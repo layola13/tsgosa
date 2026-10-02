@@ -270,6 +270,18 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		scope.types[name] = "arr"
 		return true
 	}
+	// 数组构造式（`Array(n)`/`Array(a, b)`；`new Array(n)` 由声明位直办）。
+	if saIsArrayCtor(vd.Initializer) && vd.Initializer.Kind == ast.KindCallExpression {
+		h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "arr"
+		return true
+	}
 	// 绑定句柄与数组返回调用皆直传（slice/concat/map 等新鲜句柄）。
 	if src, msg := saArrValueOf(w, vd.Initializer, scope, pos, refusals, nextTemp); msg == "" {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
@@ -666,6 +678,84 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 	default:
 		return "", "not an array expression"
 	}
+}
+
+// saNewSizedArray 零缓冲定长数组（形状证据：封存 newSizedArray:7710-7730）。
+func saNewSizedArray(w printer.EmitTextWriter, lenOp string, nextTemp *int) string {
+	bytes := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", bytes, lenOp))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc %s\n", buf, bytes))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, lenOp))
+	w.Write(fmt.Sprintf("  !%s\n", buf))
+	return h
+}
+
+// saIsArrayCtor 识别数组构造式（`Array(...)` 调用与 `new Array(n)` 单长形；
+// 后者多参落通用拒绝，镜像封存 lowerNew:8603）。
+func saIsArrayCtor(e *ast.Node) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindCallExpression {
+		ce := e.AsCallExpression()
+		return ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "Array"
+	}
+	if e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		return ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Array"
+	}
+	return false
+}
+
+// saLowerArrayCtor 数组构造式具化（单长分配；多元逐元 push；i32  plain 值；
+// 形状证据：封存 lowerCall Array:3871-3884 + newSizedArray）。
+func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	var argNodes []*ast.Node
+	isNew := false
+	if e.Kind == ast.KindCallExpression {
+		if ce := e.AsCallExpression(); ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+	} else {
+		isNew = true
+		if ne := e.AsNewExpression(); ne.Arguments != nil {
+			argNodes = ne.Arguments.Nodes
+		}
+	}
+	if isNew && len(argNodes) != 1 {
+		return "", "new Array takes 1 length argument"
+	}
+	if len(argNodes) == 1 {
+		// 单参恒为长（`Array(5)` 即长 5；元素式请用字面量；
+		// 形状证据：封存调用式 newSizedArray 分支 + lowerNew:8603）。
+		v, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return saNewSizedArray(w, v, nextTemp), ""
+	}
+	h := saNewEmptyArray(w, nextTemp)
+	for _, a := range argNodes {
+		if a != nil && a.Kind == ast.KindSpreadElement {
+			return "", "Array(...) elements must be plain values"
+		}
+		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
+			return "", "Array(...) elements must be plain values"
+		}
+		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		saLowerArrayPush(w, h, v, scope, nextTemp)
+	}
+	return h, ""
 }
 
 // saNewEmptyArray 空数组（alloc 16 头 + 空柄；形状证据：封存 newEmptyArray:7802-7817）。

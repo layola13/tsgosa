@@ -11,6 +11,33 @@ import (
 // saEvalCall 求函数调用（形状证据：封存 `%s = call @%s(%s)` / `call @%s(%s)`）。
 // 被调者须为同文件顶层函数（预扫签名表；元数精确匹配）；局部同名遮蔽则拒
 // （无一等函数）。返回 (operand, isVoidCall, errMsg)。
+// saNumberConst Number 整形常量折叠（形状证据：封存 stdlib.go:128-130
+// `@const:2147483647/-2147483648` integer subset）。
+func saNumberConst(pa *ast.PropertyAccessExpression) (string, bool) {
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Expression.Text() != "Number" ||
+		pa.Name() == nil {
+		return "", false
+	}
+	switch pa.Name().Text() {
+	case "MAX_VALUE", "MAX_SAFE_INTEGER":
+		return "2147483647", true
+	case "MIN_SAFE_INTEGER":
+		return "-2147483648", true
+	}
+	return "", false
+}
+
+// saIsNumberIsInteger 识别 `Number.isInteger(x)`（形状证据：封存 lowerCall:3837-3848 +
+// stdlib.go:404-411；f64 位本薄口不可达——浮点字面早拒）。
+func saIsNumberIsInteger(ce *ast.CallExpression) bool {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	return pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Number" &&
+		pa.Name() != nil && pa.Name().Text() == "isInteger"
+}
+
 // saEvalMathAbs 求 `Math.abs(x)`（形状证据：封存 lowerMathInline abs:5754-5780
 // 分支汇合原样：alloc 8 槽 + `sge x, 0` + br + 两臂 store + end load + 释放。
 // 其余 Math.* 本薄口大声拒；`Math.abs` 别名调用不认（无 mathAliases 表，拒）。

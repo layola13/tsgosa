@@ -80,6 +80,31 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
+			// `new Array(n)` 定长零数组（`new Array(a, b)` 落通用拒绝）。
+			if saIsArrayCtor(vd.Initializer) {
+				ne := vd.Initializer.AsNewExpression()
+				if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Array takes 1 length argument"})
+					return false
+				}
+				if vd.Type != nil {
+					if k, ok := saAnnotKind(vd.Type); !ok || k != "arr" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array annotation must be an array type"})
+						return false
+					}
+				}
+				h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = "arr"
+				continue
+			}
 			// `new Map()`/`new Set()` 绑定为 map/set 种（零参；有参形大声拒）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier &&
 				(ne.Expression.Text() == "Map" || ne.Expression.Text() == "Set") {
@@ -278,6 +303,17 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	if vd.Initializer.Kind == ast.KindCallExpression {
 		// 数组/串/date 返回调用按返回种建种。
+		if saIsArrayCtor(vd.Initializer) {
+			h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "arr"
+			return true
+		}
 		if k, ok := saArrCallRet(vd.Initializer.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}

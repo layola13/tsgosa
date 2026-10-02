@@ -194,6 +194,28 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return op, false, ""
 			}
 		}
+		// Number.isInteger(x)：i32 操作数恒整（求值保留副作用后折 "1"；
+		// 形状证据：封存 lowerCall:3837-3848）。
+		if saIsNumberIsInteger(ce) {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "Number.isInteger takes one argument"
+			}
+			if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+				return "", false, msg
+			}
+			return "1", false, ""
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Number" {
+			// parseFloat 回 f64（薄口无 f64 种）；其余 Number.* 未知。
+			if pa.Name() != nil && pa.Name().Text() == "parseFloat" {
+				return "", false, "Number.parseFloat needs f64 (beyond i32 subset)"
+			}
+			return "", false, "unknown Number member"
+		}
 		// Date 调用（静态 now/parse 与 date 绑定方法；种由调用方判定）。
 		if _, ok := saDateCallKind(ce, scope); ok {
 			op, _, msg := saLowerDateCall(w, ce, scope, pos, refusals, nextTemp)
@@ -208,6 +230,18 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "only direct function calls lowerable"
 	}
 	name := ce.Expression.Text()
+	if name == "Number" {
+		// Number(x) 回 f64（薄口无 f64 种，大声拒）。
+		return "", false, "Number(x) needs f64 (beyond i32 subset)"
+	}
+	if name == "Array" {
+		// 数组构造式具化（调用式；`new Array` 另走声明位）。
+		h, msg := saLowerArrayCtor(w, ce.AsNode(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		return h, false, ""
+	}
 	if _, shadowed := scope.types[name]; shadowed {
 		return "", false, name + " is not a function"
 	}
@@ -471,6 +505,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindPropertyAccessExpression:
 		pa := e.AsPropertyAccessExpression()
+		// Number 整形常量折叠（`MAX_VALUE` 等；形状证据：封存 stdlib.go:128-130）。
+		if v, ok := saNumberConst(pa); ok {
+			return v, ""
+		}
 		// 实例字段读（`o.f`/`this.f`；静态成员大声拒）。
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			h, def, msg := saInstBase(pa.Expression, scope)
@@ -660,6 +698,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if k != "" {
 				return "", "date millis needs i64 (beyond i32 subset)"
 			}
+		}
+		if saIsArrayCtor(e) {
+			return "", "array value in i32 expression"
 		}
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {
