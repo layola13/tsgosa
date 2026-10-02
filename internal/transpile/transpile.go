@@ -604,6 +604,9 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int,
 			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp, false) {
 				return
 			}
+			if saStmtTerminates(s) {
+				terminated = true
+			}
 			continue
 		}
 		ln, col := pos(s.Pos())
@@ -708,7 +711,7 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
 			return false
 		}
-		w.Write("  ret\n")
+		// void 无 else：收尾 ret 由 saLowerFunction 统一补，此处不写，避免双 ret。
 	} else {
 		// 内层无 else 且为嵌套：按门禁在内层 endif 后跳外层（由外层补 jmp）。
 	}
@@ -722,6 +725,36 @@ func saContainsIf(stmts []*ast.Node) bool {
 		}
 	}
 	return false
+}
+
+// saStmtTerminates 判定单条语句是否终结控制流（return，或两臂皆终结的 if/else）。
+func saStmtTerminates(s *ast.Node) bool {
+	if s == nil {
+		return false
+	}
+	if s.Kind == ast.KindReturnStatement {
+		return true
+	}
+	if s.Kind == ast.KindIfStatement {
+		iv := s.AsIfStatement()
+		if iv.ElseStatement == nil {
+			return false
+		}
+		thenStmts, ok1 := saEmbeddedBlock(iv.ThenStatement)
+		elseStmts, ok2 := saEmbeddedBlock(iv.ElseStatement)
+		if !ok1 || !ok2 {
+			return false
+		}
+		return saArmTerminates(thenStmts) && saArmTerminates(elseStmts)
+	}
+	return false
+}
+
+func saArmTerminates(stmts []*ast.Node) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	return saStmtTerminates(stmts[len(stmts)-1])
 }
 
 func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {
