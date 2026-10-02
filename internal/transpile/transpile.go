@@ -588,9 +588,10 @@ type saLoop struct {
 // saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）
 // + 文件级函数签名表（调用核只认同文件顶层函数）。
 type saScope struct {
-	types map[string]string
-	loops []saLoop
-	funcs map[string]saFuncSig
+	types     map[string]string
+	loops     []saLoop
+	funcs     map[string]saFuncSig
+	nextLabel *int
 }
 
 func saLiteralI32(e *ast.Node) (string, bool) {
@@ -662,7 +663,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel}
 	paramKinds, ok := saParamKinds(fn)
 	if !ok {
 		ln, col := pos(st.Pos())
@@ -791,15 +792,8 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	if op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp); msg != "" {
 		ln, col := pos(s.Pos())
-		// 调用核错误透传具体信息（元数/未知函数/void 值位），其余保持原子消息。
-		out := "unsupported return expression"
-		for _, k := range []string{"arity mismatch", "unknown function", "is not a function", "direct function calls", "void function"} {
-			if strings.Contains(msg, k) {
-				out = msg
-				break
-			}
-		}
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: out})
+		// 求值错误透传具体信息（调用核/一元/未知变量等定位关键）。
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return false, true
 	} else {
 		w.Write(fmt.Sprintf("  ret %s\n", op))
@@ -902,7 +896,139 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 }
 
 // saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324
-// add/sub/mul/div/srem、eq/ne/slt/sle/sgt/sge、and/or；负数字面折叠见 modstate:309）。
+// saLowerPrefixUnary lowering 前缀一元（证据：封存 lowerPrefixUnary:3595-3619：
+// 数字面正负折叠；`-x` 为 `sub 0, x`；`!x` 为 `eq x, 0`；其余大声拒）。
+func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral &&
+		(un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
+		t := un.Operand.Text()
+		if saIsFloatLit(t) {
+			return "", "float literal not in i32 subset"
+		}
+		if un.Operator == ast.KindMinusToken {
+			return "-" + t, ""
+		}
+		return t, ""
+	}
+	switch un.Operator {
+	case ast.KindPlusPlusToken, ast.KindMinusMinusToken:
+		// 前缀返回新值（证据：封存 lowerIncDec:3632 + lowerPrefixUnary:3598-3601）。
+		return saLowerIncDec(w, un.Operand, un.Operator == ast.KindPlusPlusToken, true, scope, pos, refusals, nextTemp)
+	case ast.KindMinusToken:
+		arg, msg := saEvalI32(w, un.Operand, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub 0, %s\n", t, arg))
+		return t, ""
+	case ast.KindExclamationToken:
+		var arg string
+		if un.Operand != nil && un.Operand.Kind == ast.KindIdentifier {
+			nm := un.Operand.Text()
+			if _, ok := scope.types[nm]; !ok {
+				return "", "unknown variable " + nm
+			}
+			arg = nm
+		} else {
+			var msg string
+			arg, msg = saEvalI32(w, un.Operand, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, arg))
+		return t, ""
+	default:
+		return "", fmt.Sprintf("prefix operator %s not in subset", un.Operator.String())
+	}
+}
+
+// saLowerPostfixUnary lowering 后缀一元（证据：封存 lowerPostfixUnary:3621-3630
+// + lowerIncDec:3632：`++`/`--` 皆可；后缀返回旧值）。
+func saLowerPostfixUnary(w printer.EmitTextWriter, un *ast.PostfixUnaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if un.Operator != ast.KindPlusPlusToken && un.Operator != ast.KindMinusMinusToken {
+		return "", fmt.Sprintf("postfix operator %s not in subset", un.Operator.String())
+	}
+	return saLowerIncDec(w, un.Operand, un.Operator == ast.KindPlusPlusToken, false, scope, pos, refusals, nextTemp)
+}
+
+// saLowerIncDec lowering 自增（prefix=true 返回新值，false 返回旧值；仅 i32 绑定）。
+func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	target, ok := saBoundI32(scope, operand)
+	if !ok {
+		return "", "incdec target must be bound i32 variable"
+	}
+	op := "add"
+	if !up {
+		op = "sub"
+	}
+	if prefix {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
+		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+		return t, ""
+	}
+	old := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", old, target))
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
+	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	return old, ""
+}
+
+// saLowerPow lowering 整数 `**`（形状证据：封存 lowerPowLoop:3326-3350：
+// r=1；ctr=expo；top: cc=sgt ctr,0；br body/end；body: r*=base, ctr--；jmp top）。
+func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	base, msgB := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+	if msgB != "" {
+		return "", msgB
+	}
+	expo, msgE := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msgE != "" {
+		return "", msgE
+	}
+	nextLabel := scope.nextLabel
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 1\n", res))
+	topL := fmt.Sprintf("L_pow_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_pow_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_pow_end_%d", *nextLabel)
+	*nextLabel++
+	ctr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", ctr, expo))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", cc, ctr))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cc, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	nr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", nr, res, base))
+	w.Write(fmt.Sprintf("  %s = %s\n", res, nr))
+	nc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nc, ctr))
+	w.Write(fmt.Sprintf("  %s = %s\n", ctr, nc))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return res, ""
+}
+
+// saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324
+// add/sub/mul/div/srem/shl/ashr/lshr/and/or/xor、eq/ne/slt/sle/sgt/sge；`**`
+// 走 lowerPowLoop:3326-3350；一元见 lowerPrefixUnary:3595-3619）。
 // 返回 (operand, errMsg)，errMsg 非空即失败（调用方按上下文包装定位拒绝）。
 func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
@@ -931,19 +1057,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindParenthesizedExpression:
 		return saEvalI32(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindPrefixUnaryExpression:
-		un := e.AsPrefixUnaryExpression()
-		if un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral &&
-			(un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
-			t := un.Operand.Text()
-			if saIsFloatLit(t) {
-				return "", "float literal not in i32 subset"
-			}
-			if un.Operator == ast.KindMinusToken {
-				return "-" + t, ""
-			}
-			return t, ""
-		}
-		return "", "unsupported unary operator"
+		return saLowerPrefixUnary(w, e.AsPrefixUnaryExpression(), scope, pos, refusals, nextTemp)
+	case ast.KindPostfixUnaryExpression:
+		return saLowerPostfixUnary(w, e.AsPostfixUnaryExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
@@ -953,6 +1069,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
 			ast.KindAsteriskToken: "mul", ast.KindSlashToken: "div",
 			ast.KindPercentToken: "srem",
+			ast.KindLessThanLessThanToken: "shl",
+			ast.KindGreaterThanGreaterThanToken: "ashr",
+			ast.KindGreaterThanGreaterThanGreaterThanToken: "lshr",
+			ast.KindAmpersandToken: "and", ast.KindBarToken: "or",
+			ast.KindCaretToken: "xor",
 			ast.KindEqualsEqualsToken: "eq", ast.KindEqualsEqualsEqualsToken: "eq",
 			ast.KindExclamationEqualsToken: "ne", ast.KindExclamationEqualsEqualsToken: "ne",
 			ast.KindLessThanToken: "slt", ast.KindLessThanEqualsToken: "sle",
@@ -960,6 +1081,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			ast.KindAmpersandAmpersandToken: "and", ast.KindBarBarToken: "or",
 		}[saBinaryOpKind(be)]
 		if !ok {
+			if saBinaryOpKind(be) == ast.KindAsteriskAsteriskToken {
+				return saLowerPow(w, be, scope, pos, refusals, nextTemp)
+			}
 			return "", fmt.Sprintf("binary operator %s not in subset", saBinaryOpKind(be).String())
 		}
 		l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
@@ -1111,9 +1235,14 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return true
 	}
 	if e.Kind != ast.KindBinaryExpression {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (assignments only)"})
-		return false
+		// 其余表达式语句求值后丢弃（证据：封存 lowerExprStatement:2712-2715
+		// 只 lower 表达式：`i++` 等副作用保留，无副作用的纯表达式亦然）。
+		if _, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp); msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement: " + msg})
+			return false
+		}
+		return true
 	}
 	be := e.AsBinaryExpression()
 	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
@@ -1271,35 +1400,50 @@ func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, po
 // canonicalForStep:1855-1900 只认 ++ 系；复合赋值的 op 映射见 lowerCompoundAssign:3394-3417）。
 // 其余一律大声拒（遗留 legacy 接受任意表达式，本子集收紧为门）。
 func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
-	var target, rhs string
+	// 增量位只用写回副作用，不发旧值临时量（表达式位经 saLowerIncDec 保留旧值语义）。
+	emitBump := func(target, op string) {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
+		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	}
 	switch incr.Kind {
 	case ast.KindPostfixUnaryExpression:
 		un := incr.AsPostfixUnaryExpression()
-		if un.Operator != ast.KindPlusPlusToken {
+		if un.Operator != ast.KindPlusPlusToken && un.Operator != ast.KindMinusMinusToken {
 			break
 		}
-		var ok bool
-		if target, ok = saBoundI32(scope, un.Operand); !ok {
+		target, ok := saBoundI32(scope, un.Operand)
+		if !ok {
 			break
 		}
-		rhs = "1"
+		op := "add"
+		if un.Operator == ast.KindMinusMinusToken {
+			op = "sub"
+		}
+		emitBump(target, op)
+		return true
 	case ast.KindPrefixUnaryExpression:
 		un := incr.AsPrefixUnaryExpression()
-		if un.Operator != ast.KindPlusPlusToken {
+		if un.Operator != ast.KindPlusPlusToken && un.Operator != ast.KindMinusMinusToken {
 			break
 		}
-		var ok bool
-		if target, ok = saBoundI32(scope, un.Operand); !ok {
+		target, ok := saBoundI32(scope, un.Operand)
+		if !ok {
 			break
 		}
-		rhs = "1"
+		op := "add"
+		if un.Operator == ast.KindMinusMinusToken {
+			op = "sub"
+		}
+		emitBump(target, op)
+		return true
 	case ast.KindBinaryExpression:
 		be := incr.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
 			// `x = <i32>` 赋值形增量（与语句位同门）。
-			var okT bool
-			if target, okT = saBoundI32(scope, be.Left); !okT {
-				target = ""
+			target, okT := saBoundI32(scope, be.Left)
+			if !okT {
 				break
 			}
 			r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
@@ -1315,9 +1459,8 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		if !ok {
 			break
 		}
-		var okT bool
-		if target, okT = saBoundI32(scope, be.Left); !okT {
-			target = ""
+		target, okT := saBoundI32(scope, be.Left)
+		if !okT {
 			break
 		}
 		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
@@ -1331,17 +1474,14 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
 		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
 		return true
-	}
-	if target == "" || rhs == "" {
+	default:
 		ln, col := pos(incr.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor (x++/++x/x+=K only)"})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor (x++/--x/x=<i32>/x+=K only)"})
 		return false
 	}
-	t := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", t, target, rhs))
-	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
-	return true
+	ln, col := pos(incr.Pos())
+	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor (x++/--x/x=<i32>/x+=K only)"})
+	return false
 }
 
 // saLowerFor lowering for（形状证据：封存 lowerFor:2043-2122 legacy 形；
