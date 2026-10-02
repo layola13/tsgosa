@@ -567,7 +567,8 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 // i32 返回注解按封存 annotationType:181-186 视为 number。
 func saReturnKind(t *ast.TypeNode) (string, bool) {
 	if t == nil {
-		return "", false
+		// 缺注解即 void（形状证据：封存 lowerFunction:919-923）。
+		return "void", true
 	}
 	switch t.Kind {
 	case ast.KindVoidKeyword:

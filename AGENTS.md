@@ -40,6 +40,7 @@
 - step16：数组解构声明（`const [a,b] = p|[...]` 逐元越界归零 join 绑 i32；空穴跳过；rest/嵌套/对象布局/非数组源/函数值/缺 init/重复名拒；`lowerDestructuringDecl:5414-5461/destructureArray:5309-5333/bindPatternName:5513-5524`）。
 - step17：无注解局部推断（数组字面量/句柄走 arr 通道，`true/false`/bool 句柄走 bool，其余 i32 求值；缺 init 绑 i32 零值，const 缺 init/函数值拒；`lowerVarDeclList:1415-1433` 缺省 i32 + 按初值绑定）。
 - step18：无注解参数缺省 i32（`lowerFunction:946 ptype := tI32`）。
+- step19：无注解返回缺省 void（`lowerFunction:919-923`；有值返回仍拒）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
