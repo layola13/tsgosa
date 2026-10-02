@@ -459,7 +459,62 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 	return out, true
 }
 
+// saParamKinds 与 saParamNames 同步校验参数，返回名->种（"i32"|"bool"）。
+// 标注依据封存 saemit.go:162 annotationType（number->i32；i32 TypeReference->i32）。
+func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
+	kinds := map[string]string{}
+	if fn.Parameters == nil {
+		return kinds, true
+	}
+	for _, p := range fn.Parameters.Nodes {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+			return nil, false
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			return nil, false
+		}
+		k, ok := saAnnotKind(pd.Type)
+		if !ok {
+			return nil, false
+		}
+		// 参数仅允许 i32/bool 两种标量（其余大声拒，子集门）。
+		if k != "i32" && k != "bool" {
+			return nil, false
+		}
+		kinds[nm.Text()] = k
+	}
+	return kinds, true
+}
+
+// saAnnotKind 映射类型注解到子集种类（证据：封存 annotationType:166-210）。
+func saAnnotKind(t *ast.TypeNode) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	switch t.Kind {
+	case ast.KindNumberKeyword:
+		return "i32", true
+	case ast.KindBooleanKeyword:
+		return "bool", true
+	case ast.KindTypeReference:
+		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+			switch ref.TypeName.Text() {
+			case "i32":
+				return "i32", true
+			case "boolean":
+				return "bool", true
+			}
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
 // saReturnKind: "", "void", "number", "boolean"; 其他一律拒绝。
+// i32 返回注解按封存 annotationType:181-186 视为 number。
 func saReturnKind(t *ast.TypeNode) (string, bool) {
 	if t == nil {
 		return "", false
@@ -471,9 +526,26 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		return "number", true
 	case ast.KindBooleanKeyword:
 		return "boolean", true
+	case ast.KindTypeReference:
+		if k, ok := saAnnotKind(t); ok && k == "i32" {
+			return "number", true
+		}
+		return "", false
 	default:
 		return "", false
 	}
+}
+
+// saLoop 是 break/continue 的跳转栈帧（unlabeled；labeled 形大声拒）。
+type saLoop struct {
+	top string
+	end string
+}
+
+// saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）。
+type saScope struct {
+	types map[string]string
+	loops []saLoop
 }
 
 func saLiteralI32(e *ast.Node) (string, bool) {
@@ -545,76 +617,26 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int,
 		w.Write("  ret\n")
 		return
 	}
-	paramSet := map[string]bool{}
-	for _, p := range params {
-		paramSet[p] = true
+	scope := &saScope{types: map[string]string{}}
+	paramKinds, ok := saParamKinds(fn)
+	if !ok {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool only)"})
+		return
+	}
+	for k, v := range paramKinds {
+		scope.types[k] = v
 	}
 	terminated := false
 	for _, s := range stmts {
 		if terminated {
 			break
 		}
-		if s.Kind == ast.KindReturnStatement {
-			rs := s.AsReturnStatement()
-			if isVoid {
-				if rs.Expression != nil {
-					ln, col := pos(s.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "return value in void function refused"})
-					return
-				}
-				w.Write("  ret\n")
-				terminated = true
-				continue
-			}
-			if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
-				ce := rs.Expression.AsConditionalExpression()
-				condName, ok := saCondVar(ce.Condition, paramSet)
-				if !ok {
-					ln, col := pos(s.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition"})
-					return
-				}
-				a, ok1 := saLiteralI32(ce.WhenTrue)
-				b, ok2 := saLiteralI32(ce.WhenFalse)
-				if !ok1 || !ok2 {
-					ln, col := pos(s.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be i32 literals"})
-					return
-				}
-				needImport("sa_std/control.sal")
-				t := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", t, condName, a, b))
-				w.Write(fmt.Sprintf("  ret %s\n", t))
-				terminated = true
-				continue
-			}
-			lit, ok := saLiteralI32(rs.Expression)
-			if !ok {
-				ln, col := pos(s.Pos())
-				if rs.Expression != nil && rs.Expression.Kind == ast.KindStringLiteral {
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string return refused"})
-				} else {
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return expression"})
-				}
-				return
-			}
-			w.Write(fmt.Sprintf("  ret %s\n", lit))
+		if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+			return
+		} else if done {
 			terminated = true
-			continue
 		}
-		if s.Kind == ast.KindIfStatement {
-			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
-				return
-			}
-			if saStmtTerminates(s) {
-				terminated = true
-			}
-			continue
-		}
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
-		return
 	}
 	if !terminated {
 		if !isVoid {
@@ -626,35 +648,408 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int,
 	}
 }
 
-func saCondVar(cond *ast.Node, paramSet map[string]bool) (string, bool) {
-	if cond == nil {
-		return "", false
-	}
-	if cond.Kind == ast.KindIdentifier {
-		nm := cond.Text()
-		if paramSet[nm] {
-			return nm, true
+// saLowerStmt lowering 单条语句（函数体/臂/循环体共用）：
+// 返回 (terminated, failed)。形状锁：return/if 原有形状不变。
+func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	switch s.Kind {
+	case ast.KindReturnStatement:
+		return saLowerReturn(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	case ast.KindIfStatement:
+		if !saLowerIf(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
 		}
-		return "", false
+		return saStmtTerminates(s), false
+	case ast.KindWhileStatement:
+		if !saLowerWhile(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
+	case ast.KindVariableStatement:
+		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
+			return false, true
+		}
+		return false, false
+	case ast.KindExpressionStatement:
+		if !saLowerAssignStmt(w, s, scope, pos, refusals, nextTemp) {
+			return false, true
+		}
+		return false, false
+	case ast.KindBreakStatement, ast.KindContinueStatement:
+		if !saLowerBreakContinue(w, s, scope, pos, refusals) {
+			return false, true
+		}
+		return true, false
+	case ast.KindLabeledStatement:
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "labeled statements not lowerable"})
+		return false, true
+	default:
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		return false, true
 	}
-	return "", false
+}
+
+// saLowerReturn lowering return（含 void 裸 return、三元 SELECT、i32 操作数）。
+func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	rs := s.AsReturnStatement()
+	if isVoid {
+		if rs.Expression != nil {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "return value in void function refused"})
+			return false, true
+		}
+		w.Write("  ret\n")
+		return true, false
+	}
+	if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
+		ce := rs.Expression.AsConditionalExpression()
+		condOp, msg := saCondOperand(w, ce.Condition, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})
+			return false, true
+		}
+		a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+		b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+		if msgA != "" || msgB != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be i32 operands"})
+			return false, true
+		}
+		needImport("sa_std/control.sal")
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", t, condOp, a, b))
+		w.Write(fmt.Sprintf("  ret %s\n", t))
+		return true, false
+	}
+	if rs.Expression != nil && rs.Expression.Kind == ast.KindStringLiteral {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string return refused"})
+		return false, true
+	}
+	if op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp); msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return expression"})
+		return false, true
+	} else {
+		w.Write(fmt.Sprintf("  ret %s\n", op))
+		return true, false
+	}
+}
+
+// saBoolSideCond 报告二元条件中布尔类型一侧的变量名（无则 ""）。
+// 门禁 TestSATSGoPortNonParamCondRefused 要求此类条件以 condition kind 拒绝。
+func saBoolSideCond(cond *ast.Node, scope *saScope) string {
+	if cond == nil || cond.Kind != ast.KindBinaryExpression {
+		return ""
+	}
+	be := cond.AsBinaryExpression()
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
+			return side.Text()
+		}
+	}
+	return ""
+}
+
+// saCondOperand 求条件操作数：绑定标识符直接用（形状锁）；真/假折 1/0；
+// 其余走 saEvalI32（比较等先行发射临时量）。失败返回定位信息。
+func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if cond == nil {
+		return "", "missing condition"
+	}
+	switch cond.Kind {
+	case ast.KindIdentifier:
+		nm := cond.Text()
+		if _, ok := scope.types[nm]; ok {
+			return nm, ""
+		}
+		return "", "unknown condition variable " + nm
+	case ast.KindTrueKeyword:
+		return "1", ""
+	case ast.KindFalseKeyword:
+		return "0", ""
+	default:
+		return saEvalI32(w, cond, scope, pos, refusals, nextTemp)
+	}
+}
+
+// saIsFloatLit 粗判浮点数字面（封存 lowerExpr:2725 按 isFloatLiteral 分 f64/i32）。
+func saIsFloatLit(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if c := text[i]; c == '.' || c == 'e' || c == 'E' {
+			return true
+		}
+	}
+	return false
+}
+
+// saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324
+// add/sub/mul/div/srem、eq/ne/slt/sle/sgt/sge、and/or；负数字面折叠见 modstate:309）。
+// 返回 (operand, errMsg)，errMsg 非空即失败（调用方按上下文包装定位拒绝）。
+func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil {
+		return "", "missing expression"
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		t := e.Text()
+		if saIsFloatLit(t) {
+			return "", "float literal " + t + " not in i32 subset"
+		}
+		return t, ""
+	case ast.KindTrueKeyword:
+		return "1", ""
+	case ast.KindFalseKeyword:
+		return "0", ""
+	case ast.KindIdentifier:
+		nm := e.Text()
+		if k, ok := scope.types[nm]; ok {
+			if k != "i32" {
+				return "", "boolean " + nm + " in i32 expression"
+			}
+			return nm, ""
+		}
+		return "", "unknown variable " + nm
+	case ast.KindParenthesizedExpression:
+		return saEvalI32(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindPrefixUnaryExpression:
+		un := e.AsPrefixUnaryExpression()
+		if un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral &&
+			(un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
+			t := un.Operand.Text()
+			if saIsFloatLit(t) {
+				return "", "float literal not in i32 subset"
+			}
+			if un.Operator == ast.KindMinusToken {
+				return "-" + t, ""
+			}
+			return t, ""
+		}
+		return "", "unsupported unary operator"
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
+			return "", "assignment only as statement"
+		}
+		op, ok := map[ast.Kind]string{
+			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
+			ast.KindAsteriskToken: "mul", ast.KindSlashToken: "div",
+			ast.KindPercentToken: "srem",
+			ast.KindEqualsEqualsToken: "eq", ast.KindEqualsEqualsEqualsToken: "eq",
+			ast.KindExclamationEqualsToken: "ne", ast.KindExclamationEqualsEqualsToken: "ne",
+			ast.KindLessThanToken: "slt", ast.KindLessThanEqualsToken: "sle",
+			ast.KindGreaterThanToken: "sgt", ast.KindGreaterThanEqualsToken: "sge",
+			ast.KindAmpersandAmpersandToken: "and", ast.KindBarBarToken: "or",
+		}[be.OperatorToken.Kind]
+		if !ok {
+			return "", fmt.Sprintf("binary operator %s not in subset", be.OperatorToken.Kind.String())
+		}
+		l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+		if msgL != "" {
+			return "", msgL
+		}
+		r, msgR := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		if msgR != "" {
+			return "", msgR
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
+		return t, ""
+	default:
+		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
+	}
+}
+
+// saLowerVarDecl lowering 变量声明（`let/const x: number|i32 = <i32>`）。
+// 形状证据：封存 lowerVarDeclList:1395-1470（using 拒、无 init const 拒、
+// 解构拒、缺 init 绑零值、名按 bindingNameText 取标识符）。
+func saLowerVarDecl(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	vs := s.AsVariableStatement()
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable"})
+		return false
+	}
+	isConst := dl.AsNode().Flags&ast.NodeFlagsConst != 0
+	for _, d := range dl.Declarations.Nodes {
+		vd := d.AsVariableDeclaration()
+		nm := vd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring declarations are not in subset"})
+			return false
+		}
+		name := nm.Text()
+		if _, dup := scope.types[name]; dup {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+			return false
+		}
+		if k, ok := saAnnotKind(vd.Type); !ok || k != "i32" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32 locals only)"})
+			return false
+		}
+		if vd.Initializer == nil {
+			if isConst {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = 0\n", name))
+			scope.types[name] = "i32"
+			continue
+		}
+		if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function initializer not lowerable"})
+			return false
+		}
+		op, msg := saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		scope.types[name] = "i32"
+	}
+	return true
+}
+
+// saLowerAssignStmt lowering 赋值语句（`x = <i32>`，x 须已绑定）。
+func saLowerAssignStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindBinaryExpression {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (assignments only)"})
+		return false
+	}
+	be := e.AsBinaryExpression()
+	if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken ||
+		be.Left == nil || be.Left.Kind != ast.KindIdentifier {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (plain x = i32 only)"})
+		return false
+	}
+	name := be.Left.Text()
+	k, ok := scope.types[name]
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
+		return false
+	}
+	if k != "i32" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
+		return false
+	}
+	op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
+		return false
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+	return true
+}
+
+// saLowerWhile lowering while（形状证据：封存 lowerWhile:1805-1835
+// top/body/end + br + 体 + jmp top + end；false 恒假消死臂）。
+func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	ws := s.AsWhileStatement()
+	if ws.Expression != nil && ws.Expression.Kind == ast.KindFalseKeyword {
+		return true
+	}
+	if be := saBoolSideCond(ws.Expression, scope); be != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported condition kind (boolean %s in comparison)", be)})
+		return false
+	}
+	bodyStmts, ok := saEmbeddedBlock(ws.Statement)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported while body"})
+		return false
+	}
+	topL := fmt.Sprintf("L_while_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_while_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_while_end_%d", *nextLabel)
+	*nextLabel++
+	// 条件求值落在顶标号之后（每轮重算），先落顶再求条件。
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	condOp, msg := saCondOperand(w, ws.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported while condition: " + msg})
+		return false
+	}
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	scope.loops = append(scope.loops, saLoop{top: topL, end: endL})
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	if !saArmTerminates(bodyStmts) {
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saLowerBreakContinue lowering 无标号 break/continue（标号形大声拒；栈空拒）。
+func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	isBreak := s.Kind == ast.KindBreakStatement
+	var label *ast.IdentifierNode
+	if isBreak {
+		label = s.AsBreakStatement().Label
+	} else {
+		label = s.AsContinueStatement().Label
+	}
+	if label != nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "labeled break/continue not lowerable"})
+		return false
+	}
+	if len(scope.loops) == 0 {
+		ln, col := pos(s.Pos())
+		kind := "break"
+		if !isBreak {
+			kind = "continue"
+		}
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: kind + " outside loop"})
+		return false
+	}
+	top := scope.loops[len(scope.loops)-1]
+	if isBreak {
+		w.Write(fmt.Sprintf("  jmp %s\n", top.end))
+	} else {
+		w.Write(fmt.Sprintf("  jmp %s\n", top.top))
+	}
+	return true
 }
 
 // saLowerIf 处理 if/else（void 与 i32 值两形，支持嵌套；嵌套走同一函数递归）。
-func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[string]bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+// 条件：绑定标识符直接用（形状锁），其余 i32 操作数先求值到临时量。
+func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	iv := s.AsIfStatement()
 	// false 恒假消死臂。
 	if iv.Expression != nil && iv.Expression.Kind == ast.KindFalseKeyword {
 		return true
 	}
-	condName, ok := saCondVar(iv.Expression, paramSet)
-	if !ok {
+	if be := saBoolSideCond(iv.Expression, scope); be != "" {
 		ln, col := pos(s.Pos())
-		if iv.Expression != nil && iv.Expression.Kind == ast.KindIdentifier {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown condition variable"})
-		} else {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported condition kind %d", int(iv.Expression.Kind))})
-		}
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported condition kind (boolean %s in comparison)", be)})
 		return false
 	}
 	thenStmts, ok := saEmbeddedBlock(iv.ThenStatement)
@@ -673,19 +1068,25 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[
 			return false
 		}
 	}
+	condOp, msg := saCondOperand(w, iv.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported condition kind: " + msg})
+		return false
+	}
 	needImport("sa_std/control.sal")
 	if hasElse {
 		thenLabel := fmt.Sprintf("L_then_%d", *nextLabel)
 		*nextLabel++
 		elseLabel := fmt.Sprintf("L_else_%d", *nextLabel)
 		*nextLabel++
-		w.Write(fmt.Sprintf("  EXPAND IF_ELSE %s, %s, %s\n", condName, thenLabel, elseLabel))
+		w.Write(fmt.Sprintf("  EXPAND IF_ELSE %s, %s, %s\n", condOp, thenLabel, elseLabel))
 		w.Write(thenLabel + ":\n")
-		if !saLowerArm(w, thenStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
+		if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false
 		}
 		w.Write(elseLabel + ":\n")
-		if !saLowerArm(w, elseStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
+		if !saLowerArm(w, elseStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false
 		}
 		return true
@@ -695,21 +1096,17 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[
 	*nextLabel++ // 预留 else 槽位，与 satsgo 门禁形状对齐（1→3，4→6）
 	endifLabel := fmt.Sprintf("L_endif_%d", *nextLabel)
 	*nextLabel++
-	w.Write(fmt.Sprintf("  EXPAND IF_TRUE %s, %s, %s\n", condName, thenLabel, endifLabel))
+	w.Write(fmt.Sprintf("  EXPAND IF_TRUE %s, %s, %s\n", condOp, thenLabel, endifLabel))
 	w.Write(thenLabel + ":\n")
-	if !saLowerArm(w, thenStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
+	if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 		return false
 	}
 	if saContainsIf(thenStmts) {
 		w.Write(fmt.Sprintf("  jmp %s\n", endifLabel))
 	}
 	w.Write(endifLabel + ":\n")
-	if !isVoid {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-		return false
-	}
-	// void 无 else：收尾 ret 由 saLowerFunction 统一补，此处不写，避免双 ret。
+	// 无 else 是否缺 return 由函数尾 epilogue 经 saStmtTerminates 统一判定，
+	// 此处不拒（循环体/臂内同形亦然）。
 	return true
 }
 
@@ -722,15 +1119,16 @@ func saContainsIf(stmts []*ast.Node) bool {
 	return false
 }
 
-// saStmtTerminates 判定单条语句是否终结控制流（return，或两臂皆终结的 if/else）。
+// saStmtTerminates 判定单条语句是否终结控制流（return、break/continue，
+// 或两臂皆终结的 if/else）。while/声明/赋值落空（须后继收尾）。
 func saStmtTerminates(s *ast.Node) bool {
 	if s == nil {
 		return false
 	}
-	if s.Kind == ast.KindReturnStatement {
+	switch s.Kind {
+	case ast.KindReturnStatement, ast.KindBreakStatement, ast.KindContinueStatement:
 		return true
-	}
-	if s.Kind == ast.KindIfStatement {
+	case ast.KindIfStatement:
 		iv := s.AsIfStatement()
 		if iv.ElseStatement == nil {
 			return false
@@ -741,8 +1139,9 @@ func saStmtTerminates(s *ast.Node) bool {
 			return false
 		}
 		return saArmTerminates(thenStmts) && saArmTerminates(elseStmts)
+	default:
+		return false
 	}
-	return false
 }
 
 func saArmTerminates(stmts []*ast.Node) bool {
@@ -763,39 +1162,12 @@ func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {
 	return []*ast.Node{n}, true
 }
 
-// saLowerArm 处理臂内语句（return 或嵌套 if）。
-func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, paramSet map[string]bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+// saLowerArm 处理臂/循环体语句（经 saLowerStmt 与函数体共用全语句集）。
+func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	for _, s := range stmts {
-		if s.Kind == ast.KindReturnStatement {
-			rs := s.AsReturnStatement()
-			if isVoid {
-				if rs.Expression != nil {
-					ln, col := pos(s.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "return value in void function refused"})
-					return false
-				}
-				w.Write("  ret\n")
-				continue
-			}
-			lit, ok := saLiteralI32(rs.Expression)
-			if !ok {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return expression"})
-				return false
-			}
-			w.Write(fmt.Sprintf("  ret %s\n", lit))
-			continue
+		if _, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+			return false
 		}
-		if s.Kind == ast.KindIfStatement {
-			// 嵌套走同一函数递归（编号全局递增；外层无 else 时由 saLowerIf 补 jmp）。
-			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
-				return false
-			}
-			continue
-		}
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported arm statement kind %d", int(s.Kind))})
-		return false
 	}
 	return true
 }
