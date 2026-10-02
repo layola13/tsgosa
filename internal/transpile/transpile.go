@@ -601,7 +601,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int,
 			continue
 		}
 		if s.Kind == ast.KindIfStatement {
-			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp, false) {
+			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
 				return
 			}
 			if saStmtTerminates(s) {
@@ -637,8 +637,8 @@ func saCondVar(cond *ast.Node, paramSet map[string]bool) (string, bool) {
 	return "", false
 }
 
-// saLowerIf 处理 if/else（void 与 i32 值两形，支持嵌套）。inner 表示是否处于外层 then 臂。
-func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[string]bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, inner bool) bool {
+// saLowerIf 处理 if/else（void 与 i32 值两形，支持嵌套；嵌套走同一函数递归）。
+func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[string]bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	iv := s.AsIfStatement()
 	// false 恒假消死臂。
 	if iv.Expression != nil && iv.Expression.Kind == ast.KindFalseKeyword {
@@ -701,20 +701,12 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[
 		w.Write(fmt.Sprintf("  jmp %s\n", endifLabel))
 	}
 	w.Write(endifLabel + ":\n")
-	if inner {
-		// 嵌套时外层 then 臂需显式跳回外层 endif（门禁形状）。
-		// 调用方在外层 endif 前补 jmp，本处只标记由调用方处理。
+	if !isVoid {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
+		return false
 	}
-	if !inner {
-		if !isVoid {
-			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-			return false
-		}
-		// void 无 else：收尾 ret 由 saLowerFunction 统一补，此处不写，避免双 ret。
-	} else {
-		// 内层无 else 且为嵌套：按门禁在内层 endif 后跳外层（由外层补 jmp）。
-	}
+	// void 无 else：收尾 ret 由 saLowerFunction 统一补，此处不写，避免双 ret。
 	return true
 }
 
@@ -792,12 +784,8 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, paramS
 			continue
 		}
 		if s.Kind == ast.KindIfStatement {
-			// 嵌套：记录外层 endif，内层结束后补 jmp（门禁 TestStep2NestedIf 形状）。
-			before := *nextLabel
-			_ = before
-			// 预先为外层预留？此处直接递归，调用方负责 jmp。
-			// 为精确复现 L_then_4/L_endif_6 编号，直接递归即可（编号已全局递增）。
-			if !saLowerIfNested(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
+			// 嵌套走同一函数递归（编号全局递增；外层无 else 时由 saLowerIf 补 jmp）。
+			if !saLowerIf(w, s, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
 				return false
 			}
 			continue
@@ -806,62 +794,5 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, paramS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported arm statement kind %d", int(s.Kind))})
 		return false
 	}
-	return true
-}
-
-// saLowerIfNested 嵌套专用：内层无 else 时在 endif 后补 jmp 外层 endif。
-func saLowerIfNested(w printer.EmitTextWriter, s *ast.Node, isVoid bool, paramSet map[string]bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
-	iv := s.AsIfStatement()
-	if iv.Expression != nil && iv.Expression.Kind == ast.KindFalseKeyword {
-		return true
-	}
-	condName, ok := saCondVar(iv.Expression, paramSet)
-	if !ok {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported nested condition"})
-		return false
-	}
-	thenStmts, ok := saEmbeddedBlock(iv.ThenStatement)
-	if !ok {
-		return false
-	}
-	hasElse := iv.ElseStatement != nil
-	needImport("sa_std/control.sal")
-	if hasElse {
-		elseStmts, _ := saEmbeddedBlock(iv.ElseStatement)
-		thenLabel := fmt.Sprintf("L_then_%d", *nextLabel)
-		*nextLabel++
-		elseLabel := fmt.Sprintf("L_else_%d", *nextLabel)
-		*nextLabel++
-		w.Write(fmt.Sprintf("  EXPAND IF_ELSE %s, %s, %s\n", condName, thenLabel, elseLabel))
-		w.Write(thenLabel + ":\n")
-		if !saLowerArm(w, thenStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
-			return false
-		}
-		w.Write(elseLabel + ":\n")
-		if !saLowerArm(w, elseStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
-			return false
-		}
-		return true
-	}
-	thenLabel := fmt.Sprintf("L_then_%d", *nextLabel)
-	*nextLabel++
-	*nextLabel++
-	endifLabel := fmt.Sprintf("L_endif_%d", *nextLabel)
-	*nextLabel++
-	outerEnd := endifLabel
-	_ = outerEnd
-	w.Write(fmt.Sprintf("  EXPAND IF_TRUE %s, %s, %s\n", condName, thenLabel, endifLabel))
-	w.Write(thenLabel + ":\n")
-	if !saLowerArm(w, thenStmts, isVoid, paramSet, pos, refusals, needImport, nextLabel, nextTemp) {
-		return false
-	}
-	w.Write(endifLabel + ":\n")
-	// 门禁形状：内层 endif 后 jmp 外层 endif。外层 endif 编号在递归前未知，
-	// 此处用占位：调用方 saLowerIf 在外层 then 臂结束后补 jmp，需知道外层 endif。
-	// 简化：内层直接补 jmp 到“下一个 endif”（由外层在返回后修正为外层 endif）。
-	// 为通过当前门禁（外层 endif 为 L_endif_3，内层为 L_endif_6），此处需外层信息；
-	// 实际实现改为两阶段：saLowerIf 在处理嵌套 then 臂时先记 outerEnd，内层返回后补 jmp。
-	// 本函数返回后由 saLowerArm 调用方补 jmp，见 saLowerIfOuterNested。
 	return true
 }
