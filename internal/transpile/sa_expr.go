@@ -244,6 +244,11 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "only direct function calls lowerable"
 	}
 	name := ce.Expression.Text()
+	callName := name
+	if name == "main" && scope.mainRenamed {
+		// 入口合成抢 `@main`（定义改名处同步；签名表仍以原名建）。
+		callName = "main__user"
+	}
 	if name == "Number" {
 		// Number(x) 回 f64（薄口无 f64 种，大声拒）。
 		return "", false, "Number(x) needs f64 (beyond i32 subset)"
@@ -315,7 +320,7 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	if len(args) != sig.params {
 		return "", false, fmt.Sprintf("arity mismatch for %s: want %d, got %d", name, sig.params, len(args))
 	}
-	call := fmt.Sprintf("call @%s(%s)", name, strings.Join(args, ", "))
+	call := fmt.Sprintf("call @%s(%s)", callName, strings.Join(args, ", "))
 	if sig.isVoid {
 		w.Write(fmt.Sprintf("  %s\n", call))
 		return "", true, ""

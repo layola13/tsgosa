@@ -491,10 +491,37 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	}
 	strPool := &saStrPool{seen: map[string]string{}}
 	emitted := map[string]bool{}
+	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；
+	// 用户 `main` 遇合成改名 `main__user`（定义 + 调用点；`main__user` 已有则拒）。
+	// 形状证据：封存 entry_top.go:1-152。
+	var entryStmts []*ast.Node
+	hasUserMain := false
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st.Kind == ast.KindFunctionDeclaration {
+			if nm := st.AsFunctionDeclaration().Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				if nm.Text() == "main" {
+					hasUserMain = true
+				}
+				if nm.Text() == "main__user" {
+					ln, col := pos(st.Pos())
+					refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "entry synthesis collides with existing definition main__user (rename it)"})
+				}
+			}
+			continue
+		}
+		if saIsEntryStmt(st) {
+			entryStmts = append(entryStmts, st)
+		}
+	}
+	mainRenamed := hasUserMain && len(entryStmts) > 0
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`
 		// 同形；`export {}`/`export =` 无码，镜像 lowerModuleDecl:10329-10336）。
+		// 入口语句跳过定义流（聚入合成 `@main`）。
+		if saIsEntryStmt(st) {
+			continue
+		}
 		switch st.Kind {
 		case ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration, ast.KindEnumDeclaration,
 			ast.KindExportDeclaration, ast.KindExportAssignment, ast.KindNamespaceExportDeclaration,
@@ -520,7 +547,28 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, classes, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+		saLowerFunction(w, st, funcs, enums, classes, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+	}
+	if len(entryStmts) > 0 {
+		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
+		w.Write("@main() -> i32:\n")
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
+		terminated := false
+		for _, s := range entryStmts {
+			if terminated {
+				ln, col := pos(s.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
+				break
+			}
+			if done, failed := saLowerStmt(w, s, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp); failed {
+				break
+			} else if done {
+				terminated = true
+			}
+		}
+		if !terminated {
+			w.Write("  ret 0\n")
+		}
 	}
 	var head strings.Builder
 	head.WriteString(saStepHeader)
@@ -741,21 +789,22 @@ type saLoop struct {
 // 绑定时落子，语句终结随语句消亡；串行复用合法，同名嵌套拒；形状证据：封存
 // labels.go:1-58）。
 type saScope struct {
-	types     map[string]string
-	loops     []saLoop
-	labels    map[string]saLoop
-	pending   []string
-	mathAlias map[string]string
-	funcs     map[string]saFuncSig
-	enums     map[string]map[string]int64
-	classes   map[string]*saClassDef
-	thisSelf  string
-	thisClass string
-	nextLabel *int
-	retKind   string
-	strPool   *saStrPool
-	addImport func(string)
-	inlineRet *saInlineRet
+	types       map[string]string
+	loops       []saLoop
+	labels      map[string]saLoop
+	pending     []string
+	mathAlias   map[string]string
+	funcs       map[string]saFuncSig
+	enums       map[string]map[string]int64
+	classes     map[string]*saClassDef
+	thisSelf    string
+	thisClass   string
+	mainRenamed bool
+	nextLabel   *int
+	retKind     string
+	strPool     *saStrPool
+	addImport   func(string)
+	inlineRet   *saInlineRet
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -781,7 +830,29 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 	return body.AsBlock().Statements.Nodes, true
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+// saIsEntryStmt 报告顶层模块加载执行语句（声明/导入导出无码；其余执行。
+// 形状证据：封存 isEntryStmt:32-50）。
+func saIsEntryStmt(st *ast.Node) bool {
+	switch st.Kind {
+	case ast.KindFunctionDeclaration,
+		ast.KindClassDeclaration,
+		ast.KindInterfaceDeclaration,
+		ast.KindTypeAliasDeclaration,
+		ast.KindEnumDeclaration,
+		ast.KindImportDeclaration,
+		ast.KindExportDeclaration,
+		ast.KindExportAssignment,
+		ast.KindNamespaceExportDeclaration,
+		ast.KindImportEqualsDeclaration,
+		ast.KindVariableStatement,
+		ast.KindModuleDeclaration:
+		return false
+	default:
+		return true
+	}
+}
+
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -806,7 +877,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		return
 	}
 	isVoid := retKind == "void"
-	sig := "@" + name + "(" + strings.Join(params, ", ") + ")"
+	emitName := name
+	if emitName == "main" && mainRenamed {
+		// 入口合成抢 `@main`，用户定义改名（形状证据：封存 planEntry:99-101）。
+		emitName = "main__user"
+	}
+	sig := "@" + emitName + "(" + strings.Join(params, ", ") + ")"
 	if !isVoid {
 		if retKind == "string" {
 			// 字符串返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:`）。
@@ -832,7 +908,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
 	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {
 		ln, col := pos(st.Pos())
