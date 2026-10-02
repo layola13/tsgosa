@@ -139,6 +139,12 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
 		return t, ""
 	}
+	// Map/Set 用 `.size()` 方法（属性形大声拒）。
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[pa.Expression.Text()]; ok && (k == "map" || k == "set") {
+			return "", "use .size() method on " + k
+		}
+	}
 	// 字符串 `.length`：字面量/调用结果等非常驻基先具化为句柄。
 	h, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {

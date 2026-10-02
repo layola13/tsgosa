@@ -52,6 +52,33 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
+			// `new Map()`/`new Set()` 绑定为 map/set 种（零参；有参形大声拒）。
+			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier &&
+				(ne.Expression.Text() == "Map" || ne.Expression.Text() == "Set") {
+				if vd.Type != nil {
+					tn := vd.Type
+					ref := tn.AsTypeReferenceNode()
+					if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil ||
+						(ref.TypeName.Text() != "Map" && ref.TypeName.Text() != "Set") {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "collection annotation must be Map or Set"})
+						return false
+					}
+				}
+				h, msg := saLowerMapNew(w, ne.Expression.Text(), ne, scope, nextTemp)
+				if msg != "" {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				kind := "map"
+				if ne.Expression.Text() == "Set" {
+					kind = "set"
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = kind
+				continue
+			}
 			// `new Date()` 绑定为 date 种（millis 不透明；有参形大声拒）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Date" {
 				if !saIsDateNew(vd.Initializer) {

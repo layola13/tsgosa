@@ -56,6 +56,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			if k == "str" {
 				return "", "string " + nm + " in condition"
 			}
+			if k == "map" || k == "set" || k == "date" {
+				return "", k + " " + nm + " in condition"
+			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in condition"
 			}
@@ -179,6 +182,16 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
 			if _, ok := scope.classes[pa.Expression.Text()]; ok {
 				return "", false, "static class members are not lowerable"
+			}
+		}
+		// Map/Set 成员调用（基为 map/set 绑定；未知成员由总线定位）。
+		if pa.Name() != nil {
+			if kind, ok := saMapBaseKind(pa.Expression, scope); ok {
+				op, _, msg := saLowerMapCall(w, pa.Expression.Text(), kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
 			}
 		}
 		// Date 调用（静态 now/parse 与 date 绑定方法；种由调用方判定）。
