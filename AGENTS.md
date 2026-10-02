@@ -32,6 +32,12 @@
 
 - step1：顶层 `function f(): void {}`/`return;` → `@f(): ret`；`(): number/boolean {return lit;}` → `@f() -> i32: ret lit`；值空体缺 return、大声拒；非函数、void 回值、联合注解、string 返回一律拒（`main_test.go:22-126`）。
 - step2：`if/else` → `EXPAND IF_ELSE/IF_TRUE` + `@import "sa_std/control.sal"`；`false` 恒假消死臂；`return c?a:b`（i32 字面臂）→ `EXPAND SELECT`（`main_test.go:128-284`）。
+- step3-11：i32/bool 表达式核（算术/比较/逻辑/`!`/`++/--`/三元值形/调用传参）、`while`/`for`（legacy br 形，cont 落增量前）/`do-while`/`switch`（legacy 链）/`try-finally`（无 throw 时直跑，含 throw 拒）+ 不可达门。
+- step12：i32 数组（字面量 alloc 16 头 + 缓冲逐槽 store、越界归零下标读 join、元素存、`.length` 头+8、`let a=b` 句柄拷贝/传参直传；spread/非 i32 元/缺 init/数组条件·返回位一律拒）。
+- step13：`for-of`/`for-in` 索引巡回（绑定数组直传/字面量现场构造，`idx=0`+头+8 len+`slt/br`+`base/mul/add/i32` 读回；for-in 绑下标；`continue→top` 原样不对称；`await`/多声明/pattern/非数组基拒；sci FOR/ARRAY_FOR_EACH 宏形不用，沿 legacy）。
+- step14：标号语句（loops/switch/block 绑定，标号 break/continue 查表；块为 break-only；串行复用合法、同名嵌套/未定义/块上 continue/标非常规语句拒；`labels.go:1-158`）。
+- step15：`throw` → `panic(2501)`（终结；try 内含 throw 仍拒）+ 空语句 no-op（`saemit.go:153,882-887`）。
+- step16：数组解构声明（`const [a,b] = p|[...]` 逐元越界归零 join 绑 i32；空穴跳过；rest/嵌套/对象布局/非数组源/函数值/缺 init/重复名拒；`lowerDestructuringDecl:5414-5461/destructureArray:5309-5333/bindPatternName:5513-5524`）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
