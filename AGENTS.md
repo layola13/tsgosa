@@ -44,6 +44,10 @@
 - step20：`Math.abs(x)` 分支汇合内联（alloc 8 槽 + `sge x,0` + br + 两臂 store + end load + 释放；`lowerMathInline abs:5754-5780` 原样；其余 Math.*/别名调用/元数错拒）。
 - step21：`Math.pow(b,e)` 幂循环内联（与 `**` 的 `saLowerPow` 同发射，仅标号前缀 `L_mpow_`；`lowerMathInline pow:5781-5806`；其余 Math.* 仍拒）。
 - step22：`Math.floor/ceil/round/trunc(x)` 整数恒等内联（`out = add v, 0`；`lowerMathRounding:5941-5945`；浮点分支在 i32 子集内不可达）。
+- step23：`Math.min/max(a,b)` 两元折叠内联（`slt/sgt` + alloc 8 槽 join；`lowerMathMinMax:5650-5687`；spread 切片归约拒）。
+- step24（math 一次过收官）：`Math.min/max(...slice)` 切片归约循环（极值初值 + 索引巡回 take/skip；`lowerMathSpreadMinMax:5690-5747`）、`Math.sqrt` 整数二分（`lowerMathSqrt:5841-5891`；浮点早拒）、`Math.log10` 位数循环（`lowerMathLog10:5894-5916`）、`Math.random` 确定性 LCG（`__ts_rand_seed`；`lowerMathRandom:5920-5936`）、`Math.PI/E` 折 3/2（`stdlib.go:126-127`）、`const f = Math.<m>` 别名及链式（`mathAliases:2957-2964`；调用经统一分发；顶层 const 仍由函数外语句门拒）。
+- sa_std 复用纪律（回应“直接映射 sa_std、禁造轮子”）：以 `satsgo/internal/saemit/stdlib.go` 投影表为准——凡 `Module: sa_std/*.sai`（string/concat、console.log→print、Map/Set→btree、Date/fs/net…）的特性必须走 `@import` + 符号调用，不得手写；整数系 Math.* 在表中全为 `@inline`（`stdlib.go:115-127`），`sci/sa_std` 侧并无 i32 符号（math.sai 皆 f64、math.sa 皆 u64/i64 宏另带 `!` 释放纪律），故 step20-24 内联即底座复用而非造轮子。
+- 底座结论（回应“math 直接映射 sa_std”）：`satsgo/internal/saemit/stdlib.go:115-127` 投影表规定整数系 Math.* 全部 `@inline`，`sci/sa_std` 侧只有 f64 外部函数（`math.sai`）与 u64/i64 宏（`math.sa`，另带 `!` 释放纪律），并无 i32 符号可投；故 step20-23 内联即底座复用。string/vec 同理：`string.sa`/`vec.sa` 为运行时句柄库，薄口尚无 string 类型，待 string 字面量特性时再投影。
 - CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
