@@ -58,6 +58,7 @@
 - step29（date 最小子集 + 正则门，落 `sa_date.go`，JEV 落件 a 97%）：`new Date()`/now/parse/getTime/setter 皆以 date 种（i64 millis）不透明流转，永不截断；串方法（toISOString/toString 系）与模板/console 插值（经 `sa_fmt_i64_into`）直调 `time.sai` 现货；getters 窄化为 i32（分量恒 < 2^31，窄化点唯一）；setters 变异重绑；parse 非法 panic(2503)；getTimezoneOffset 恒 0；门：有参 new、i32 位 millis、toLocale 系、未知成员一律拒。正则：satsgo/sa_plugin_ts 均无 lowering 证据（regex.sai 系无人调用现货），铁律 4 禁原创，字面量/new RegExp/.test 一律大声拒。
 - step30（Map/Set 最小子集，落 `sa_map.go`，JEV 落件 a 84%）：`new Map()`/`new Set()` 零参柄直调 btree 后端；Map set/get/has/delete/clear/size,getSize + Set add/has/delete/clear/size 全直调现货（`lowerMapMethod:4726-4803`/`lowerSetMethod:4806-4859`）；键 i32（单元切片）/串直通，值 i32（读回窄化点唯一）；门：有参 new/keys-values-entries（vec 模型超槽）/未知成员/元数错/条件位/`.length` 属性形一律拒。
 - step31（typeof 收官，落 `sa_expr.go`/`sa_str.go`）：`typeof v === "undefined"`（任一序、==/===/!=/!==）标识符空检查（eq/ne v,0；`lowerTypeofGuard:156-178`）；其余对静态种折叠 `eq/ne 1, 1` 常量临时量（字面按语法表null方言映 undefined，标识符按作用域种i32/bool/str/arr/map/set/date/inst→number/boolean/string/object，别名/函数→function；`lowerTypeofConstFold:236-283`）；值位具化种类串（`lowerTypeof:9171-9239`）；门：非标识符守卫/未知全局（无 env-probe）/计算值一律拒。
+- step32（对象字面量一次过，落 `sa_class.go`）：接口布局预扫（i32 字段；方法/索引签名拒）+ 字面量具化（alloc + 逐域 store；简写读绑定；字面计算键；`layoutOfLiteral:8953-8975`/`objPropName:8984-9007`/`lowerObjectLiteral:9009+`）+ 按键集唯一匹配（0/多皆拒）+ 注解须同名接口 + 实例形参直传（`inst:Pt` 对 `inst:Pt`，预扫拆两遍保序）；读写复用实例通道；门：spread/方法属性/串字段/值位字面量/`new` 接口/错配传参一律拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

@@ -421,10 +421,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	funcs := map[string]saFuncSig{}
 	enums := map[string]map[string]int64{}
 	classes := map[string]*saClassDef{}
+	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindClassDeclaration {
 			// 类定义预扫成表（布局记录、无码；方法随调用内联）。
 			saRecordClass(st, classes, pos, &refusals)
+			continue
+		}
+		if st.Kind == ast.KindInterfaceDeclaration {
+			// 接口布局预扫成表（对象字面量匹配用；无码）。
+			saRecordIface(st, classes, pos, &refusals)
 			continue
 		}
 		if st.Kind == ast.KindEnumDeclaration {
@@ -440,6 +446,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 				continue
 			}
 			enums[nm.Text()] = members
+			continue
+		}
+	}
+	// 预扫二：函数签名（形参种含实例注解，须类型表先行）。
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st.Kind == ast.KindClassDeclaration || st.Kind == ast.KindInterfaceDeclaration ||
+			st.Kind == ast.KindEnumDeclaration {
 			continue
 		}
 		if st.Kind != ast.KindFunctionDeclaration {
@@ -467,7 +480,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			isVoid = k == "void"
 		}
 		var pk []string
-		if kinds, ok := saParamKinds(fn); ok {
+		if kinds, ok := saParamKinds(fn, classes); ok {
 			if fn.Parameters != nil {
 				for _, p := range fn.Parameters.Nodes {
 					pk = append(pk, kinds[p.AsParameterDeclaration().Name().Text()])
@@ -548,7 +561,8 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 // saParamKinds 与 saParamNames 同步校验参数，返回名->种（"i32"|"bool"）。
 // 标注依据封存 saemit.go:162 annotationType（number->i32；i32 TypeReference->i32）；
 // 无注解缺省 i32（形状证据：封存 lowerFunction:946 `ptype := tI32`）。
-func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
+// 类/接口注解（`p: Pt`）记 `inst:Pt`（实例句柄直传）。
+func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef) (map[string]string, bool) {
 	kinds := map[string]string{}
 	if fn.Parameters == nil {
 		return kinds, true
@@ -568,6 +582,15 @@ func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 		}
 		k, ok := saAnnotKind(pd.Type)
 		if !ok {
+			// 类/接口注解直记实例种（`p: Pt` → `inst:Pt`）。
+			if pd.Type.Kind == ast.KindTypeReference {
+				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+					if _, ok := classes[ref.TypeName.Text()]; ok {
+						kinds[nm.Text()] = "inst:" + ref.TypeName.Text()
+						continue
+					}
+				}
+			}
 			return nil, false
 		}
 		// 参数仅允许 i32/bool/str/arr 四种（其余大声拒，子集门）。
@@ -810,10 +833,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		return
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
-	paramKinds, ok := saParamKinds(fn)
+	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {
 		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/str only)"})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
 		return
 	}
 	for k, v := range paramKinds {

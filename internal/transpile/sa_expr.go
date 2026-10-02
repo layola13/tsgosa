@@ -239,6 +239,16 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				args = append(args, h)
 				continue
 			}
+			// 实例句柄须形参同类相授（`inst:Pt` 对 `inst:Pt`）。
+			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
+				if a != nil && a.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
+						args = append(args, a.Text())
+						continue
+					}
+				}
+				return "", false, "instance argument needs matching class"
+			}
 			// 数组/字符串句柄直传（0/1 统一之外唯一的引用语义）；其余走 bool 兼容求值。
 			if a != nil && a.Kind == ast.KindIdentifier {
 				if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
@@ -661,6 +671,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return op, ""
 	case ast.KindRegularExpressionLiteral:
 		return "", "regular expressions are not lowerable (no base lowering; regex.sai is unprojected stock)"
+	case ast.KindObjectLiteralExpression:
+		return "", "object literal needs a declaration binding (const p: Iface = {...})"
 	default:
 		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
 	}

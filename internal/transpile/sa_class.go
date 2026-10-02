@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
@@ -24,7 +25,8 @@ type saClassField struct {
 	offset int
 }
 
-// saClassDef 是类定义（字段表 + 构造 + 方法表）。
+// saClassDef 是类定义（字段表 + 构造 + 方法表；接口以 isIface 记，
+// 方法/构造恒空，不可 new）。
 type saClassDef struct {
 	name    string
 	fields  []saClassField
@@ -32,6 +34,7 @@ type saClassDef struct {
 	size    int
 	methods map[string]*ast.Node
 	ctor    *ast.Node
+	isIface bool
 }
 
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
@@ -161,7 +164,183 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 	return false
 }
 
-// saInstBase 解析实例基（绑定实例名或方法内 this；返回句柄与类定义）。
+// saRecordIface 记录接口布局（i32 字段；无码。形状证据：封存
+// lowerTypeDecl 的布局记录一半；方法/索引签名大声拒）。
+func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	decl := st.AsInterfaceDeclaration()
+	nm := st.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous interfaces are not lowerable"})
+		return false
+	}
+	name := nm.Text()
+	if _, dup := classes[name]; dup {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate type " + name})
+		return false
+	}
+	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}, isIface: true}
+	off := 0
+	for _, m := range decl.Members.Nodes {
+		if m.Kind != ast.KindPropertySignature {
+			ln, col := pos(m.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface member is not lowerable (i32 props only)"})
+			return false
+		}
+		fn := m.Name()
+		if fn == nil || fn.Kind != ast.KindIdentifier {
+			ln, col := pos(m.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed interface field names are not lowerable"})
+			return false
+		}
+		pd := m.AsPropertySignatureDeclaration()
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32"})
+				return false
+			}
+		}
+		if _, dup := def.offsets[fn.Text()]; dup {
+			ln, col := pos(m.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
+			return false
+		}
+		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
+		def.offsets[fn.Text()] = off
+		off += 4
+	}
+	def.size = off
+	classes[name] = def
+	return true
+}
+
+// saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
+// 形状证据：封存 layoutOfLiteral:8953-8975 + matchLayout 名集匹配）。
+func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
+	var hit *saClassDef
+	for _, def := range classes {
+		if !def.isIface || len(def.fields) != len(keys) {
+			continue
+		}
+		ok := true
+		for _, k := range keys {
+			if _, has := def.offsets[k]; !has {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		if hit != nil {
+			return nil, "object literal matches no unique recorded interface layout (declare the interface first)"
+		}
+		hit = def
+	}
+	if hit == nil {
+		return nil, "object literal matches no recorded interface layout (declare the interface first)"
+	}
+	return hit, ""
+}
+
+// saObjPropName 解析字面量键（标识符/串字面量/字面计算键；简写由调用方展值。
+// 形状证据：封存 objPropName:8984-9007）。
+func saObjPropName(p *ast.Node) (string, bool) {
+	nm := p.Name()
+	if nm == nil {
+		return "", false
+	}
+	switch nm.Kind {
+	case ast.KindIdentifier:
+		return nm.Text(), true
+	case ast.KindStringLiteral:
+		t := nm.Text()
+		if len(t) >= 2 && t[0] == '"' {
+			if unq, err := strconv.Unquote(t); err == nil {
+				return unq, true
+			}
+			return "", false
+		}
+		return t, true
+	case ast.KindComputedPropertyName:
+		expr := nm.AsComputedPropertyName().Expression
+		if expr == nil {
+			return "", false
+		}
+		if expr.Kind == ast.KindStringLiteral {
+			t := expr.Text()
+			if len(t) >= 2 && t[0] == '"' {
+				if unq, err := strconv.Unquote(t); err == nil {
+					return unq, true
+				}
+				return "", false
+			}
+			return t, true
+		}
+		if expr.Kind == ast.KindNumericLiteral {
+			return expr.Text(), true
+		}
+	}
+	return "", false
+}
+
+// saLowerObjectLiteral 具化结构体（alloc 布局 + 逐域 store；i32 值；
+// 简写读绑定；spread/方法/动态键拒；want 非空时须命中该接口。
+// 形状证据：封存 lowerObjectLiteral:9009+）。
+func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	ol := n.AsObjectLiteralExpression()
+	type op struct {
+		fname string
+		init  *ast.Node
+	}
+	var ops []op
+	var keys []string
+	for _, p := range ol.Properties.Nodes {
+		switch p.Kind {
+		case ast.KindPropertyAssignment:
+			fname, ok := saObjPropName(p)
+			if !ok {
+				return "", "", "computed property names must be literals (dynamic keys have no static layout)"
+			}
+			ops = append(ops, op{fname: fname, init: p.AsPropertyAssignment().Initializer})
+			keys = append(keys, fname)
+		case ast.KindShorthandPropertyAssignment:
+			fname, ok := saObjPropName(p)
+			if !ok {
+				return "", "", "computed property names must be literals (dynamic keys have no static layout)"
+			}
+			ops = append(ops, op{fname: fname, init: p.Name()})
+			keys = append(keys, fname)
+		default:
+			return "", "", "object literal property is not lowerable (spread/methods refused)"
+		}
+	}
+	def, msg := saMatchIface(keys, scope.classes)
+	if msg != "" {
+		return "", "", msg
+	}
+	if want != "" && def.name != want {
+		return "", "", "object literal does not match interface " + want
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if def.size == 0 {
+		w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+	} else {
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+	}
+	for _, o := range ops {
+		v, msg := saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[o.fname], v))
+	}
+	return h, def.name, ""
+}
+
 func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 	if e != nil && e.Kind == ast.KindThisKeyword {
 		if scope.thisSelf == "" {
@@ -195,6 +374,9 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	def, ok := scope.classes[name]
 	if !ok {
 		return "", "unknown class " + name
+	}
+	if def.isIface {
+		return "", "interfaces cannot be instantiated (declare a class)"
 	}
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -309,6 +491,18 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 	}
 	if len(argNodes) != len(params) {
 		return "", "method takes exact arguments"
+	}
+	// 方法形参恒 i32（回调快照绑定只存标量；句柄形参无改写机制，大声拒）。
+	for _, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			return "", "method parameter shape is not lowerable"
+		}
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
+				return "", "method parameters must be i32"
+			}
+		}
 	}
 	var argVals []string
 	for _, a := range argNodes {

@@ -51,6 +51,34 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 		if saTryMathAliasDecl(d, vd, name, scope, pos, refusals) {
 			continue
 		}
+		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
+			// 对象字面量声明（注解须为同名接口；无注解按键集匹配）。
+			want := ""
+			if vd.Type != nil {
+				tn := vd.Type
+				ref := tn.AsTypeReferenceNode()
+				if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+					return false
+				}
+				want = ref.TypeName.Text()
+				if def, ok := scope.classes[want]; !ok || !def.isIface {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+					return false
+				}
+			}
+			h, defname, msg := saLowerObjectLiteral(w, vd.Initializer, want, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "inst:" + defname
+			continue
+		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
 			// `new Map()`/`new Set()` 绑定为 map/set 种（零参；有参形大声拒）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier &&
