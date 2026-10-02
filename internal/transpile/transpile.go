@@ -586,7 +586,8 @@ type saFuncSig struct {
 	params int
 	isVoid bool
 }
-// saLoop 是 break/continue 的跳转栈帧（unlabeled；labeled 形大声拒）。
+// saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
+// 查表：loops/switch 绑定 break+cont，block/switch 绑 break-only（cont 为空）。
 // cont 为 continue 落点：while 即 top；for 落增量前（证据：封存 lowerFor:2072-2084
 // 跳 top 会跳过增量导致死循环，故增量存在且体用 continue 时另立 cont 标号）。
 type saLoop struct {
@@ -596,10 +597,14 @@ type saLoop struct {
 }
 
 // saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）
-// + 文件级函数签名表（调用核只认同文件顶层函数）。
+// + 文件级函数签名表（调用核只认同文件顶层函数）+ 标号表（loops/switch/block
+// 绑定时落子，语句终结随语句消亡；串行复用合法，同名嵌套拒；形状证据：封存
+// labels.go:1-58）。
 type saScope struct {
 	types     map[string]string
 	loops     []saLoop
+	labels    map[string]saLoop
+	pending   []string
 	funcs     map[string]saFuncSig
 	nextLabel *int
 	retKind   string
@@ -771,9 +776,11 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		}
 		return true, false
 	case ast.KindLabeledStatement:
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "labeled statements not lowerable"})
-		return false, true
+		done, failed := saLowerLabeled(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			return false, true
+		}
+		return done, false
 	default:
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
@@ -1687,6 +1694,7 @@ func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
@@ -1913,6 +1921,7 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	}
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL})
+	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
@@ -2039,6 +2048,7 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	saBindPendingLabels(scope, false)
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	cT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -2125,6 +2135,7 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	saBindPendingLabels(scope, false)
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	cT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -2174,6 +2185,7 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	*nextLabel++
 	w.Write(fmt.Sprintf("%s:\n", loopL))
 	scope.loops = append(scope.loops, saLoop{top: loopL, cont: condL, end: endL})
+	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
@@ -2241,6 +2253,7 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
 	*nextLabel++
 	scope.loops = append(scope.loops, saLoop{end: endL})
+	saBindPendingLabels(scope, true)
 	testLabels := make([]string, len(parts)+1)
 	bodyLabels := make([]string, len(parts))
 	for i := range parts {
@@ -2362,7 +2375,95 @@ func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	return true
 }
 
-// saLowerBreakContinue lowering 无标号 break/continue（标号形大声拒；栈空拒）。
+// saBindPendingLabels 将待绑标号附到刚压栈的目标上（`a: b: for` 双绑同环；
+// block/switch 为 break-only；形状证据：封存 labels.go:38-58）。
+// 调用点：每个 loops/breaks 压栈之后（while/for/for-of/for-in/do/switch/标号块）。
+func saBindPendingLabels(scope *saScope, breakOnly bool) {
+	if len(scope.pending) == 0 {
+		return
+	}
+	if scope.labels == nil {
+		scope.labels = map[string]saLoop{}
+	}
+	fr := scope.loops[len(scope.loops)-1]
+	ld := saLoop{end: fr.end}
+	if !breakOnly {
+		ld.top = fr.top
+		ld.cont = fr.cont
+	}
+	for _, nm := range scope.pending {
+		scope.labels[nm] = ld
+	}
+	scope.pending = nil
+}
+
+// saLowerLabeled lowering `lbl: stmt`（仅 loops/switch/block；形状证据：封存
+// lowerLabeled:63-98：标号随内层语句绑定、随语句消亡；串行复用合法，同名嵌套拒；
+// 非三者大声拒。标号块为 break-only（continue 落此拒），体经 saLowerArm 直跑，
+// end 落空点；break 到自标号不视为语句终结（落空继续），return 终结则透传）。
+func saLowerLabeled(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	ls := s.AsLabeledStatement()
+	lbl := ls.Label.Text()
+	if _, dup := scope.labels[lbl]; dup {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate label " + lbl + " is not lowerable (labels share the function scope)"})
+		return false, true
+	}
+	inner := ls.Statement
+	if inner.Kind == ast.KindBlock {
+		stmts, ok := saEmbeddedBlock(inner)
+		if !ok {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported labeled block"})
+			return false, true
+		}
+		endL := fmt.Sprintf("L_lbl_end_%d", *nextLabel)
+		*nextLabel++
+		scope.pending = append(scope.pending, lbl)
+		scope.loops = append(scope.loops, saLoop{end: endL})
+		saBindPendingLabels(scope, true)
+		armOK := saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.loops = scope.loops[:len(scope.loops)-1]
+		delete(scope.labels, lbl)
+		if !armOK {
+			return false, true
+		}
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		// 终结性：仅 return 透传；break/continue 落空（不终结）。
+		if len(stmts) > 0 {
+			if last := stmts[len(stmts)-1]; last != nil && last.Kind == ast.KindReturnStatement {
+				return true, false
+			}
+		}
+		return false, false
+	}
+	switch inner.Kind {
+	case ast.KindForStatement, ast.KindWhileStatement, ast.KindForOfStatement,
+		ast.KindForInStatement, ast.KindDoStatement, ast.KindSwitchStatement,
+		ast.KindLabeledStatement:
+		scope.pending = append(scope.pending, lbl)
+		done, failed := saLowerStmt(w, inner, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		delete(scope.labels, lbl)
+		if failed {
+			return false, true
+		}
+		if len(scope.pending) > 0 {
+			scope.pending = nil
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %d did not bind (internal invariant)", int(inner.Kind))})
+			return false, true
+		}
+		return done, false
+	default:
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %d is not lowerable (loops, switch and blocks only)", int(inner.Kind))})
+		return false, true
+	}
+}
+
+// saLowerBreakContinue lowering break/continue（无标号走栈顶；标号形查标号表：
+// break 落 end，continue 落 cont（block/switch 无 cont 拒，未定义标号拒）；
+// 栈空/表空拒。形状证据：封存 labels.go:129-158）。
 func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	isBreak := s.Kind == ast.KindBreakStatement
 	var label *ast.IdentifierNode
@@ -2372,9 +2473,28 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 		label = s.AsContinueStatement().Label
 	}
 	if label != nil {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "labeled break/continue not lowerable"})
-		return false
+		nm := label.Text()
+		ld, ok := scope.labels[nm]
+		if !ok {
+			ln, col := pos(s.Pos())
+			kind := "break"
+			if !isBreak {
+				kind = "continue"
+			}
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: kind + " to undefined label " + nm + " is not lowerable"})
+			return false
+		}
+		if isBreak {
+			w.Write(fmt.Sprintf("  jmp %s\n", ld.end))
+			return true
+		}
+		if ld.cont == "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "continue to non-loop label " + nm + " is not lowerable"})
+			return false
+		}
+		w.Write(fmt.Sprintf("  jmp %s\n", ld.cont))
+		return true
 	}
 	if len(scope.loops) == 0 {
 		ln, col := pos(s.Pos())
