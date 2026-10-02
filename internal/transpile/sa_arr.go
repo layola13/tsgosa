@@ -303,6 +303,10 @@ func saForBindingName(init *ast.Node) (string, *ast.Node, bool) {
 	if init == nil || init.Kind != ast.KindVariableDeclarationList {
 		return "", nil, false
 	}
+	// `using` 头大声拒（随声明位同门；调用方以通用初始化位信息拒出）。
+	if init.Flags&ast.NodeFlagsUsing != 0 {
+		return "", nil, false
+	}
 	decls := init.AsVariableDeclarationList().Declarations.Nodes
 	if len(decls) != 1 {
 		return "", nil, false
@@ -317,11 +321,6 @@ func saForBindingName(init *ast.Node) (string, *ast.Node, bool) {
 	return "", nm.AsNode(), true
 }
 
-// saForArrHandle 取 for-of/for-in 被巡数组句柄（复用 step12 底座）：
-// 已绑定数组直传句柄（引用语义直传）；数组字面量走 saLowerArrayLiteral
-// 现场构造（alloc 16 头 + 缓冲 + 逐槽 store）；其余一律大声拒。
-// 形状证据：封存 lowerForOf:2123/lowerForIn:2191 的 lowerExpr(fo.Expression)
-// 位（本薄口仅支持句柄/字面量子集）。
 // saForArrHandle 取 for-of/for-in 被巡数组句柄（复用 step12 底座）：
 // 已绑定数组直传句柄（引用语义直传）；数组字面量走 saLowerArrayLiteral
 // 现场构造（alloc 16 头 + 缓冲 + 逐槽 store）；其余一律大声拒。

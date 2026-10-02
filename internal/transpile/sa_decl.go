@@ -18,8 +18,10 @@ func saLowerVarDecl(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos f
 
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+		// `using`/`await using` 同旗（后者 NodeFlagsAwaitUsing 含 Using 位）；
+		// 形状证据：封存 lowerVarDeclList:1395-1398。
 		ln, col := pos(anchor.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable"})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable (explicit resource disposal has no SA-ASM scope-exit hook)"})
 		return false
 	}
 	isConst := dl.AsNode().Flags&ast.NodeFlagsConst != 0
