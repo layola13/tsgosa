@@ -124,6 +124,54 @@ func saIsFloatLit(text string) bool {
 	return false
 }
 
+// saSpreadCallArgs 展开定元 spread 调用（单尾 spread；静态部按位求值；
+// 余位经越界归零 join 填齐；形状证据：封存 resolveSpreadCall:7764-7798）。
+// 返回 (args, msg, handled)：无 spread 即 handled=false。
+func saSpreadCallArgs(w printer.EmitTextWriter, name string, nodes []*ast.Node, sig saFuncSig, evalOne func(int, *ast.Node, int) (string, string), scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) ([]string, string, bool) {
+	spreadAt := -1
+	for i, a := range nodes {
+		if a != nil && a.Kind == ast.KindSpreadElement {
+			if spreadAt >= 0 {
+				return nil, "spread call supports only one trailing spread", true
+			}
+			spreadAt = i
+		}
+	}
+	if spreadAt < 0 {
+		return nil, "", false
+	}
+	if spreadAt != len(nodes)-1 {
+		return nil, "spread call supports only one trailing spread", true
+	}
+	if len(sig.paramKinds) != sig.params {
+		return nil, "spread call needs a known callee arity", true
+	}
+	nStatic := spreadAt
+	if nStatic > sig.params {
+		return nil, "too many arguments in call to " + name, true
+	}
+	se := nodes[spreadAt].AsSpreadElement()
+	arr, msg := saArrValueOf(w, se.Expression.AsNode(), scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return nil, msg, true
+	}
+	var args []string
+	for i := 0; i < nStatic; i++ {
+		op, msg := evalOne(i, nodes[i], sig.params)
+		if msg != "" {
+			return nil, msg, true
+		}
+		args = append(args, op)
+	}
+	for j := nStatic; j < sig.params; j++ {
+		if sig.paramKinds[j] != "i32" {
+			return nil, "spread fills i32 parameters only", true
+		}
+		args = append(args, saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", j-nStatic), scope.nextLabel, nextTemp))
+	}
+	return args, "", true
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
@@ -272,49 +320,46 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "unknown function " + name
 	}
 	var args []string
-	if ce.Arguments != nil {
-		for i, a := range ce.Arguments.Nodes {
-			// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
-			// arr/str 句柄标识符直传；其余走 bool 兼容求值。
-			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && sig.paramKinds[i] == "str" {
-				h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return "", false, msg
-				}
-				args = append(args, h)
-				continue
-			}
-			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && sig.paramKinds[i] == "arr" {
-				h, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return "", false, msg
-				}
-				args = append(args, h)
-				continue
-			}
-			// 实例句柄须形参同类相授（`inst:Pt` 对 `inst:Pt`）。
-			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
-				if a != nil && a.Kind == ast.KindIdentifier {
-					if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
-						args = append(args, a.Text())
-						continue
-					}
-				}
-				return "", false, "instance argument needs matching class"
-			}
-			// 数组/字符串句柄直传（0/1 统一之外唯一的引用语义）；其余走 bool 兼容求值。
+	evalOne := func(i int, a *ast.Node, total int) (string, string) {
+		// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
+		// arr 形参走句柄值；实例须同类相授；arr/str 句柄标识符直传；
+		// 其余走 bool 兼容求值。
+		if len(sig.paramKinds) == total && sig.paramKinds[i] == "str" {
+			return saEvalStr(w, a, scope, pos, refusals, nextTemp)
+		}
+		if len(sig.paramKinds) == total && sig.paramKinds[i] == "arr" {
+			return saArrValueOf(w, a, scope, pos, refusals, nextTemp)
+		}
+		if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
 			if a != nil && a.Kind == ast.KindIdentifier {
-				if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
-					args = append(args, a.Text())
-					continue
+				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
+					return a.Text(), ""
 				}
 			}
-			// 实参 bool 兼容求值。
-			op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
+			return "", "instance argument needs matching class"
+		}
+		if a != nil && a.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
+				return a.Text(), ""
+			}
+		}
+		return saEvalBool(w, a, scope, pos, refusals, nextTemp)
+	}
+	if ce.Arguments != nil {
+		nodes := ce.Arguments.Nodes
+		if spread, msg, handled := saSpreadCallArgs(w, name, nodes, sig, evalOne, scope, pos, refusals, nextTemp); handled || msg != "" {
 			if msg != "" {
 				return "", false, msg
 			}
-			args = append(args, op)
+			args = spread
+		} else {
+			for i, a := range nodes {
+				op, msg := evalOne(i, a, len(nodes))
+				if msg != "" {
+					return "", false, msg
+				}
+				args = append(args, op)
+			}
 		}
 	}
 	if len(args) != sig.params {
