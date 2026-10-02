@@ -181,6 +181,14 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return "", false, "static class members are not lowerable"
 			}
 		}
+		// Date 调用（静态 now/parse 与 date 绑定方法；种由调用方判定）。
+		if _, ok := saDateCallKind(ce, scope); ok {
+			op, _, msg := saLowerDateCall(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, false, ""
+		}
 		return "", false, "only direct function calls lowerable"
 	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
@@ -424,6 +432,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// 实例只可经声明绑定（`const o = new C()`）；值位大声拒。
 		ne := e.AsNewExpression()
 		if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+			if ne.Expression.Text() == "Date" {
+				return "", "new Date(x) is not lowerable (only arg-less now-shape binds)"
+			}
+			if ne.Expression.Text() == "RegExp" {
+				return "", "regular expressions are not lowerable (no base lowering; regex.sai is unprojected stock)"
+			}
 			if _, ok := scope.classes[ne.Expression.Text()]; ok {
 				return "", "instance in i32 expression (bind it first)"
 			}
@@ -606,6 +620,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k != "i32" {
 			return "", "array value in i32 expression"
 		}
+		if k, ok := saDateCallKind(e.AsCallExpression(), scope); ok && k != "i32" {
+			// 未知成员（种 ""）落调用核取精确定位；millis/串位在此拒。
+			if k == "str" || saIsDateStrCall(e.AsCallExpression(), scope) {
+				return "", "string value in i32 expression"
+			}
+			if k != "" {
+				return "", "date millis needs i64 (beyond i32 subset)"
+			}
+		}
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -614,6 +637,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "void function call in value position"
 		}
 		return op, ""
+	case ast.KindRegularExpressionLiteral:
+		return "", "regular expressions are not lowerable (no base lowering; regex.sai is unprojected stock)"
 	default:
 		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
 	}

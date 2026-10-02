@@ -198,7 +198,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if voidCall {
 			return "", "void function call in string position"
 		}
-		if !saCallIsStr(e.AsCallExpression(), scope) && !saIsArrJoinCall(e.AsCallExpression(), scope) {
+		if !saCallIsStr(e.AsCallExpression(), scope) && !saIsArrJoinCall(e.AsCallExpression(), scope) && !saIsDateStrCall(e.AsCallExpression(), scope) {
 			return "", "non-string call in string position"
 		}
 		return op, ""
@@ -230,9 +230,31 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	if saIsStrExpr(e, scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
+	// date 串方法直通串位（toISOString/toString 系）。
+	if e != nil && e.Kind == ast.KindCallExpression && saIsDateStrCall(e.AsCallExpression(), scope) {
+		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
+	}
 	// 数组 join 回串（串位；形状证据同 saEvalStr 调用位）。
 	if e != nil && e.Kind == ast.KindCallExpression && saIsArrJoinCall(e.AsCallExpression(), scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
+	}
+	// date millis 经 i64 直插值（无 sext；窄化不发生，millis 原样入 fmt）。
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "date" {
+			return saRenderInterp64(w, e.Text(), scope, nextTemp), ""
+		}
+	}
+	if e != nil && e.Kind == ast.KindCallExpression {
+		if k, ok := saDateCallKind(e.AsCallExpression(), scope); ok && k == "date" {
+			op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if voidCall {
+				return "", "void call in string position"
+			}
+			return saRenderInterp64(w, op, scope, nextTemp), ""
+		}
 	}
 	var op string
 	if e != nil && e.Kind == ast.KindIdentifier {
@@ -261,6 +283,30 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 	}
 	return saRenderInterp(w, op, scope, nextTemp), ""
+}
+
+// saRenderInterp64 i64 操作数经 @sa_fmt_i64_into 落文本切片（date millis
+// 直用，无 sext；形状证据同 saRenderInterp）。
+func saRenderInterp64(w printer.EmitTextWriter, v string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/fmt.sai")
+	numbuf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 64\n", numbuf))
+	numlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", numlen))
+	rc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_i64_into(%s, 10, %s, 64, &%s)\n", rc, v, numbuf, numlen))
+	nlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
+	vslice := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", vslice))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", vslice, numbuf))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", vslice, nlen))
+	return vslice
 }
 
 // saRenderInterp 整数操作数经 sext + @sa_fmt_i64_into 落文本切片

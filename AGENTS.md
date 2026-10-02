@@ -30,7 +30,7 @@
 
 ## 3. 当前移植清单（satsgo → tsgosa，不新建文件）
 
-> 文件布局（JEV split_many 批准拆分，零语义变更）：`internal/transpile/transpile.go`（管线/作用域/函数/语句）+ `sa_expr.go`（表达式核与调用总线）+ `sa_decl.go`（变量声明）+ `sa_ctrl.go`（控制流与语句）+ `sa_math.go`（Math 内联与别名）+ `sa_str.go`（str 全集）+ `sa_arr.go`（arr 全集）+ `sa_class.go`（class 最小子集）。同包，禁跨文件重复定义；新增领域先问 JEV 落哪件。
+> 文件布局（JEV split_many 批准拆分，零语义变更）：`internal/transpile/transpile.go`（管线/作用域/函数/语句）+ `sa_expr.go`（表达式核与调用总线）+ `sa_decl.go`（变量声明）+ `sa_ctrl.go`（控制流与语句）+ `sa_math.go`（Math 内联与别名）+ `sa_str.go`（str 全集）+ `sa_arr.go`（arr 全集）+ `sa_class.go`（class 最小子集）+ `sa_date.go`（Date 最小子集与正则门）。同包，禁跨文件重复定义；新增领域先问 JEV 落哪件。
 
 - step1：顶层 `function f(): void {}`/`return;` → `@f(): ret`；`(): number/boolean {return lit;}` → `@f() -> i32: ret lit`；值空体缺 return、大声拒；非函数、void 回值、联合注解一律拒（`main_test.go:22-126`；string 返回见 step25）。
 - step2：`if/else` → `EXPAND IF_ELSE/IF_TRUE` + `@import "sa_std/control.sal"`；`false` 恒假消死臂；`return c?a:b`（i32 字面臂）→ `EXPAND SELECT`（`main_test.go:128-284`；串臂见 step25 槽汇合）。
@@ -55,6 +55,7 @@
 - step26（数组方法一次过收官，落 `sa_arr.go`）：push（扩容拷贝）/pop/shift/unshift/fill/sort（数值插入；比较器走 cmp 内联，具名比较器拒）/indexOf-lastIndexOf-includes（扫描）/reverse/slice/at/join（interp 折叠）/copyWithin/toReversed/toSorted/with/toSpliced/concat（含 spread）/`Array.from`（`{length}` 零数组/切片克隆/mapper 内联 map）+ 高阶 forEach-map-filter-find 系-some-every-reduce 系（回调现场内联：形参快照绑定 + return 槽拦截；串回调值/具名回调/形参超量拒）；调用核经成员分发，返回种导向各求值位（i32/arr/str）；下标读基放宽到数组值调用；门：未知成员/元数错一律拒。
 - step27（core 顶层收官）：`export function`/`export default function` 修饰擦除直通；interface/type-alias/enum 声明擦除（无码）；`export {}`/`export =` 无码（`lowerModuleDecl:10329-10336`）；type-only import 擦除，值 import 拒（单文件）；整数枚举预扫成表 + `E.M` 折叠（`integerInit:9258-9277`；串/计算初值、未知成员拒）。
 - step28（class 最小子集，落 `sa_class.go`）：单类 i32 字段布局（4 字节槽）+ `new`（布局 alloc + 构造 `this.f = param` wiring）+ 方法调用内联（形参快照 + this 指向 + 槽汇合，复用回调机）+ 字段读写（含语句位 `o.f = v`）；门：继承/抽象/静态/访问器/装饰器/私有·计算名/参数属性/字段初值/非 param 右值/具名外回调一律拒。
+- step29（date 最小子集 + 正则门，落 `sa_date.go`，JEV 落件 a 97%）：`new Date()`/now/parse/getTime/setter 皆以 date 种（i64 millis）不透明流转，永不截断；串方法（toISOString/toString 系）与模板/console 插值（经 `sa_fmt_i64_into`）直调 `time.sai` 现货；getters 窄化为 i32（分量恒 < 2^31，窄化点唯一）；setters 变异重绑；parse 非法 panic(2503)；getTimezoneOffset 恒 0；门：有参 new、i32 位 millis、toLocale 系、未知成员一律拒。正则：satsgo/sa_plugin_ts 均无 lowering 证据（regex.sai 系无人调用现货），铁律 4 禁原创，字面量/new RegExp/.test 一律大声拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

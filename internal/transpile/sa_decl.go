@@ -52,6 +52,28 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
+			// `new Date()` 绑定为 date 种（millis 不透明；有参形大声拒）。
+			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Date" {
+				if !saIsDateNew(vd.Initializer) {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Date(x) is not lowerable (only arg-less now-shape binds)"})
+					return false
+				}
+				if vd.Type != nil {
+					tn := vd.Type
+					ref := tn.AsTypeReferenceNode()
+					if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil ||
+						ref.TypeName.Text() != "Date" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "date annotation must be Date"})
+						return false
+					}
+				}
+				h := saLowerDateNew(w, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = "date"
+				continue
+			}
 			// 实例声明（`const o: C = new C(...)` 注解须同名；`let o = new C()` 推断）。
 			ne := vd.Initializer.AsNewExpression()
 			cname := ""
@@ -91,6 +113,27 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				return false
 			}
 			continue
+		}
+		if vd.Type.Kind == ast.KindTypeReference {
+			if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Text() == "Date" {
+				// `: Date` 注解须配 date 种初值（new/now/parse/getTime/setter 链）。
+				if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+					if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
+						op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
+						if msg != "" || voidCall {
+							ln, col := pos(d.Pos())
+							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported date initializer: " + msg})
+							return false
+						}
+						w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+						scope.types[name] = "date"
+						continue
+					}
+				}
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Date annotation needs a date value"})
+				return false
+			}
 		}
 		vkind, ok := saAnnotKind(vd.Type)
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str") {
@@ -179,7 +222,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
 	if vd.Initializer.Kind == ast.KindCallExpression {
-		// 数组/串返回调用按返回种建种（slice/concat/map、join/String() 等）。
+		// 数组/串/date 返回调用按返回种建种。
 		if k, ok := saArrCallRet(vd.Initializer.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
@@ -192,6 +235,17 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "str"
+			return true
+		}
+		if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
+			op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" || voidCall {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = "date"
 			return true
 		}
 	}
@@ -216,6 +270,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = "bool"
+			return true
+		}
+		if k, ok := scope.types[vd.Initializer.Text()]; ok && k == "date" {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, vd.Initializer.Text()))
+			scope.types[name] = "date"
 			return true
 		}
 	}
