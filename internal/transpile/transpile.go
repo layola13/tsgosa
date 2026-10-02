@@ -1405,6 +1405,15 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
 			return false
 		}
+		if vd.Type == nil {
+			// 无注解推断（形状证据：封存 lowerVarDeclList:1415-1418/1463-1464
+			// 未知注解缺省 i32 + 按初值类型绑定）：数组字面量/数组句柄走 arr 通道，
+			// true/false 走 bool，其余 i32 求值；缺 init 绑 i32 零值（const 缺 init 拒）。
+			if !saLowerInferredDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
+				return false
+			}
+			continue
+		}
 		vkind, ok := saAnnotKind(vd.Type)
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr") {
 			ln, col := pos(d.Pos())
@@ -1524,6 +1533,65 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		scope.types[name] = "i32"
 		idx++
 	}
+	return true
+}
+
+// saLowerInferredDecl lowering 无注解声明的类型推断（见上注释）。
+// 数组/bool/i32 三通道复用已有求值与落字，不自造语义。
+func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, isConst bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	if vd.Initializer == nil {
+		if isConst {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = 0\n", name))
+		scope.types[name] = "i32"
+		return true
+	}
+	if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function initializer not lowerable"})
+		return false
+	}
+	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
+		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+	}
+	if _, ok := saArrBase(scope, vd.Initializer); ok {
+		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+	}
+	if vd.Initializer.Kind == ast.KindTrueKeyword || vd.Initializer.Kind == ast.KindFalseKeyword {
+		op, msg := saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		scope.types[name] = "bool"
+		return true
+	}
+	if vd.Initializer.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[vd.Initializer.Text()]; ok && k == "bool" {
+			op, msg := saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = "bool"
+			return true
+		}
+	}
+	op, msg := saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+		return false
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+	scope.types[name] = "i32"
 	return true
 }
 
