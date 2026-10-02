@@ -419,7 +419,23 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
 	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
 	funcs := map[string]saFuncSig{}
+	enums := map[string]map[string]int64{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st.Kind == ast.KindEnumDeclaration {
+			// 整数枚举预扫成表（布局记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
+			nm := st.AsEnumDeclaration().Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			members, msg := saEnumMembers(st)
+			if msg != "" {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				continue
+			}
+			enums[nm.Text()] = members
+			continue
+		}
 		if st.Kind != ast.KindFunctionDeclaration {
 			continue
 		}
@@ -457,6 +473,22 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	strPool := &saStrPool{seen: map[string]string{}}
 	emitted := map[string]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
+		// export 修饰随声明擦除（单文件无模块边；`export default function`
+		// 同形；`export {}`/`export =` 无码，镜像 lowerModuleDecl:10329-10336）。
+		switch st.Kind {
+		case ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration, ast.KindEnumDeclaration,
+			ast.KindExportDeclaration, ast.KindExportAssignment, ast.KindNamespaceExportDeclaration:
+			continue
+		case ast.KindImportDeclaration:
+			imp := st.AsImportDeclaration()
+			if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
+				continue
+			}
+			ln, col := pos(st.Pos())
+			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "value imports are not lowerable (single file)"})
+			continue
+		}
 		if st.Kind != ast.KindFunctionDeclaration {
 			ln, col := pos(st.Pos())
 			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("step2 refuses kind %d (only top-level functions)", int(st.Kind))})
@@ -468,7 +500,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+		saLowerFunction(w, st, funcs, enums, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
 	}
 	var head strings.Builder
 	head.WriteString(saStepHeader)
@@ -580,6 +612,58 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 
 // saReturnKind: "void", "number", "boolean", "string"; 其他一律拒绝。
 // i32 返回注解按封存 annotationType:181-186 视为 number。
+// saEnumMembers 整数枚举成员编号（显式 =N 优先，余下 next++；
+// 形状证据：封存 integerInit:9258-9277 + enumMemberTable:9284+。非整数
+// （串/浮点/计算式）初值大声拒）。
+func saEnumMembers(st *ast.Node) (map[string]int64, string) {
+	m := map[string]int64{}
+	var next int64
+	for _, mem := range st.AsEnumDeclaration().Members.Nodes {
+		nm := mem.Name()
+		if nm == nil || (nm.Kind != ast.KindIdentifier && nm.Kind != ast.KindStringLiteral) {
+			return nil, "enum member shape is not lowerable"
+		}
+		if init := mem.AsEnumMember().Initializer; init != nil {
+			v, ok := saEnumInit(init.AsNode())
+			if !ok {
+				return nil, "enum member needs an integer initializer"
+			}
+			m[nm.Text()] = v
+			next = v + 1
+			continue
+		}
+		m[nm.Text()] = next
+		next++
+	}
+	return m, ""
+}
+
+// saEnumInit 折叠枚举初值（整数 Natal 字面量与一元 -/+；镜像 integerInit）。
+func saEnumInit(e *ast.Node) (int64, bool) {
+	if e.Kind == ast.KindNumericLiteral && !saIsFloatLit(e.Text()) {
+		var v int64
+		if _, err := fmt.Sscanf(e.Text(), "%d", &v); err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	if e.Kind == ast.KindPrefixUnaryExpression {
+		un := e.AsPrefixUnaryExpression()
+		if (un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) &&
+			un.Operand.Kind == ast.KindNumericLiteral && !saIsFloatLit(un.Operand.Text()) {
+			var v int64
+			if _, err := fmt.Sscanf(un.Operand.Text(), "%d", &v); err != nil {
+				return 0, false
+			}
+			if un.Operator == ast.KindMinusToken {
+				v = -v
+			}
+			return v, true
+		}
+	}
+	return 0, false
+}
+
 func saReturnKind(t *ast.TypeNode) (string, bool) {
 	if t == nil {
 		// 缺注解即 void（形状证据：封存 lowerFunction:919-923）。
@@ -633,6 +717,7 @@ type saScope struct {
 	pending   []string
 	mathAlias map[string]string
 	funcs     map[string]saFuncSig
+	enums     map[string]map[string]int64
 	nextLabel *int
 	retKind   string
 	strPool   *saStrPool
@@ -679,7 +764,7 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 	return body.AsBlock().Statements.Nodes, true
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -730,7 +815,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
 	paramKinds, ok := saParamKinds(fn)
 	if !ok {
 		ln, col := pos(st.Pos())
@@ -1318,6 +1403,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindPropertyAccessExpression:
 		pa := e.AsPropertyAccessExpression()
+		// 整数枚举成员折叠（`E.A` → 字面量；未知成员大声拒）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			if members, ok := scope.enums[pa.Expression.Text()]; ok {
+				if v, ok := members[pa.Name().Text()]; ok {
+					return fmt.Sprintf("%d", v), ""
+				}
+				return "", "unknown enum member " + pa.Name().Text()
+			}
+		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Math" &&
 			pa.Name() != nil {
 			// `Math.PI`/`Math.E` 折叠为 3/2（形状证据：封存 stdlib.go:126-127

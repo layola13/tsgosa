@@ -53,6 +53,7 @@
 - 底座结论（回应“math 直接映射 sa_std”）：`satsgo/internal/saemit/stdlib.go:115-127` 投影表规定整数系 Math.* 全部 `@inline`，`sci/sa_std` 侧只有 f64 外部函数（`math.sai`）与 u64/i64 宏（`math.sa`，另带 `!` 释放纪律），并无 i32 符号可投；故 step20-23 内联即底座复用。string/vec 同理：`string.sa`/`vec.sa` 为运行时句柄库，薄口尚无 string 类型，待 string 字面量特性时再投影。
 - CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
 - step26（数组方法一次过收官，落 `sa_arr.go`）：push（扩容拷贝）/pop/shift/unshift/fill/sort（数值插入；比较器走 cmp 内联，具名比较器拒）/indexOf-lastIndexOf-includes（扫描）/reverse/slice/at/join（interp 折叠）/copyWithin/toReversed/toSorted/with/toSpliced/concat（含 spread）/`Array.from`（`{length}` 零数组/切片克隆/mapper 内联 map）+ 高阶 forEach-map-filter-find 系-some-every-reduce 系（回调现场内联：形参快照绑定 + return 槽拦截；串回调值/具名回调/形参超量拒）；调用核经成员分发，返回种导向各求值位（i32/arr/str）；下标读基放宽到数组值调用；门：未知成员/元数错一律拒。
+- step27（core 顶层收官）：`export function`/`export default function` 修饰擦除直通；interface/type-alias/enum 声明擦除（无码）；`export {}`/`export =` 无码（`lowerModuleDecl:10329-10336`）；type-only import 擦除，值 import 拒（单文件）；整数枚举预扫成表 + `E.M` 折叠（`integerInit:9258-9277`；串/计算初值、未知成员拒）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
