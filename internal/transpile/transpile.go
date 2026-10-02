@@ -985,12 +985,68 @@ func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	return out, false, ""
 }
 
+// saEvalMathPow 求 `Math.pow(base, expo)`（形状证据：封存 lowerMathInline
+// pow:5781-5806，即 lowerPowLoop 循环形；本薄口 saLowerPow:1130-1168 同形，
+// 此处复用同发射，仅标号前缀取 L_mpow_ 以区分表达式位）。
+func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 2 {
+		return "", false, "Math.pow needs 2 arguments"
+	}
+	base, msgB := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	if msgB != "" {
+		return "", false, msgB
+	}
+	expo, msgE := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+	if msgE != "" {
+		return "", false, msgE
+	}
+	nextLabel := scope.nextLabel
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 1\n", res))
+	topL := fmt.Sprintf("L_mpow_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_mpow_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_mpow_end_%d", *nextLabel)
+	*nextLabel++
+	ctr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", ctr, expo))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", cc, ctr))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cc, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	nr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", nr, res, base))
+	w.Write(fmt.Sprintf("  %s = %s\n", res, nr))
+	nc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nc, ctr))
+	w.Write(fmt.Sprintf("  %s = %s\n", ctr, nc))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return res, false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
 		pa := ce.Expression.AsPropertyAccessExpression()
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Math" &&
-			pa.Name() != nil && pa.Name().Text() == "abs" {
-			return saEvalMathAbs(w, ce, scope, pos, refusals, nextTemp)
+			pa.Name() != nil {
+			switch pa.Name().Text() {
+			case "abs":
+				return saEvalMathAbs(w, ce, scope, pos, refusals, nextTemp)
+			case "pow":
+				return saEvalMathPow(w, ce, scope, pos, refusals, nextTemp)
+			}
 		}
 		return "", false, "only direct function calls lowerable"
 	}
