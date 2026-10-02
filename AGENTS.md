@@ -67,6 +67,7 @@
 - step38（spread 调用展开一次过，落 `sa_expr.go`）：单尾 spread + 定元被调（`resolveSpreadCall:7764-7798`；静态部按位求值，余位越界归零 join 填齐，spread 填位仅 i32）；门：双 spread/非尾/超元/非数组源/非 i32 填充位一律拒。
 - step40（存取器一次过，落 `sa_class.go`）：get/set 以内联体记录（静态/计算名/字段重名拒，同类重复拒，继承拷贝覆写；`recordClassNamed:9774-9818`）+ 读内联 getter/写内联 setter（`lowerExpr:8130-8137`；只写读拒）+ super 存取走基 + `in` 判存；门：索引器如前拒。
 - step39（`delete`/`await` 对齐，落 `sa_expr.go`）：`delete` 显式拒（静态布局不可删域，`lowerExpr:2742-2745`）；`await v` 值透传（悬挂在内层调用门拒，`lowerExpr:2863-2871`）。
+- step41（重载签名擦除，落 `transpile.go`零新文件）：无体声明预扫不注册/发射不落字/入口改名不参与（实现体唯一定义；`saemit.go:642+758`）；孤签名零定义调用点按未知函数诚实拒（`saemit.go:983`）；JS 管线同形擦除（仅实现体落字），本次即底座复用替换。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

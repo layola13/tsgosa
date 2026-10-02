@@ -463,6 +463,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		if nm == nil || nm.Kind != ast.KindIdentifier {
 			continue
 		}
+		// 重载签名擦除：无体声明不注册签名，实现体唯一注册/发射；
+		// 孤签名定义无名，调用点按未知函数诚实拒。
+		// 证据：satsgo saemit.go:642（预扫跳过）+ :758（发射跳过）+ :983（无体拒）；
+		// 上游 JS 管线同形擦除（printer 落字仅实现体）。
+		if fn.Body == nil {
+			continue
+		}
 		name := nm.Text()
 		if _, dup := funcs[name]; dup {
 			ln, col := pos(st.Pos())
@@ -498,6 +505,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	hasUserMain := false
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindFunctionDeclaration {
+			if fn := st.AsFunctionDeclaration(); fn != nil {
+				if fn.Body == nil {
+					// 重载签名无体：不参与入口改名/碰撞（仅实现体定义）。
+					continue
+				}
+			}
 			if nm := st.AsFunctionDeclaration().Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 				if nm.Text() == "main" {
 					hasUserMain = true
@@ -539,6 +552,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		if st.Kind != ast.KindFunctionDeclaration {
 			ln, col := pos(st.Pos())
 			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("step2 refuses kind %d (only top-level functions)", int(st.Kind))})
+			continue
+		}
+		// 重载签名擦除：无体声明直接跳过（实现体唯一发射；孤签名零定义）。
+		if fn0 := st.AsFunctionDeclaration(); fn0 == nil || fn0.Body == nil {
 			continue
 		}
 		if nm := st.AsFunctionDeclaration().Name(); nm != nil && nm.Kind == ast.KindIdentifier {
@@ -881,6 +898,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if emitName == "main" && mainRenamed {
 		// 入口合成抢 `@main`，用户定义改名（形状证据：封存 planEntry:99-101）。
 		emitName = "main__user"
+	}
+	// 防御：无体直达即孤签名（发射环已擦除，此处按封存 :983 诚实拒）。
+	if fn.Body == nil {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function " + name + " has no body (overload signatures are not lowerable)"})
+		return
 	}
 	sig := "@" + emitName + "(" + strings.Join(params, ", ") + ")"
 	if !isVoid {
