@@ -30,6 +30,8 @@
 
 ## 3. 当前移植清单（satsgo → tsgosa，不新建文件）
 
+> 文件布局（JEV split_many 批准拆分，零语义变更）：`internal/transpile/transpile.go`（管线/作用域/函数/语句/表达式核/声明/控制流/CLI）+ `sa_math.go`（Math 内联与别名）+ `sa_str.go`（str 全集）+ `sa_arr.go`（arr 全集：字面量/读写/方法与高阶内联）。同包，禁跨文件重复定义；新增领域先问 JEV 落哪件。
+
 - step1：顶层 `function f(): void {}`/`return;` → `@f(): ret`；`(): number/boolean {return lit;}` → `@f() -> i32: ret lit`；值空体缺 return、大声拒；非函数、void 回值、联合注解一律拒（`main_test.go:22-126`；string 返回见 step25）。
 - step2：`if/else` → `EXPAND IF_ELSE/IF_TRUE` + `@import "sa_std/control.sal"`；`false` 恒假消死臂；`return c?a:b`（i32 字面臂）→ `EXPAND SELECT`（`main_test.go:128-284`；串臂见 step25 槽汇合）。
 - step3-11：i32/bool 表达式核（算术/比较/逻辑/`!`/`++/--`/三元值形/调用传参）、`while`/`for`（legacy br 形，cont 落增量前）/`do-while`/`switch`（legacy 链）/`try-finally`（无 throw 时直跑，含 throw 拒）+ 不可达门。
