@@ -672,6 +672,11 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return false, false
+	case ast.KindDoStatement:
+		if !saLowerDoWhile(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
 	case ast.KindVariableStatement:
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
@@ -942,7 +947,50 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 	return true
 }
 
-// saLowerAssignStmt lowering 赋值语句（`x = <i32>`，x 须已绑定）。
+// saBoundI32 报告绑定 i32 变量名（未绑定或非 i32 即失败）。
+func saBoundI32(scope *saScope, n *ast.Node) (string, bool) {
+	if n == nil || n.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	nm := n.Text()
+	if k, ok := scope.types[nm]; !ok || k != "i32" {
+		return "", false
+	}
+	return nm, true
+}
+
+// saCompoundOp 映射复合赋值到 SA 算符（证据：封存 lowerCompoundAssign:3394-3417）。
+func saCompoundOp(op ast.Kind) (string, bool) {
+	mapped, ok := map[ast.Kind]string{
+		ast.KindPlusEqualsToken: "add", ast.KindMinusEqualsToken: "sub",
+		ast.KindAsteriskEqualsToken: "mul", ast.KindSlashEqualsToken: "div",
+		ast.KindPercentEqualsToken: "srem",
+	}[op]
+	return mapped, ok
+}
+
+// saLowerCompound lowering x <op>= e（语句位与增量位共用）。
+func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
+	target, ok := saBoundI32(scope, be.Left)
+	if !ok {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound assignment to unknown/non-i32 variable"})
+		return false
+	}
+	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+		return false
+	}
+	op, _ := saCompoundOp(saBinaryOpKind(be))
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
+	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	return true
+}
+// saLowerAssignStmt lowering 赋值语句（`x = <i32>`，x 须已绑定；复合赋分流）。
 func saLowerAssignStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	e := s.AsExpressionStatement().Expression
 	if e == nil || e.Kind != ast.KindBinaryExpression {
@@ -951,6 +999,9 @@ func saLowerAssignStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, po
 		return false
 	}
 	be := e.AsBinaryExpression()
+	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
+		return saLowerCompound(w, be, scope, pos, refusals, nextTemp, s)
+	}
 	if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken ||
 		be.Left == nil || be.Left.Kind != ast.KindIdentifier {
 		ln, col := pos(s.Pos())
@@ -1103,16 +1154,6 @@ func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, po
 // canonicalForStep:1855-1900 只认 ++ 系；复合赋值的 op 映射见 lowerCompoundAssign:3394-3417）。
 // 其余一律大声拒（遗留 legacy 接受任意表达式，本子集收紧为门）。
 func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
-	checkTarget := func(n *ast.Node) (string, bool) {
-		if n == nil || n.Kind != ast.KindIdentifier {
-			return "", false
-		}
-		nm := n.Text()
-		if k, ok := scope.types[nm]; !ok || k != "i32" {
-			return "", false
-		}
-		return nm, true
-	}
 	var target, rhs string
 	switch incr.Kind {
 	case ast.KindPostfixUnaryExpression:
@@ -1121,7 +1162,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			break
 		}
 		var ok bool
-		if target, ok = checkTarget(un.Operand); !ok {
+		if target, ok = saBoundI32(scope, un.Operand); !ok {
 			break
 		}
 		rhs = "1"
@@ -1131,7 +1172,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			break
 		}
 		var ok bool
-		if target, ok = checkTarget(un.Operand); !ok {
+		if target, ok = saBoundI32(scope, un.Operand); !ok {
 			break
 		}
 		rhs = "1"
@@ -1140,7 +1181,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
 			// `x = <i32>` 赋值形增量（与语句位同门）。
 			var okT bool
-			if target, okT = checkTarget(be.Left); !okT {
+			if target, okT = saBoundI32(scope, be.Left); !okT {
 				target = ""
 				break
 			}
@@ -1153,16 +1194,12 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			w.Write(fmt.Sprintf("  %s = %s\n", target, r))
 			return true
 		}
-		op, ok := map[ast.Kind]string{
-			ast.KindPlusEqualsToken: "add", ast.KindMinusEqualsToken: "sub",
-			ast.KindAsteriskEqualsToken: "mul", ast.KindSlashEqualsToken: "div",
-			ast.KindPercentEqualsToken: "srem",
-		}[saBinaryOpKind(be)]
+		op, ok := saCompoundOp(saBinaryOpKind(be))
 		if !ok {
 			break
 		}
 		var okT bool
-		if target, okT = checkTarget(be.Left); !okT {
+		if target, okT = saBoundI32(scope, be.Left); !okT {
 			target = ""
 			break
 		}
@@ -1260,6 +1297,59 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	}
 	if !saArmTerminates(bodyStmts) {
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saLowerDoWhile lowering do-while（形状证据：封存 lowerDoWhile:2232-2263：
+// 体跑一次 + `jmp cond`（体终结则省）+ 条件 `jmp loop`/`br` + end；
+// continue 落条件（非顶），break 落 end）。
+func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	ds := s.AsDoStatement()
+	bodyStmts, ok := saEmbeddedBlock(ds.Statement)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported do body"})
+		return false
+	}
+	if be := saBoolSideCond(ds.Expression, scope); be != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported condition kind (boolean %s in comparison)", be)})
+		return false
+	}
+	loopL := fmt.Sprintf("L_do_%d", *nextLabel)
+	*nextLabel++
+	condL := fmt.Sprintf("L_do_cond_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_do_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", loopL))
+	scope.loops = append(scope.loops, saLoop{top: loopL, cont: condL, end: endL})
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	bodyTerm := saArmTerminates(bodyStmts)
+	if !bodyTerm {
+		w.Write(fmt.Sprintf("  jmp %s\n", condL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", condL))
+	condOp, msg := saCondOperand(w, ds.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported do condition: " + msg})
+		return false
+	}
+	switch condOp {
+	case "1", "true":
+		w.Write(fmt.Sprintf("  jmp %s\n", loopL))
+	case "0", "false":
+		// 落空直达 end。
+	default:
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, loopL, endL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	return true
