@@ -514,8 +514,8 @@ func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 		if !ok {
 			return nil, false
 		}
-		// 参数仅允许 i32/bool 两种标量（其余大声拒，子集门）。
-		if k != "i32" && k != "bool" {
+		// 参数仅允许 i32/bool/arr 三种（其余大声拒，子集门）。
+		if k != "i32" && k != "bool" && k != "arr" {
 			return nil, false
 		}
 		kinds[nm.Text()] = k
@@ -524,6 +524,7 @@ func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 }
 
 // saAnnotKind 映射类型注解到子集种类（证据：封存 annotationType:166-210）。
+// number/i32 标量；number[]/i32[] 为 i32 数组（16 字节头 + 4 字节槽，见 lowerArrayLiteral）。
 func saAnnotKind(t *ast.TypeNode) (string, bool) {
 	if t == nil {
 		return "", false
@@ -533,6 +534,15 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		return "i32", true
 	case ast.KindBooleanKeyword:
 		return "bool", true
+	case ast.KindArrayType:
+		el := t.AsArrayTypeNode().ElementType
+		if el != nil && el.Kind == ast.KindNumberKeyword {
+			return "arr", true
+		}
+		if k, ok := saAnnotKind(el); ok && k == "i32" {
+			return "arr", true
+		}
+		return "", false
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 			switch ref.TypeName.Text() {
@@ -835,7 +845,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 	switch cond.Kind {
 	case ast.KindIdentifier:
 		nm := cond.Text()
-		if _, ok := scope.types[nm]; ok {
+		if k, ok := scope.types[nm]; ok {
+			if k == "arr" {
+				return "", "array " + nm + " in condition"
+			}
 			return nm, ""
 		}
 		return "", "unknown condition variable " + nm
@@ -857,8 +870,13 @@ func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 }
 
 // saEvalReturnOperand 按函数返回种求 return 操作数：boolean 函数走 saEvalBool
-//（bool 标识符直用，其余 0/1 操作数），number 函数走 saEvalI32。
+//（bool 标识符直用，其余 0/1 操作数），number 函数走 saEvalI32；数组无返回位。
 func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
+			return "", "array return not supported"
+		}
+	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
 	}
@@ -905,7 +923,14 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	var args []string
 	if ce.Arguments != nil {
 		for _, a := range ce.Arguments.Nodes {
-			// 实参 0/1 统一表示：bool 标识符直传，其余 i32 操作数。
+			// 数组句柄直传（0/1 统一之外唯一的引用语义）；其余走 bool 兼容求值。
+			if a != nil && a.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[a.Text()]; ok && k == "arr" {
+					args = append(args, a.Text())
+					continue
+				}
+			}
+			// 实参 bool 兼容求值。
 			op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", false, msg
@@ -1080,12 +1105,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindIdentifier:
 		nm := e.Text()
 		if k, ok := scope.types[nm]; ok {
+			if k == "arr" {
+				return "", "array " + nm + " in i32 expression"
+			}
 			if k != "i32" {
 				return "", "boolean " + nm + " in i32 expression"
 			}
 			return nm, ""
 		}
 		return "", "unknown variable " + nm
+	case ast.KindElementAccessExpression:
+		return saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
+	case ast.KindPropertyAccessExpression:
+		return saLowerLengthExpr(w, e.AsPropertyAccessExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindParenthesizedExpression:
 		return saEvalI32(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindAsExpression:
@@ -1178,6 +1210,148 @@ func saLowerVarDecl(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos f
 }
 
 // saLowerVarDeclList lowering 声明表（语句位与 for 初始化位共用）。
+// saLowerArrayLiteral lowering i32 数组字面量（形状证据：封存
+// lowerArrayLiteral:8684-8740：`alloc 16` 头 + `alloc len*4` 缓冲 + 逐槽
+// `store … as i32` + 头部 ptr/len + `!buf`；spread/非 i32 元大声拒）。
+func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	al := n.AsArrayLiteralExpression()
+	var elems []string
+	if al.Elements != nil {
+		for _, el := range al.Elements.Nodes {
+			if el.Kind == ast.KindSpreadElement {
+				return "", "spread elements are not lowerable"
+			}
+			v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			elems = append(elems, v)
+		}
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(elems)*4))
+	for i, v := range elems {
+		p := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
+	w.Write(fmt.Sprintf("  !%s\n", buf))
+	return h, ""
+}
+
+// saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
+// lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
+// 取址 + i32 读回；OOB 得 0；release 为空操作故略）。
+func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
+	freshT := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	freshL := func(p string) string {
+		l := fmt.Sprintf("L_%s_%d", p, *nextLabel)
+		*nextLabel++
+		return l
+	}
+	slot := freshT()
+	endL := freshL("idx_end")
+	oobL := freshL("idx_oob")
+	loadL := freshL("idx_ok")
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	ln := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, base))
+	ok := freshT()
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, idx, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, loadL, oobL))
+	w.Write(fmt.Sprintf("%s:\n", loadL))
+	data := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, base))
+	off := freshT()
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, idx))
+	addr := freshT()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+	v := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", v, addr))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", oobL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	return dest
+}
+
+// saLowerElementStore lowering `a[i] = v`（形状证据：封存 lowerElementStore:8437-8448）。
+func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTemp *int) {
+	baseT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	offT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	ptrT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", baseT, base))
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", offT, idx))
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", ptrT, baseT, offT))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", ptrT, rhs))
+}
+
+// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`（基须为绑定数组；
+// `?.[]` 拒；下标走 i32 求值，读回走越界归零 join）。
+func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if ea.QuestionDotToken != nil {
+		return "", "optional index access not lowerable"
+	}
+	base, ok := saArrBase(scope, ea.Expression)
+	if !ok {
+		return "", "index base must be bound array"
+	}
+	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
+}
+
+// saLowerLengthExpr lowering `a.length`（数组头 +8 u64；其余成员拒）。
+func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	_ = refusals
+	if pa.QuestionDotToken != nil {
+		return "", "optional member access not lowerable"
+	}
+	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
+		return "", "only .length member access lowerable"
+	}
+	base, ok := saArrBase(scope, pa.Expression)
+	if !ok {
+		return "", ".length base must be bound array"
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
+	return t, ""
+}
+
+// saArrBase 报告绑定数组变量的句柄名（未绑定/非数组即失败）。
+func saArrBase(scope *saScope, n *ast.Node) (string, bool) {
+	if n == nil || n.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	nm := n.Text()
+	if k, ok := scope.types[nm]; !ok || k != "arr" {
+		return "", false
+	}
+	return nm, true
+}
+
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 		ln, col := pos(anchor.Pos())
@@ -1200,10 +1374,16 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			return false
 		}
 		vkind, ok := saAnnotKind(vd.Type)
-		if !ok || (vkind != "i32" && vkind != "bool") {
+		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr") {
 			ln, col := pos(d.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool locals only)"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr locals only)"})
 			return false
+		}
+		if vkind == "arr" {
+			if !saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
+				return false
+			}
+			continue
 		}
 		if vd.Initializer == nil {
 			if isConst {
@@ -1238,6 +1418,39 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 	return true
 }
 
+// saLowerArrDecl lowering 数组声明（`let a: number[] = […]` 字面构造；
+// 同类句柄拷贝 `= b`；缺 init/const 缺 init/非字面皆大声拒）。
+func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, isConst bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	if vd.Initializer == nil {
+		ln, col := pos(d.Pos())
+		if isConst {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+		} else {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array declaration needs initializer"})
+		}
+		return false
+	}
+	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
+		h, msg := saLowerArrayLiteral(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array literal: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "arr"
+		return true
+	}
+	if src, ok := saArrBase(scope, vd.Initializer); ok {
+		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
+		scope.types[name] = "arr"
+		return true
+	}
+	ln, col := pos(d.Pos())
+	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array initializer must be literal or array"})
+	return false
+}
+
 // saBoundI32 报告绑定 i32 变量名（未绑定或非 i32 即失败）。
 func saBoundI32(scope *saScope, n *ast.Node) (string, bool) {
 	if n == nil || n.Kind != ast.KindIdentifier {
@@ -1260,8 +1473,72 @@ func saCompoundOp(op ast.Kind) (string, bool) {
 	return mapped, ok
 }
 
-// saLowerCompound lowering x <op>= e（语句位与增量位共用）。
+// saLowerElementAssign lowering `a[i] = v`（仅 plain `=`；下标/右值走 i32 求值）。
+func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
+	ea := be.Left.AsElementAccessExpression()
+	if ea.QuestionDotToken != nil {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
+		return false
+	}
+	base, ok := saArrBase(scope, ea.Expression)
+	if !ok {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
+		return false
+	}
+	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported index: " + msg})
+		return false
+	}
+	rhs, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported element rhs: " + msg})
+		return false
+	}
+	saLowerElementStore(w, base, idx, rhs, nextTemp)
+	return true
+}
+
+// saLowerCompound lowering x <op>= e（语句位与增量位共用；元素目标读改写回）。
 func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
+	if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
+		ea := be.Left.AsElementAccessExpression()
+		if ea.QuestionDotToken != nil {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
+			return false
+		}
+		base, ok := saArrBase(scope, ea.Expression)
+		if !ok {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
+			return false
+		}
+		idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported index: " + msg})
+			return false
+		}
+		// 读-改-写回：join 读回当前值，算符作用后存回同址。
+		cur := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+			return false
+		}
+		op, _ := saCompoundOp(saBinaryOpKind(be))
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+		saLowerElementStore(w, base, idx, t, nextTemp)
+		return true
+	}
 	target, ok := saBoundI32(scope, be.Left)
 	if !ok {
 		ln, col := pos(where.Pos())
@@ -1312,8 +1589,16 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
 		return saLowerCompound(w, be, scope, pos, refusals, nextTemp, s)
 	}
-	if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken ||
-		be.Left == nil || be.Left.Kind != ast.KindIdentifier {
+	if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (plain x = i32 only)"})
+		return false
+	}
+	// 元素目标 `a[i] = v`（仅 plain `=`；复合走 saLowerCompound 的元素分支）。
+	if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
+		return saLowerElementAssign(w, be, scope, pos, refusals, nextTemp, s)
+	}
+	if be.Left == nil || be.Left.Kind != ast.KindIdentifier {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (plain x = i32 only)"})
 		return false
@@ -1325,9 +1610,19 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false
 	}
-	if k != "i32" && k != "bool" {
+	if k != "i32" && k != "bool" && k != "arr" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
+		return false
+	}
+	if k == "arr" {
+		// 数组句柄拷贝（同类相授）。
+		if src, ok := saArrBase(scope, be.Right); ok {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, src))
+			return true
+		}
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array assignment needs array handle"})
 		return false
 	}
 	var op string
