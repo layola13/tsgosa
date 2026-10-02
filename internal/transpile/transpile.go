@@ -677,6 +677,11 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return false, false
+	case ast.KindSwitchStatement:
+		if !saLowerSwitch(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
 	case ast.KindVariableStatement:
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
@@ -1355,6 +1360,99 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	return true
 }
 
+// saLowerSwitch lowering switch（形状证据：封存 lowerSwitch:2599-2675 legacy 链：
+// 每 case 一 test 标号（eq 比较 -> body/下一 test）+ body 标号；
+// 体终结则省尾 jmp；default 落空点；break 经栈到 end（无 continue 目标）。
+// 2/3 臂宏形 SWITCH_2/3 暂不采用，统一 legacy 链）。
+func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	sw := s.AsSwitchStatement()
+	disc, msg := saEvalI32(w, sw.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
+		return false
+	}
+	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
+	type casePart struct {
+		node *ast.Node
+	}
+	var parts []casePart
+	var defaultNode *ast.Node
+	for _, cl := range clauses {
+		switch cl.Kind {
+		case ast.KindCaseClause:
+			parts = append(parts, casePart{node: cl})
+		case ast.KindDefaultClause:
+			if defaultNode != nil {
+				ln, col := pos(cl.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "multiple default clauses are not lowerable"})
+				return false
+			}
+			defaultNode = cl
+		default:
+			ln, col := pos(cl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("switch clause kind %d is not lowerable", int(cl.Kind))})
+			return false
+		}
+	}
+	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
+	*nextLabel++
+	scope.loops = append(scope.loops, saLoop{end: endL})
+	testLabels := make([]string, len(parts)+1)
+	bodyLabels := make([]string, len(parts))
+	for i := range parts {
+		testLabels[i] = fmt.Sprintf("L_case_t_%d", *nextLabel)
+		*nextLabel++
+		bodyLabels[i] = fmt.Sprintf("L_case_b_%d", *nextLabel)
+		*nextLabel++
+	}
+	testLabels[len(parts)] = fmt.Sprintf("L_case_default_%d", *nextLabel)
+	*nextLabel++
+	lowered := true
+	for i, p := range parts {
+		w.Write(fmt.Sprintf("%s:\n", testLabels[i]))
+		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
+		if vmsg != "" {
+			ln, col := pos(p.node.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+			lowered = false
+			break
+		}
+		cmp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, %s\n", cmp, disc, val))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, bodyLabels[i], testLabels[i+1]))
+		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
+		if !saLowerArm(w, p.node.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			lowered = false
+			break
+		}
+		if !saArmTerminates(p.node.AsCaseOrDefaultClause().Statements.Nodes) {
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		}
+	}
+	if !lowered {
+		scope.loops = scope.loops[:len(scope.loops)-1]
+		return false
+	}
+	w.Write(fmt.Sprintf("%s:\n", testLabels[len(parts)]))
+	if defaultNode != nil {
+		if !saLowerArm(w, defaultNode.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			scope.loops = scope.loops[:len(scope.loops)-1]
+			return false
+		}
+		if !saArmTerminates(defaultNode.AsCaseOrDefaultClause().Statements.Nodes) {
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		}
+	} else {
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	return true
+}
+
 // saLowerBreakContinue lowering 无标号 break/continue（标号形大声拒；栈空拒）。
 func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	isBreak := s.Kind == ast.KindBreakStatement
@@ -1381,9 +1479,14 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 	fr := scope.loops[len(scope.loops)-1]
 	if isBreak {
 		w.Write(fmt.Sprintf("  jmp %s\n", fr.end))
-	} else {
-		w.Write(fmt.Sprintf("  jmp %s\n", fr.cont))
+		return true
 	}
+	if fr.cont == "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "continue to non-loop target"})
+		return false
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", fr.cont))
 	return true
 }
 
