@@ -1036,6 +1036,27 @@ func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	return res, false, ""
 }
 
+// saEvalMathRounding 求 `Math.floor/ceil/round/trunc(x)`（形状证据：封存
+// lowerMathRounding:5941-5945：整数操作数恒等 `out = add v, 0`；浮点转换分支
+// 在本薄口不存在——i32 子集内浮点字面早由 saEvalI32 大声拒，故恒等即全量）。
+func saEvalMathRounding(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 {
+		return "", false, "Math rounding needs 1 argument"
+	}
+	v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, v))
+	return out, false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
 		pa := ce.Expression.AsPropertyAccessExpression()
@@ -1046,6 +1067,8 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return saEvalMathAbs(w, ce, scope, pos, refusals, nextTemp)
 			case "pow":
 				return saEvalMathPow(w, ce, scope, pos, refusals, nextTemp)
+			case "floor", "ceil", "round", "trunc":
+				return saEvalMathRounding(w, ce, scope, pos, refusals, nextTemp)
 			}
 		}
 		return "", false, "only direct function calls lowerable"
