@@ -107,16 +107,14 @@ func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTe
 	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", ptrT, rhs))
 }
 
-// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`（基须为绑定数组；
-// `?.[]` 拒；下标走 i32 求值，读回走越界归零 join）。
-// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`（基须为绑定数组；
+// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`（基为绑定数组或数组值调用；
 // `?.[]` 拒；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if ea.QuestionDotToken != nil {
 		return "", "optional index access not lowerable"
 	}
-	base, ok := saArrBase(scope, ea.Expression)
-	if !ok {
+	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
 		return "", "index base must be bound array"
 	}
 	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
@@ -126,7 +124,6 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
 }
 
-// saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 // saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
@@ -153,7 +150,6 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	return t, ""
 }
 
-// saArrBase 报告绑定数组变量的句柄名（未绑定/非数组即失败）。
 // saArrBase 报告绑定数组变量的句柄名（未绑定/非数组即失败）。
 func saArrBase(scope *saScope, n *ast.Node) (string, bool) {
 	if n == nil || n.Kind != ast.KindIdentifier {
@@ -268,7 +264,8 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		scope.types[name] = "arr"
 		return true
 	}
-	if src, ok := saArrBase(scope, vd.Initializer); ok {
+	// 绑定句柄与数组返回调用皆直传（slice/concat/map 等新鲜句柄）。
+	if src, msg := saArrValueOf(w, vd.Initializer, scope, pos, refusals, nextTemp); msg == "" {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
 		scope.types[name] = "arr"
 		return true
@@ -279,7 +276,6 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 }
 
 // saBoundI32 报告绑定 i32 变量名（未绑定或非 i32 即失败）。
-// saForBindingName 取 for-of/for-in 循环变量名（形状证据：封存
 // foBindingName:11440-11450 + foBindingPattern:11428-11438：
 // 初始化位须为 VariableDeclarationList 单声明；标识符取名单，
 // 非标识符 Name 即 pattern 位）。
@@ -2332,4 +2328,462 @@ func saLowerSortWithCmp(w printer.EmitTextWriter, recv string, cb *ast.Node, sco
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	return recv, "arr", ""
+}
+
+// saArrCallbackNode 取调用实参中的首个内联回调（箭头/函数表达式；
+// 具名标识符不内联，大声拒。形状证据：封存 lowerHigherOrder:4887-4902）。
+func saArrCallbackNode(args []*ast.Node) (*ast.Node, int, string) {
+	for i, a := range args {
+		if a == nil {
+			continue
+		}
+		if a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression {
+			return a, i, ""
+		}
+		if a.Kind == ast.KindIdentifier {
+			return nil, -1, "pass the arrow inline (named callbacks do not inline)"
+		}
+	}
+	return nil, -1, ""
+}
+
+// saLowerArrCall 数组调用总线（成员 + Array.from；返回 (operand, 种, errMsg)。
+// 种 ∈ {"i32","arr","str"}；形状证据：封存 lowerArrayMethod:6137-6397）。
+func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string, string) {
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" &&
+			pa.Name() != nil && pa.Name().Text() == "from" {
+			h, msg := saLowerArrayFrom(w, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			return h, "arr", ""
+		}
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.QuestionDotToken != nil {
+		return "", "", "optional member call not lowerable"
+	}
+	recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	method := ""
+	if pa.Name() != nil {
+		method = pa.Name().Text()
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	i32arg := func(i int) (string, string) {
+		if i >= len(argNodes) {
+			return "", "missing argument"
+		}
+		return saEvalI32(w, argNodes[i], scope, pos, refusals, nextTemp)
+	}
+	switch method {
+	case "push":
+		if len(argNodes) != 1 {
+			return "", "", "push needs 1 argument"
+		}
+		v, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		return saLowerArrayPush(w, recv, v, scope, nextTemp), "i32", ""
+	case "pop":
+		if len(argNodes) != 0 {
+			return "", "", "pop needs 0 arguments"
+		}
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+		last := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", last, ln))
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		off := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, last))
+		addr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, addr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, last))
+		return out, "i32", ""
+	case "shift":
+		if len(argNodes) != 0 {
+			return "", "", "shift needs 0 arguments"
+		}
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, data))
+		nlen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nlen, ln))
+		topL := fmt.Sprintf("L_sh_top_%d", *nextLabel)
+		*nextLabel++
+		bodyL := fmt.Sprintf("L_sh_body_%d", *nextLabel)
+		*nextLabel++
+		endL := fmt.Sprintf("L_sh_end_%d", *nextLabel)
+		*nextLabel++
+		i := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = 0\n", i))
+		w.Write(fmt.Sprintf("%s:\n", topL))
+		c := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, nlen))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+		w.Write(fmt.Sprintf("%s:\n", bodyL))
+		src := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", src, i))
+		soff := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", soff, src))
+		saddr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, data, soff))
+		tmp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tmp, saddr))
+		doff := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", doff, i))
+		daddr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, data, doff))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, tmp))
+		inext := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, nlen))
+		return out, "i32", ""
+	case "unshift":
+		if len(argNodes) != 1 {
+			return "", "", "unshift needs 1 argument"
+		}
+		v, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		nlen := saLowerArrayPush(w, recv, v, scope, nextTemp)
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		topL := fmt.Sprintf("L_unsh_top_%d", *nextLabel)
+		*nextLabel++
+		bodyL := fmt.Sprintf("L_unsh_body_%d", *nextLabel)
+		*nextLabel++
+		endL := fmt.Sprintf("L_unsh_end_%d", *nextLabel)
+		*nextLabel++
+		i := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", i, nlen))
+		w.Write(fmt.Sprintf("%s:\n", topL))
+		c := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", c, i))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+		w.Write(fmt.Sprintf("%s:\n", bodyL))
+		prev := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", prev, i))
+		soff := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", soff, prev))
+		saddr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, data, soff))
+		tmp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tmp, saddr))
+		doff := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", doff, i))
+		daddr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, data, doff))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, tmp))
+		w.Write(fmt.Sprintf("  %s = %s\n", i, prev))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", data, v))
+		return nlen, "i32", ""
+	case "fill":
+		if len(argNodes) != 1 {
+			return "", "", "fill needs 1 argument"
+		}
+		v, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		topL := fmt.Sprintf("L_fill_top_%d", *nextLabel)
+		*nextLabel++
+		bodyL := fmt.Sprintf("L_fill_body_%d", *nextLabel)
+		*nextLabel++
+		endL := fmt.Sprintf("L_fill_end_%d", *nextLabel)
+		*nextLabel++
+		i := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = 0\n", i))
+		w.Write(fmt.Sprintf("%s:\n", topL))
+		c := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+		w.Write(fmt.Sprintf("%s:\n", bodyL))
+		off := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
+		addr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
+		inext := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		return recv, "arr", ""
+	case "sort", "toSorted":
+		if cb, _, msg := saArrCallbackNode(argNodes); msg != "" {
+			return "", "", msg
+		} else if cb != nil {
+			target := recv
+			if method == "toSorted" {
+				target = saLowerArraySlice(w, recv, "0", "", scope, nextTemp)
+			}
+			out, kind, msg := saLowerSortWithCmp(w, target, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			return out, kind, ""
+		}
+		if len(argNodes) != 0 {
+			return "", "", method + " without a comparator takes 0 arguments"
+		}
+		if method == "sort" {
+			saLowerInsertionSort(w, recv, scope, nextTemp)
+			return recv, "arr", ""
+		}
+		cp := saLowerArraySlice(w, recv, "0", "", scope, nextTemp)
+		saLowerInsertionSort(w, cp, scope, nextTemp)
+		return cp, "arr", ""
+	case "indexOf", "lastIndexOf", "includes":
+		if len(argNodes) < 1 {
+			return "", "", method + " needs 1 argument"
+		}
+		want, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		from := ""
+		if len(argNodes) > 1 {
+			var msg string
+			from, msg = i32arg(1)
+			if msg != "" {
+				return "", "", msg
+			}
+		} else if method != "lastIndexOf" {
+			from = "0"
+		}
+		reverse := method == "lastIndexOf"
+		wantIndex := method != "includes"
+		return saLowerArrayScan(w, recv, want, from, reverse, wantIndex, scope, nextTemp), "i32", ""
+	case "reverse":
+		if len(argNodes) != 0 {
+			return "", "", "reverse needs 0 arguments"
+		}
+		saLowerArrayReverse(w, recv, scope, nextTemp)
+		return recv, "arr", ""
+	case "slice":
+		start, end := "0", ""
+		if len(argNodes) > 0 {
+			var msg string
+			start, msg = i32arg(0)
+			if msg != "" {
+				return "", "", msg
+			}
+		}
+		if len(argNodes) > 1 {
+			var msg string
+			end, msg = i32arg(1)
+			if msg != "" {
+				return "", "", msg
+			}
+		}
+		if len(argNodes) > 2 {
+			return "", "", "slice takes at most 2 arguments"
+		}
+		return saLowerArraySlice(w, recv, start, end, scope, nextTemp), "arr", ""
+	case "at":
+		if len(argNodes) != 1 {
+			return "", "", "at needs 1 argument"
+		}
+		v, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		return saLowerArrayAt(w, recv, v, scope, nextTemp), "i32", ""
+	case "join":
+		var sep string
+		if len(argNodes) > 0 {
+			h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			sep = h
+		}
+		if len(argNodes) > 1 {
+			return "", "", "join takes at most 1 argument"
+		}
+		h, msg := saLowerArrayJoin(w, recv, sep, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return h, "str", ""
+	case "copyWithin":
+		if len(argNodes) < 1 {
+			return "", "", "copyWithin needs 1 argument"
+		}
+		target, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		start, end := "0", ""
+		if len(argNodes) > 1 {
+			var msg string
+			start, msg = i32arg(1)
+			if msg != "" {
+				return "", "", msg
+			}
+		}
+		if len(argNodes) > 2 {
+			var msg string
+			end, msg = i32arg(2)
+			if msg != "" {
+				return "", "", msg
+			}
+		}
+		if len(argNodes) > 3 {
+			return "", "", "copyWithin takes at most 3 arguments"
+		}
+		saLowerCopyWithin(w, recv, target, start, end, scope, nextTemp)
+		return recv, "arr", ""
+	case "toReversed":
+		if len(argNodes) != 0 {
+			return "", "", "toReversed needs 0 arguments"
+		}
+		return saLowerToReversed(w, recv, scope, nextTemp), "arr", ""
+	case "with":
+		if len(argNodes) != 2 {
+			return "", "", "with needs 2 arguments"
+		}
+		idx, msg := i32arg(0)
+		if msg != "" {
+			return "", "", msg
+		}
+		val, msg := i32arg(1)
+		if msg != "" {
+			return "", "", msg
+		}
+		cp, msg := saLowerArrayWith(w, recv, idx, val, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return cp, "arr", ""
+	case "toSpliced":
+		h, msg := saLowerToSpliced(w, recv, argNodes, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return h, "arr", ""
+	case "concat":
+		h, msg := saLowerArrayConcat(w, recv, argNodes, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return h, "arr", ""
+	case "forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every":
+		cb, _, msg := saArrCallbackNode(argNodes)
+		if msg != "" {
+			return "", "", msg
+		}
+		if cb == nil {
+			return "", "", method + " needs an inline arrow callback"
+		}
+		if len(argNodes) != 1 {
+			return "", "", method + " takes only a callback"
+		}
+		if method == "map" {
+			h, msg := saHigherOrderMap(w, recv, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			return h, "arr", ""
+		}
+		out, kind, msg := saHigherOrderScan(w, recv, method, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return out, kind, ""
+	case "reduce", "reduceRight":
+		right := method == "reduceRight"
+		cb, cbIdx, msg := saArrCallbackNode(argNodes)
+		if msg != "" {
+			return "", "", msg
+		}
+		if cb == nil {
+			return "", "", method + " needs an inline arrow callback"
+		}
+		if cbIdx != 0 {
+			return "", "", method + " needs (callback, init)"
+		}
+		var initVal string
+		hasInit := false
+		if len(argNodes) > 1 {
+			if argNodes[1] != nil && (argNodes[1].Kind == ast.KindArrowFunction || argNodes[1].Kind == ast.KindFunctionExpression) {
+				return "", "", method + " needs (callback, init)"
+			}
+			v, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			initVal, hasInit = v, true
+		}
+		if len(argNodes) > 2 {
+			return "", "", method + " takes at most 2 arguments"
+		}
+		out, kind, msg := saHigherOrderReduce(w, recv, right, cb, initVal, hasInit, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return out, kind, ""
+	default:
+		return "", "", "unsupported array method " + method
+	}
 }

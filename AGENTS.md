@@ -52,6 +52,7 @@
 - sa_std 复用纪律（回应“直接映射 sa_std、禁造轮子”）：以 `satsgo/internal/saemit/stdlib.go` 投影表为准——凡 `Module: sa_std/*.sai`（string/concat、console.log→print、Map/Set→btree、Date/fs/net…）的特性必须走 `@import` + 符号调用，不得手写；整数系 Math.* 在表中全为 `@inline`（`stdlib.go:115-127`），`sci/sa_std` 侧并无 i32 符号（math.sai 皆 f64、math.sa 皆 u64/i64 宏另带 `!` 释放纪律），故 step20-24 内联即底座复用而非造轮子。
 - 底座结论（回应“math 直接映射 sa_std”）：`satsgo/internal/saemit/stdlib.go:115-127` 投影表规定整数系 Math.* 全部 `@inline`，`sci/sa_std` 侧只有 f64 外部函数（`math.sai`）与 u64/i64 宏（`math.sa`，另带 `!` 释放纪律），并无 i32 符号可投；故 step20-23 内联即底座复用。string/vec 同理：`string.sa`/`vec.sa` 为运行时句柄库，薄口尚无 string 类型，待 string 字面量特性时再投影。
 - CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
+- step26（数组方法一次过收官，落 `sa_arr.go`）：push（扩容拷贝）/pop/shift/unshift/fill/sort（数值插入；比较器走 cmp 内联，具名比较器拒）/indexOf-lastIndexOf-includes（扫描）/reverse/slice/at/join（interp 折叠）/copyWithin/toReversed/toSorted/with/toSpliced/concat（含 spread）/`Array.from`（`{length}` 零数组/切片克隆/mapper 内联 map）+ 高阶 forEach-map-filter-find 系-some-every-reduce 系（回调现场内联：形参快照绑定 + return 槽拦截；串回调值/具名回调/形参超量拒）；调用核经成员分发，返回种导向各求值位（i32/arr/str）；下标读基放宽到数组值调用；门：未知成员/元数错一律拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

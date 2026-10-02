@@ -198,7 +198,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if voidCall {
 			return "", "void function call in string position"
 		}
-		if !saCallIsStr(e.AsCallExpression(), scope) {
+		if !saCallIsStr(e.AsCallExpression(), scope) && !saIsArrJoinCall(e.AsCallExpression(), scope) {
 			return "", "non-string call in string position"
 		}
 		return op, ""
@@ -228,6 +228,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // 供模板/console/String() 共用（renderInterpValue 哲学：同 sa_fmt 现货）。
 func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if saIsStrExpr(e, scope) {
+		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
+	}
+	// 数组 join 回串（串位；形状证据同 saEvalStr 调用位）。
+	if e != nil && e.Kind == ast.KindCallExpression && saIsArrJoinCall(e.AsCallExpression(), scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
 	var op string

@@ -1062,6 +1062,27 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}
+		// 数组成员调用与 Array.from（基为数组位；其余成员拒）。
+		// 管线经 scope 内取（addImport/nextLabel 已随 scope 走，无需改签名）。
+		if pa.Name() != nil {
+			m := pa.Name().Text()
+			if saIsArrMethod(m) && saIsArrValue(pa.Expression, scope) {
+				op, kind, msg := saLowerArrCall(w, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				_ = kind
+				return op, false, ""
+			}
+			if m == "from" && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" {
+				op, kind, msg := saLowerArrCall(w, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				_ = kind
+				return op, false, ""
+			}
+		}
 		return "", false, "only direct function calls lowerable"
 	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
@@ -1085,6 +1106,14 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			// arr/str 句柄标识符直传；其余走 bool 兼容求值。
 			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && sig.paramKinds[i] == "str" {
 				h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				args = append(args, h)
+				continue
+			}
+			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && sig.paramKinds[i] == "arr" {
+				h, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", false, msg
 				}
@@ -1414,6 +1443,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "string value in i32 expression"
 			}
 		}
+		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k != "i32" {
+			return "", "array value in i32 expression"
+		}
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -1564,6 +1596,23 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	if _, ok := saArrBase(scope, vd.Initializer); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+	}
+	if vd.Initializer.Kind == ast.KindCallExpression {
+		// 数组/串返回调用按返回种建种（slice/concat/map、join/String() 等）。
+		if k, ok := saArrCallRet(vd.Initializer.AsCallExpression(), scope); ok && k == "arr" {
+			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+		}
+		if saCallIsStr(vd.Initializer.AsCallExpression(), scope) && !saStrCallIsI32(vd.Initializer.AsCallExpression(), scope) {
+			h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "str"
+			return true
+		}
 	}
 	if vd.Initializer.Kind == ast.KindTrueKeyword || vd.Initializer.Kind == ast.KindFalseKeyword {
 		op, msg := saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
@@ -1780,8 +1829,8 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return false
 	}
 	if k == "arr" {
-		// 数组句柄拷贝（同类相授）。
-		if src, ok := saArrBase(scope, be.Right); ok {
+		// 数组句柄拷贝（绑定直传；数组返回调用亦直传）。
+		if src, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp); msg == "" {
 			w.Write(fmt.Sprintf("  %s = %s\n", name, src))
 			return true
 		}
