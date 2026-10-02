@@ -537,9 +537,12 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled；labeled 形大声拒）。
+// cont 为 continue 落点：while 即 top；for 落增量前（证据：封存 lowerFor:2072-2084
+// 跳 top 会跳过增量导致死循环，故增量存在且体用 continue 时另立 cont 标号）。
 type saLoop struct {
-	top string
-	end string
+	top  string
+	cont string
+	end  string
 }
 
 // saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）。
@@ -664,6 +667,11 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return false, false
+	case ast.KindForStatement:
+		if !saLowerFor(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
 	case ast.KindVariableStatement:
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
@@ -776,6 +784,14 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 	}
 }
 
+// saBinaryOpKind 空安全取二元操作符（parser 常保非空，防御备用）。
+func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
+	if be == nil || be.OperatorToken == nil {
+		return ast.KindUnknown
+	}
+	return be.OperatorToken.Kind
+}
+
 // saIsFloatLit 粗判浮点数字面（封存 lowerExpr:2725 按 isFloatLiteral 分 f64/i32）。
 func saIsFloatLit(text string) bool {
 	for i := 0; i < len(text); i++ {
@@ -843,9 +859,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			ast.KindLessThanToken: "slt", ast.KindLessThanEqualsToken: "sle",
 			ast.KindGreaterThanToken: "sgt", ast.KindGreaterThanEqualsToken: "sge",
 			ast.KindAmpersandAmpersandToken: "and", ast.KindBarBarToken: "or",
-		}[be.OperatorToken.Kind]
+		}[saBinaryOpKind(be)]
 		if !ok {
-			return "", fmt.Sprintf("binary operator %s not in subset", be.OperatorToken.Kind.String())
+			return "", fmt.Sprintf("binary operator %s not in subset", saBinaryOpKind(be).String())
 		}
 		l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
 		if msgL != "" {
@@ -869,9 +885,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // 解构拒、缺 init 绑零值、名按 bindingNameText 取标识符）。
 func saLowerVarDecl(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	vs := s.AsVariableStatement()
-	dl := vs.DeclarationList.AsVariableDeclarationList()
+	return saLowerVarDeclList(w, s, vs.DeclarationList.AsVariableDeclarationList(), scope, pos, refusals, nextTemp)
+}
+
+// saLowerVarDeclList lowering 声明表（语句位与 for 初始化位共用）。
+func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
-		ln, col := pos(s.Pos())
+		ln, col := pos(anchor.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable"})
 		return false
 	}
@@ -994,11 +1014,249 @@ func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	}
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	scope.loops = append(scope.loops, saLoop{top: topL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
+	}
+	if !saArmTerminates(bodyStmts) {
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saBodyHasContinue 报告循环体是否可能执行 continue（证据：封存 labels.go:100-127；
+// 函数边界重置目标，其余过近似——多出的 cont 标号无害）。
+func saBodyHasContinue(n *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		if x.Kind == ast.KindContinueStatement {
+			found = true
+			return
+		}
+		switch x.Kind {
+		case ast.KindFunctionDeclaration, ast.KindArrowFunction,
+			ast.KindFunctionExpression, ast.KindClassDeclaration:
+			return
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
+// saLowerForInit lowering for 初始化位（变量声明表走声明路径；表达式须为赋值形）。
+func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	if init == nil {
+		return true
+	}
+	switch init.Kind {
+	case ast.KindVariableDeclarationList:
+		dl := init.AsVariableDeclarationList()
+		return saLowerVarDeclList(w, init, dl, scope, pos, refusals, nextTemp)
+	case ast.KindVariableStatement:
+		return saLowerVarDecl(w, init, scope, pos, refusals, nextTemp)
+	default:
+		// 表达式初始化位：仅接受 x = <i32> 赋值形（与语句位同门）。
+		if init.Kind != ast.KindBinaryExpression {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer"})
+			return false
+		}
+		be := init.AsBinaryExpression()
+		if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken ||
+			be.Left == nil || be.Left.Kind != ast.KindIdentifier {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer"})
+			return false
+		}
+		name := be.Left.Text()
+		if _, ok := scope.types[name]; !ok {
+			// 初始化位允许首次绑定（`for (i = 0;;)`），视同 let 隐式声明。
+			scope.types[name] = "i32"
+		} else if scope.types[name] != "i32" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
+			return false
+		}
+		op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		return true
+	}
+}
+
+// saLowerIncr lowering for 增量位：`x++`/`++x`/`x += K` 等（证据：封存
+// canonicalForStep:1855-1900 只认 ++ 系；复合赋值的 op 映射见 lowerCompoundAssign:3394-3417）。
+// 其余一律大声拒（遗留 legacy 接受任意表达式，本子集收紧为门）。
+func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	checkTarget := func(n *ast.Node) (string, bool) {
+		if n == nil || n.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		nm := n.Text()
+		if k, ok := scope.types[nm]; !ok || k != "i32" {
+			return "", false
+		}
+		return nm, true
+	}
+	var target, rhs string
+	switch incr.Kind {
+	case ast.KindPostfixUnaryExpression:
+		un := incr.AsPostfixUnaryExpression()
+		if un.Operator != ast.KindPlusPlusToken {
+			break
+		}
+		var ok bool
+		if target, ok = checkTarget(un.Operand); !ok {
+			break
+		}
+		rhs = "1"
+	case ast.KindPrefixUnaryExpression:
+		un := incr.AsPrefixUnaryExpression()
+		if un.Operator != ast.KindPlusPlusToken {
+			break
+		}
+		var ok bool
+		if target, ok = checkTarget(un.Operand); !ok {
+			break
+		}
+		rhs = "1"
+	case ast.KindBinaryExpression:
+		be := incr.AsBinaryExpression()
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
+			// `x = <i32>` 赋值形增量（与语句位同门）。
+			var okT bool
+			if target, okT = checkTarget(be.Left); !okT {
+				target = ""
+				break
+			}
+			r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(incr.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", target, r))
+			return true
+		}
+		op, ok := map[ast.Kind]string{
+			ast.KindPlusEqualsToken: "add", ast.KindMinusEqualsToken: "sub",
+			ast.KindAsteriskEqualsToken: "mul", ast.KindSlashEqualsToken: "div",
+			ast.KindPercentEqualsToken: "srem",
+		}[saBinaryOpKind(be)]
+		if !ok {
+			break
+		}
+		var okT bool
+		if target, okT = checkTarget(be.Left); !okT {
+			target = ""
+			break
+		}
+		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(incr.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+			return false
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
+		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+		return true
+	}
+	if target == "" || rhs == "" {
+		ln, col := pos(incr.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor (x++/++x/x+=K only)"})
+		return false
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", t, target, rhs))
+	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	return true
+}
+
+// saLowerFor lowering for（形状证据：封存 lowerFor:2043-2122 legacy 形；
+// canonical 宏形 FOR_INIT/FOR_CHECK/FOR_NEXT 暂不采用，统一 legacy br 形）。
+func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	fs := s.AsForStatement()
+	if !saLowerForInit(w, fs.Initializer, scope, pos, refusals, nextTemp) {
+		return false
+	}
+	// Never-taken C 循环只发射 init（证据：封存 lowerFor:2061-2068）。
+	if fs.Condition != nil && fs.Condition.Kind == ast.KindFalseKeyword {
+		return true
+	}
+	if be := saBoolSideCond(fs.Condition, scope); be != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported condition kind (boolean %s in comparison)", be)})
+		return false
+	}
+	bodyNode := fs.Statement
+	var bodyStmts []*ast.Node
+	if bodyNode != nil {
+		var ok bool
+		bodyStmts, ok = saEmbeddedBlock(bodyNode)
+		if !ok {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for body"})
+			return false
+		}
+	}
+	topL := fmt.Sprintf("L_for_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_for_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_for_end_%d", *nextLabel)
+	*nextLabel++
+	needCont := fs.Incrementor != nil && bodyNode != nil && saBodyHasContinue(bodyNode)
+	contL := topL
+	if needCont {
+		contL = fmt.Sprintf("L_for_cont_%d", *nextLabel)
+		*nextLabel++
+	}
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	if fs.Condition != nil {
+		condOp, msg := saCondOperand(w, fs.Condition, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for condition: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, bodyL, endL))
+	} else {
+		w.Write(fmt.Sprintf("  jmp %s\n", bodyL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL})
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	if needCont {
+		w.Write(fmt.Sprintf("%s:\n", contL))
+	}
+	doIncr := fs.Incrementor != nil && (!saArmTerminates(bodyStmts) || needCont)
+	if doIncr {
+		if !saLowerIncr(w, fs.Incrementor, scope, pos, refusals, nextTemp) {
+			return false
+		}
 	}
 	if !saArmTerminates(bodyStmts) {
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
@@ -1030,11 +1288,11 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: kind + " outside loop"})
 		return false
 	}
-	top := scope.loops[len(scope.loops)-1]
+	fr := scope.loops[len(scope.loops)-1]
 	if isBreak {
-		w.Write(fmt.Sprintf("  jmp %s\n", top.end))
+		w.Write(fmt.Sprintf("  jmp %s\n", fr.end))
 	} else {
-		w.Write(fmt.Sprintf("  jmp %s\n", top.top))
+		w.Write(fmt.Sprintf("  jmp %s\n", fr.cont))
 	}
 	return true
 }
