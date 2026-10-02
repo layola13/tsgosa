@@ -729,6 +729,16 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return false, false
+	case ast.KindForOfStatement:
+		if !saLowerForOf(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
+	case ast.KindForInStatement:
+		if !saLowerForIn(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return false, false
 	case ast.KindDoStatement:
 		if !saLowerDoWhile(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false, true
@@ -1918,6 +1928,221 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 		}
 	}
 	if !saArmTerminates(bodyStmts) {
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saForBindingName 取 for-of/for-in 循环变量名（形状证据：封存
+// foBindingName:11440-11450 + foBindingPattern:11428-11438：
+// 初始化位须为 VariableDeclarationList 单声明；标识符取名单，
+// 非标识符 Name 即 pattern 位）。
+// 返回 (name, pattern, ok)：pattern 非空时为解构位（调用方大声拒），
+// ok=false 时形状不支持（多声明/缺声明/非声明位）。
+func saForBindingName(init *ast.Node) (string, *ast.Node, bool) {
+	if init == nil || init.Kind != ast.KindVariableDeclarationList {
+		return "", nil, false
+	}
+	decls := init.AsVariableDeclarationList().Declarations.Nodes
+	if len(decls) != 1 {
+		return "", nil, false
+	}
+	nm := decls[0].Name()
+	if nm == nil {
+		return "", nil, false
+	}
+	if nm.Kind == ast.KindIdentifier {
+		return nm.Text(), nil, true
+	}
+	return "", nm.AsNode(), true
+}
+
+// saForArrHandle 取 for-of/for-in 被巡数组句柄（复用 step12 底座）：
+// 已绑定数组直传句柄（引用语义直传）；数组字面量走 saLowerArrayLiteral
+// 现场构造（alloc 16 头 + 缓冲 + 逐槽 store）；其余一律大声拒。
+// 形状证据：封存 lowerForOf:2123/lowerForIn:2191 的 lowerExpr(fo.Expression)
+// 位（本薄口仅支持句柄/字面量子集）。
+func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node, what string) (string, bool) {
+	if e != nil && e.Kind == ast.KindArrayLiteralExpression {
+		h, msg := saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported %s base: %s", what, msg)})
+			return "", false
+		}
+		return h, true
+	}
+	if base, ok := saArrBase(scope, e); ok {
+		return base, true
+	}
+	ln, col := pos(where.Pos())
+	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("%s base must be bound array", what)})
+	return "", false
+}
+
+// saLowerForOf lowering for-of（形状证据：封存 lowerForOf:2120-2184 索引巡回
+// 原样镜像：idx=0 + 头+8 len + top:slt/br + body:base/mul/add/i32读回 +
+// 绑定 + 体 + 增量 + jmp top + end；continue→top（非增量前，与 for 的
+// cont 分支不对称，文档化原样）；break 落 end。
+// sci for 宏（control.sal FOR_INIT/FOR_CHECK/FOR_NEXT、core/loop.sa
+// ARRAY_FOR_EACH）为计数/Slice 形，与本 16 字节头 + ptr/len 形状不同，
+// 故沿用 legacy br 形，不套宏——禁止原创调用惯例）。
+func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	fo := s.AsForInOrOfStatement()
+	if fo.AwaitModifier != nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "for-await not lowerable"})
+		return false
+	}
+	binding, pat, ok := saForBindingName(fo.Initializer)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-of initializer (single identifier declaration only)"})
+		return false
+	}
+	if pat != nil {
+		ln, col := pos(s.Pos())
+		if pat.Kind == ast.KindArrayBindingPattern {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array patterns in for-of need nested array handles"})
+		} else {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object patterns in for-of need static element layouts"})
+		}
+		return false
+	}
+	if _, dup := scope.types[binding]; dup {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})
+		return false
+	}
+	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-of")
+	if !ok {
+		return false
+	}
+	bodyStmts, ok := saEmbeddedBlock(fo.Statement)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-of body"})
+		return false
+	}
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", idx))
+	topL := fmt.Sprintf("L_forof_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_forof_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_forof_end_%d", *nextLabel)
+	*nextLabel++
+	lenT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, lenT))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	baseT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	offT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	elemPtr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	elemT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", baseT, arrVal))
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", offT, idx))
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", elemPtr, baseT, offT))
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elemT, elemPtr))
+	w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
+	scope.types[binding] = "i32"
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	if !saArmTerminates(bodyStmts) {
+		incT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", incT, idx))
+		w.Write(fmt.Sprintf("  %s = %s\n", idx, incT))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saLowerForIn lowering for-in（形状证据：封存 lowerForIn:2189-2226：
+// 与 for-of 同索引巡回，唯绑定位为下标本身 `binding = idx`（+ declarePlain
+// 记 i32）；对象巡回大声拒（须为绑定数组）；continue→top 原样）。
+func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = needImport
+	fo := s.AsForInOrOfStatement()
+	if fo.AwaitModifier != nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "for-await not lowerable"})
+		return false
+	}
+	binding, pat, ok := saForBindingName(fo.Initializer)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in initializer (single identifier declaration only)"})
+		return false
+	}
+	if pat != nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "patterns in for-in need static element layouts"})
+		return false
+	}
+	if _, dup := scope.types[binding]; dup {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})
+		return false
+	}
+	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-in")
+	if !ok {
+		return false
+	}
+	bodyStmts, ok := saEmbeddedBlock(fo.Statement)
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in body"})
+		return false
+	}
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", idx))
+	topL := fmt.Sprintf("L_forin_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_forin_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_forin_end_%d", *nextLabel)
+	*nextLabel++
+	lenT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, lenT))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	w.Write(fmt.Sprintf("  %s = %s\n", binding, idx))
+	scope.types[binding] = "i32"
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	if !saArmTerminates(bodyStmts) {
+		incT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", incT, idx))
+		w.Write(fmt.Sprintf("  %s = %s\n", idx, incT))
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
