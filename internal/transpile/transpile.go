@@ -439,11 +439,22 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			nparams = len(fn.Parameters.Nodes)
 		}
 		isVoid := false
-		if k, ok := saReturnKind(fn.Type); ok && k == "void" {
-			isVoid = true
+		retKind := ""
+		if k, ok := saReturnKind(fn.Type); ok {
+			retKind = k
+			isVoid = k == "void"
 		}
-		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid}
+		var pk []string
+		if kinds, ok := saParamKinds(fn); ok {
+			if fn.Parameters != nil {
+				for _, p := range fn.Parameters.Nodes {
+					pk = append(pk, kinds[p.AsParameterDeclaration().Name().Text()])
+				}
+			}
+		}
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk}
 	}
+	strPool := &saStrPool{seen: map[string]string{}}
 	emitted := map[string]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind != ast.KindFunctionDeclaration {
@@ -457,13 +468,14 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, pos, &refusals, needImport, &nextLabel, &nextTemp)
+		saLowerFunction(w, st, funcs, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
 	}
 	var head strings.Builder
 	head.WriteString(saStepHeader)
 	for _, imp := range importOrder {
 		head.WriteString("@import \"" + imp + "\"\n")
 	}
+	head.WriteString(strPool.buf.String())
 	return head.String() + w.String(), refusals
 }
 
@@ -519,8 +531,8 @@ func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 		if !ok {
 			return nil, false
 		}
-		// 参数仅允许 i32/bool/arr 三种（其余大声拒，子集门）。
-		if k != "i32" && k != "bool" && k != "arr" {
+		// 参数仅允许 i32/bool/str/arr 四种（其余大声拒，子集门）。
+		if k != "i32" && k != "bool" && k != "arr" && k != "str" {
 			return nil, false
 		}
 		kinds[nm.Text()] = k
@@ -539,6 +551,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		return "i32", true
 	case ast.KindBooleanKeyword:
 		return "bool", true
+	case ast.KindStringKeyword:
+		// 字符串为 16 字节 {ptr,len} 句柄（证据：封存 tString:141）。
+		return "str", true
 	case ast.KindArrayType:
 		el := t.AsArrayTypeNode().ElementType
 		if el != nil && el.Kind == ast.KindNumberKeyword {
@@ -563,7 +578,7 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 	}
 }
 
-// saReturnKind: "", "void", "number", "boolean"; 其他一律拒绝。
+// saReturnKind: "void", "number", "boolean", "string"; 其他一律拒绝。
 // i32 返回注解按封存 annotationType:181-186 视为 number。
 func saReturnKind(t *ast.TypeNode) (string, bool) {
 	if t == nil {
@@ -577,6 +592,8 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		return "number", true
 	case ast.KindBooleanKeyword:
 		return "boolean", true
+	case ast.KindStringKeyword:
+		return "string", true
 	case ast.KindTypeReference:
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true
@@ -587,10 +604,12 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	}
 }
 
-// saFuncSig 是调用核的签名表项（名->形参数/是否 void）。
+// saFuncSig 是调用核的签名表项（名->形参数/是否 void/返回种/形参种）。
 type saFuncSig struct {
-	params int
-	isVoid bool
+	params     int
+	isVoid     bool
+	retKind    string
+	paramKinds []string
 }
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
 // 查表：loops/switch 绑定 break+cont，block/switch 绑 break-only（cont 为空）。
@@ -615,6 +634,17 @@ type saScope struct {
 	funcs     map[string]saFuncSig
 	nextLabel *int
 	retKind   string
+	strPool   *saStrPool
+	addImport func(string)
+}
+
+// saStrPool 是文件级字符串常量池（`@const str_const_N = utf8:"...\\0"` 行在
+// @import 之后、函数之前集中落字；同文本去重。形状证据：封存
+// lowerStringLiteral:2974-2990）。
+type saStrPool struct {
+	buf  strings.Builder
+	seen map[string]string
+	next int
 }
 
 func saLiteralI32(e *ast.Node) (string, bool) {
@@ -640,7 +670,7 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 	return body.AsBlock().Statements.Nodes, true
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -667,7 +697,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	isVoid := retKind == "void"
 	sig := "@" + name + "(" + strings.Join(params, ", ") + ")"
 	if !isVoid {
-		sig += " -> i32"
+		if retKind == "string" {
+			// 字符串返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:`）。
+			sig += " -> ptr"
+		} else {
+			sig += " -> i32"
+		}
 	}
 	sig += ":\n"
 	w.Write(sig)
@@ -686,11 +721,11 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel, retKind: retKind}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
 	paramKinds, ok := saParamKinds(fn)
 	if !ok {
 		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool only)"})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/str only)"})
 		return
 	}
 	for k, v := range paramKinds {
@@ -824,6 +859,43 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})
 			return false, true
 		}
+		if saIsStrValue(ce.WhenTrue, scope) || saIsStrValue(ce.WhenFalse, scope) {
+			// 串臂三元走槽汇合（两侧须皆串位；形状证据：封存 lowerTernary:8498-8515）。
+			if !saIsStrValue(ce.WhenTrue, scope) || !saIsStrValue(ce.WhenFalse, scope) {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms disagree (string vs non-string)"})
+				return false, true
+			}
+			tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+			fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+			if msgA != "" || msgB != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be string operands"})
+				return false, true
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+			*nextLabel++
+			fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+			*nextLabel++
+			endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+			w.Write(fmt.Sprintf("%s:\n", tL))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+			w.Write(fmt.Sprintf("  ret %s\n", res))
+			return true, false
+		}
 		a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 		b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
 		if msgA != "" || msgB != "" {
@@ -837,11 +909,6 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", t, condOp, a, b))
 		w.Write(fmt.Sprintf("  ret %s\n", t))
 		return true, false
-	}
-	if rs.Expression != nil && rs.Expression.Kind == ast.KindStringLiteral {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string return refused"})
-		return false, true
 	}
 	op, msg := saEvalReturnOperand(w, rs.Expression, scope.retKind, scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -882,6 +949,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			if k == "arr" {
 				return "", "array " + nm + " in condition"
 			}
+			if k == "str" {
+				return "", "string " + nm + " in condition"
+			}
 			return nm, ""
 		}
 		return "", "unknown condition variable " + nm
@@ -909,9 +979,15 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
 			return "", "array return not supported"
 		}
+		if k, ok := scope.types[e.Text()]; ok && k == "str" && retKind != "string" {
+			return "", "string return needs string annotation"
+		}
 	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
+	}
+	if retKind == "string" {
+		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
 }
@@ -1426,7 +1502,24 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
 	}
+	if saIsConsoleLog(ce) {
+		ok, msg := saLowerConsoleLog(w, ce, scope, pos, refusals, nextTemp)
+		if !ok {
+			return "", false, msg
+		}
+		return "", true, ""
+	}
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "String" {
+		return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
+	}
 	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" {
+			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
+		}
+		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
+			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
+		}
 		return "", false, "only direct function calls lowerable"
 	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
@@ -1445,10 +1538,20 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	}
 	var args []string
 	if ce.Arguments != nil {
-		for _, a := range ce.Arguments.Nodes {
-			// 数组句柄直传（0/1 统一之外唯一的引用语义）；其余走 bool 兼容求值。
+		for i, a := range ce.Arguments.Nodes {
+			// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
+			// arr/str 句柄标识符直传；其余走 bool 兼容求值。
+			if len(sig.paramKinds) == len(ce.Arguments.Nodes) && sig.paramKinds[i] == "str" {
+				h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				args = append(args, h)
+				continue
+			}
+			// 数组/字符串句柄直传（0/1 统一之外唯一的引用语义）；其余走 bool 兼容求值。
 			if a != nil && a.Kind == ast.KindIdentifier {
-				if k, ok := scope.types[a.Text()]; ok && k == "arr" {
+				if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
 					args = append(args, a.Text())
 					continue
 				}
@@ -1631,6 +1734,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if k == "arr" {
 				return "", "array " + nm + " in i32 expression"
 			}
+			if k == "str" {
+				return "", "string " + nm + " in i32 expression"
+			}
 			if k != "i32" {
 				return "", "boolean " + nm + " in i32 expression"
 			}
@@ -1678,6 +1784,17 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		be := e.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
 			// 值位赋值折成寄存器拷贝（证据：封存 lowerBinary:3009-3010）。
+			// 串目标走串求值（同形拷贝）。
+			if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[be.Left.Text()]; ok && k == "str" {
+					op, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), op))
+					return be.Left.Text(), ""
+				}
+			}
 			target, ok := saBoundI32(scope, be.Left)
 			if !ok {
 				return "", "assignment to unknown/non-i32 variable"
@@ -1688,6 +1805,33 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", target, op))
 			return target, ""
+		}
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
+			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
+			// `+` 遇串位即拼接，串句柄只可由串位取用（saEvalStr）；i32 位拒收。
+			// 此处不落字（落字只走 saEvalStr 串路径），直接定位拒绝。
+			return "", "string value in i32 expression"
+		}
+		if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
+			// 串位仅 `+`（拼接）与 `==/!=`（内容相等）可走；其余算符大声拒。
+			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) &&
+				saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
+				lh, msgL := saEvalStr(w, be.Left, scope, pos, refusals, nextTemp)
+				if msgL != "" {
+					return "", msgL
+				}
+				rh, msgR := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+				if msgR != "" {
+					return "", msgR
+				}
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				return saStringContentEq(w, lh, rh, neg, scope, nextTemp), ""
+			}
+			return "", "only +/==/!= operate on strings"
 		}
 		op, ok := map[ast.Kind]string{
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
@@ -1723,6 +1867,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
 		return t, ""
 	case ast.KindCallExpression:
+		if saCallIsStr(e.AsCallExpression(), scope) {
+			if !saStrCallIsI32(e.AsCallExpression(), scope) {
+				return "", "string value in i32 expression"
+			}
+		}
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -1856,7 +2005,7 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
 }
 
-// saLowerLengthExpr lowering `a.length`（数组头 +8 u64；其余成员拒）。
+// saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
 	if pa.QuestionDotToken != nil {
@@ -1865,13 +2014,20 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
 	}
-	base, ok := saArrBase(scope, pa.Expression)
-	if !ok {
-		return "", ".length base must be bound array"
+	if base, ok := saArrBase(scope, pa.Expression); ok {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
+		return t, ""
+	}
+	// 字符串 `.length`：字面量/调用结果等非常驻基先具化为句柄。
+	h, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", ".length base must be bound array or string"
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
 	return t, ""
 }
 
@@ -1932,13 +2088,19 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		vkind, ok := saAnnotKind(vd.Type)
-		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr") {
+		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str") {
 			ln, col := pos(d.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr locals only)"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
 			return false
 		}
 		if vkind == "arr" {
 			if !saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
+				return false
+			}
+			continue
+		}
+		if vkind == "str" {
+			if !saLowerStrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
 				return false
 			}
 			continue
@@ -2074,6 +2236,19 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
+	if vd.Initializer.Kind == ast.KindStringLiteral || vd.Initializer.Kind == ast.KindNoSubstitutionTemplateLiteral ||
+		vd.Initializer.Kind == ast.KindTemplateExpression {
+		// 无注解串推断（字面量/模板皆串位）。
+		h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "str"
+		return true
+	}
 	if _, ok := saArrBase(scope, vd.Initializer); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
@@ -2110,6 +2285,892 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 	scope.types[name] = "i32"
 	return true
+}
+
+// ---- string（str 种：16 字节 {ptr,len} 切片句柄，与 arr 同模型）----
+// 形状证据总纲：封存 tString:141（ptr 句柄）+ lowerStringLiteral:2974-2990
+// （@const utf8 + 16 字节头）+ lowerStringMethod:7156-7388（sa_std/string.sai
+// 现货直调）+ concatSlices:8909-8930（concat 经 sa_fmt_buffer_data/len 读回）+
+// renderInterpValue:8854-8904（串直通；i32/bool 经 sext + sa_fmt_i64_into；
+// f64 经 sa_fmt_f64_into）+ lowerTemplate:8823-8847 +
+// lowerConsoleLog:7862-7887（print.sai，两操作数间空格 + 末尾换行）+
+// stringContentEq:9146-9166（等长 + 零偏 indexOf 命中）+ 投影表
+// stdlib.go:80-106（concat/string 方法→string.sai，console.log→io/print.sai，
+// 模板/i32 插值→fmt.sai；i32 Math 系全 @inline 故不投）。
+// sa_std 现货（string.sai/fmt.sai）：concat/from_char_code/from_code_point/
+// index_of/last_index_of/starts_with/ends_with/to_lower-upper_ascii/repeat/
+// pad_start-end/replace/code_point_at + i64_into/buffer_data-len。
+// 本薄口只调以上现货；split（串元数组超 i32 槽模型）、tagged模板、
+// Number.parseFloat（f64）、console.error（node 插件后端）一律大声拒。
+
+// saStrIntern 字符串常量池录入（同文本去重；转义镜像封存）。
+func saStrIntern(pool *saStrPool, text string) string {
+	if n, ok := pool.seen[text]; ok {
+		return n
+	}
+	n := fmt.Sprintf("str_const_%d", pool.next)
+	pool.next++
+	esc := strings.ReplaceAll(text, "\\", "\\\\")
+	esc = strings.ReplaceAll(esc, "\"", "\\\"")
+	esc = strings.ReplaceAll(esc, "\n", "\\n")
+	esc = strings.ReplaceAll(esc, "\r", "\\r")
+	esc = strings.ReplaceAll(esc, "\t", "\\t")
+	fmt.Fprintf(&pool.buf, "@const %s = utf8:\"%s\\0\"\n", n, esc)
+	pool.seen[text] = n
+	return n
+}
+
+// saLowerStringLiteral 字符串字面量具化（@const utf8 + 16 字节头）。
+func saLowerStringLiteral(w printer.EmitTextWriter, text string, scope *saScope, nextTemp *int) string {
+	cname := saStrIntern(scope.strPool, text)
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, &%s as ptr\n", h, cname))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(text)))
+	return h
+}
+
+// saExpandStr 展开句柄为 (ptr, len)（形状证据：封存 expandSlice:6126-6132）。
+func saExpandStr(w printer.EmitTextWriter, h string, nextTemp *int) (string, string) {
+	p := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	l := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", p, h))
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", l, h))
+	return p, l
+}
+
+// saIsStrExpr 语法级判定表达式是否为串位（不落字；供 + 拼接与 i32 拒用）。
+func saIsStrExpr(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindTemplateExpression:
+		return true
+	case ast.KindIdentifier:
+		k, ok := scope.types[e.Text()]
+		return ok && k == "str"
+	case ast.KindCallExpression:
+		return saCallIsStr(e.AsCallExpression(), scope)
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken {
+			return saIsStrExpr(be.Left, scope) || saIsStrExpr(be.Right, scope)
+		}
+		return false
+	case ast.KindParenthesizedExpression:
+		return saIsStrExpr(e.AsParenthesizedExpression().Expression, scope)
+	case ast.KindAsExpression:
+		return saIsStrExpr(e.AsAsExpression().Expression, scope)
+	case ast.KindSatisfiesExpression:
+		return saIsStrExpr(e.AsSatisfiesExpression().Expression, scope)
+	case ast.KindNonNullExpression:
+		return saIsStrExpr(e.AsNonNullExpression().Expression, scope)
+	case ast.KindTypeAssertionExpression:
+		return saIsStrExpr(e.AsTypeAssertion().Expression, scope)
+	default:
+		return false
+	}
+}
+
+// saIsStrValue 串值判定（串位扣除 i32 返回的串方法调用；供 i32 位门禁，
+// 免得 `&&`/`+` 等 numerical 上下文被方法名误拦）。
+func saIsStrValue(e *ast.Node, scope *saScope) bool {
+	if e != nil && e.Kind == ast.KindCallExpression && saStrCallIsI32(e.AsCallExpression(), scope) {
+		return false
+	}
+	return saIsStrExpr(e, scope)
+}
+
+// saCallIsStr 判定调用是否为串返回（String()/String.from*/串方法/同文件 string 函数）。
+func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
+	if ce.Expression == nil {
+		return false
+	}
+	if ce.Expression.Kind == ast.KindIdentifier {
+		nm := ce.Expression.Text()
+		if nm == "String" {
+			return true
+		}
+		if sig, ok := scope.funcs[nm]; ok {
+			return !sig.isVoid && sig.retKind == "string"
+		}
+		return false
+	}
+	if ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" &&
+		pa.Name() != nil {
+		switch pa.Name().Text() {
+		case "fromCharCode", "fromCodePoint":
+			return true
+		}
+		return false
+	}
+	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
+		return false
+	}
+	return saIsStrExpr(pa.Expression, scope)
+}
+
+// saStrCallIsI32 判定串调用是否为 i32 返回（indexOf 系/startsWith 系/
+// charCodeAt 系/includes；其余串调用皆为串返回）。
+func saStrCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Name() == nil {
+		return false
+	}
+	switch pa.Name().Text() {
+	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith", "includes":
+		return saIsStrExpr(pa.Expression, scope)
+	}
+	return false
+}
+// split 另行大声拒，不在此列为“未知方法”拒）。
+func saIsStrMethod(m string) bool {
+	switch m {
+	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith",
+		"toLowerCase", "toUpperCase", "repeat", "padStart", "padEnd", "replace", "replaceAll",
+		"includes", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
+		"slice", "substring", "substr", "toString":
+		return true
+	}
+	return false
+}
+
+// saEvalStr 求串操作数（返回 16 字节句柄）。
+func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil {
+		return "", "missing expression"
+	}
+	switch e.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return saLowerStringLiteral(w, e.Text(), scope, nextTemp), ""
+	case ast.KindTemplateExpression:
+		return saLowerTemplate(w, e.AsTemplateExpression(), scope, pos, refusals, nextTemp)
+	case ast.KindTaggedTemplateExpression:
+		return "", "tagged templates are not lowerable (String.raw needs raw source text)"
+	case ast.KindIdentifier:
+		nm := e.Text()
+		if k, ok := scope.types[nm]; ok {
+			if k == "str" {
+				return nm, ""
+			}
+			return "", nm + " is not a string"
+		}
+		return "", "unknown variable " + nm
+	case ast.KindCallExpression:
+		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if voidCall {
+			return "", "void function call in string position"
+		}
+		if !saCallIsStr(e.AsCallExpression(), scope) {
+			return "", "non-string call in string position"
+		}
+		return op, ""
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
+			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
+			return saConcatStr(w, be.Left, be.Right, scope, pos, refusals, nextTemp)
+		}
+		return "", "only + concatenates strings"
+	case ast.KindParenthesizedExpression:
+		return saEvalStr(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindAsExpression:
+		return saEvalStr(w, e.AsAsExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindSatisfiesExpression:
+		return saEvalStr(w, e.AsSatisfiesExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindNonNullExpression:
+		return saEvalStr(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindTypeAssertionExpression:
+		return saEvalStr(w, e.AsTypeAssertion().Expression, scope, pos, refusals, nextTemp)
+	default:
+		return "", "not a string expression"
+	}
+}
+
+// saToSlice 任一可文本化操作数转切片（串直通；i32/bool 经 interp；其余拒）。
+// 供模板/console/String() 共用（renderInterpValue 哲学：同 sa_fmt 现货）。
+func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if saIsStrExpr(e, scope) {
+		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
+	}
+	var op string
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "bool" {
+			var msg string
+			op, msg = saEvalBool(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+		} else {
+			var msg string
+			op, msg = saEvalI32(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+		}
+	} else {
+		var msg string
+		op, msg = saEvalI32(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			// bool 字面走 saEvalBool 兜底（saEvalI32 未必收 true/false）。
+			op, msg = saEvalBool(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+		}
+	}
+	return saRenderInterp(w, op, scope, nextTemp), ""
+}
+
+// saRenderInterp 整数操作数经 sext + @sa_fmt_i64_into 落文本切片
+// （形状证据：封存 renderInterpValue:8879-8900；bool 到此已是 0/1）。
+func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/fmt.sai")
+	wide := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, v))
+	numbuf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 64\n", numbuf))
+	numlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", numlen))
+	rc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_i64_into(%s, 10, %s, 64, &%s)\n", rc, wide, numbuf, numlen))
+	nlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
+	vslice := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", vslice))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", vslice, numbuf))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", vslice, nlen))
+	return vslice
+}
+
+// saConcatSlices 两切片经 @sa_string_concat 合并后读回新切片
+// （形状证据：封存 concatSlices:8909-8930；需 string.sai + fmt.sai）。
+func saConcatSlices(w printer.EmitTextWriter, left, right string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/fmt.sai")
+	lptr, llen := saExpandStr(w, left, nextTemp)
+	rptr, rlen := saExpandStr(w, right, nextTemp)
+	obuf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", obuf, lptr, llen, rptr, rlen))
+	optr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", optr, obuf))
+	olen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", olen, obuf))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, optr))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, olen))
+	return out
+}
+
+// saConcatStr `+` 拼接（两侧须皆为串位；混合数值须显式 String()，
+// 子集门，大声拒——封存 lowerBinary 无数值隐式强制证据）。
+func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if !saIsStrValue(l, scope) || !saIsStrValue(r, scope) {
+		return "", "string + needs string operands on both sides (use String(x))"
+	}
+	lh, msgL := saEvalStr(w, l, scope, pos, refusals, nextTemp)
+	if msgL != "" {
+		return "", msgL
+	}
+	rh, msgR := saEvalStr(w, r, scope, pos, refusals, nextTemp)
+	if msgR != "" {
+		return "", msgR
+	}
+	return saConcatSlices(w, lh, rh, scope, nextTemp), ""
+}
+
+// saStringContentEq 串内容相等（等长 + 零偏 indexOf 命中；negate 取反。
+// 形状证据：封存 stringContentEq:9146-9166）。
+func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/string.sai")
+	lp, ll := saExpandStr(w, l, nextTemp)
+	rp, rl := saExpandStr(w, r, nextTemp)
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, lp, ll, rp, rl))
+	at0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
+	samelen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, ll, rl))
+	both := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if negate {
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", out, both))
+	} else {
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, both))
+	}
+	return out
+}
+
+// saLowerStrDecl lowering 字符串声明（字面量具化；同类句柄拷贝；
+// 缺 init/const 缺 init/非串初值皆大声拒）。
+func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, isConst bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	if vd.Initializer == nil {
+		ln, col := pos(d.Pos())
+		if isConst {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+		} else {
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string declaration needs initializer"})
+		}
+		return false
+	}
+	h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported string initializer: " + msg})
+		return false
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+	scope.types[name] = "str"
+	return true
+}
+
+// saLowerStrCall lowering 串调用：String(x)/String.from*/串方法/同文件 string 函数。
+func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "String" {
+		args := []*ast.Node{}
+		if ce.Arguments != nil {
+			args = ce.Arguments.Nodes
+		}
+		if len(args) != 1 {
+			return "", false, "String(x) needs 1 argument"
+		}
+		// String(x)：串直通，数值经 interp（形状证据：封存 lowerCall:3885-3900）。
+		h, msg := saToSlice(w, args[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		return h, false, ""
+	}
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" &&
+			pa.Name() != nil {
+			switch pa.Name().Text() {
+			case "fromCharCode", "fromCodePoint":
+				args := []*ast.Node{}
+				if ce.Arguments != nil {
+					args = ce.Arguments.Nodes
+				}
+				if len(args) != 1 {
+					return "", false, "String." + pa.Name().Text() + " needs 1 argument"
+				}
+				v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				sym := "sa_string_from_char_code"
+				if pa.Name().Text() == "fromCodePoint" {
+					sym = "sa_string_from_code_point"
+				}
+				scope.addImport("sa_std/string.sai")
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, sym, v))
+				return t, false, ""
+			}
+			return "", false, "unsupported String method " + pa.Name().Text()
+		}
+		if pa.QuestionDotToken != nil {
+			return "", false, "optional member call not lowerable"
+		}
+		recv, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		if pa.Name() == nil {
+			return "", false, "missing method name"
+		}
+		return saLowerStrMethod(w, recv, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+	}
+	// 同文件 string 函数走通用调用核（saEvalCall 标识符分支按签名表落字）；
+	// 此处仅处理 String()/String.from*/串方法。
+	return "", false, "not a string call"
+}
+
+// saLowerStrMethod lowering 串方法全集（投影表 stdlib.go:95-105 + 封存
+// lowerStringMethod:7173-7386；split 需串元数组，超 i32 槽模型，大声拒）。
+func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	scope.addImport("sa_std/string.sai")
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	strArg := func(i int) (string, string) {
+		if i >= len(args) {
+			return "", "missing argument"
+		}
+		return saEvalStr(w, args[i], scope, pos, refusals, nextTemp)
+	}
+	intArg := func(i int) (string, string) {
+		if i >= len(args) {
+			return "", "missing argument"
+		}
+		return saEvalI32(w, args[i], scope, pos, refusals, nextTemp)
+	}
+	bp, bl := saExpandStr(w, recv, nextTemp)
+	call1 := func(sym string, extra ...string) string {
+		all := append([]string{bp, bl}, extra...)
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, sym, strings.Join(all, ", ")))
+		return t
+	}
+	switch method {
+	case "charCodeAt":
+		if len(args) != 1 {
+			return "", false, "charCodeAt needs 1 argument"
+		}
+		a, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_string_code_point_at(%s, %s, %s)\n", t, bp, bl, a))
+		return t, false, ""
+	case "codePointAt":
+		if len(args) != 1 {
+			return "", false, "codePointAt needs 1 argument"
+		}
+		a, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		return call1("sa_string_code_point_at", a), false, ""
+	case "indexOf", "lastIndexOf":
+		if len(args) < 1 {
+			return "", false, method + " needs 1 argument"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		from := "0"
+		if len(args) > 1 {
+			var msg string
+			from, msg = intArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+		}
+		sym := "sa_string_index_of"
+		if method == "lastIndexOf" {
+			sym = "sa_string_last_index_of"
+		}
+		return call1(sym, np, nl, from), false, ""
+	case "startsWith", "endsWith":
+		if len(args) != 1 {
+			return "", false, method + " needs 1 argument"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		sym := "sa_string_starts_with"
+		if method == "endsWith" {
+			sym = "sa_string_ends_with"
+		}
+		return call1(sym, np, nl), false, ""
+	case "toLowerCase":
+		return call1("sa_string_to_lower_ascii"), false, ""
+	case "toUpperCase":
+		return call1("sa_string_to_upper_ascii"), false, ""
+	case "repeat":
+		if len(args) != 1 {
+			return "", false, "repeat needs 1 argument"
+		}
+		a, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		return call1("sa_string_repeat", a), false, ""
+	case "padStart", "padEnd":
+		if len(args) < 1 {
+			return "", false, method + " needs 1 argument"
+		}
+		a, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		padArg := saLowerStringLiteral(w, " ", scope, nextTemp)
+		if len(args) > 1 {
+			var msg string
+			padArg, msg = strArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+		}
+		pp, pl := saExpandStr(w, padArg, nextTemp)
+		sym := "sa_string_pad_start"
+		if method == "padEnd" {
+			sym = "sa_string_pad_end"
+		}
+		return call1(sym, a, pp, pl), false, ""
+	case "replace", "replaceAll":
+		need := 2
+		if method == "replace" {
+			need = -1
+		}
+		if (need == -1 && len(args) != 2 && len(args) != 3) || (need == 2 && len(args) != 2) {
+			return "", false, method + " needs 2 arguments"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		rp_, msg := strArg(1)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		rp, rl := saExpandStr(w, rp_, nextTemp)
+		all := "0"
+		if method == "replaceAll" {
+			all = "1"
+		} else if len(args) == 3 {
+			var msg string
+			all, msg = intArg(2)
+			if msg != "" {
+				return "", false, msg
+			}
+		}
+		return call1("sa_string_replace", np, nl, rp, rl, all), false, ""
+	case "includes":
+		if len(args) < 1 {
+			return "", false, "includes needs 1 argument"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		from := "0"
+		if len(args) > 1 {
+			var msg string
+			from, msg = intArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+		}
+		idx := call1("sa_string_index_of", np, nl, from)
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, -1\n", out, idx))
+		return out, false, ""
+	case "charAt", "at":
+		if len(args) != 1 {
+			return "", false, method + " needs 1 argument"
+		}
+		a, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		sel := a
+		if method == "at" {
+			// 负下标自末端起（无分支形；形状证据：封存 lowerStringMethod:7288-7295）。
+			isneg := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", isneg, a))
+			adj := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = mul %s, %s\n", adj, bl, isneg))
+			sel = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", sel, a, adj))
+		}
+		addr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, bp, sel))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, addr))
+		w.Write(fmt.Sprintf("  store %s + 8, 1 as u64\n", out))
+		return out, false, ""
+	case "trim", "trimStart", "trimEnd":
+		// ascii 三件套合成（形状证据：封存 lowerStringMethod:7304-7335）。
+		start := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_start_index(%s, %s)\n", start, bp, bl))
+		full := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_end_len(%s, %s)\n", full, bp, bl))
+		s, l := start, full
+		if method == "trimStart" {
+			rest := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sub %s, %s\n", rest, bl, start))
+			l = rest
+		} else if method == "trimEnd" {
+			s = "0"
+		} else {
+			rest := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sub %s, %s\n", rest, full, start))
+			l = rest
+		}
+		nptr := bp
+		if s != "0" {
+			nptr = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", nptr, bp, s))
+		}
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, nptr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, l))
+		return out, false, ""
+	case "concat":
+		// 逐片折叠 @sa_string_concat（形状证据：封存 lowerStringMethod:7336-7347；
+		// 注意此处直接折叠缓冲柄，与 + 拼接的读回形不同，各守其源）。
+		acc := recv
+		for i := range args {
+			n, msg := strArg(i)
+			if msg != "" {
+				return "", false, msg
+			}
+			np, nl := saExpandStr(w, n, nextTemp)
+			abp, abl := saExpandStr(w, acc, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", t, abp, abl, np, nl))
+			acc = t
+		}
+		return acc, false, ""
+	case "slice", "substring", "substr":
+		// 钳位子切片（形状证据：封存 lowerStringMethod:7348-7369 + clampRange:7393-7465）。
+		if len(args) < 1 {
+			return "", false, method + " needs 1 argument"
+		}
+		a0, msg := intArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		end := bl
+		if len(args) > 1 {
+			var msg string
+			end, msg = intArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+		}
+		if method == "substr" {
+			nend := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", nend, a0, end))
+			end = nend
+		}
+		s, l := saClampRange(w, bp, bl, a0, end, method == "substring", scope, nextTemp)
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, s))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, l))
+		return out, false, ""
+	case "split":
+		return "", false, "split needs string arrays (beyond i32 slots)"
+	case "toString":
+		return recv, false, ""
+	}
+	return "", false, "unsupported string method " + method
+}
+
+// saClampRange 钳位 [start, end) 到 [0, len]（负值自末端起钳；substring 另
+// 交换逆序界并将负值记 0。形状证据：封存 clampRange:7393-7465）。
+func saClampRange(w printer.EmitTextWriter, bp, bl, start, end string, substring bool, scope *saScope, nextTemp *int) (string, string) {
+	norm := func(v string) string {
+		neg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		adj := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		nL := fmt.Sprintf("L_cl_neg_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		nN := fmt.Sprintf("L_cl_nneg_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		nE := fmt.Sprintf("L_cl_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, v))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", neg, nL, nN))
+		w.Write(fmt.Sprintf("%s:\n", nL))
+		if substring {
+			w.Write(fmt.Sprintf("  %s = 0\n", adj))
+		} else {
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", adj, bl, v))
+		}
+		w.Write(fmt.Sprintf("  jmp %s\n", nE))
+		w.Write(fmt.Sprintf("%s:\n", nN))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", adj, v))
+		w.Write(fmt.Sprintf("  jmp %s\n", nE))
+		w.Write(fmt.Sprintf("%s:\n", nE))
+		lo := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		loT := fmt.Sprintf("L_cl_lot_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		loF := fmt.Sprintf("L_cl_lof_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		loE := fmt.Sprintf("L_cl_loe_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", lo, adj))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lo, loT, loF))
+		w.Write(fmt.Sprintf("%s:\n", loT))
+		w.Write(fmt.Sprintf("  %s = 0\n", out))
+		w.Write(fmt.Sprintf("  jmp %s\n", loE))
+		w.Write(fmt.Sprintf("%s:\n", loF))
+		hi := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		hiT := fmt.Sprintf("L_cl_hit_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		hiF := fmt.Sprintf("L_cl_hif_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", hi, adj, bl))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hi, hiT, hiF))
+		w.Write(fmt.Sprintf("%s:\n", hiT))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, bl))
+		w.Write(fmt.Sprintf("  jmp %s\n", loE))
+		w.Write(fmt.Sprintf("%s:\n", hiF))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, adj))
+		w.Write(fmt.Sprintf("  jmp %s\n", loE))
+		w.Write(fmt.Sprintf("%s:\n", loE))
+		return out
+	}
+	s := norm(start)
+	f := norm(end)
+	if substring {
+		sw := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		c := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		tL := fmt.Sprintf("L_cl_swap_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		kL := fmt.Sprintf("L_cl_keep_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		dL := fmt.Sprintf("L_cl_done_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", c, s, f))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, kL))
+		w.Write(fmt.Sprintf("%s:\n", tL))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", sw, s))
+		w.Write(fmt.Sprintf("  %s = %s\n", s, f))
+		w.Write(fmt.Sprintf("  %s = %s\n", f, sw))
+		w.Write(fmt.Sprintf("  jmp %s\n", dL))
+		w.Write(fmt.Sprintf("%s:\n", kL))
+		w.Write(fmt.Sprintf("  jmp %s\n", dL))
+		w.Write(fmt.Sprintf("%s:\n", dL))
+	}
+	nptr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nptr, bp, s))
+	nlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen, f, s))
+	return nptr, nlen
+}
+
+// saLowerTemplate 模板字面量（头 +  spans 插值 + tails 逐片拼接；
+// 形状证据：封存 lowerTemplate:8823-8847；插值仅 i32/bool/串，f64 拒）。
+func saLowerTemplate(w printer.EmitTextWriter, tp *ast.TemplateExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/fmt.sai")
+	head := ""
+	if tp.Head != nil {
+		head = tp.Head.Text()
+	}
+	acc := saLowerStringLiteral(w, head, scope, nextTemp)
+	if tp.TemplateSpans != nil {
+		for _, sp := range tp.TemplateSpans.Nodes {
+			span := sp.AsTemplateSpan()
+			part, msg := saToSlice(w, span.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			acc = saConcatSlices(w, acc, part, scope, nextTemp)
+			tail := ""
+			if span.Literal != nil {
+				tail = span.Literal.Text()
+			}
+			if tail != "" {
+				tailH := saLowerStringLiteral(w, tail, scope, nextTemp)
+				acc = saConcatSlices(w, acc, tailH, scope, nextTemp)
+			}
+		}
+	}
+	return acc, ""
+}
+
+// saLowerConsoleLog `console.log(...)`（操作数经 interp 转切片，空格分隔，
+// 末尾换行；形状证据：封存 lowerConsoleLog:7862-7887；console.error 走
+// node 插件后端，本薄口大声拒）。
+func saLowerConsoleLog(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (bool, string) {
+	scope.addImport("sa_std/io/print.sai")
+	scope.addImport("sa_std/fmt.sai")
+	scope.addImport("sa_std/string.sai")
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	for i, a := range argNodes {
+		if i > 0 {
+			seg := saLowerStringLiteral(w, " ", scope, nextTemp)
+			bp, bl := saExpandStr(w, seg, nextTemp)
+			w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+		}
+		seg, msg := saToSlice(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return false, msg
+		}
+		bp, bl := saExpandStr(w, seg, nextTemp)
+		w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+	}
+	seg := saLowerStringLiteral(w, "\n", scope, nextTemp)
+	bp, bl := saExpandStr(w, seg, nextTemp)
+	w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+	return true, ""
+}
+
+// saIsConsoleLog 识别 `console.log(...)`。
+func saIsConsoleLog(ce *ast.CallExpression) bool {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	return pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "console" &&
+		pa.Name() != nil && pa.Name().Text() == "log"
 }
 
 // saLowerArrDecl lowering 数组声明（`let a: number[] = […]` 字面构造；
@@ -2235,6 +3296,21 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	}
 	target, ok := saBoundI32(scope, be.Left)
 	if !ok {
+		// 串目标仅 `+=` 拼接（两侧串位；混合数值须显式 String()）。
+		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+			if k, bound := scope.types[be.Left.Text()]; bound && k == "str" &&
+				saBinaryOpKind(be) == ast.KindPlusEqualsToken {
+				h, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported string += rhs: " + msg})
+					return false
+				}
+				out := saConcatSlices(w, be.Left.Text(), h, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), out))
+				return true
+			}
+		}
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound assignment to unknown/non-i32 variable"})
 		return false
@@ -2304,7 +3380,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false
 	}
-	if k != "i32" && k != "bool" && k != "arr" {
+	if k != "i32" && k != "bool" && k != "arr" && k != "str" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
 		return false
@@ -2318,6 +3394,17 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array assignment needs array handle"})
 		return false
+	}
+	if k == "str" {
+		// 字符串句柄拷贝（同类相授）。
+		h, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string assignment needs string value: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		return true
 	}
 	var op string
 	var msg string

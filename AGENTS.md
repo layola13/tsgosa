@@ -30,8 +30,8 @@
 
 ## 3. 当前移植清单（satsgo → tsgosa，不新建文件）
 
-- step1：顶层 `function f(): void {}`/`return;` → `@f(): ret`；`(): number/boolean {return lit;}` → `@f() -> i32: ret lit`；值空体缺 return、大声拒；非函数、void 回值、联合注解、string 返回一律拒（`main_test.go:22-126`）。
-- step2：`if/else` → `EXPAND IF_ELSE/IF_TRUE` + `@import "sa_std/control.sal"`；`false` 恒假消死臂；`return c?a:b`（i32 字面臂）→ `EXPAND SELECT`（`main_test.go:128-284`）。
+- step1：顶层 `function f(): void {}`/`return;` → `@f(): ret`；`(): number/boolean {return lit;}` → `@f() -> i32: ret lit`；值空体缺 return、大声拒；非函数、void 回值、联合注解一律拒（`main_test.go:22-126`；string 返回见 step25）。
+- step2：`if/else` → `EXPAND IF_ELSE/IF_TRUE` + `@import "sa_std/control.sal"`；`false` 恒假消死臂；`return c?a:b`（i32 字面臂）→ `EXPAND SELECT`（`main_test.go:128-284`；串臂见 step25 槽汇合）。
 - step3-11：i32/bool 表达式核（算术/比较/逻辑/`!`/`++/--`/三元值形/调用传参）、`while`/`for`（legacy br 形，cont 落增量前）/`do-while`/`switch`（legacy 链）/`try-finally`（无 throw 时直跑，含 throw 拒）+ 不可达门。
 - step12：i32 数组（字面量 alloc 16 头 + 缓冲逐槽 store、越界归零下标读 join、元素存、`.length` 头+8、`let a=b` 句柄拷贝/传参直传；spread/非 i32 元/缺 init/数组条件·返回位一律拒）。
 - step13：`for-of`/`for-in` 索引巡回（绑定数组直传/字面量现场构造，`idx=0`+头+8 len+`slt/br`+`base/mul/add/i32` 读回；for-in 绑下标；`continue→top` 原样不对称；`await`/多声明/pattern/非数组基拒；sci FOR/ARRAY_FOR_EACH 宏形不用，沿 legacy）。
@@ -46,6 +46,7 @@
 - step22：`Math.floor/ceil/round/trunc(x)` 整数恒等内联（`out = add v, 0`；`lowerMathRounding:5941-5945`；浮点分支在 i32 子集内不可达）。
 - step23：`Math.min/max(a,b)` 两元折叠内联（`slt/sgt` + alloc 8 槽 join；`lowerMathMinMax:5650-5687`；spread 切片归约拒）。
 - step24（math 一次过收官）：`Math.min/max(...slice)` 切片归约循环（极值初值 + 索引巡回 take/skip；`lowerMathSpreadMinMax:5690-5747`）、`Math.sqrt` 整数二分（`lowerMathSqrt:5841-5891`；浮点早拒）、`Math.log10` 位数循环（`lowerMathLog10:5894-5916`）、`Math.random` 确定性 LCG（`__ts_rand_seed`；`lowerMathRandom:5920-5936`）、`Math.PI/E` 折 3/2（`stdlib.go:126-127`）、`const f = Math.<m>` 别名及链式（`mathAliases:2957-2964`；调用经统一分发；顶层 const 仍由函数外语句门拒）。
+- step25（string 一次过收官）：str 种（16 字节 {ptr,len} 句柄；`string` 注解/形参/`-> ptr` 返回/实参形参种导向/无注解字面量推断）+ 文件级 `@const utf8` 常量池（`lowerStringLiteral:2974-2990`）+ `s.length` + `+` 双串拼接（`sa_string_concat` 经 fmt 缓冲读回；混合数值须显式 `String()`）+ `==/!=` 内容相等（`stringContentEq:9146-9166`）+ 串方法全集直调现货（charCodeAt/codePointAt/indexOf/lastIndexOf/startsWith/endsWith/toLower-upper/repeat/padStart-padEnd/replace/replaceAll/includes/charAt/at/trim 系/concat/slice-substring-substr/toString；`lowerStringMethod:7156-7388`；split 需串元数组拒）+ `String(x)`/`String.fromCharCode-fromCodePoint` + 模板字面量（i32/bool 经 `sext+sa_fmt_i64_into`；`lowerTemplate:8823-8847`）+ `console.log`（空格分隔+末尾换行→`sa_print_bytes`；`lowerConsoleLog:7862-7887`）+ `s+=` 拼接；门：tagged 模板/`Number.parseFloat`（f64）/`console.error`（node 插件）/串 switch/串 for-of/串条件一律拒。
 - sa_std 复用纪律（回应“直接映射 sa_std、禁造轮子”）：以 `satsgo/internal/saemit/stdlib.go` 投影表为准——凡 `Module: sa_std/*.sai`（string/concat、console.log→print、Map/Set→btree、Date/fs/net…）的特性必须走 `@import` + 符号调用，不得手写；整数系 Math.* 在表中全为 `@inline`（`stdlib.go:115-127`），`sci/sa_std` 侧并无 i32 符号（math.sai 皆 f64、math.sa 皆 u64/i64 宏另带 `!` 释放纪律），故 step20-24 内联即底座复用而非造轮子。
 - 底座结论（回应“math 直接映射 sa_std”）：`satsgo/internal/saemit/stdlib.go:115-127` 投影表规定整数系 Math.* 全部 `@inline`，`sci/sa_std` 侧只有 f64 外部函数（`math.sai`）与 u64/i64 宏（`math.sa`，另带 `!` 释放纪律），并无 i32 符号可投；故 step20-23 内联即底座复用。string/vec 同理：`string.sa`/`vec.sa` 为运行时句柄库，薄口尚无 string 类型，待 string 字面量特性时再投影。
 - CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
