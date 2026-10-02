@@ -1056,6 +1056,21 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return "", "unknown variable " + nm
 	case ast.KindParenthesizedExpression:
 		return saEvalI32(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindAsExpression:
+		// 纯类型级（TypeEraser 已擦类型，值层直通）。
+		return saEvalI32(w, e.AsAsExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindSatisfiesExpression:
+		return saEvalI32(w, e.AsSatisfiesExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindTypeAssertionExpression:
+		return saEvalI32(w, e.AsTypeAssertion().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindNonNullExpression:
+		return saEvalI32(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindVoidExpression:
+		// `void expr` 求值为 0，副作用保留（证据：封存 lowerExpr:2739-2743）。
+		if _, msg := saEvalI32(w, e.AsVoidExpression().Expression, scope, pos, refusals, nextTemp); msg != "" {
+			return "", msg
+		}
+		return "0", ""
 	case ast.KindPrefixUnaryExpression:
 		return saLowerPrefixUnary(w, e.AsPrefixUnaryExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindPostfixUnaryExpression:
@@ -1063,7 +1078,17 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
-			return "", "assignment only as statement"
+			// 值位赋值折成寄存器拷贝（证据：封存 lowerBinary:3009-3010）。
+			target, ok := saBoundI32(scope, be.Left)
+			if !ok {
+				return "", "assignment to unknown/non-i32 variable"
+			}
+			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", target, op))
+			return target, ""
 		}
 		op, ok := map[ast.Kind]string{
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
