@@ -781,6 +781,15 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return done, false
+	case ast.KindThrowStatement:
+		// throw 即 panic(2501)，不可恢复（形状证据：封存 saemit.go:153
+		// panicThrow 常量 + :882-884 `panic(%d)` 落字；try 内含 throw
+		// 仍由 saLowerTry 前门大声拒，见 lowerTry 前的 containsThrow 门）。
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		return true, false
+	case ast.KindEmptyStatement:
+		// 空语句 no-op（形状证据：封存 :886-887）。
+		return false, false
 	default:
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
@@ -2429,9 +2438,9 @@ func saLowerLabeled(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 			return false, true
 		}
 		w.Write(fmt.Sprintf("%s:\n", endL))
-		// 终结性：仅 return 透传；break/continue 落空（不终结）。
+		// 终结性：仅 return/throw 透传；break/continue 落空（不终结）。
 		if len(stmts) > 0 {
-			if last := stmts[len(stmts)-1]; last != nil && last.Kind == ast.KindReturnStatement {
+			if last := stmts[len(stmts)-1]; last != nil && (last.Kind == ast.KindReturnStatement || last.Kind == ast.KindThrowStatement) {
 				return true, false
 			}
 		}
@@ -2606,7 +2615,8 @@ func saStmtTerminates(s *ast.Node) bool {
 		return false
 	}
 	switch s.Kind {
-	case ast.KindReturnStatement, ast.KindBreakStatement, ast.KindContinueStatement:
+	case ast.KindReturnStatement, ast.KindBreakStatement, ast.KindContinueStatement,
+		ast.KindThrowStatement:
 		return true
 	case ast.KindTryStatement:
 		tryTerm, finTerm := saTryTerms(s)
