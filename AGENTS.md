@@ -61,6 +61,7 @@
 - step32（对象字面量一次过，落 `sa_class.go`）：接口布局预扫（i32 字段；方法/索引签名拒）+ 字面量具化（alloc + 逐域 store；简写读绑定；字面计算键；`layoutOfLiteral:8953-8975`/`objPropName:8984-9007`/`lowerObjectLiteral:9009+`）+ 按键集唯一匹配（0/多皆拒）+ 注解须同名接口 + 实例形参直传（`inst:Pt` 对 `inst:Pt`，预扫拆两遍保序）；读写复用实例通道；门：spread/方法属性/串字段/值位字面量/`new` 接口/错配传参一律拒。
 - step34（class 继承一次过，落 `sa_class.go`）：单 extends（基须先声明；多/mixin/未知/环拒）布局追加（父偏移守恒，同名守基偏移）+ 方法拷贝覆写 + 默认派生构造（`recordClassNamed:9819-9828`）+ 自有构造须 `super()`（`ctorCallsSuper:280-317`，声明期查）+ `super(...)` 委托基 wiring（`wireSuperCtorStatement:383-472`）+ `super.m` 同接收者内联/`super.f` 基布局读写（`lowerSuperMethodCall:237-250`/`checkSuperAccess:253-278`）+ abstract 记录并拒 `new` + 接口 extends 展平（`inheritInterfaceLayout:319-376`）。
 - step33（Number/数组构造一次过，落 `sa_math.go`+`sa_arr.go`）：`MAX_VALUE`/`MAX_SAFE_INTEGER`→2147483647、`MIN_SAFE_INTEGER`→-2147483648（`stdlib.go:128-130`）；`isInteger(x)` 求值保副作用后折 "1"（`lowerCall:3837-3848`；浮点早拒）；`Array(n)`/`Array(a,b)`/`new Array(n)` 定长零数组与逐元构造（`lowerCall Array:3871-3884`/`newSizedArray:7710-7730`/`lowerNew:8603`）；门：parseFloat/Number(x)（f64）/未知 Number 成员/多元 new Array/spread·回调元一律拒。
+- step35（`in`/`??` 一次过，落 `sa_expr.go`）：`in` 布局静态折叠 1/0（`lowerBinary:3135-3177`；品牌检查/动态键拒）+ `??` 空合槽（左非零直通否则右惰性求值，`lowerBinary:3182-3206`；i32 位）；门：串位 `??`/未知布局基一律拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

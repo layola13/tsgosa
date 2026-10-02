@@ -656,6 +656,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			w.Write(fmt.Sprintf("  %s = %s\n", target, op))
 			return target, ""
 		}
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindInKeyword {
+			// `in` 静态折叠须先于一切求值门（左为串字面量键）。
+			return saLowerInFold(w, be, scope, pos, refusals, nextTemp)
+		}
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+			// `??` 空合槽须先于串门（i32 位，右惰性）。
+			return saLowerNullish(w, be, scope, pos, refusals, nextTemp)
+		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
 			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
 			// `+` 遇串位即拼接，串句柄只可由串位取用（saEvalStr）；i32 位拒收。
@@ -761,6 +769,70 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	default:
 		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
 	}
+}
+
+// saLowerInFold `in` 静态折叠（布局固定，字段有无编译期 1/0；
+// 形状证据：封存 lowerBinary:3135-3177。品牌检查/动态键一律拒）。
+func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	verdict := ""
+	if be.Left != nil && be.Left.Kind == ast.KindStringLiteral {
+		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[be.Right.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if def, ok := scope.classes[k[5:]]; ok {
+					if _, ok := def.offsets[be.Left.Text()]; ok {
+						verdict = "1"
+					} else {
+						verdict = "0"
+					}
+				}
+			}
+		}
+	}
+	if verdict == "" {
+		return "", "in operator needs a literal key and a known-layout object"
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
+	return t, ""
+}
+
+// saLowerNullish `??` 空合槽（左非零直通，否则右惰性求值；子集 null 即 0；
+// i32 位；形状证据：封存 lowerBinary:3182-3206）。
+func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	l, msg := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	tL := fmt.Sprintf("L_null_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_null_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_null_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
 }
 
 // saTypeofKind 静态 typeof 串：字面按语法表；标识符按作用域种
