@@ -495,7 +495,8 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 }
 
 // saParamKinds 与 saParamNames 同步校验参数，返回名->种（"i32"|"bool"）。
-// 标注依据封存 saemit.go:162 annotationType（number->i32；i32 TypeReference->i32）。
+// 标注依据封存 saemit.go:162 annotationType（number->i32；i32 TypeReference->i32）；
+// 无注解缺省 i32（形状证据：封存 lowerFunction:946 `ptype := tI32`）。
 func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 	kinds := map[string]string{}
 	if fn.Parameters == nil {
@@ -509,6 +510,10 @@ func saParamKinds(fn *ast.FunctionDeclaration) (map[string]string, bool) {
 		nm := pd.Name()
 		if nm == nil || nm.Kind != ast.KindIdentifier {
 			return nil, false
+		}
+		if pd.Type == nil {
+			kinds[nm.Text()] = "i32"
+			continue
 		}
 		k, ok := saAnnotKind(pd.Type)
 		if !ok {
