@@ -167,7 +167,18 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return op, false, ""
 			}
 		}
-		// 实例方法调用（`o.m()`/`this.m()` 内联；静态 `C.m` 大声拒）。
+		// super.m() 内联基方法（同接收者；形状证据：封存 lowerSuperMethodCall:237-250）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
+			bdef, h, msg := saSuperBase(scope)
+			if msg != "" {
+				return "", false, msg
+			}
+			op, msg := saInlineMethod(w, h, bdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, false, ""
+		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {
@@ -227,6 +238,9 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "only direct function calls lowerable"
 	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		if ce.Expression != nil && ce.Expression.Kind == ast.KindSuperKeyword {
+			return "", false, "super() is only lowerable inside a subclass constructor"
+		}
 		return "", false, "only direct function calls lowerable"
 	}
 	name := ce.Expression.Text()
@@ -505,6 +519,18 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindPropertyAccessExpression:
 		pa := e.AsPropertyAccessExpression()
+		// super.f 读基布局（形状证据：封存 checkSuperAccess:253-278）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
+			bdef, h, msg := saSuperBase(scope)
+			if msg != "" {
+				return "", msg
+			}
+			t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return t, ""
+		}
 		// Number 整形常量折叠（`MAX_VALUE` 等；形状证据：封存 stdlib.go:128-130）。
 		if v, ok := saNumberConst(pa); ok {
 			return v, ""
@@ -585,6 +611,24 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			target, ok := saBoundI32(scope, be.Left)
 			if !ok {
+				// super.f 写基布局（形状证据同读位）。
+				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+					lpa := be.Left.AsPropertyAccessExpression()
+					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindSuperKeyword && lpa.Name() != nil {
+						bdef, h, msg := saSuperBase(scope)
+						if msg != "" {
+							return "", msg
+						}
+						op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						if msg := saLowerClassFieldStore(w, h, bdef, lpa.Name().Text(), op); msg != "" {
+							return "", msg
+						}
+						return op, ""
+					}
+				}
 				// 实例字段写（`o.f = v`；返回右值，镜像赋值折值语义）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()

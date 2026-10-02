@@ -26,15 +26,18 @@ type saClassField struct {
 }
 
 // saClassDef 是类定义（字段表 + 构造 + 方法表；接口以 isIface 记，
-// 方法/构造恒空，不可 new）。
+// 方法/构造恒空，不可 new；parent 为单继承父名，空即无）。
 type saClassDef struct {
-	name    string
-	fields  []saClassField
-	offsets map[string]int
-	size    int
-	methods map[string]*ast.Node
-	ctor    *ast.Node
-	isIface bool
+	name       string
+	fields     []saClassField
+	offsets    map[string]int
+	size       int
+	methods    map[string]*ast.Node
+	ctor       *ast.Node
+	ctorOwner  string
+	parent     string
+	isIface    bool
+	isAbstract bool
 }
 
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
@@ -57,22 +60,79 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + name})
 		return false
 	}
+	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}}
+	ownFields := map[string]bool{}
+	ownMethods := map[string]bool{}
+	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
+	// implements 擦除；多 extends/动态基/未知基/环一律拒。
+	// 形状证据：封存 parseHeritage:42-83 + inheritClass:88-215。
 	if hc := cd.HeritageClauses; hc != nil {
 		for _, h := range hc.Nodes {
-			if h.Kind == ast.KindHeritageClause && h.AsHeritageClause().Token == ast.KindExtendsKeyword {
+			if h.Kind != ast.KindHeritageClause {
+				continue
+			}
+			if h.AsHeritageClause().Token != ast.KindExtendsKeyword {
+				continue
+			}
+			types := h.AsHeritageClause().Types
+			if types == nil || len(types.Nodes) != 1 {
 				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class heritage is not lowerable"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs exactly one base class"})
 				return false
 			}
+			base := ""
+			el := types.Nodes[0]
+			if el.Kind == ast.KindExpressionWithTypeArguments {
+				if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
+					base = ex.Text()
+				}
+			} else if el.Kind == ast.KindIdentifier {
+				base = el.Text()
+			}
+			if base == "" {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs a plain base class name (mixins are not lowerable)"})
+				return false
+			}
+			if def.parent != "" {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs exactly one base class"})
+				return false
+			}
+			bdef, ok := classes[base]
+			if !ok || bdef.isIface {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
+				return false
+			}
+			for p := base; p != ""; {
+				if p == name {
+					ln, col := pos(st.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " has an inheritance cycle through " + base})
+					return false
+				}
+				pb, ok := classes[p]
+				if !ok {
+					break
+				}
+				p = pb.parent
+			}
+			for _, f := range bdef.fields {
+				def.fields = append(def.fields, f)
+				def.offsets[f.name] = f.offset
+			}
+			for k, v := range bdef.methods {
+				if _, ok := def.methods[k]; !ok {
+					def.methods[k] = v
+				}
+			}
+			def.parent = base
 		}
 	}
 	if ast.HasModifier(st, ast.ModifierFlagsAbstract) {
-		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "abstract class " + name + " cannot be instantiated"})
-		return false
+		def.isAbstract = true
 	}
-	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}}
-	off := 0
+	off := len(def.fields) * 4
 	for _, m := range cd.Members.Nodes {
 		if len(m.Decorators()) > 0 {
 			ln, col := pos(m.Pos())
@@ -107,10 +167,16 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				}
 			}
 			if _, dup := def.offsets[fn.Text()]; dup {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
-				return false
+				// 继承字段重声明：守基偏移（同宽恒成立，i32 薄口）。
+				// 形状证据：封存 recordClassNamed:9717-9733。
+				if def.parent == "" || ownFields[fn.Text()] {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
+					return false
+				}
+				continue
 			}
+			ownFields[fn.Text()] = true
 			def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 			def.offsets[fn.Text()] = off
 			off += 4
@@ -133,11 +199,13 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
 				return false
 			}
-			if _, dup := def.methods[mn.Text()]; dup {
+			if _, dup := def.methods[mn.Text()]; dup && ownMethods[mn.Text()] {
 				ln, col := pos(m.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate method " + mn.Text()})
 				return false
 			}
+			// 覆写语义：子类同名直接覆盖继承方法（形状证据：封存 inheritClass:139-149）。
+			ownMethods[mn.Text()] = true
 			def.methods[mn.Text()] = m
 		case ast.KindSemicolonClassElement:
 		default:
@@ -146,9 +214,66 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			return false
 		}
 	}
+	// 默认派生构造：无 ctor 的子类继承基 ctor 节点（ctorOwner 指向基；
+	// 形状证据：封存 recordClassNamed:9819-9828）。
+	if def.ctor != nil {
+		def.ctorOwner = name
+	} else if def.parent != "" {
+		if bdef, ok := classes[def.parent]; ok {
+			def.ctor = bdef.ctor
+			def.ctorOwner = def.parent
+		}
+	}
+	// 派生类自有构造须调 super()（无 super 基域悄零，TS 规则；形状证据：
+	// 封存 recordClassNamed:9829-9836）。检查提前到声明期。
+	if def.ctor != nil && def.ctorOwner == name && def.parent != "" {
+		if _, ok := classes[def.parent]; ok && !saCtorCallsSuper(def.ctor) {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + name + " must call super() (derived constructors delegate to the base)"})
+			return false
+		}
+	}
 	def.size = off
 	classes[name] = def
 	return true
+}
+
+// saCtorCallsSuper 报告构造体是否含顶层 `super(...)`（嵌套函数/类边界
+// 拥有各自 super，箭头继承外层；形状证据：封存 ctorCallsSuper:280-317）。
+func saCtorCallsSuper(ctor *ast.Node) bool {
+	body := ctor.Body()
+	if body == nil {
+		return false
+	}
+	found := false
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if found || n == nil {
+			return
+		}
+		switch n.Kind {
+		case ast.KindFunctionDeclaration, ast.KindFunctionExpression,
+			ast.KindClassDeclaration, ast.KindClassExpression:
+			return
+		case ast.KindCallExpression:
+			call := n.AsCallExpression()
+			if call.Expression != nil && call.Expression.Kind == ast.KindSuperKeyword {
+				found = true
+				return
+			}
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	for _, s := range body.Statements() {
+		walk(s)
+		if found {
+			break
+		}
+	}
+	return found
 }
 
 // saCouldBeInst 判定表达式是否可能为实例基（绑定实例名或方法内 this）。
@@ -182,6 +307,46 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	}
 	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}, isIface: true}
 	off := 0
+	ownIface := map[string]bool{}
+	// 接口 extends 基展平（类型级；未知基尽力跳过，checker 拥有类型错；
+	// 形状证据：封存 inheritInterfaceLayout:319-376）。
+	if hc := decl.HeritageClauses; hc != nil {
+		for _, h := range hc.Nodes {
+			if h.Kind != ast.KindHeritageClause || h.AsHeritageClause().Token != ast.KindExtendsKeyword {
+				continue
+			}
+			for _, el := range h.AsHeritageClause().Types.Nodes {
+				iname := ""
+				switch el.Kind {
+				case ast.KindExpressionWithTypeArguments:
+					if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
+						iname = ex.Text()
+					}
+				case ast.KindTypeReference:
+					if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil {
+						iname = tn.TypeName.Text()
+					}
+				case ast.KindIdentifier:
+					iname = el.Text()
+				}
+				if iname == "" {
+					continue
+				}
+				base, ok := classes[iname]
+				if !ok || base == nil || !base.isIface {
+					continue
+				}
+				for _, f := range base.fields {
+					if _, dup := def.offsets[f.name]; dup {
+						continue
+					}
+					def.fields = append(def.fields, saClassField{name: f.name, offset: off})
+					def.offsets[f.name] = off
+					off += 4
+				}
+			}
+		}
+	}
 	for _, m := range decl.Members.Nodes {
 		if m.Kind != ast.KindPropertySignature {
 			ln, col := pos(m.Pos())
@@ -203,10 +368,15 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			}
 		}
 		if _, dup := def.offsets[fn.Text()]; dup {
-			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
-			return false
+			// 基展平字段重声明：守基偏移（形状证据同类分支）。
+			if ownIface[fn.Text()] {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
+				return false
+			}
+			continue
 		}
+		ownIface[fn.Text()] = true
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		off += 4
@@ -368,6 +538,23 @@ func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 	return "", nil, ""
 }
 
+// saSuperBase 解析方法内 super 基（同接收者；形状证据：封存
+// superBaseForRecv:219-232 + lowerSuperMethodCall:237-250）。
+func saSuperBase(scope *saScope) (*saClassDef, string, string) {
+	if scope.thisSelf == "" || scope.thisClass == "" {
+		return nil, "", "super calls are only lowerable inside a subclass method"
+	}
+	def, ok := scope.classes[scope.thisClass]
+	if !ok || def.parent == "" {
+		return nil, "", "super calls are only lowerable inside a subclass method"
+	}
+	bdef, ok := scope.classes[def.parent]
+	if !ok {
+		return nil, "", "unknown base class " + def.parent
+	}
+	return bdef, scope.thisSelf, ""
+}
+
 // saLowerNewClass 具化 `new C(...)`（布局 alloc + 构造 wiring；
 // 形状证据：封存 lowerNewClass:9899-9962 + wireCtorStatement:9968-10001）。
 func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -377,6 +564,9 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	}
 	if def.isIface {
 		return "", "interfaces cannot be instantiated (declare a class)"
+	}
+	if def.isAbstract {
+		return "", "abstract class " + name + " cannot be instantiated (declare a concrete subclass)"
 	}
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -426,52 +616,209 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	if body == nil {
 		return h, ""
 	}
+	owner := name
+	if def.ctorOwner != "" {
+		owner = def.ctorOwner
+	}
+	if !saWireCtorBody(w, h, owner, def.ctor, paramVal, scope, pos, refusals, nextTemp) {
+		return "", "unwirable"
+	}
+	return h, ""
+}
+
+// saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param`；
+// 形状证据：封存 wireCtorBody:10075-10147 + wireSuperCtorStatement:383-472）。
+func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	body := ctor.Body()
+	if body == nil {
+		return true
+	}
 	for _, s := range body.Statements() {
+		if saIsSuperCall(s) {
+			if !saWireSuperCtor(w, h, owner, s, paramVal, scope, pos, refusals, nextTemp) {
+				return false
+			}
+			continue
+		}
 		// 仅 this.f = param  wiring（余下语句大声拒，镜像 wireCtorStatement）。
 		if s.Kind != ast.KindExpressionStatement {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + name + " supports only this.f = param wirings"})
-			return "", "unwirable"
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+			return false
 		}
 		ex := s.AsExpressionStatement().Expression
 		if ex == nil || ex.Kind != ast.KindBinaryExpression {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + name + " supports only this.f = param wirings"})
-			return "", "unwirable"
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+			return false
 		}
 		bin := ex.AsBinaryExpression()
 		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
 			bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + name + " supports only this.f = param wirings"})
-			return "", "unwirable"
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+			return false
 		}
 		pa := bin.Left.AsPropertyAccessExpression()
 		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + name + " supports only this.f = param wirings"})
-			return "", "unwirable"
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+			return false
+		}
+		def, ok := scope.classes[owner]
+		if !ok {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + owner})
+			return false
 		}
 		off, ok := def.offsets[pa.Name().Text()]
 		if !ok {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pa.Name().Text() + " is not in the " + name + " layout"})
-			return "", "unwirable"
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pa.Name().Text() + " is not in the " + owner + " layout"})
+			return false
 		}
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor wiring right side must be a parameter name"})
-			return "", "unwirable"
+			return false
 		}
 		v, ok := paramVal[bin.Right.Text()]
 		if !ok {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
-			return "", "unwirable"
+			return false
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	}
-	return h, ""
+	return true
+}
+
+// saIsSuperCallStatement 识别顶层 `super(...)` 语句（形状证据：封存 isSuperCallStatement）。
+func saIsSuperCall(s *ast.Node) bool {
+	if s == nil || s.Kind != ast.KindExpressionStatement {
+		return false
+	}
+	ex := s.AsExpressionStatement().Expression
+	if ex == nil || ex.Kind != ast.KindCallExpression {
+		return false
+	}
+	call := ex.AsCallExpression()
+	return call.Expression != nil && call.Expression.Kind == ast.KindSuperKeyword
+}
+
+// saWireSuperCtor 将 `super(a, ...)` 委托给基构造 wiring（同实例柄；
+// 实参须为构造参数或字面量；形状证据：封存 wireSuperCtorStatement:383-472）。
+func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, outerVal map[string]string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	ownerDef, ok := scope.classes[owner]
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + owner})
+		return false
+	}
+	base := ownerDef.parent
+	if base == "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() is only lowerable inside a subclass constructor"})
+		return false
+	}
+	bdef, ok := scope.classes[base]
+	if !ok {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown base class " + base})
+		return false
+	}
+	call := s.AsExpressionStatement().Expression.AsCallExpression()
+	var argNodes []*ast.Node
+	if call.Arguments != nil {
+		argNodes = call.Arguments.Nodes
+	}
+	if bdef.ctor == nil {
+		// 基无显式构造：逐个求值保序后丢弃（形状证据：封存 wireSuperCtorStatement:402-424）。
+		for _, a := range argNodes {
+			if a == nil {
+				continue
+			}
+			switch a.Kind {
+			case ast.KindArrowFunction, ast.KindFunctionExpression:
+			case ast.KindIdentifier:
+				if _, ok := outerVal[a.Text()]; !ok {
+					ln, col := pos(a.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+					return false
+				}
+			case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+				if _, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg != "" {
+					ln, col := pos(a.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+			default:
+				ln, col := pos(a.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+				return false
+			}
+		}
+		return true
+	}
+	params := bdef.ctor.Parameters()
+	if len(argNodes) != len(params) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() takes exact base constructor arguments"})
+		return false
+	}
+	paramVal := map[string]string{}
+	for i, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructured constructor parameters are not lowerable"})
+			return false
+		}
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter shape is not lowerable"})
+			return false
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructured constructor parameters are not lowerable"})
+			return false
+		}
+		a := argNodes[i]
+		if a == nil {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+			return false
+		}
+		switch a.Kind {
+		case ast.KindArrowFunction, ast.KindFunctionExpression:
+			ln, col := pos(a.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+			return false
+		case ast.KindIdentifier:
+			v, ok := outerVal[a.Text()]
+			if !ok {
+				ln, col := pos(a.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+				return false
+			}
+			paramVal[nm.Text()] = v
+		case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+			v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(a.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			paramVal[nm.Text()] = v
+		default:
+			ln, col := pos(a.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
+			return false
+		}
+	}
+	return saWireCtorBody(w, h, base, bdef.ctor, paramVal, scope, pos, refusals, nextTemp)
 }
 
 // saInlineMethod 内联 `obj.m(args)`（形参快照 + this 指向 + 槽汇合；
