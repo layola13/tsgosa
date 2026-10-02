@@ -41,6 +41,8 @@
 - step17：无注解局部推断（数组字面量/句柄走 arr 通道，`true/false`/bool 句柄走 bool，其余 i32 求值；缺 init 绑 i32 零值，const 缺 init/函数值拒；`lowerVarDeclList:1415-1433` 缺省 i32 + 按初值绑定）。
 - step18：无注解参数缺省 i32（`lowerFunction:946 ptype := tI32`）。
 - step19：无注解返回缺省 void（`lowerFunction:919-923`；有值返回仍拒）。
+- step20：`Math.abs(x)` 分支汇合内联（alloc 8 槽 + `sge x,0` + br + 两臂 store + end load + 释放；`lowerMathInline abs:5754-5780` 原样；其余 Math.*/别名调用/元数错拒）。
+- CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

@@ -940,7 +940,60 @@ func saIsFloatLit(text string) bool {
 // saEvalCall 求函数调用（形状证据：封存 `%s = call @%s(%s)` / `call @%s(%s)`）。
 // 被调者须为同文件顶层函数（预扫签名表；元数精确匹配）；局部同名遮蔽则拒
 // （无一等函数）。返回 (operand, isVoidCall, errMsg)。
+// saEvalMathAbs 求 `Math.abs(x)`（形状证据：封存 lowerMathInline abs:5754-5780
+// 分支汇合原样：alloc 8 槽 + `sge x, 0` + br + 两臂 store + end load + 释放。
+// 其余 Math.* 本薄口大声拒；`Math.abs` 别名调用不认（无 mathAliases 表，拒）。
+func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 {
+		return "", false, "Math.abs needs 1 argument"
+	}
+	v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	tL := fmt.Sprintf("L_abs_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_abs_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_abs_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c, v))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	nv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub 0, %s\n", nv, v))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, nv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Math" &&
+			pa.Name() != nil && pa.Name().Text() == "abs" {
+			return saEvalMathAbs(w, ce, scope, pos, refusals, nextTemp)
+		}
+		return "", false, "only direct function calls lowerable"
+	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		return "", false, "only direct function calls lowerable"
 	}
