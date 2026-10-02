@@ -676,7 +676,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	terminated := false
 	for _, s := range stmts {
 		if terminated {
-			break
+			// 终结后仍有语句：此前静默丢弃，现大声拒（拒则大声）。
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
+			return
 		}
 		if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
 			return
@@ -725,6 +728,12 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, true
 		}
 		return false, false
+	case ast.KindTryStatement:
+		if !saLowerTry(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		tryTerm, finTerm := saTryTerms(s)
+		return tryTerm || finTerm, false
 	case ast.KindVariableStatement:
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
@@ -1730,6 +1739,73 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	return true
 }
 
+// saContainsThrow 报告子树是否含 throw（函数边界重置；证据：封存 lowerTry 前的
+// containsThrow 门——SA-ASM 无异常边，throw 即 panic 不可恢复）。
+func saContainsThrow(n *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		if x.Kind == ast.KindThrowStatement {
+			found = true
+			return
+		}
+		switch x.Kind {
+		case ast.KindFunctionDeclaration, ast.KindArrowFunction,
+			ast.KindFunctionExpression, ast.KindClassDeclaration:
+			return
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
+// saTryTerms 报告 try/finally 的终结性（try 终结或 finally 终结即终结；
+// 缺省块视为空）。
+func saTryTerms(s *ast.Node) (bool, bool) {
+	ts := s.AsTryStatement()
+	tryTerm := false
+	if ts.TryBlock != nil {
+		tryTerm = saArmTerminates(ts.TryBlock.AsBlock().Statements.Nodes)
+	}
+	finTerm := false
+	if ts.FinallyBlock != nil {
+		finTerm = saArmTerminates(ts.FinallyBlock.AsBlock().Statements.Nodes)
+	}
+	return tryTerm, finTerm
+}
+
+// saLowerTry lowering try（形状证据：封存 lowerTry:2271-2300：无 throw 时
+// try 体直跑、catch 死代码跳过、finally 必跑；含 throw 大声拒。
+// 局限（与封存一致）：try 体内 abrupt 退出（return/break）跳过后随 finally
+// 代码，finally 仅直落路径精确）。
+func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	ts := s.AsTryStatement()
+	if saContainsThrow(s) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw inside try is not lowerable (catch cannot resume after panic)"})
+		return false
+	}
+	if ts.TryBlock != nil {
+		if !saLowerArm(w, ts.TryBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false
+		}
+	}
+	// catch 永不可达（无 throw）：整块跳过，不绑定。
+	if ts.FinallyBlock != nil {
+		if !saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false
+		}
+	}
+	return true
+}
+
 // saLowerBreakContinue lowering 无标号 break/continue（标号形大声拒；栈空拒）。
 func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	isBreak := s.Kind == ast.KindBreakStatement
@@ -1856,6 +1932,9 @@ func saStmtTerminates(s *ast.Node) bool {
 	switch s.Kind {
 	case ast.KindReturnStatement, ast.KindBreakStatement, ast.KindContinueStatement:
 		return true
+	case ast.KindTryStatement:
+		tryTerm, finTerm := saTryTerms(s)
+		return tryTerm || finTerm
 	case ast.KindIfStatement:
 		iv := s.AsIfStatement()
 		if iv.ElseStatement == nil {
@@ -1891,11 +1970,20 @@ func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {
 }
 
 // saLowerArm 处理臂/循环体语句（经 saLowerStmt 与函数体共用全语句集）。
+// 臂内终结后仍有语句同样大声拒（与函数体同门）。
 func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	terminated := false
 	for _, s := range stmts {
-		if _, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+		if terminated {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
 			return false
 		}
+		done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			return false
+		}
+		terminated = terminated || done
 	}
 	return true
 }
