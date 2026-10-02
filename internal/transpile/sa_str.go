@@ -179,6 +179,13 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saLowerStringLiteral(w, e.Text(), scope, nextTemp), ""
 	case ast.KindTemplateExpression:
 		return saLowerTemplate(w, e.AsTemplateExpression(), scope, pos, refusals, nextTemp)
+	case ast.KindTypeOfExpression:
+		// 值位 typeof 具化为种类串（形状证据：封存 lowerTypeof:9171-9239）。
+		kind, msg := saTypeofKind(e, scope)
+		if msg != "" {
+			return "", msg
+		}
+		return saLowerStringLiteral(w, kind, scope, nextTemp), ""
 	case ast.KindTaggedTemplateExpression:
 		return "", "tagged templates are not lowerable (String.raw needs raw source text)"
 	case ast.KindIdentifier:

@@ -570,6 +570,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// 此处不落字（落字只走 saEvalStr 串路径），直接定位拒绝。
 			return "", "string value in i32 expression"
 		}
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) &&
+			((be.Left != nil && be.Left.Kind == ast.KindTypeOfExpression) ||
+				(be.Right != nil && be.Right.Kind == ast.KindTypeOfExpression)) {
+			// typeof 比较对（守卫 + 常量折叠；形状证据：封存 typeof_guard.go 全文件）。
+			return saLowerTypeofCompare(w, be, scope, pos, refusals, nextTemp)
+		}
 		if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
 			// 串位仅 `+`（拼接）与 `==/!=`（内容相等）可走；其余算符大声拒。
 			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
@@ -655,6 +664,122 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	default:
 		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
 	}
+}
+
+// saTypeofKind 静态 typeof 串：字面按语法表；标识符按作用域种
+// （math 别名/同文件函数为 function）；未知大声拒（无 checker，
+// env-probe 不做——无 binder 权威，折叠即发明事实）。
+// 形状证据：封存 lowerTypeof:9171-9239（字面表 + 种映射）+
+// lowerTypeofConstFold:236-283（null/undefined 方言映 "undefined"）。
+func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
+	if e == nil || e.Kind != ast.KindTypeOfExpression {
+		return "", "not a typeof expression"
+	}
+	op := e.AsTypeOfExpression().Expression
+	if op == nil {
+		return "", "missing typeof operand"
+	}
+	if op.Kind == ast.KindIdentifier {
+		name := op.Text()
+		if k, ok := scope.types[name]; ok {
+			switch {
+			case k == "i32":
+				return "number", ""
+			case k == "bool":
+				return "boolean", ""
+			case k == "str":
+				return "string", ""
+			case k == "arr" || k == "map" || k == "set" || k == "date":
+				return "object", ""
+			case len(k) > 5 && k[:5] == "inst:":
+				return "object", ""
+			default:
+				return "", "typeof " + name + " is not statically known"
+			}
+		}
+		if _, ok := scope.mathAlias[name]; ok {
+			return "function", ""
+		}
+		if _, ok := scope.funcs[name]; ok {
+			return "function", ""
+		}
+		return "", "typeof unknown global " + name + " is not lowerable"
+	}
+	switch op.Kind {
+	case ast.KindNumericLiteral:
+		return "number", ""
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return "string", ""
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "boolean", ""
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return "undefined", ""
+	case ast.KindArrowFunction, ast.KindFunctionExpression:
+		return "function", ""
+	case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
+		return "object", ""
+	default:
+		return "", "typeof on computed values is not lowerable (bind it first)"
+	}
+}
+
+// saLowerTypeofCompare `typeof X ==/===/!=/!== "kind"` 任一操作数序
+// （形状证据：封存 splitTypeofCompare:120-151 + lowerTypeofGuard:156-178 +
+// lowerTypeofConstFold:236-283）：
+//   - "undefined" 对 + 标识符 → 空检查（eq/ne v, 0；子集 null 即 0）。
+//   - 其余对静态种折叠为 `eq/ne 1, 1` 常量临时量（br 只吃寄存器）。
+func saLowerTypeofCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	neg := false
+	switch saBinaryOpKind(be) {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+		neg = false
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		neg = true
+	default:
+		return "", "typeof pairs only compare with ==/!="
+	}
+	var typeOp, litNode *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindTypeOfExpression {
+			typeOp = side
+		}
+	}
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindStringLiteral {
+			litNode = side
+		}
+	}
+	if typeOp == nil || litNode == nil {
+		return "", "typeof pairs need typeof X against a string literal"
+	}
+	lit := litNode.Text()
+	inner := typeOp.AsTypeOfExpression().Expression
+	if lit == "undefined" && inner != nil && inner.Kind == ast.KindIdentifier {
+		nm := inner.Text()
+		if _, ok := scope.types[nm]; !ok {
+			return "", "typeof unknown global " + nm + " is not lowerable"
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if neg {
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, nm))
+		} else {
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, nm))
+		}
+		return t, ""
+	}
+	kind, msg := saTypeofKind(typeOp, scope)
+	if msg != "" {
+		return "", msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if (kind == lit) != neg {
+		w.Write(fmt.Sprintf("  %s = eq 1, 1\n", t))
+	} else {
+		w.Write(fmt.Sprintf("  %s = ne 1, 1\n", t))
+	}
+	return t, ""
 }
 
 // saLowerVarDecl lowering 变量声明（`let/const x: number|i32 = <i32>`）。
