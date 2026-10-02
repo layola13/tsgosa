@@ -416,13 +416,48 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	pos := func(p int) (int, int) { return saPos(offs, p) }
 	nextLabel := 1
 	nextTemp := 1
+	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
+	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
+	funcs := map[string]saFuncSig{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st.Kind != ast.KindFunctionDeclaration {
+			continue
+		}
+		fn := st.AsFunctionDeclaration()
+		nm := fn.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		name := nm.Text()
+		if _, dup := funcs[name]; dup {
+			ln, col := pos(st.Pos())
+			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate function " + name})
+			continue
+		}
+		nparams := 0
+		if fn.Parameters != nil {
+			nparams = len(fn.Parameters.Nodes)
+		}
+		isVoid := false
+		if k, ok := saReturnKind(fn.Type); ok && k == "void" {
+			isVoid = true
+		}
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid}
+	}
+	emitted := map[string]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind != ast.KindFunctionDeclaration {
 			ln, col := pos(st.Pos())
 			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("step2 refuses kind %d (only top-level functions)", int(st.Kind))})
 			continue
 		}
-		saLowerFunction(w, st, pos, &refusals, needImport, &nextLabel, &nextTemp)
+		if nm := st.AsFunctionDeclaration().Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			if emitted[nm.Text()] {
+				continue
+			}
+			emitted[nm.Text()] = true
+		}
+		saLowerFunction(w, st, funcs, pos, &refusals, needImport, &nextLabel, &nextTemp)
 	}
 	var head strings.Builder
 	head.WriteString(saStepHeader)
@@ -536,6 +571,11 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	}
 }
 
+// saFuncSig 是调用核的签名表项（名->形参数/是否 void）。
+type saFuncSig struct {
+	params int
+	isVoid bool
+}
 // saLoop 是 break/continue 的跳转栈帧（unlabeled；labeled 形大声拒）。
 // cont 为 continue 落点：while 即 top；for 落增量前（证据：封存 lowerFor:2072-2084
 // 跳 top 会跳过增量导致死循环，故增量存在且体用 continue 时另立 cont 标号）。
@@ -545,10 +585,12 @@ type saLoop struct {
 	end  string
 }
 
-// saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）。
+// saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）
+// + 文件级函数签名表（调用核只认同文件顶层函数）。
 type saScope struct {
 	types map[string]string
 	loops []saLoop
+	funcs map[string]saFuncSig
 }
 
 func saLiteralI32(e *ast.Node) (string, bool) {
@@ -574,7 +616,7 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 	return body.AsBlock().Statements.Nodes, true
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -620,7 +662,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, pos func(int) (int,
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}}
+	scope := &saScope{types: map[string]string{}, funcs: funcs}
 	paramKinds, ok := saParamKinds(fn)
 	if !ok {
 		ln, col := pos(st.Pos())
@@ -688,7 +730,7 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		}
 		return false, false
 	case ast.KindExpressionStatement:
-		if !saLowerAssignStmt(w, s, scope, pos, refusals, nextTemp) {
+		if !saLowerExprStmt(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
 		}
 		return false, false
@@ -749,7 +791,15 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	if op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp); msg != "" {
 		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return expression"})
+		// 调用核错误透传具体信息（元数/未知函数/void 值位），其余保持原子消息。
+		out := "unsupported return expression"
+		for _, k := range []string{"arity mismatch", "unknown function", "is not a function", "direct function calls", "void function"} {
+			if strings.Contains(msg, k) {
+				out = msg
+				break
+			}
+		}
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: out})
 		return false, true
 	} else {
 		w.Write(fmt.Sprintf("  ret %s\n", op))
@@ -810,6 +860,45 @@ func saIsFloatLit(text string) bool {
 		}
 	}
 	return false
+}
+
+// saEvalCall 求函数调用（形状证据：封存 `%s = call @%s(%s)` / `call @%s(%s)`）。
+// 被调者须为同文件顶层函数（预扫签名表；元数精确匹配）；局部同名遮蔽则拒
+// （无一等函数）。返回 (operand, isVoidCall, errMsg)。
+func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return "", false, "only direct function calls lowerable"
+	}
+	name := ce.Expression.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return "", false, name + " is not a function"
+	}
+	sig, ok := scope.funcs[name]
+	if !ok {
+		return "", false, "unknown function " + name
+	}
+	var args []string
+	if ce.Arguments != nil {
+		for _, a := range ce.Arguments.Nodes {
+			op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			args = append(args, op)
+		}
+	}
+	if len(args) != sig.params {
+		return "", false, fmt.Sprintf("arity mismatch for %s: want %d, got %d", name, sig.params, len(args))
+	}
+	call := fmt.Sprintf("call @%s(%s)", name, strings.Join(args, ", "))
+	if sig.isVoid {
+		w.Write(fmt.Sprintf("  %s\n", call))
+		return "", true, ""
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", t, call))
+	return t, false, ""
 }
 
 // saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324
@@ -885,6 +974,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
 		return t, ""
+	case ast.KindCallExpression:
+		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if voidCall {
+			return "", "void function call in value position"
+		}
+		return op, ""
 	default:
 		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
 	}
@@ -995,10 +1093,24 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
 	return true
 }
-// saLowerAssignStmt lowering 赋值语句（`x = <i32>`，x 须已绑定；复合赋分流）。
-func saLowerAssignStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+// saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
+// （`x = <i32>`，x 须已绑定；复合赋分流）。其余一律大声拒。
+func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	e := s.AsExpressionStatement().Expression
-	if e == nil || e.Kind != ast.KindBinaryExpression {
+	if e == nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (calls and assignments only)"})
+		return false
+	}
+	if e.Kind == ast.KindCallExpression {
+		if _, _, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported call statement: " + msg})
+			return false
+		}
+		return true
+	}
+	if e.Kind != ast.KindBinaryExpression {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (assignments only)"})
 		return false
