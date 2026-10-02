@@ -569,17 +569,24 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindPropertyAccessExpression:
 		pa := e.AsPropertyAccessExpression()
-		// super.f 读基布局（形状证据：封存 checkSuperAccess:253-278）。
+		// super.f 读基布局（存取器走基 getter 内联；形状证据：封存 checkSuperAccess:253-278）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
 			bdef, h, msg := saSuperBase(scope)
 			if msg != "" {
 				return "", msg
 			}
-			t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), nextTemp)
+			if _, ok := bdef.offsets[pa.Name().Text()]; ok {
+				t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return t, ""
+			}
+			v, msg := saInlineGetter(w, h, bdef, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
-			return t, ""
+			return v, ""
 		}
 		// Number 整形常量折叠（`MAX_VALUE` 等；形状证据：封存 stdlib.go:128-130）。
 		if v, ok := saNumberConst(pa); ok {
@@ -591,11 +598,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if msg != "" {
 				return "", msg
 			}
-			t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), nextTemp)
+			if _, ok := def.offsets[pa.Name().Text()]; ok {
+				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return t, ""
+			}
+			// 存取器读内联 getter 体（形状证据：封存 lowerExpr:8130-8137）。
+			v, msg := saInlineGetter(w, h, def, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
-			return t, ""
+			return v, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
 			if _, ok := scope.classes[pa.Expression.Text()]; ok {
@@ -661,7 +676,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			target, ok := saBoundI32(scope, be.Left)
 			if !ok {
-				// super.f 写基布局（形状证据同读位）。
+				// super.f 写基布局（存取器走基 setter 内联；形状证据同读位）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindSuperKeyword && lpa.Name() != nil {
@@ -673,13 +688,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						if msg != "" {
 							return "", msg
 						}
-						if msg := saLowerClassFieldStore(w, h, bdef, lpa.Name().Text(), op); msg != "" {
+						if _, ok := bdef.offsets[lpa.Name().Text()]; ok {
+							if msg := saLowerClassFieldStore(w, h, bdef, lpa.Name().Text(), op); msg != "" {
+								return "", msg
+							}
+							return op, ""
+						}
+						if msg := saInlineSetter(w, h, bdef, lpa.Name().Text(), op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
 							return "", msg
 						}
 						return op, ""
 					}
 				}
-				// 实例字段写（`o.f = v`；返回右值，镜像赋值折值语义）。
+				// 实例字段写（`o.f = v`；setter 走一参体内联；返回右值）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Name() != nil && saCouldBeInst(lpa.Expression, scope) {
@@ -691,7 +712,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						if msg != "" {
 							return "", msg
 						}
-						if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), op); msg != "" {
+						if _, ok := def.offsets[lpa.Name().Text()]; ok {
+							if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), op); msg != "" {
+								return "", msg
+							}
+							return op, ""
+						}
+						if msg := saInlineSetter(w, h, def, lpa.Name().Text(), op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
 							return "", msg
 						}
 						return op, ""
@@ -834,7 +861,12 @@ func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *sa
 		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
 			if k, ok := scope.types[be.Right.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
 				if def, ok := scope.classes[k[5:]]; ok {
+					// 存取器无槽但有名（`in` 判存在；形状证据同上）。
 					if _, ok := def.offsets[be.Left.Text()]; ok {
+						verdict = "1"
+					} else if _, ok := def.getters[be.Left.Text()]; ok {
+						verdict = "1"
+					} else if _, ok := def.setters[be.Left.Text()]; ok {
 						verdict = "1"
 					} else {
 						verdict = "0"

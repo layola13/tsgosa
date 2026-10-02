@@ -33,6 +33,8 @@ type saClassDef struct {
 	offsets    map[string]int
 	size       int
 	methods    map[string]*ast.Node
+	getters    map[string]*ast.Node
+	setters    map[string]*ast.Node
 	ctor       *ast.Node
 	ctorOwner  string
 	parent     string
@@ -60,7 +62,7 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + name})
 		return false
 	}
-	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}}
+	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
@@ -124,6 +126,23 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			for k, v := range bdef.methods {
 				if _, ok := def.methods[k]; !ok {
 					def.methods[k] = v
+				}
+			}
+			// 存取器随方法同例继承（子类覆写；形状证据：封存 inheritClass:167-198）。
+			if def.getters == nil {
+				def.getters = map[string]*ast.Node{}
+			}
+			for k, v := range bdef.getters {
+				if _, ok := def.getters[k]; !ok {
+					def.getters[k] = v
+				}
+			}
+			if def.setters == nil {
+				def.setters = map[string]*ast.Node{}
+			}
+			for k, v := range bdef.setters {
+				if _, ok := def.setters[k]; !ok {
+					def.setters[k] = v
 				}
 			}
 			def.parent = base
@@ -207,10 +226,46 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			// 覆写语义：子类同名直接覆盖继承方法（形状证据：封存 inheritClass:139-149）。
 			ownMethods[mn.Text()] = true
 			def.methods[mn.Text()] = m
+		case ast.KindGetAccessor, ast.KindSetAccessor:
+			// 存取器以内联体记录（零参 get/一参 set；静态/计算名/字段重名拒；
+			// 形状证据：封存 recordClassNamed:9774-9818）。
+			an := m.Name()
+			if an == nil || an.Kind != ast.KindIdentifier {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed/private accessor names are not lowerable"})
+				return false
+			}
+			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
+				return false
+			}
+			if _, dup := def.offsets[an.Text()]; dup {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "member name clash " + an.Text()})
+				return false
+			}
+			if m.Kind == ast.KindGetAccessor {
+				if _, dup := def.getters[an.Text()]; dup && ownMethods[an.Text()] {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate getter " + an.Text()})
+					return false
+				}
+				ownMethods[an.Text()] = true
+				def.getters[an.Text()] = m
+			} else {
+				if _, dup := def.setters[an.Text()]; dup && ownMethods[an.Text()] {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate setter " + an.Text()})
+					return false
+				}
+				ownMethods[an.Text()] = true
+				def.setters[an.Text()] = m
+			}
 		case ast.KindSemicolonClassElement:
 		default:
 			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class member is not lowerable (getters/setters/indexers refused)"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class member is not lowerable (indexers refused)"})
 			return false
 		}
 	}
@@ -872,7 +927,43 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 	return v, ""
 }
 
-// saLowerClassFieldLoad 读 `o.f`（偏移 load；形状证据：字段偏移布局）。
+// saInlineGetter 内联 `o.g` 读（零参体；形状证据：封存 lowerExpr:8130-8137）。
+func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	gn, ok := def.getters[name]
+	if !ok {
+		if _, ok := def.setters[name]; ok {
+			return "", name + " is write-only (setter has no getter)"
+		}
+		return "", "unknown field " + name
+	}
+	if len(gn.Parameters()) != 0 {
+		return "", "getter " + name + " takes 0 parameters"
+	}
+	savedSelf, savedClass := scope.thisSelf, scope.thisClass
+	scope.thisSelf, scope.thisClass = recv, def.name
+	v, msg := saCallbackValue(w, gn, nil, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	if msg != "" {
+		return "", msg
+	}
+	return v, ""
+}
+
+// saInlineSetter 内联 `o.s = v` 写（一参体；返回右值，镜像赋值折值语义）。
+func saInlineSetter(w printer.EmitTextWriter, recv string, def *saClassDef, name, val string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) string {
+	sn, ok := def.setters[name]
+	if !ok {
+		return "unknown field " + name
+	}
+	if len(sn.Parameters()) != 1 {
+		return "setter " + name + " takes 1 parameter"
+	}
+	savedSelf, savedClass := scope.thisSelf, scope.thisClass
+	scope.thisSelf, scope.thisClass = recv, def.name
+	_, msg := saCallbackValue(w, sn, []string{val}, false, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	return msg
+}
 func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, nextTemp *int) (string, string) {
 	off, ok := def.offsets[field]
 	if !ok {
