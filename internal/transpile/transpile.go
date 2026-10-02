@@ -592,6 +592,7 @@ type saScope struct {
 	loops     []saLoop
 	funcs     map[string]saFuncSig
 	nextLabel *int
+	retKind   string
 }
 
 func saLiteralI32(e *ast.Node) (string, bool) {
@@ -663,7 +664,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, nextLabel: nextLabel, retKind: retKind}
 	paramKinds, ok := saParamKinds(fn)
 	if !ok {
 		ln, col := pos(st.Pos())
@@ -799,15 +800,15 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string return refused"})
 		return false, true
 	}
-	if op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp); msg != "" {
+	op, msg := saEvalReturnOperand(w, rs.Expression, scope.retKind, scope, pos, refusals, nextTemp)
+	if msg != "" {
 		ln, col := pos(s.Pos())
 		// 求值错误透传具体信息（调用核/一元/未知变量等定位关键）。
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return false, true
-	} else {
-		w.Write(fmt.Sprintf("  ret %s\n", op))
-		return true, false
 	}
+	w.Write(fmt.Sprintf("  ret %s\n", op))
+	return true, false
 }
 
 // saBoolSideCond 报告二元条件中布尔类型一侧的变量名（无则 ""）。
@@ -855,6 +856,27 @@ func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 	return be.OperatorToken.Kind
 }
 
+// saEvalReturnOperand 按函数返回种求 return 操作数：boolean 函数走 saEvalBool
+//（bool 标识符直用，其余 0/1 操作数），number 函数走 saEvalI32。
+func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if retKind == "boolean" {
+		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
+	}
+	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
+}
+
+// saEvalBool 求布尔操作数（0/1 表示与 i32 统一）：绑定 bool 标识符直用，
+// 其余走 saEvalI32（字面/比较/`!`/调 bool 函数皆产 0/1 操作数）。
+func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		nm := e.Text()
+		if k, ok := scope.types[nm]; ok && k == "bool" {
+			return nm, ""
+		}
+	}
+	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
+}
+
 // saIsFloatLit 粗判浮点数字面（封存 lowerExpr:2725 按 isFloatLiteral 分 f64/i32）。
 func saIsFloatLit(text string) bool {
 	for i := 0; i < len(text); i++ {
@@ -883,7 +905,8 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	var args []string
 	if ce.Arguments != nil {
 		for _, a := range ce.Arguments.Nodes {
-			op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+			// 实参 0/1 统一表示：bool 标识符直传，其余 i32 操作数。
+			op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", false, msg
 			}
@@ -1176,9 +1199,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
 			return false
 		}
-		if k, ok := saAnnotKind(vd.Type); !ok || k != "i32" {
+		vkind, ok := saAnnotKind(vd.Type)
+		if !ok || (vkind != "i32" && vkind != "bool") {
 			ln, col := pos(d.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32 locals only)"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool locals only)"})
 			return false
 		}
 		if vd.Initializer == nil {
@@ -1188,7 +1212,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				return false
 			}
 			w.Write(fmt.Sprintf("  %s = 0\n", name))
-			scope.types[name] = "i32"
+			scope.types[name] = vkind
 			continue
 		}
 		if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
@@ -1196,14 +1220,20 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function initializer not lowerable"})
 			return false
 		}
-		op, msg := saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		var op string
+		var msg string
+		if vkind == "bool" {
+			op, msg = saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		} else {
+			op, msg = saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		}
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
-		scope.types[name] = "i32"
+		scope.types[name] = vkind
 	}
 	return true
 }
@@ -1295,12 +1325,18 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false
 	}
-	if k != "i32" {
+	if k != "i32" && k != "bool" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
 		return false
 	}
-	op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	var op string
+	var msg string
+	if k == "bool" {
+		op, msg = saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
+	} else {
+		op, msg = saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	}
 	if msg != "" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
