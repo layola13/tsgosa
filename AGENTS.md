@@ -65,6 +65,7 @@
 - step37（`using` 门收口，落 `sa_decl.go`+`sa_arr.go`）：`using`/`await using` 措辞与封存对齐（`lowerVarDeclList:1395-1398`；同旗）；`for (using …)` 头经声明位同门，`for-of`/`for-in` 头补旗检查（否则析构跳过致静默错义）；回归测试锁死。
 - step36（入口合成一次过，落 `transpile.go`）：顶层执行语句聚入生成的 `@main() -> i32`（空帧，缺尾返补 `ret 0`；`entry_top.go:1-152`）；用户 `main` 遇合成改名 `main__user`（定义 + 调用点，`main__user` 已有则拒）；无执行语句零附加（字节一致）；门：顶层变量声明仍拒（模块槽另域）。
 - step38（spread 调用展开一次过，落 `sa_expr.go`）：单尾 spread + 定元被调（`resolveSpreadCall:7764-7798`；静态部按位求值，余位越界归零 join 填齐，spread 填位仅 i32）；门：双 spread/非尾/超元/非数组源/非 i32 填充位一律拒。
+- step39（`delete`/`await` 对齐，落 `sa_expr.go`）：`delete` 显式拒（静态布局不可删域，`lowerExpr:2742-2745`）；`await v` 值透传（悬挂在内层调用门拒，`lowerExpr:2863-2871`）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
