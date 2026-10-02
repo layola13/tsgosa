@@ -3,7 +3,10 @@ package transpile
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -795,4 +798,61 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, paramS
 		return false
 	}
 	return true
+}
+
+// ── ts→sa 端到端薄壳：复用 TranspileSA，落盘 .sai + subset-report.txt ──
+// 移植自 satsgo/cmd/tsgo-sa/main.go（CLI 壳：--out/用法/exit 码；其 lowerFile
+// 核心即本文件 TranspileSA）。上游对齐：输入输出走 os/flag 标准库，与
+// execute.CommandLine 无耦合；调用方（cmd/tsgo/main.go）只做 --sa 薄分发。
+// Exit 码：2 用法/IO 错误，1 存在定位拒绝，0 全量通过。
+func RunSA(args []string) int {
+	fs := flag.NewFlagSet("sa", flag.ContinueOnError)
+	out := fs.String("out", "", "output directory for .sai files (default: <first-input-base>_sa)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	inputs := fs.Args()
+	if len(inputs) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: tsgo --sa [--out <dir>] <file.ts> [...]")
+		return 2
+	}
+	outDir := *out
+	if outDir == "" {
+		base := strings.TrimSuffix(filepath.Base(inputs[0]), filepath.Ext(inputs[0]))
+		outDir = base + "_sa"
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: mkdir %s: %v\n", outDir, err)
+		return 2
+	}
+	refused := false
+	var report strings.Builder
+	for _, f := range inputs {
+		text, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", f, err)
+			return 2
+		}
+		res := TranspileSA(context.Background(), string(text), Options{FileName: f})
+		base := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+		if err := os.WriteFile(filepath.Join(outDir, base+".sai"), []byte(res.SAI), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "error: write %s: %v\n", f, err)
+			return 2
+		}
+		for _, r := range res.Refusals {
+			fmt.Fprintf(&report, "%s:%d:%d: %s\n", f, r.Line, r.Col, r.Msg)
+		}
+		if len(res.Refusals) > 0 {
+			refused = true
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "subset-report.txt"), []byte(report.String()), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error: write report: %v\n", err)
+		return 2
+	}
+	fmt.Printf("wrote SA project to %s\n", outDir)
+	if refused {
+		return 1
+	}
+	return 0
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/execute"
 	"github.com/microsoft/typescript-go/internal/osutil"
+	"github.com/microsoft/typescript-go/internal/transpile"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func runMain() int {
 			return runLSP(args[1:])
 		case "--api":
 			return runAPI(args[1:])
+		case "--sa":
+			return transpile.RunSA(args[1:])
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
