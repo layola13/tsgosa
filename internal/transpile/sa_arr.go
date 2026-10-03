@@ -747,6 +747,22 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 	switch e.Kind {
 	case ast.KindArrayLiteralExpression:
 		return saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
+	case ast.KindPropertyAccessExpression:
+		// 实例 arr 字段基（`this.a`/`c.a` 读句柄；私名/静态/存取器沿既有门）。
+		pa := e.AsPropertyAccessExpression()
+		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			h, def, msg := saInstBase(pa.Expression, scope)
+			if msg == "" {
+				fname := pa.Name().Text()
+				if off, ok := def.offsets[fname]; ok && def.fkinds[fname] == "arr" {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+					return t, ""
+				}
+			}
+		}
+		return "", "not an array expression"
 	case ast.KindElementAccessExpression:
 		ea := e.AsElementAccessExpression()
 		if ea.QuestionDotToken != nil {

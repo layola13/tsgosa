@@ -61,10 +61,10 @@ type saClassDef struct {
 	isAbstract    bool
 }
 
-// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str 句柄头指针 8/8；
+// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr 句柄 8/8；
 // 形状证据：封存 widthOf:268-279 + alignTo:281-289）。
 func saFieldWidth(kind string) (int, int) {
-	if kind == "str" {
+	if kind == "str" || kind == "arr" {
 		return 8, 8
 	}
 	return 4, 4
@@ -337,12 +337,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			// （封存 widthOf；其余宽度无槽）。
 			fkind := "i32"
 			if pd.Type != nil {
-				if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str") {
+				if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
 					ln, col := pos(m.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32 or string"})
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string or array"})
 					return false
 				} else if k == "str" {
 					fkind = "str"
+				} else if k == "arr" {
+					fkind = "arr"
 				}
 			}
 			if _, dup := def.offsets[fkey]; dup {
@@ -553,14 +555,16 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, pos func
 			return false
 		}
 		k, ok := saAnnotKind(pd.Type)
-		if !ok || (k != "i32" && k != "bool" && k != "str") {
+		if !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
 			ln, col := pos(p.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32 or string"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string or array"})
 			return false
 		}
 		fkind := "i32"
 		if k == "str" {
 			fkind = "str"
+		} else if k == "arr" {
+			fkind = "arr"
 		}
 		*off = saAlignOff(*off, fkind)
 		def.fields = append(def.fields, saClassField{name: fname, offset: *off})
@@ -1297,6 +1301,16 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
 			return "", "constructor arguments must be values"
 		}
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); ok && k == "arr" {
+				v, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				paramVal[nm.Text()] = v
+				continue
+			}
+		}
 		if wantStr[nm.Text()] {
 			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -1477,7 +1491,7 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pname + " is not in the " + owner + " layout"})
 				return false
 			}
-			if def.fkinds[pname] == "str" {
+			if def.fkinds[pname] == "str" || def.fkinds[pname] == "arr" {
 				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 				continue
 			}
@@ -1568,8 +1582,8 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
 		}
-		// str 域存头指针（右值已按种求值）。
-		if def.fkinds[fname] == "str" {
+		// str/arr 域存句柄（右值已按种求值）。
+		if def.fkinds[fname] == "str" || def.fkinds[fname] == "arr" {
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 			continue
 		}
@@ -1643,6 +1657,12 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 					return false
 				}
+			case ast.KindArrayLiteralExpression:
+				if _, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg != "" {
+					ln, col := pos(a.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
 			default:
 				ln, col := pos(a.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
@@ -1706,6 +1726,15 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 			// str 字面量超参（基 str 形参位；值位门在基 wire）。
 			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(a.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			paramVal[nm.Text()] = v
+		case ast.KindArrayLiteralExpression:
+			// arr 字面量超参（基 arr 形参位；值位门在基 wire）。
+			v, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(a.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
@@ -1951,7 +1980,7 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	if !ok {
 		return "", "unknown field " + field
 	}
-	// str 域读回头指针即串值（16 字节头在堆上，值即其址；临时量记 str
+	// str/arr 域读回句柄（16 字节头在堆上，值即其址；临时量记 str
 	// 供下游串位；封存 lowerMemberChain:8294-8297 `load as <type>` 同形）。
 	if def.fkinds[field] == "str" {
 		t := fmt.Sprintf("t_%d", *nextTemp)
@@ -1960,19 +1989,25 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 		scope.types[t] = "str"
 		return t, ""
 	}
+	if def.fkinds[field] == "arr" {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		return t, ""
+	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, h, off))
 	return t, ""
 }
 
-// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str 存头指针）。
+// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str/arr 存句柄）。
 func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef, field, v string) string {
 	off, ok := def.offsets[field]
 	if !ok {
 		return "unknown field " + field
 	}
-	if def.fkinds[field] == "str" {
+	if def.fkinds[field] == "str" || def.fkinds[field] == "arr" {
 		w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 		return ""
 	}
