@@ -603,7 +603,39 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 	}
 	if ce.Arguments != nil {
 		nodes := ce.Arguments.Nodes
-		if spread, msg, handled := saSpreadCallArgs(w, name, nodes, sig, evalOne, scope, pos, refusals, nextTemp); handled || msg != "" {
+		if sig.hasRest {
+			// rest calls pack into one slice (fixed positions evaluate per signature kind, extras pack:
+			// plain values push as i32, spreads append whole; cf resolveSpreadCall rest branch).
+			fixed := sig.params - 1
+			if fixed < 0 || len(nodes) < fixed {
+				return "", false, fmt.Sprintf("arity mismatch for %s: want at least %d, got %d", name, fixed, len(nodes))
+			}
+			for i := 0; i < fixed; i++ {
+				op, msg := evalOne(i, nodes[i], len(sig.paramKinds))
+				if msg != "" {
+					return "", false, msg
+				}
+				args = append(args, op)
+			}
+			h := saNewEmptyArray(w, nextTemp)
+			for _, a := range nodes[fixed:] {
+				if a != nil && a.Kind == ast.KindSpreadElement {
+					sv, msg := saArrValueOf(w, a.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					saAppendSlice(w, h, sv, scope, nextTemp)
+					continue
+				}
+				v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				saLowerArrayPush(w, h, v, scope, nextTemp)
+			}
+			saOwnTemp(scope, h)
+			args = append(args, h)
+		} else if spread, msg, handled := saSpreadCallArgs(w, name, nodes, sig, evalOne, scope, pos, refusals, nextTemp); handled || msg != "" {
 			if msg != "" {
 				return "", false, msg
 			}

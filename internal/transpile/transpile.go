@@ -528,7 +528,15 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		if fn.Parameters != nil {
 			defs, dexprs = saFuncDefaultTables(fn.Parameters.Nodes)
 		}
-		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
+		hasRest := false
+		if fn.Parameters != nil && len(fn.Parameters.Nodes) > 0 {
+			if last := fn.Parameters.Nodes[len(fn.Parameters.Nodes)-1]; last != nil {
+				if pd := last.AsParameterDeclaration(); pd != nil && pd.DotDotDotToken != nil {
+					hasRest = true
+				}
+			}
+		}
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest}
 	}
 	// 预扫二b：顶层箭头/函数表达式 `const f = (...)=>...` 记调用签名
 	// （与函数声明同表；形状证据：封存 tryTopLevelArrow:1015-1032 +
@@ -770,10 +778,30 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 	kinds := map[string]string{}
 	var pendings []saDestructurePending
 	taken := map[string]bool{}
-	for _, p := range paramNodes {
+	for idx, p := range paramNodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.QuestionToken != nil {
+		if pd == nil || pd.QuestionToken != nil {
 			return nil, nil, nil, false
+		}
+		if pd.DotDotDotToken != nil {
+			// trailing rest collects the packed slice (`...rest: number[]` records arr; last position plus
+			// identifier plus array annotation or no annotation; other rest shapes refuse loudly).
+			if idx != len(paramNodes)-1 {
+				return nil, nil, nil, false
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				return nil, nil, nil, false
+			}
+			if pd.Type != nil {
+				k, ok := saAnnotKind(pd.Type)
+				if !ok || k != "arr" {
+					return nil, nil, nil, false
+				}
+			}
+			taken[nm.Text()] = true
+			kinds[nm.Text()] = "arr"
+			continue
 		}
 		nm := pd.Name()
 		if nm == nil {
@@ -876,10 +904,23 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 	}
 	var out []string
 	taken := map[string]bool{}
-	for _, p := range fn.Parameters.Nodes {
+	for idx, p := range fn.Parameters.Nodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.QuestionToken != nil {
+		if pd == nil || pd.QuestionToken != nil {
 			return nil, false
+		}
+		if pd.DotDotDotToken != nil {
+			// trailing rest passes through here; kind gate lives in saSynthParamNodes.
+			if idx != len(fn.Parameters.Nodes)-1 {
+				return nil, false
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				return nil, false
+			}
+			out = append(out, nm.Text())
+			taken[nm.Text()] = true
+			continue
 		}
 		nm := pd.Name()
 		if nm == nil {
@@ -1269,6 +1310,7 @@ type saFuncSig struct {
 	defaults     []bool
 	defaultExprs []*ast.Node
 	arrowCaps    []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
+	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
