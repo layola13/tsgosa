@@ -413,16 +413,18 @@ func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope
 }
 
 // saLowerStrDecl lowering 字符串声明（字面量具化；同类句柄拷贝；
-// 缺 init/const 缺 init/非串初值皆大声拒）。
+// 缺 init 的 let 绑空句柄零值（`s = 0`，后赋重绑；形状证据：封存
+// lowerVarDeclList:1405-1434）；const 缺 init/非串初值皆大声拒）。
 func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, isConst bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if vd.Initializer == nil {
 		ln, col := pos(d.Pos())
 		if isConst {
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
-		} else {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string declaration needs initializer"})
+			return false
 		}
-		return false
+		w.Write(fmt.Sprintf("  %s = 0\n", name))
+		scope.types[name] = "str"
+		return true
 	}
 	h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
 	if msg != "" {

@@ -68,6 +68,7 @@
 - step40（存取器一次过，落 `sa_class.go`）：get/set 以内联体记录（静态/计算名/字段重名拒，同类重复拒，继承拷贝覆写；`recordClassNamed:9774-9818`）+ 读内联 getter/写内联 setter（`lowerExpr:8130-8137`；只写读拒）+ super 存取走基 + `in` 判存；门：索引器如前拒。
 - step39（`delete`/`await` 对齐，落 `sa_expr.go`）：`delete` 显式拒（静态布局不可删域，`lowerExpr:2742-2745`）；`await v` 值透传（悬挂在内层调用门拒，`lowerExpr:2863-2871`）。
 - step41（重载签名擦除，落 `transpile.go`零新文件）：无体声明预扫不注册/发射不落字/入口改名不参与（实现体唯一定义；`saemit.go:642+758`）；孤签名零定义调用点按未知函数诚实拒（`saemit.go:983`）；JS 管线同形擦除（仅实现体落字），本次即底座复用替换。
+- step42（未初始化声明补齐，落 `sa_str.go`零新文件）：`let s: string;` 绑空句柄零值（`s = 0`，后赋重绑；`saemit.go:lowerVarDeclList:1405-1434`）；`let x: number;` 既有 `x = 0` 不变；`const` 缺 init 仍拒；数组缺 init 仍按 step12 大声拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
