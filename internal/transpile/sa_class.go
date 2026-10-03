@@ -708,13 +708,15 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		fkind := "i32"
 		if pd.Type != nil {
 			// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
-			// string 为头指针 8 字节槽；余下（数组/嵌套/多联合）无槽，拒。
-			if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str") {
+			// string/arr 为句柄 8 字节槽；余下（嵌套/多联合）无槽，拒。
+			if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
 				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32 or string"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string or array"})
 				return false
 			} else if k == "str" {
 				fkind = "str"
+			} else if k == "arr" {
+				fkind = "arr"
 			}
 		}
 		if _, dup := def.offsets[fn.Text()]; dup {
@@ -1172,7 +1174,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				}
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
-				if sk == "str" {
+				if sk == "str" || sk == "arr" {
 					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src.h, src.def.offsets[f.name]))
 					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], t))
 					continue
@@ -1185,6 +1187,15 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		if fk := def.fkinds[o.fname]; fk == "str" {
 			// str 域具化存头指针（封存 9109 `store ... as <type>` 同形）。
 			v, msg := saEvalStr(w, o.init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+			continue
+		}
+		if fk := def.fkinds[o.fname]; fk == "arr" {
+			// arr 域存句柄（字面量递归/绑定直传经句柄总线）。
+			v, msg := saArrValueOf(w, o.init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
