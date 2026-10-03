@@ -603,37 +603,49 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 
 // saLowerProjCall lowers builtin-module projected calls (fs.readFile now; other surfaces
 // refuse loudly until their step; cf emitProjCall + StdProjectionTable).
-// saFsProjTable maps one fs surface to its projection contract (cf StdProjectionTable fs section:
-// symbol, module, extra fixed params, string-arg positions, buffer unwrap, arity).
-func saFsProjTable(remote string) (symbol, module, extra string, strArgs []int, unwrap bool, nargs int, ok bool) {
+// saProjTable maps one fs/net surface to its projection contract (cf StdProjectionTable:
+// symbol, module, extra fixed params, string-arg positions, buffer unwrap, fallible u64, arity).
+func saProjTable(remote string) (symbol, module, extra string, strArgs []int, unwrap, fallible bool, nargs int, ok bool) {
 	switch remote {
 	case "readFile":
-		return "sa_fs_read_file", "sa_std/fs.sai", "1048576", []int{0}, true, 1, true
+		return "sa_fs_read_file", "sa_std/fs.sai", "1048576", []int{0}, true, false, 1, true
 	case "writeFile":
-		return "sa_fs_write_file", "sa_std/fs.sai", "", []int{0, 1}, false, 2, true
+		return "sa_fs_write_file", "sa_std/fs.sai", "", []int{0, 1}, false, false, 2, true
 	case "open":
-		return "sa_fs_file_open", "sa_std/fs.sai", "0", []int{0}, false, 1, true
+		return "sa_fs_file_open", "sa_std/fs.sai", "0", []int{0}, false, false, 1, true
 	case "create":
-		return "sa_fs_file_create", "sa_std/fs.sai", "", []int{0}, false, 1, true
+		return "sa_fs_file_create", "sa_std/fs.sai", "", []int{0}, false, false, 1, true
 	case "close":
-		return "sa_fs_file_close", "sa_std/fs.sai", "", nil, false, 1, true
+		return "sa_fs_file_close", "sa_std/fs.sai", "", nil, false, false, 1, true
 	case "read":
-		return "sa_fs_file_read", "sa_std/fs.sai", "&buf, 4096", nil, false, 1, true
+		return "sa_fs_file_read", "sa_std/fs.sai", "&buf, 4096", nil, false, false, 1, true
 	case "write":
-		return "sa_fs_file_write", "sa_std/fs.sai", "&buf, 0", nil, false, 1, true
+		return "sa_fs_file_write", "sa_std/fs.sai", "&buf, 0", nil, false, false, 1, true
 	case "remove":
-		return "sa_fs_remove_file", "sa_std/fs.sai", "", []int{0}, false, 1, true
+		return "sa_fs_remove_file", "sa_std/fs.sai", "", []int{0}, false, false, 1, true
 	case "mkdir":
-		return "sa_fs_make_dir", "sa_std/fs.sai", "", []int{0}, false, 1, true
+		return "sa_fs_make_dir", "sa_std/fs.sai", "", []int{0}, false, false, 1, true
+	case "tcpConnect":
+		return "sa_net_tcp_connect", "sa_std/net.sai", "0", []int{0}, false, true, 1, true
+	case "tcpListen":
+		return "sa_net_tcp_listener_bind", "sa_std/net.sai", "0", []int{0}, false, true, 1, true
+	case "tcpAccept":
+		return "sa_net_tcp_listener_accept", "sa_std/net.sai", "", nil, false, true, 1, true
+	case "tcpRead":
+		return "sa_net_tcp_stream_read", "sa_std/net.sai", "&buf, 0", nil, false, false, 1, true
+	case "tcpWrite":
+		return "sa_net_tcp_stream_write", "sa_std/net.sai", "&buf, 0", nil, false, false, 1, true
+	case "tcpClose":
+		return "sa_net_tcp_stream_close", "sa_std/net.sai", "", nil, false, false, 1, true
 	}
-	return "", "", "", nil, false, 0, false
+	return "", "", "", nil, false, false, 0, false
 }
 
 func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
-	if mod != "fs" {
+	if mod != "fs" && mod != "net" {
 		return "", false, mod + "." + remote + " is not a projected surface"
 	}
-	symbol, module, extra, strArgs, unwrap, nargs, ok := saFsProjTable(remote)
+	symbol, module, extra, strArgs, unwrap, fallible, nargs, ok := saProjTable(remote)
 	if !ok {
 		return "", false, mod + "." + remote + " is not a projected surface"
 	}
@@ -642,7 +654,7 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 		argNodes = ce.Arguments.Nodes
 	}
 	if len(argNodes) != nargs {
-		return "", false, "fs." + remote + " takes " + fmt.Sprintf("%d", nargs) + " arguments"
+		return "", false, mod + "." + remote + " takes " + fmt.Sprintf("%d", nargs) + " arguments"
 	}
 	isStr := map[int]bool{}
 	for _, k := range strArgs {
@@ -684,6 +696,14 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, symbol, strings.Join(parts, ", ")))
 	saOwnTemp(scope, t)
+	// fallible u64 handles (field-0 load as i64, handle released).
+	if fallible {
+		u := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", u, t))
+		saReleaseOwnedTemp(w, scope, t)
+		return u, false, ""
+	}
 	if !unwrap {
 		return t, false, ""
 	}
