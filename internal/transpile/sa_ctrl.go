@@ -862,11 +862,16 @@ type saCasePart struct {
 // 2/3 臂走上游 SWITCH_2/3 宏（证据：封存 tryLowerSwitchMacro:2502-2588）。
 func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	sw := s.AsSwitchStatement()
+	// discriminant i32 优先、败则串（串句柄 eq 分发，与上游 lowerExpr 通用同形）。
 	disc, msg := saEvalI32(w, sw.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
-		return false
+		if h, smsg := saEvalStr(w, sw.Expression, scope, pos, refusals, nextTemp); smsg == "" {
+			disc = h
+		} else {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
+			return false
+		}
 	}
 	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
 	var parts []saCasePart
@@ -911,10 +916,15 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		w.Write(fmt.Sprintf("%s:\n", testLabels[i]))
 		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
 		if vmsg != "" {
-			ln, col := pos(p.node.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
-			lowered = false
-			break
+			// case 值败则串（与 discriminant 同门；混合臂 eq 恒假落 default）。
+			if h, smsg := saEvalStr(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp); smsg == "" {
+				val = h
+			} else {
+				ln, col := pos(p.node.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+				lowered = false
+				break
+			}
 		}
 		cmp := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -960,9 +970,13 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	for i, p := range parts {
 		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
 		if vmsg != "" {
-			ln, col := pos(p.node.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
-			return false
+			if h, smsg := saEvalStr(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp); smsg == "" {
+				val = h
+			} else {
+				ln, col := pos(p.node.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+				return false
+			}
 		}
 		vals[i] = val
 	}
