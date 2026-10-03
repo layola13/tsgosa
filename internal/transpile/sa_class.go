@@ -345,14 +345,28 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			// （封存 widthOf；其余宽度无槽）。
 			fkind := "i32"
 			if pd.Type != nil {
-				if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
+				if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+					if k == "str" {
+						fkind = "str"
+					} else if k == "arr" {
+						fkind = "arr"
+					}
+				} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+					if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = sub.name
+					} else {
+						ln, col := pos(m.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
+						return false
+					}
+				} else {
 					ln, col := pos(m.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string or array"})
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
 					return false
-				} else if k == "str" {
-					fkind = "str"
-				} else if k == "arr" {
-					fkind = "arr"
 				}
 			}
 			if _, dup := def.offsets[fkey]; dup {
@@ -1382,6 +1396,25 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 				paramVal[nm.Text()] = v
 				continue
 			}
+			// 嵌套布局形参（`p: P`）：对象字面按子布局构造，实例直传须同布局。
+			if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+				if sub, ok := scope.classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
+					if a != nil && a.Kind == ast.KindObjectLiteralExpression {
+						v, _, msg := saLowerObjectLiteral(w, a, sub.name, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						paramVal[nm.Text()] = v
+						continue
+					}
+					if a != nil && a.Kind == ast.KindIdentifier {
+						if k, ok := scope.types[a.Text()]; ok && k == "inst:"+sub.name {
+							paramVal[nm.Text()] = a.Text()
+							continue
+						}
+					}
+				}
+			}
 		}
 		if wantStr[nm.Text()] {
 			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
@@ -1654,8 +1687,8 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
 		}
-		// str/arr 域存句柄（右值已按种求值）。
-		if def.fkinds[fname] == "str" || def.fkinds[fname] == "arr" {
+		// str/arr/inst 域存句柄（右值已按种求值）。
+		if def.fkinds[fname] == "str" || def.fkinds[fname] == "arr" || def.fkinds[fname] == "inst" {
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 			continue
 		}
