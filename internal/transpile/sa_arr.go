@@ -1846,6 +1846,7 @@ func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope 
 	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", cendL))
+	saPropArrNest(scope, recv, dh)
 	return dh
 }
 
@@ -2133,6 +2134,7 @@ func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, ne
 	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	saPropArrNest(scope, recv, dest)
 	return dest
 }
 
@@ -2184,6 +2186,7 @@ func saLowerArrayWith(w printer.EmitTextWriter, recv, idx, val string, scope *sa
 	w.Write(fmt.Sprintf("  jmp %s\n", finL))
 	w.Write(fmt.Sprintf("%s:\n", finL))
 	_ = pos
+	saPropArrNest(scope, recv, cp)
 	return cp, ""
 }
 
@@ -2311,6 +2314,7 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", dst2, s, ni))
 	saCopyRange(w, sdata, dloop, s2, ln, dst2, scope, nextTemp)
+	saPropArrNest(scope, recv, dest)
 	return dest, ""
 }
 
@@ -2318,6 +2322,7 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
 	saAppendSlice(w, h, recv, scope, nextTemp)
+	saPropArrNest(scope, recv, h)
 	for _, a := range args {
 		if a != nil && a.Kind == ast.KindSpreadElement {
 			se := a.AsSpreadElement()
@@ -2326,6 +2331,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 				return "", msg
 			}
 			saAppendSlice(w, h, src, scope, nextTemp)
+			saPropArrNest(scope, src, h)
 			continue
 		}
 		if a != nil && saIsArrValue(a, scope) {
@@ -2334,6 +2340,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 				return "", msg
 			}
 			saAppendSlice(w, h, src, scope, nextTemp)
+			saPropArrNest(scope, src, h)
 			continue
 		}
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
@@ -2417,6 +2424,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		}
 		h := saNewEmptyArray(w, nextTemp)
 		saAppendSlice(w, h, src, scope, nextTemp)
+		saPropArrNest(scope, src, h)
 		base = h
 	}
 	if mapper == nil {
@@ -2468,6 +2476,28 @@ func saCallbackScalarKind(kinds []string, i int) string {
 		return "f64"
 	}
 	return "i32"
+}
+
+// saNestedElemKinds reports callback element kinds for nested-slice receivers
+// (element binds the handle directly; other params snapshot as before).
+// saSortElemKinds reports comparator kinds for nested-slice receivers (both compare
+// handles directly).
+func saSortElemKinds(scope *saScope, recv string) []string {
+	if scope.arrNest == nil || !scope.arrNest[recv] {
+		return nil
+	}
+	return []string{"arr", "arr"}
+}
+
+func saNestedElemKinds(scope *saScope, recv string, idx, n int) []string {
+	if scope.arrNest == nil || !scope.arrNest[recv] {
+		return nil
+	}
+	kinds := make([]string, n)
+	if idx >= 0 && idx < n {
+		kinds[idx] = "arr"
+	}
+	return kinds
 }
 
 func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
@@ -2571,6 +2601,12 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			bind(name, kinds[i])
 			continue
 		}
+		// handle elements (nested slices) bind directly, never owned.
+		if i < len(kinds) && kinds[i] == "arr" {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			bind(name, "arr")
+			continue
+		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
 		bind(name, saCallbackScalarKind(kinds, i))
 		saDeclarePlain(scope, name)
@@ -2604,6 +2640,18 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				return "", msg
 			}
 			v = sop
+		} else if body != nil && body.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[body.Text()]; ok && k == "arr" {
+				// bare handle bodies pass the word through (filter predicates, identity maps).
+				v = body.Text()
+			} else {
+				op, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					done()
+					return "", msg
+				}
+				v = op
+			}
 		} else {
 			op, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -2675,7 +2723,7 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
 	if msg != "" {
 		return "", msg
 	}
@@ -2731,7 +2779,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp); msg != "" {
+		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2)); msg != "" {
 			return "", "", msg
 		}
 		inext := fmt.Sprintf("t_%d", *nextTemp)
@@ -2763,7 +2811,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2810,7 +2858,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2868,7 +2916,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2948,7 +2996,7 @@ func saHigherOrderReduce(w printer.EmitTextWriter, recv string, right bool, cb *
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 1, 3))
 	if msg != "" {
 		return "", "", msg
 	}
@@ -2990,7 +3038,7 @@ func saLowerSortWithCmp(w printer.EmitTextWriter, recv string, cb *ast.Node, sco
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
 	}
 	cmpGt := func(x, y string) (string, string) {
-		v, msg := saCallbackValue(w, cb, []string{x, y}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{x, y}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saSortElemKinds(scope, recv))
 		if msg != "" {
 			return "", msg
 		}
@@ -3483,6 +3531,9 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		out, kind, msg := saHigherOrderScan(w, recv, method, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			return "", "", msg
+		}
+		if method == "filter" {
+			saPropArrNest(scope, recv, out)
 		}
 		return out, kind, ""
 	case "reduce", "reduceRight":
