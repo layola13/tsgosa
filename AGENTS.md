@@ -95,6 +95,7 @@
 - step65（labels 锁形一次过，落 `sa_ctrl.go` 消息对齐，零新文件）：标号循环/块/switch 与 6 拒因（未定义/break-continue、块 continue、重名、表达式标号、顺序复用放行）全过；标号拒因改 kind 名（`KindExpressionStatement`），与封存断言逐字对齐。
 - step66（for 宏一次过，落 `sa_ctrl.go`，零新文件）：规范计数循环（`let i=L0; i<L1; step`，非负整数字面界+正字面步进，`i++/++i/i+=K/i=i+K`）走 `EXPAND FOR_INIT/CHECK/NEXT` + `control.sal`（`canonicalForShape:1902-1955` + `tryLowerForMacro:1962-2037`；continue 落增量前，doIncr 沿既有规则）；`<=`/标识符界/递减/调用界保 legacy 原形无宏无import。
 - step67（switch 宏一次过，落 `sa_ctrl.go` + 终结一处，零新文件）：2/3 臂走 `EXPAND SWITCH_2/3`（值前置求值，体/break/default/终结镜 legacy，无 default 宏臂落空；`tryLowerSwitchMacro:2502-2588`），1/4+ 臂保 legacy；穷尽 switch 静态终结（有 default 且臂皆终结，供 epilogue）；子句未知 kind 消息改 kind 名。
+- step68（entry 单文件锁形，零改动验证）：裸脚本合成/改名调用（`@main(` 唯一）/递归改名/无执行体不变/碰撞拒因全过；modstate（`sa_modstate_set_u64`）与多文件 program-link 随 defer 域（可变顶层槽/program Phase1），本轮只锁单文件面。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
