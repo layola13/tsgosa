@@ -1061,9 +1061,26 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				// 嵌套链写（`q.p.a = v` 经内层句柄；叶子按布局存，inst 叶拒；
 				// 链 setter 不 tran，沿旧门；形状证据：封存 saChainBase）。
+				// 类名基址只读（写侧沿上游 layoutOfVar 口径拒；形状证据：封存 lowerFieldStore:8366
+				// `l := e.layoutOfVar(segs[0])`，读侧 layoutOfNode:408 才含 checker 回退）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindPropertyAccessExpression && lpa.Name() != nil {
+						root := lpa.Expression
+						for root != nil && root.Kind == ast.KindPropertyAccessExpression {
+							root = root.AsPropertyAccessExpression().Expression
+						}
+						isBareClass := false
+						if root != nil && root.Kind == ast.KindIdentifier {
+							if _, ok := scope.classes[root.Text()]; ok {
+								if _, shadowed := scope.funcs[root.Text()]; !shadowed {
+									if k, ok := scope.types[root.Text()]; !ok || len(k) <= 5 || k[:5] != "inst:" {
+										isBareClass = true
+									}
+								}
+							}
+						}
+						if !isBareClass {
 						if ch, cdef, msg := saChainBase(w, lpa.Expression, scope, pos, refusals, nextTemp); msg == "" {
 							fname := lpa.Name().Text()
 							if _, ok := cdef.offsets[fname]; ok {
@@ -1099,6 +1116,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 									return op, ""
 								}
 							}
+						}
 						}
 					}
 				}
