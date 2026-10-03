@@ -115,6 +115,7 @@
 - step85（三元进求值总线一次过，落`sa_expr/sa_str.go`各一臂，零新文件）：`saEvalI32`/`saEvalStr`增`Conditional`分支共用值核（串种交叉沿既有门拒；bool经`saEvalBool`回退自动通）；5项等价（有注解串/bool/赋值/串赋值/return回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧行；JEV blast local_only；`transpile.go`/`main.go`未动。
 - step86（串switch一次过，落`sa_ctrl.go`三处，零新文件）：disc/case值i32优先败则串（legacy链+2/3臂宏同门，混合臂eq恒假落default；拒因文案不变）；3项等价（串1臂/串2臂宏/i32回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - step87（类链/操作符锁形，零改码）：switch变量形（形参/disc/顶层量case）/setter实例与静态作值/方法返实例链（两边同拒）/super读调写/`new`直读直调（两边同拒）/`in`通/`instanceof`两边同拒，20+实测全与上游同形；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；零改码，只记台账。
+- step88（集合/对象锁形，零改码）：Map基础/Set方法/无参Date/void值/嵌套调用全通；有参Date/Date.now（i64）/split串数组/RegExp沿既有记账边界拒；嵌套对象布局（接口嵌套/数组字段+`q.p.a`链读）上游通本仓拒，需布局递归+链读大项另立；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；零改码，只记台账。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
