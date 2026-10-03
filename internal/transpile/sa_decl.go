@@ -503,10 +503,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saConsumeOwn(scope, t)
 			saDeclareOwned(scope, name)
 		} else if k, ok := scope.types[t]; ok && k == "f64" {
-			w.Write(fmt.Sprintf("  %s = %s\n", name, t))
 			scope.types[name] = "f64"
 			saDeclarePlain(scope, name)
 		} else {
+			// i32 三元值记种(str/f64 臂已记；缺此行下游报 unknown).
+			scope.types[name] = "i32"
 			saDeclareInitOwn(scope, name, t)
 		}
 		return true

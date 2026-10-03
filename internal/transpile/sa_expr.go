@@ -499,7 +499,9 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).
 	if ak, at, aok := saTernaryF64Arm(ce.WhenTrue, scope); aok {
 		if bk, bt, bok := saTernaryF64Arm(ce.WhenFalse, scope); bok {
-			return saLowerTernaryF64Join(w, condOp, ak, at, bk, bt, scope, nextLabel, nextTemp), false, ""
+			if ak == "f64" || bk == "f64" {
+				return saLowerTernaryF64Join(w, condOp, ak, at, bk, bt, scope, nextLabel, nextTemp), false, ""
+			}
 		}
 	}
 	a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)

@@ -169,6 +169,7 @@
 - step140（H8b 闭环：串/嵌套值入数组一次过，落 `sa_arr.go` 值门 7 处，零新文件）：push/unshift/fill/with 值位 + concat 标量臂 + `Array(...)` 多元逐元臂由 `i32arg/saEvalI32` 换 `saArrayLiteralElem` 共用核（嵌套递归/串位/其余 i32 与字面量元同形；上游 push 种无关照存同源）；concat `strOK` 标量臂改 `strOK && saIsStrExpr`（全串 concat 结果可迭代；`at` 下标位未动）；11 探针 10 项转正（push 字面量/绑定/unshift/concat 标量+迭代/Array 构造/fill/with/嵌套 push 全过；空数组 push 后迭代双方同拒，无需变异标记）；**286 差分保持 286 同通过，0 回退**，语料 SAI 零字节变 0/286（vs step138 基线）；回归 `go build ./...`+`testrunner`（-count=1）+`vet` 全绿；`gofmt` 仅旧 4 文件；`transpile.go`/`main.go`/AGENTS 外未动。值流裁决二则：`Array("x","yy")` 具化交错/编号差（push 值序一致）+ concat 标量循环脚手架差（结果元一致），皆发射序差非语义差。
 - step141（demos 第一批 20 例可运行集 + 驱动出的释放修复，零新 Go 文件）：`demos/` 每例 `main.ts`+`expected.stdout`+`main.sai`（demo 根，TS/SA 同进仓）+`run.sh`（ts→sa→`sa build-exe`→跑→diff 进度表）+README 覆盖表；20/20 原生通过。驱动修复 4 项（皆上游同形、有上游 SAI 对照）：回调 slot own+事后释放（14_class 复活）+ for-of/in 出口本域释放循环（temps；具名行绑定改每轮尾释放+重绑 markRebound，12_for_of 复活）+ `saToSlice` 改 `saIsStrValue`（indexOf 不再误走串位）+ extern call 结果/call1/slice 柄补 ownTemp；**286 差分保持 286 同通过，0 回退**，语料 SAI 增量 21/286 且全为 `!` 行（值流零变）；回归全绿；`gofmt` 仅旧 4 文件。有意分歧/边界：join 形两家同被 verifier 拒（PhiStateConflict，parity 成立，demo 去 join 待后端侧）；split 结果位仍窄；for-in 另有 UseAfterMove（H11）；声明/赋值位三元值拒（H10）；alloc 归属全覆盖待审计（H12）。
 - step142（demos 第二批 20 例 + Map 调用归属，零新 Go 文件）：21-40（复合赋值/f64比较/switch/find系/reduce/sort/slice-concat/push族/spread/闭包值/Math/串谓词/嵌套布局/泛型擦除/Map/Date/模板算式/嵌套循环/下标查找/Array.from）；`run.sh --check`（重生成与进仓 main.sai 逐字节比对，40/40 SA-CLEAN，手改即 FAIL；用户令：sai 禁止手改，ts->sa 是编译出来的）+ Map get/has/delete/size/Set 系调用结果补 ownTemp（上游同形，35_map_getset 复活）；**40/40 原生通过**；**286 差分保持 286 同通过，0 回退**；回归全绿； 仅旧 4 文件。parity 边界四则（皆两家同形/同拒，上游 SAI 对照）：串+数加法指针加（SAI 逐行一致）+ 元素直打句柄数 + `==` 内容相等两家同漏 + sqrt 二分环两家同被 verifier 拒；32_string_eq 改 string_pred（startsWith/includes/endsWith 可跑），28 去元素直打。
+- step143（H10 闭环：声明/赋值位三元值一次过，落 sa_expr.go f64 门 + sa_decl.go 推断臂，零新文件）：f64 槽仅真浮臂进（int+int 走 i32 SELECT，与上游同形；混合臂 sitofp 保留）+ i32 臂补 scope.types 记种（str/f64 臂本有，缺之 unknown）+ 去 f64 臂双写（move 语义下 UseAfterMove，281 的 t=t_14 即此例）；探针 const/assign/f64混合三项转正且真机值与上游一致；**286 差分保持 286 同通过，0 回退**，语料 SAI 增量仅 281 去双写一行（结构逐一核对）；回归全绿；gofmt 仅旧 4 文件。
 
 ## 后续 TODO（按优先级排队，逐个击破；探针位 /tmp/probe 可复现；每项附证据与验收）
 ### P0 移植缺口（UP 过 / TN 拒）
@@ -180,7 +181,7 @@
 - [ ] H1b 深层罪魁节点定位（`1+nosuchfn()`/`String(nosuchfn())`/`Array(nosuchfn())`/`Date.parse(nosuchfn())`/三元臂内调用：上游指内层调用，本仓止于初值根；需求值链透传失败节点位置，大项另立）.
 - [ ] H1c 双报去重（三元/str 推断臂内层直报+wrapper 复报 2 vs 上游 1；step138 已对齐位置，计数对齐另立）.
 - [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；unknown-fn 体；datenew " binds" 尾；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.
-- [ ] H10 声明/赋值位三元值（`const t = c?a:b`/`r = c?a:b` UP 过 / PORT 拒 "float/f64 ternary"；return 位通；demos 已规避，另立）.
+- [x] H10 声明/赋值位三元值 → step143 已落地（f64 门仅真浮臂进 + i32 臂记种 + 去 f64 臂双写；`const t`/`r=` 转正且真机值对）.
 - [ ] H11 for-in 增量 UseAfterMove（`t_6` 于 `add t_6, 1`；for-of 同形已修，for-in 另立）.
 - [ ] H12 alloc 结果归属全覆盖审计（verifier 规则：alloc 出须 `!`；已修回调 slot/for-of 域/extern call/slice，余下具化点逐方法探针 build-exe 全覆盖）.
 - [x] H2 arrNest 方法派生传递 → step136 已闭环（slice/toReversed/with/toSpliced/concat/from/filter；map 天然 flat）。
