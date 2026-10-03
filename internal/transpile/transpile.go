@@ -1414,6 +1414,7 @@ type saScope struct {
 	pendingFns  *[]string    // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
 	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
 	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
+	arrNest     map[string]bool // array handle holds slice handles (deep clone recurses; flat by default)
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：

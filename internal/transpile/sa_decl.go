@@ -515,10 +515,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		scope.types[name] = "f64"
 		saDeclarePlain(scope, name)
 	} else if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = k
 		saConsumeOwn(scope, op)
 		saDeclareOwned(scope, name)
 		saCopyInstFn(scope, op, name)
+		saPropArrNest(scope, op, name)
 	} else {
 		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "i32"

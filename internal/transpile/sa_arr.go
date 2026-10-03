@@ -21,6 +21,16 @@ import (
 // saArrayLiteralElem 求数组字面量单个普通元（嵌套字面量递归/串位/其余 i32；
 // spread 元不在此（调用方走合并通道）；形状证据：封存 lowerArrayLiteral:8709-8735
 // 普通元逐元 lowerExpr 同形）。
+// saPropArrNest propagates nested-slice marking across handle bindings.
+func saPropArrNest(scope *saScope, from, to string) {
+	if scope.arrNest == nil || to == "" || from == to {
+		return
+	}
+	if scope.arrNest[from] {
+		scope.arrNest[to] = true
+	}
+}
+
 func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if el.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
@@ -82,6 +92,16 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		return h, ""
 	}
 	var elems []string
+	// nested-slice marking (elements that are themselves literals hold handles).
+	nested := false
+	if al.Elements != nil {
+		for _, el := range al.Elements.Nodes {
+			if el != nil && el.Kind == ast.KindArrayLiteralExpression {
+				nested = true
+				break
+			}
+		}
+	}
 	if al.Elements != nil {
 		for _, el := range al.Elements.Nodes {
 			v, msg := saArrayLiteralElem(w, el, scope, pos, refusals, nextTemp)
@@ -107,6 +127,12 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
+	if nested {
+		if scope.arrNest == nil {
+			scope.arrNest = map[string]bool{}
+		}
+		scope.arrNest[h] = true
+	}
 	return h, ""
 }
 
@@ -414,6 +440,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		scope.types[name] = "arr"
 		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
+		saPropArrNest(scope, h, name)
 		return true
 	}
 	// 数组构造式（`Array(n)`/`Array(a, b)`；`new Array(n)` 由声明位直办）。
@@ -440,6 +467,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 			saConsumeOwn(scope, src)
 		}
 		saDeclareOwned(scope, name)
+		saPropArrNest(scope, src, name)
 		return true
 	}
 	ln, col := pos(d.Pos())
@@ -1298,6 +1326,121 @@ func saArrayClampLen(w printer.EmitTextWriter, v, ln string, scope *saScope, nex
 }
 
 // saLowerArrayPush 扩容拷贝压栈（返回新长；形状证据：封存 lowerArrayPush:5999-6054）。
+// saLowerDeepClone lowers `structuredClone(v)` (element-wise deep copy for array handles,
+// recursing one level into nested slices; scalars snapshot; cf lowerDeepClone).
+// saLowerDeepClone lowers `structuredClone(v)` array copying (flat or nested by mark).
+func saLowerDeepClone(w printer.EmitTextWriter, src string, nested bool, scope *saScope, nextTemp *int) string {
+	if nested {
+		return saLowerDeepCloneInner(w, src, "deep", true, scope, nextTemp)
+	}
+	return saLowerDeepCloneInner(w, src, "flat", true, scope, nextTemp)
+}
+
+// saLowerDeepCloneInner ports lowerDeepCloneInner (kind snap/flat/deep; takeOwn marks only
+// the top result owned; loop-scoped inner headers move into the outer array).
+func saLowerDeepCloneInner(w printer.EmitTextWriter, src, kind string, takeOwn bool, scope *saScope, nextTemp *int) string {
+	if kind == "snap" {
+		cp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", cp, src))
+		return cp
+	}
+	fresh := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	freshL := func(p string) string {
+		l := fmt.Sprintf("L_dc_%s_%d", p, *scope.nextLabel)
+		*scope.nextLabel++
+		return l
+	}
+	ln := fresh()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, src))
+	sdata := fresh()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, src))
+	dest := fresh()
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
+	ln1 := fresh()
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", ln1, ln))
+	nby := fresh()
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, ln1))
+	ddata := fresh()
+	w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, ln))
+	w.Write(fmt.Sprintf("  !%s\n", ddata))
+	dloop := fresh()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
+	iv := fresh()
+	w.Write(fmt.Sprintf("  %s = 0\n", iv))
+	topL, bodyL, endL := freshL("top"), freshL("body"), freshL("end")
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fresh()
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iv, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	so := fresh()
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", so, iv))
+	saddr := fresh()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, sdata, so))
+	daddr := fresh()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, dloop, so))
+	if kind == "deep" {
+		inner := fresh()
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", inner, saddr))
+		inew := saLowerDeepCloneInner(w, inner, "flat", false, scope, nextTemp)
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, inew))
+	} else {
+		cv := fresh()
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cv, saddr))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, cv))
+	}
+	inext := fresh()
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, iv))
+	w.Write(fmt.Sprintf("  %s = %s\n", iv, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	if takeOwn {
+		saOwnTemp(scope, dest)
+	}
+	if kind == "deep" {
+		if scope.arrNest == nil {
+			scope.arrNest = map[string]bool{}
+		}
+		scope.arrNest[dest] = true
+	}
+	return dest
+}
+
+func saLowerStructuredClone(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, "structuredClone takes 1 argument"
+	}
+	if h, msg := saArrValueOf(w, argNodes[0], scope, pos, refusals, nextTemp); msg == "" {
+		nested := scope.arrNest != nil && scope.arrNest[h]
+		dest := saLowerDeepClone(w, h, nested, scope, nextTemp)
+		saOwnTemp(scope, dest)
+		scope.types[dest] = "arr"
+		if nested {
+			if scope.arrNest == nil {
+				scope.arrNest = map[string]bool{}
+			}
+			scope.arrNest[dest] = true
+		}
+		return dest, false, ""
+	}
+	v, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	return saLowerDeepCloneInner(w, v, "snap", false, scope, nextTemp), false, ""
+}
+
 func saLowerArrayPush(w printer.EmitTextWriter, arr, val string, scope *saScope, nextTemp *int) string {
 	ln := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++

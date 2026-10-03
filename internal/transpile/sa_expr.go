@@ -632,6 +632,10 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 	}
 	sig, ok := scope.funcs[name]
 	if !ok {
+	// structuredClone builtin fallback (locals, math aliases and user functions win above).
+	if name == "structuredClone" {
+		return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)
+	}
 		// 异步定时器裸全局专用拒因（先于 unknown；事件循环回调分发
 		// Phase 2，无同步 JS 形；形状证据：封存 node_timers.go:16-33）。
 		// 方法形（`x.setTimeout`）不触此门，走各自表面。
