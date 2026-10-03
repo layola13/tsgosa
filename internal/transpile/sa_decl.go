@@ -398,7 +398,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		return false
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
-	scope.types[name] = "i32"
+	// 句柄读回种传递（字段读已记临时量种；字面量/绑定名沿既有 i32）。
+	if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		scope.types[name] = k
+	} else {
+		scope.types[name] = "i32"
+	}
 	return true
 }
 

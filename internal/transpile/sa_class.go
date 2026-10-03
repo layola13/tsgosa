@@ -2049,12 +2049,16 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		scope.types[t] = "arr"
 		return t, ""
 	}
 	if def.fkinds[field] == "inst" {
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		if sub, ok := def.fsub[field]; ok {
+			scope.types[t] = "inst:" + sub
+		}
 		return t, ""
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
