@@ -1134,7 +1134,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		if el != nil && el.Kind == ast.KindNumberKeyword {
 			return "arr", true
 		}
-		if k, ok := saAnnotKind(el); ok && k == "i32" {
+		// 串元数组（`string[]` 具化 16 字节切片头数组；封存 annotationType
+		// ArrayType 即 tArray 不分元种 + lowerArrayLiteral 逐元 lowerExpr 同形）。
+		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str") {
 			return "arr", true
 		}
 		return "", false

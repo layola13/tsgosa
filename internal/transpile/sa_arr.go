@@ -9,9 +9,12 @@ import (
 
 // sa_arr.go — arr 种全集：字面量/读写/length/声明/解构/for-of-in/方法与高阶内联（step12/13/16/26；esz 恒 4）。
 // saLowerVarDeclList lowering 声明表（语句位与 for 初始化位共用）。
-// saLowerArrayLiteral lowering i32 数组字面量（形状证据：封存
+// saLowerArrayLiteral lowering 数组字面量（i32/串元，形状证据：封存
 // lowerArrayLiteral:8684-8740：`alloc 16` 头 + `alloc len*4` 缓冲 + 逐槽
-// `store … as i32` + 头部 ptr/len + `!buf`；spread/非 i32 元大声拒）。
+// `store … as i32` + 头部 ptr/len + `!buf`；spread 大声拒）。
+// 元求值与上游 lowerExpr 同形：串元走串位（具化切片 temp 归属，具名直存），
+// 嵌套字面量递归（内层头归属，外层存后返前释放）；i32 元沿既有纯临时量口径。
+// 头槽一律归属（封存尾 declareOwned(h)；具名绑定消费，余下返前释放）。
 // 嵌套数组字面量元递归构造内层 slice 句柄存句柄值（外层 esz 恒 4，与上游
 // lowerExpr 递归同形；串句柄混存截断风险由注解门守，见调用方）。
 func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -26,6 +29,19 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 				h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", msg
+				}
+				elems = append(elems, h)
+				continue
+			}
+			if saIsStrExpr(el, scope) {
+				// 串元（封存 lowerExpr 串分支同形；字面量具化 temp 已归属，
+				// 具名直存不碰归属——名下值仍由名释放）。
+				h, msg := saEvalStr(w, el, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if saIsTempOp(h) {
+					saOwnTemp(scope, h)
 				}
 				elems = append(elems, h)
 				continue
@@ -52,6 +68,7 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
 	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
+	saOwnTemp(scope, h)
 	return h, ""
 }
 
@@ -324,6 +341,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "arr"
+		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		return true
 	}
@@ -337,6 +355,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "arr"
+		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		return true
 	}
@@ -344,6 +363,11 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	if src, msg := saArrValueOf(w, vd.Initializer, scope, pos, refusals, nextTemp); msg == "" {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
 		scope.types[name] = "arr"
+		// 新鲜 temp 句柄消费（具名直传不碰：名下值仍由名释放，上游同形拒拷贝，
+		// 本仓沿既有直传口径，禁静默 move）。
+		if saIsTempOp(src) {
+			saConsumeOwn(scope, src)
+		}
 		saDeclareOwned(scope, name)
 		return true
 	}
