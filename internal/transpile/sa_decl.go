@@ -497,12 +497,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 
 // saSynthArrowParams 合成箭头/函数表达式形参表（与 saSynthParams 同核；
 // 形状证据：封存 lowerArrowBinding:1074-1098，模式走同 hiddenDestructuredParam）。
-func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) ([]string, map[string]string, []saDestructurePending, bool) {
+func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if pl := arrow.ParameterList(); pl != nil {
 		nodes = pl.Nodes
 	}
-	return saSynthParamNodes(nodes, classes, aliasOf)
+	return saSynthParamNodes(nodes, classes, aliasOf, enums)
 }
 
 // saArrowParamNames 合成箭头形参名表（标识符直通；模式取隐藏名，与 saParamNames 同序）。
@@ -994,7 +994,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	// 形参种先行（签名注解与归属登记同源；封存 lowerArrowBinding 先合成形参同形）。
-	_, kinds, arrowPendings, ok := saSynthArrowParams(arrow, classes, aliasOf)
+	_, kinds, arrowPendings, ok := saSynthArrowParams(arrow, classes, aliasOf, enums)
 	if !ok {
 		ln, col := pos(arrow.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
@@ -1269,7 +1269,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	paramKinds, synthOK := map[string]string(nil), false
 	var pendings []saDestructurePending
 	var captured []string
-	if params, paramKinds, pendings, synthOK = saSynthArrowParams(arrow, scope.classes, scope.aliasOf); !synthOK {
+	if params, paramKinds, pendings, synthOK = saSynthArrowParams(arrow, scope.classes, scope.aliasOf, scope.enums); !synthOK {
 		return refuse(arrow, "unsupported parameter annotation (i32/bool/arr/str/inst only)")
 	}
 	// 返回种（严格上游序，封存 :1099-1112）：显注解 > 表达式体/有形参即值

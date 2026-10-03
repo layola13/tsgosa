@@ -584,7 +584,12 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 			return saEvalStr(w, a, scope, pos, refusals, nextTemp)
 		}
 		if len(sig.paramKinds) == total && sig.paramKinds[i] == "arr" {
-			return saArrValueOf(w, a, scope, pos, refusals, nextTemp)
+			// handle position: array values go through the handle bus; scalar values
+			// (enum instantiations as i32, etc.) pass through; cf lowerCall handle positions.
+			if op, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg == "" {
+				return op, ""
+			}
+			return saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		}
 		if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
 			if a != nil && a.Kind == ast.KindIdentifier {
@@ -841,6 +846,17 @@ func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saSco
 // add/sub/mul/div/srem/shl/ashr/lshr/and/or/xor、eq/ne/slt/sle/sgt/sge；`**`
 // 走 lowerPowLoop:3326-3350；一元见 lowerPrefixUnary:3595-3619）。
 // 返回 (operand, errMsg)，errMsg 非空即失败（调用方按上下文包装定位拒绝）。
+// saArrIdentOperand resolves an arr-handle identifier operand for direct equality
+// comparison (enum instantiations and other handle bindings against i32 values).
+func saArrIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
+			return e.Text(), true
+		}
+	}
+	return "", false
+}
+
 func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
 		return "", "missing expression"
@@ -1409,6 +1425,51 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return saLowerPow(w, be, scope, pos, refusals, nextTemp)
 			}
 			return "", fmt.Sprintf("binary operator %s not in subset", saBinaryOpKind(be).String())
+		}
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+			// handle equality compares directly (arr bindings from enum instantiations
+			// against i32 values; address semantics; string/instance sides keep old gates).
+			if ln, ok := saArrIdentOperand(be.Left, scope); ok {
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				op2 := "eq"
+				if neg {
+					op2 = "ne"
+				}
+				if rn, ok := saArrIdentOperand(be.Right, scope); ok {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, ln, rn))
+					return t, ""
+				}
+				r, msgR := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+				if msgR != "" {
+					return "", msgR
+				}
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, ln, r))
+				return t, ""
+			}
+			if rn, ok := saArrIdentOperand(be.Right, scope); ok {
+				l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+				if msgL != "" {
+					return "", msgL
+				}
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				op2 := "eq"
+				if neg {
+					op2 = "ne"
+				}
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, rn))
+				return t, ""
+			}
 		}
 		l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
 		if msgL != "" {
