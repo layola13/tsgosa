@@ -1059,6 +1059,49 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						return op, ""
 					}
 				}
+				// 嵌套链写（`q.p.a = v` 经内层句柄；叶子按布局存，inst 叶拒；
+				// 链 setter 不 tran，沿旧门；形状证据：封存 saChainBase）。
+				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+					lpa := be.Left.AsPropertyAccessExpression()
+					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindPropertyAccessExpression && lpa.Name() != nil {
+						if ch, cdef, msg := saChainBase(w, lpa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+							fname := lpa.Name().Text()
+							if _, ok := cdef.offsets[fname]; ok {
+								switch cdef.fkinds[fname] {
+								case "str":
+									sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+									if msg != "" {
+										return "", msg
+									}
+									if msg := saLowerClassFieldStore(w, ch, cdef, fname, sop); msg != "" {
+										return "", msg
+									}
+									return sop, ""
+								case "arr":
+									v, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp)
+									if msg != "" {
+										return "", msg
+									}
+									if msg := saLowerClassFieldStore(w, ch, cdef, fname, v); msg != "" {
+										return "", msg
+									}
+									return v, ""
+								case "inst":
+									return "", "nested object reassignment needs a constructed handle"
+								default:
+									op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+									if msg != "" {
+										return "", msg
+									}
+									if msg := saLowerClassFieldStore(w, ch, cdef, fname, op); msg != "" {
+										return "", msg
+									}
+									return op, ""
+								}
+							}
+						}
+					}
+				}
 				// 类名基静态存取器写（`C.s = v` 空 this 内联，返回右值；
 				// 裸类写实例 setter 大声拒；遮蔽门与读位同形）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
