@@ -197,6 +197,16 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return "", "missing expression"
 	}
 	switch e.Kind {
+	case ast.KindConditionalExpression:
+		// 三元串臂（与 return/声明位同核；i32 臂在此拒）。
+		t, isStr, msg := saLowerTernaryValue(w, e.AsConditionalExpression(), e, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if !isStr {
+			return "", "not a string expression"
+		}
+		return t, ""
 	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 		return saLowerStringLiteral(w, e.Text(), scope, nextTemp), ""
 	case ast.KindTemplateExpression:

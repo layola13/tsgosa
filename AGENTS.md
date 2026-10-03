@@ -112,6 +112,7 @@
 - step82（链式length一次过，落`sa_arr.go`一处9行，零新文件）：`saLowerLengthExpr`绑定基后增`ElementAccess`分支（经句柄总线递归求内层句柄读+8，与读位同形）；3项等价（链式/扁平/串回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step83（for-of嵌套直巡行记arr一次过，落`sa_arr.go`一处，零新文件）：被巡为嵌套字面量时行绑定记`arr`（行即内层句柄，`row[0]`/`row.length`可用；扁平仍`i32`；变量被巡元素种未知沿旧门，另立项）；2项等价（直巡行再下标/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - step84（三元值核两处共用一次过，落`sa_expr.go`值核+`sa_decl.go`推断臂+`transpile.go`return位改调，零新文件）：`saLowerTernaryValue`（i32 SELECT/串槽汇合，分歧沿核拒）+无注解声明三元臂（i32/str记种）+return位改调（净删52行归属表达式域）；4项等价（i32/串推断+return回归/分歧拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧`sa_class.go ///`行；JEV blast local_only；`main.go`未动。
+- step85（三元进求值总线一次过，落`sa_expr/sa_str.go`各一臂，零新文件）：`saEvalI32`/`saEvalStr`增`Conditional`分支共用值核（串种交叉沿既有门拒；bool经`saEvalBool`回退自动通）；5项等价（有注解串/bool/赋值/串赋值/return回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧行；JEV blast local_only；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

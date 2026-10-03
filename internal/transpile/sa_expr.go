@@ -740,6 +740,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "this outside a class method is not lowerable"
 		}
 		return scope.thisSelf, ""
+	case ast.KindConditionalExpression:
+		// 三元 i32 臂（与 return/声明位同核；串臂在此拒）。
+		t, isStr, msg := saLowerTernaryValue(w, e.AsConditionalExpression(), e, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if isStr {
+			return "", "string ternary in i32 expression"
+		}
+		return t, ""
 	case ast.KindNewExpression:
 		// 实例只可经声明绑定（`const o = new C()`）；值位大声拒。
 		ne := e.AsNewExpression()
