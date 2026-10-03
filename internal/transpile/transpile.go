@@ -488,9 +488,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		}
 		var pk []string
 		if kinds, ok := saParamKinds(fn, classes); ok {
-			if fn.Parameters != nil {
-				for _, p := range fn.Parameters.Nodes {
-					pk = append(pk, kinds[p.AsParameterDeclaration().Name().Text()])
+			if names, ok := saParamNames(fn); ok {
+				for _, n := range names {
+					pk = append(pk, kinds[n])
 				}
 			}
 		}
@@ -604,21 +604,147 @@ func saFuncName(fn *ast.FunctionDeclaration) (string, bool) {
 	return nm.Text(), true
 }
 
+// saDestructurePending 记录一个绑定模式形参：隐藏句柄形参 + 体顶展开的模式。
+// 形状证据：封存 destructurePending:5335-5341 + hiddenDestructuredParam:5347-5371
+// + drainDestructuredParams:5376-5410（体顶 field-wise，与声明解构同形同拒）。
+type saDestructurePending struct {
+	hid   string
+	pat   *ast.Node
+	annot *ast.TypeNode
+}
+
+// saSynthParams 合成形参表（标识符直通；`{x,y}`/`[a,b]` 模式合成隐藏句柄形参）。
+// rest/default/optional 形参仍大声拒（封存 :5349）。隐藏名对兄弟形参名唯一
+// （`__darg` 冲突追 `_`，封存 :5359-5368）。模式种：数组注解 `i32[]` 记 arr，
+// 类/接口注解记 `inst:Name`（调用点句柄直传，复用 arr/inst 求值位）；无注解数组
+// 模式记 arr，无注解对象模式无布局可查、大声拒。
+func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef) ([]string, map[string]string, []saDestructurePending, bool) {
+	kinds := map[string]string{}
+	var pendings []saDestructurePending
+	if fn.Parameters == nil {
+		return nil, kinds, nil, true
+	}
+	taken := map[string]bool{}
+	for _, p := range fn.Parameters.Nodes {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+			return nil, nil, nil, false
+		}
+		nm := pd.Name()
+		if nm == nil {
+			return nil, nil, nil, false
+		}
+		if nm.Kind == ast.KindIdentifier {
+			name := nm.Text()
+			taken[name] = true
+			if pd.Type == nil {
+				kinds[name] = "i32"
+				continue
+			}
+			k, ok := saAnnotKind(pd.Type)
+			if !ok {
+				if pd.Type.Kind == ast.KindTypeReference {
+					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+						if _, ok := classes[ref.TypeName.Text()]; ok {
+							kinds[name] = "inst:" + ref.TypeName.Text()
+							continue
+						}
+					}
+				}
+				return nil, nil, nil, false
+			}
+			if k != "i32" && k != "bool" && k != "arr" && k != "str" {
+				return nil, nil, nil, false
+			}
+			kinds[name] = k
+			continue
+		}
+		if nm.Kind != ast.KindObjectBindingPattern && nm.Kind != ast.KindArrayBindingPattern {
+			return nil, nil, nil, false
+		}
+		hid := "__darg"
+		for taken[hid] {
+			hid += "_"
+		}
+		taken[hid] = true
+		kind := ""
+		if pd.Type == nil {
+			if nm.Kind == ast.KindArrayBindingPattern {
+				kind = "arr"
+			} else {
+				return nil, nil, nil, false
+			}
+		} else if k, ok := saAnnotKind(pd.Type); ok && k == "arr" {
+			kind = "arr"
+		} else if pd.Type.Kind == ast.KindTypeReference {
+			if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+				if _, ok := classes[ref.TypeName.Text()]; ok {
+					kind = "inst:" + ref.TypeName.Text()
+				}
+			}
+			if kind == "" {
+				return nil, nil, nil, false
+			}
+		} else {
+			return nil, nil, nil, false
+		}
+		kinds[hid] = kind
+		pendings = append(pendings, saDestructurePending{hid: hid, pat: nm.AsNode(), annot: pd.Type})
+	}
+	var out []string
+	if fn.Parameters != nil {
+		// 按形参顺序重建名表（隐藏名已占位，保证签名/预扫/调用元数一致）。
+		taken2 := map[string]bool{}
+		for _, p := range fn.Parameters.Nodes {
+			pd := p.AsParameterDeclaration()
+			nm := pd.Name()
+			if nm.Kind == ast.KindIdentifier {
+				out = append(out, nm.Text())
+				taken2[nm.Text()] = true
+				continue
+			}
+			hid := "__darg"
+			for taken2[hid] {
+				hid += "_"
+			}
+			// 同 saSynthParams 上半的 taken 推进保持同序同名：兄弟标识符先占位。
+			// 标识符已在 taken2 占位，隐藏名按序追 `_` 即与上半一致。
+			taken2[hid] = true
+			out = append(out, hid)
+		}
+	}
+	return out, kinds, pendings, true
+}
+
 func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 	if fn.Parameters == nil {
 		return nil, true
 	}
 	var out []string
+	taken := map[string]bool{}
 	for _, p := range fn.Parameters.Nodes {
 		pd := p.AsParameterDeclaration()
 		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
 			return nil, false
 		}
 		nm := pd.Name()
-		if nm == nil || nm.Kind != ast.KindIdentifier {
+		if nm == nil {
 			return nil, false
 		}
-		out = append(out, nm.Text())
+		if nm.Kind == ast.KindIdentifier {
+			out = append(out, nm.Text())
+			taken[nm.Text()] = true
+			continue
+		}
+		if nm.Kind != ast.KindObjectBindingPattern && nm.Kind != ast.KindArrayBindingPattern {
+			return nil, false
+		}
+		hid := "__darg"
+		for taken[hid] {
+			hid += "_"
+		}
+		taken[hid] = true
+		out = append(out, hid)
 	}
 	return out, true
 }
@@ -627,44 +753,132 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 // 标注依据封存 saemit.go:162 annotationType（number->i32；i32 TypeReference->i32）；
 // 无注解缺省 i32（形状证据：封存 lowerFunction:946 `ptype := tI32`）。
 // 类/接口注解（`p: Pt`）记 `inst:Pt`（实例句柄直传）。
+// 绑定模式形参走隐藏句柄（`__darg`，数组记 arr、对象记 `inst:Name`；封存 :5347-5371）。
 func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef) (map[string]string, bool) {
-	kinds := map[string]string{}
-	if fn.Parameters == nil {
-		return kinds, true
+	_, kinds, _, ok := saSynthParams(fn, classes)
+	if !ok {
+		return nil, false
 	}
-	for _, p := range fn.Parameters.Nodes {
-		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+	for _, v := range kinds {
+		if v != "i32" && v != "bool" && v != "arr" && v != "str" && !(len(v) > 5 && v[:5] == "inst:") {
 			return nil, false
 		}
-		nm := pd.Name()
-		if nm == nil || nm.Kind != ast.KindIdentifier {
-			return nil, false
-		}
-		if pd.Type == nil {
-			kinds[nm.Text()] = "i32"
-			continue
-		}
-		k, ok := saAnnotKind(pd.Type)
-		if !ok {
-			// 类/接口注解直记实例种（`p: Pt` → `inst:Pt`）。
-			if pd.Type.Kind == ast.KindTypeReference {
-				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
-					if _, ok := classes[ref.TypeName.Text()]; ok {
-						kinds[nm.Text()] = "inst:" + ref.TypeName.Text()
-						continue
-					}
-				}
-			}
-			return nil, false
-		}
-		// 参数仅允许 i32/bool/str/arr 四种（其余大声拒，子集门）。
-		if k != "i32" && k != "bool" && k != "arr" && k != "str" {
-			return nil, false
-		}
-		kinds[nm.Text()] = k
 	}
 	return kinds, true
+}
+
+// saDrainDestructuredParams 在体顶按域展开模式形参（与声明解构同形同拒）。
+// 数组位逐元越界归零 join 绑 i32（封存 destructureArray:5309-5333）；对象位按
+// 接口/类布局偏移 `load hid + off as i32` 绑 i32（封存 destructureObject:5465-5509）。
+// rest/嵌套/缺省/未知域/无布局一律大声拒。
+func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructurePending, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) bool {
+	for _, q := range pendings {
+		if q.pat.Kind == ast.KindArrayBindingPattern {
+			idx := 0
+			for _, el := range q.pat.AsBindingPattern().Elements.Nodes {
+				if el.Kind != ast.KindBindingElement {
+					idx++
+					continue
+				}
+				be := el.AsBindingElement()
+				if be.DotDotDotToken != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
+					return false
+				}
+				if be.Initializer != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable"})
+					return false
+				}
+				nm := be.Name()
+				if nm == nil {
+					idx++
+					continue
+				}
+				if nm.Kind != ast.KindIdentifier {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
+					return false
+				}
+				name := nm.Text()
+				if _, dup := scope.types[name]; dup {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+					return false
+				}
+				v := saLowerCheckedIndex(w, q.hid, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", name, v))
+				scope.types[name] = "i32"
+				idx++
+			}
+			continue
+		}
+		if q.pat.Kind == ast.KindObjectBindingPattern {
+			var def *saClassDef
+			if q.annot != nil && q.annot.Kind == ast.KindTypeReference {
+				if ref := q.annot.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+					def, _ = scope.classes[ref.TypeName.Text()]
+				}
+			}
+			if def == nil {
+				ln, col := pos(q.pat.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
+				return false
+			}
+			for _, el := range q.pat.AsBindingPattern().Elements.Nodes {
+				if el.Kind != ast.KindBindingElement {
+					continue
+				}
+				be := el.AsBindingElement()
+				if be.DotDotDotToken != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
+					return false
+				}
+				if be.Initializer != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable"})
+					return false
+				}
+				nm := be.Name()
+				if nm == nil || nm.Kind != ast.KindIdentifier {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
+					return false
+				}
+				field := nm.Text()
+				if be.PropertyName != nil {
+					pn := be.PropertyName.AsNode()
+					if pn.Kind != ast.KindIdentifier && pn.Kind != ast.KindStringLiteral {
+						ln, col := pos(el.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed destructuring keys are not lowerable"})
+						return false
+					}
+					field = pn.Text()
+				}
+				off, ok := def.offsets[field]
+				if !ok {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + field + " is not in the " + def.name + " layout"})
+					return false
+				}
+				name := nm.Text()
+				if _, dup := scope.types[name]; dup {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", name, q.hid, off))
+				scope.types[name] = "i32"
+			}
+			continue
+		}
+		ln, col := pos(q.pat.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("binding pattern %d is not lowerable", int(q.pat.Kind))})
+		return false
+	}
+	return true
 }
 
 // saAnnotKind 映射类型注解到子集种类（证据：封存 annotationType:166-210）。
@@ -940,6 +1154,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	}
 	for k, v := range paramKinds {
 		scope.types[k] = v
+	}
+	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒）。
+	if _, _, pendings, ok := saSynthParams(fn, scope.classes); ok && len(pendings) > 0 {
+		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
+			return
+		}
 	}
 	terminated := false
 	for _, s := range stmts {
