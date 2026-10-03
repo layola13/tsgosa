@@ -4,6 +4,7 @@ package transpile
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
@@ -25,8 +26,15 @@ type saClassField struct {
 	offset int
 }
 
+// saStaticVal 是静态字面量折叠值（文本 + 种；i32/bool 直接文本，str 具化）。
+type saStaticVal struct {
+	text string
+	kind string
+}
+
 // saClassDef 是类定义（字段表 + 构造 + 方法表；接口以 isIface 记，
-// 方法/构造恒空，不可 new；parent 为单继承父名，空即无）。
+// 方法/构造恒空，不可 new；parent 为单继承父名，空即无；statics 为
+// 静态字面量折叠表，不占实例槽）。
 type saClassDef struct {
 	name       string
 	fields     []saClassField
@@ -35,6 +43,7 @@ type saClassDef struct {
 	methods    map[string]*ast.Node
 	getters    map[string]*ast.Node
 	setters    map[string]*ast.Node
+	statics    map[string]saStaticVal
 	ctor       *ast.Node
 	ctorOwner  string
 	parent     string
@@ -196,6 +205,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					def.setters[k] = v
 				}
 			}
+			// 静态字面量随继承下沉（子类未覆写则继承；形状证据：封存 inheritClass statics 拷贝）。
+			if def.statics == nil {
+				def.statics = map[string]saStaticVal{}
+			}
+			for k, v := range bdef.statics {
+				if _, ok := def.statics[k]; !ok {
+					def.statics[k] = v
+				}
+			}
 			def.parent = base
 		}
 	}
@@ -219,9 +237,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				return false
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
-				return false
+				// 静态字面量折叠记表（不占实例槽；封存 recordClassNamed:9703-9711）；
+				// 非字面静态走 legacy 实例槽（封存 s2 形；i32 恒 4 字节，见 step48）。
+				if text, kind, ok := saStaticLiteral(pd.Initializer); ok {
+					if def.statics == nil {
+						def.statics = map[string]saStaticVal{}
+					}
+					def.statics[fn.Text()] = saStaticVal{text: text, kind: kind}
+					continue
+				}
 			}
 			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
 			// 9691-9743 不读 Initializer；初值语义随 alloc，见 AGENTS step47）。
@@ -569,6 +593,85 @@ func saObjPropName(p *ast.Node) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// saStaticLiteral 折叠静态字面量初值（断言/括号剥离后：数字面→i32 文本，
+// 串/反引号字面→原文（具化路径与字面量同字节），true/false→1/0；
+// 形状证据：封存 staticLiteralText:9444-9468）。
+func saStaticLiteral(n *ast.Node) (string, string, bool) {
+	for n != nil {
+		switch n.Kind {
+		case ast.KindAsExpression:
+			n = n.AsAsExpression().Expression
+			continue
+		case ast.KindSatisfiesExpression:
+			n = n.AsSatisfiesExpression().Expression
+			continue
+		case ast.KindNonNullExpression:
+			n = n.AsNonNullExpression().Expression
+			continue
+		case ast.KindParenthesizedExpression:
+			n = n.AsParenthesizedExpression().Expression
+			continue
+		case ast.KindTypeAssertionExpression:
+			n = n.AsTypeAssertion().Expression
+			continue
+		}
+		break
+	}
+	if n == nil {
+		return "", "", false
+	}
+	switch n.Kind {
+	case ast.KindNumericLiteral:
+		return n.Text(), "i32", true
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return n.Text(), "str", true
+	case ast.KindTrueKeyword:
+		return "1", "bool", true
+	case ast.KindFalseKeyword:
+		return "0", "bool", true
+	}
+	return "", "", false
+}
+
+// saStaticFold 读静态字面量（类名/实例/`this` 基；私有名不碰；
+// 串具化回句柄；i32/bool 直接文本；形状证据：封存 lowerExpr:8013-8041）。
+func saStaticFold(w printer.EmitTextWriter, base *ast.Node, field string, scope *saScope, nextTemp *int) (string, string, bool) {
+	if field == "" || strings.HasPrefix(field, "#") {
+		return "", "", false
+	}
+	var def *saClassDef
+	if base != nil && base.Kind == ast.KindIdentifier {
+		nm := base.Text()
+		if d, ok := scope.classes[nm]; ok {
+			def = d
+		} else if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
+			d, ok := scope.classes[k[5:]]
+			if !ok {
+				return "", "", false
+			}
+			def = d
+		} else {
+			return "", "", false
+		}
+	} else if base != nil && base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return "", "", false
+		}
+		def = d
+	} else {
+		return "", "", false
+	}
+	sv, ok := def.statics[field]
+	if !ok {
+		return "", "", false
+	}
+	if sv.kind == "str" {
+		return saLowerStringLiteral(w, sv.text, scope, nextTemp), "str", true
+	}
+	return sv.text, sv.kind, true
 }
 
 // saLowerObjectLiteral 具化结构体（alloc 布局 + 逐域 store；i32 值；

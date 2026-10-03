@@ -226,6 +226,19 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saEvalStr(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindTypeAssertionExpression:
 		return saEvalStr(w, e.AsTypeAssertion().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindPropertyAccessExpression:
+		// 类静态串字面量折叠（`C.TYPE` 具化；非串静态沿标识符口径拒；
+		// 封存 lowerExpr:8013-8041）。
+		pa := e.AsPropertyAccessExpression()
+		if pa.Name() != nil {
+			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
+				if kind == "str" {
+					return op, ""
+				}
+				return "", pa.Name().Text() + " is not a string"
+			}
+		}
+		return "", "not a string expression"
 	default:
 		return "", "not a string expression"
 	}

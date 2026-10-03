@@ -624,6 +624,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return t, ""
 			}
+			// 实例基静态字面量折叠（`c.N`；实例槽优先；封存 lowerExpr:8013-8041）。
+			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
+				if kind == "str" {
+					return "", "string "+pa.Name().Text()+" in i32 expression"
+				}
+				return op, ""
+			}
 			// 存取器读内联 getter 体（形状证据：封存 lowerExpr:8130-8137）。
 			v, msg := saInlineGetter(w, h, def, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
@@ -632,6 +639,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return v, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			// 类名基静态字面量折叠（`C.K`；串在 i32 位拒；封存 lowerExpr:8013-8041）。
+			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
+				if kind == "str" {
+					return "", "string " + pa.Name().Text() + " in i32 expression"
+				}
+				return op, ""
+			}
 			if _, ok := scope.classes[pa.Expression.Text()]; ok {
 				return "", "static class members are not lowerable"
 			}
