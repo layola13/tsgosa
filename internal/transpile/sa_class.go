@@ -2179,6 +2179,14 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 			return "", nil, msg
 		}
 		h, def = ih, idef
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword:
+		// super 链基与同接收者共享展平偏移（形状证据：封存 lowerMemberChain:8254-8260
+		// super 锚定查后改写 thisSelf + checkSuperAccess；写侧同接收者见 lowerFieldStore:8325-8330）。
+		bdef, hh, msg := saSuperBase(scope)
+		if msg != "" {
+			return "", nil, msg
+		}
+		h, def = hh, bdef
 	default:
 		return "", nil, "chained base is not a bound instance"
 	}
