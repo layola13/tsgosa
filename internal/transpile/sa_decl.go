@@ -1012,7 +1012,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -1066,7 +1066,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = kinds[p]
@@ -1352,7 +1352,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 		enumNonInt: scope.enumNonInt, classes: scope.classes, topConsts: scope.topConsts,
 		topStr: scope.topStr, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
 		nextLabel: scope.nextLabel, retKind: retKind, strPool: scope.strPool, src: scope.src,
-		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq, aliasOf: scope.aliasOf}
+		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq, aliasOf: scope.aliasOf, imports: scope.imports, importRemote: scope.importRemote}
 	// 内层继承外层 math 别名（Math.* 方法体内可用；顶层 maths 已在外层种入）。
 	saSeedTopMaths(inner, scope.mathAlias)
 	for k, v := range paramKinds {

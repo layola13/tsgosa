@@ -146,6 +146,16 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		if sig, ok := scope.funcs[nm]; ok {
 			return !sig.isVoid && sig.retKind == "string"
 		}
+		// fs/net projected string surfaces (readFile returns a slice).
+		if mod, ok := scope.imports[nm]; ok {
+			remote := nm
+			if r, ok := scope.importRemote[nm]; ok {
+				remote = r
+			}
+			if mod == "fs" && remote == "readFile" {
+				return true
+			}
+		}
 		return false
 	}
 	if ce.Expression.Kind != ast.KindPropertyAccessExpression {

@@ -438,6 +438,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
 	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
 	funcs := map[string]saFuncSig{}
+	imports := map[string]string{}
+	importRemote := map[string]string{}
 	enums := map[string]map[string]int64{}
 	enumNonInt := map[string]map[string]bool{}
 	classes := map[string]*saClassDef{}
@@ -597,6 +599,15 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			handledTop[st] = true
 		}
 	}
+	// prescan zero: builtin projection imports (fs/net direct calls need no linking).
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindImportDeclaration {
+			continue
+		}
+		if saRecordProjImports(st, imports, importRemote) {
+			handledTop[st] = true
+		}
+	}
 	strPool := &saStrPool{seen: map[string]string{}}
 	emitted := map[string]bool{}
 	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；
@@ -661,6 +672,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 				continue
 			}
 		case ast.KindImportDeclaration:
+			// builtin projection imports recorded in prescan emit nothing.
+			if handledTop[st] {
+				continue
+			}
 			imp := st.AsImportDeclaration()
 			if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
 				continue
@@ -681,7 +696,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -702,12 +717,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		for _, s := range entryStmts {
@@ -1415,6 +1430,8 @@ type saScope struct {
 	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
 	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
 	arrNest     map[string]bool // array handle holds slice handles (deep clone recurses; flat by default)
+	imports       map[string]string // builtin-module named imports (local -> module; single-file direct calls)
+	importRemote  map[string]string // import alias remote names (local -> remote; cf importedRemote)
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -1444,6 +1461,71 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 
 // saIsEntryStmt 报告顶层模块加载执行语句（声明/导入导出无码；其余执行。
 // 形状证据：封存 isEntryStmt:32-50）。
+// saIsProjModule reports builtin projection modules (fs/net and their node: forms;
+// single-file direct calls need no linking; other modules refuse loudly as before).
+func saIsProjModule(mod string) bool {
+	switch mod {
+	case "fs", "net", "node:fs", "node:net":
+		return true
+	}
+	return false
+}
+
+// saRecordProjImports records builtin-module named imports (local name -> module and
+// remote name; default/namespace forms stay unrecorded and refuse loudly downstream).
+// Returns true when recorded (emission skips via handledTop).
+func saRecordProjImports(st *ast.Node, imports, importRemote map[string]string) bool {
+	imp := st.AsImportDeclaration()
+	if imp == nil || imp.ImportClause == nil {
+		return false
+	}
+	if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
+		return false
+	}
+	ms := imp.ModuleSpecifier
+	if ms == nil || ms.Kind != ast.KindStringLiteral {
+		return false
+	}
+	mod := ms.Text()
+	if !saIsProjModule(mod) {
+		return false
+	}
+	base := mod
+	if len(base) > 5 && base[:5] == "node:" {
+		base = base[5:]
+	}
+	clause := imp.ImportClause.AsImportClause()
+	if clause == nil {
+		return false
+	}
+	nb := clause.NamedBindings
+	if nb == nil || nb.Kind != ast.KindNamedImports {
+		return false
+	}
+	ni := nb.AsNamedImports()
+	if ni == nil || ni.Elements == nil {
+		return false
+	}
+	for _, n := range ni.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindImportSpecifier {
+			continue
+		}
+		sp := n.AsImportSpecifier()
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		local := nm.Text()
+		imports[local] = base
+		remote := local
+		if sp.PropertyName != nil {
+			remote = sp.PropertyName.Text()
+		}
+		importRemote[local] = remote
+	}
+	return true
+}
+
 func saIsEntryStmt(st *ast.Node) bool {
 	switch st.Kind {
 	case ast.KindFunctionDeclaration,
@@ -1464,7 +1546,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1535,7 +1617,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = paramKinds[p]

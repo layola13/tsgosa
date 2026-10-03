@@ -601,6 +601,55 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saLowerProjCall lowers builtin-module projected calls (fs.readFile now; other surfaces
+// refuse loudly until their step; cf emitProjCall + StdProjectionTable).
+func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if mod == "fs" && remote == "readFile" {
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		if len(argNodes) != 1 {
+			return "", false, "fs.readFile takes 1 argument"
+		}
+		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		// path expands to &ptr+len (cf emitProjCall StrArgs).
+		bp, bl := saExpandStr(w, h, nextTemp)
+		scope.addImport("sa_std/fs.sai")
+		buf := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_file(&%s, %s, 1048576)\n", buf, bp, bl))
+		saOwnTemp(scope, buf)
+		// BUFFER unwrap (cf unwrapFsBuffer: length read, data/length calls, 16-byte slice).
+		hb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hb, buf))
+		saReleaseOwnedTemp(w, scope, buf)
+		dp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_data(%s)\n", dp, hb))
+		saOwnTemp(scope, dp)
+		dl := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_len(%s)\n", dl, hb))
+		saOwnTemp(scope, dl)
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, dp))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, dl))
+		saOwnTemp(scope, out)
+		saReleaseOwnedTemp(w, scope, dp)
+		saReleaseOwnedTemp(w, scope, dl)
+		saReleaseOwnedTemp(w, scope, buf)
+		return out, false, ""
+	}
+	return "", false, mod + "." + remote + " is not a projected surface"
+}
+
 func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	callName := name
 	if name == "main" && scope.mainRenamed {
@@ -632,10 +681,18 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 	}
 	sig, ok := scope.funcs[name]
 	if !ok {
-	// structuredClone builtin fallback (locals, math aliases and user functions win above).
-	if name == "structuredClone" {
-		return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)
-	}
+		// structuredClone builtin fallback (locals, math aliases and user functions win above).
+		if name == "structuredClone" {
+			return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)
+		}
+		// fs/net builtin-module projection (locals, aliases and user functions win above).
+		if mod, ok := scope.imports[name]; ok {
+			remote := name
+			if r, ok := scope.importRemote[name]; ok {
+				remote = r
+			}
+			return saLowerProjCall(w, mod, remote, ce, scope, pos, refusals, nextTemp)
+		}
 		// 异步定时器裸全局专用拒因（先于 unknown；事件循环回调分发
 		// Phase 2，无同步 JS 形；形状证据：封存 node_timers.go:16-33）。
 		// 方法形（`x.setTimeout`）不触此门，走各自表面。
