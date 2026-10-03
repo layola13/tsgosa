@@ -603,51 +603,113 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 
 // saLowerProjCall lowers builtin-module projected calls (fs.readFile now; other surfaces
 // refuse loudly until their step; cf emitProjCall + StdProjectionTable).
+// saFsProjTable maps one fs surface to its projection contract (cf StdProjectionTable fs section:
+// symbol, module, extra fixed params, string-arg positions, buffer unwrap, arity).
+func saFsProjTable(remote string) (symbol, module, extra string, strArgs []int, unwrap bool, nargs int, ok bool) {
+	switch remote {
+	case "readFile":
+		return "sa_fs_read_file", "sa_std/fs.sai", "1048576", []int{0}, true, 1, true
+	case "writeFile":
+		return "sa_fs_write_file", "sa_std/fs.sai", "", []int{0, 1}, false, 2, true
+	case "open":
+		return "sa_fs_file_open", "sa_std/fs.sai", "0", []int{0}, false, 1, true
+	case "create":
+		return "sa_fs_file_create", "sa_std/fs.sai", "", []int{0}, false, 1, true
+	case "close":
+		return "sa_fs_file_close", "sa_std/fs.sai", "", nil, false, 1, true
+	case "read":
+		return "sa_fs_file_read", "sa_std/fs.sai", "&buf, 4096", nil, false, 1, true
+	case "write":
+		return "sa_fs_file_write", "sa_std/fs.sai", "&buf, 0", nil, false, 1, true
+	case "remove":
+		return "sa_fs_remove_file", "sa_std/fs.sai", "", []int{0}, false, 1, true
+	case "mkdir":
+		return "sa_fs_make_dir", "sa_std/fs.sai", "", []int{0}, false, 1, true
+	}
+	return "", "", "", nil, false, 0, false
+}
+
 func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
-	if mod == "fs" && remote == "readFile" {
-		var argNodes []*ast.Node
-		if ce.Arguments != nil {
-			argNodes = ce.Arguments.Nodes
+	if mod != "fs" {
+		return "", false, mod + "." + remote + " is not a projected surface"
+	}
+	symbol, module, extra, strArgs, unwrap, nargs, ok := saFsProjTable(remote)
+	if !ok {
+		return "", false, mod + "." + remote + " is not a projected surface"
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != nargs {
+		return "", false, "fs." + remote + " takes " + fmt.Sprintf("%d", nargs) + " arguments"
+	}
+	isStr := map[int]bool{}
+	for _, k := range strArgs {
+		isStr[k] = true
+	}
+	scope.addImport(module)
+	var parts []string
+	for idx, a := range argNodes {
+		if isStr[idx] {
+			h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			bp, bl := saExpandStr(w, h, nextTemp)
+			parts = append(parts, "&"+bp, bl)
+			continue
 		}
-		if len(argNodes) != 1 {
-			return "", false, "fs.readFile takes 1 argument"
-		}
-		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", false, msg
 		}
-		// path expands to &ptr+len (cf emitProjCall StrArgs).
-		bp, bl := saExpandStr(w, h, nextTemp)
-		scope.addImport("sa_std/fs.sai")
-		buf := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_file(&%s, %s, 1048576)\n", buf, bp, bl))
-		saOwnTemp(scope, buf)
-		// BUFFER unwrap (cf unwrapFsBuffer: length read, data/length calls, 16-byte slice).
-		hb := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hb, buf))
-		saReleaseOwnedTemp(w, scope, buf)
-		dp := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_data(%s)\n", dp, hb))
-		saOwnTemp(scope, dp)
-		dl := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_len(%s)\n", dl, hb))
-		saOwnTemp(scope, dl)
-		out := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, dp))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, dl))
-		saOwnTemp(scope, out)
-		saReleaseOwnedTemp(w, scope, dp)
-		saReleaseOwnedTemp(w, scope, dl)
-		saReleaseOwnedTemp(w, scope, buf)
-		return out, false, ""
+		parts = append(parts, v)
 	}
-	return "", false, mod + "." + remote + " is not a projected surface"
+	if extra != "" {
+		for _, tok := range strings.Split(extra, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "&buf" {
+				buf := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 4096\n", buf))
+				saOwnTemp(scope, buf)
+				parts = append(parts, "&"+buf)
+				continue
+			}
+			parts = append(parts, tok)
+		}
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, symbol, strings.Join(parts, ", ")))
+	saOwnTemp(scope, t)
+	if !unwrap {
+		return t, false, ""
+	}
+	// BUFFER unwrap (cf unwrapFsBuffer: length read, data/length calls, 16-byte slice).
+	hb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hb, t))
+	saReleaseOwnedTemp(w, scope, t)
+	dp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_data(%s)\n", dp, hb))
+	saOwnTemp(scope, dp)
+	dl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fs_read_buffer_len(%s)\n", dl, hb))
+	saOwnTemp(scope, dl)
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, dp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, dl))
+	saOwnTemp(scope, out)
+	saReleaseOwnedTemp(w, scope, dp)
+	saReleaseOwnedTemp(w, scope, dl)
+	saReleaseOwnedTemp(w, scope, t)
+	return out, false, ""
 }
 
 func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
