@@ -1189,10 +1189,22 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		}
 		// 串元数组（`string[]` 具化 16 字节切片头数组；封存 annotationType
 		// ArrayType 即 tArray 不分元种 + lowerArrayLiteral 逐元 lowerExpr 同形）。
-		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str") {
+		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str" || k == "arr") {
 			return "arr", true
 		}
 		return "", false
+	case ast.KindTupleType:
+		// Tuples lower as fixed arrays (all members must slot as i32/str/arr).
+		tt := t.AsTupleTypeNode()
+		if tt == nil || tt.Elements == nil || len(tt.Elements.Nodes) == 0 {
+			return "", false
+		}
+		for _, m := range tt.Elements.Nodes {
+			if k, ok := saTupleElemKind(m); !ok || (k != "i32" && k != "str" && k != "arr") {
+				return "", false
+			}
+		}
+		return "arr", true
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 			switch ref.TypeName.Text() {
@@ -1203,6 +1215,42 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 			}
 		}
 		return "", false
+	default:
+		return "", false
+	}
+}
+
+// saTupleElemKind resolves one tuple member (scalars map directly; arrays and nested
+// tuples recurse; named/optional members refuse loudly).
+func saTupleElemKind(m *ast.Node) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	switch m.Kind {
+	case ast.KindNumberKeyword, ast.KindBooleanKeyword:
+		return "i32", true
+	case ast.KindStringKeyword:
+		return "str", true
+	case ast.KindArrayType:
+		at := m.AsArrayTypeNode()
+		if at == nil || at.ElementType == nil {
+			return "", false
+		}
+		if k, ok := saAnnotKind(at.ElementType); ok && (k == "i32" || k == "str" || k == "arr") {
+			return "arr", true
+		}
+		return "", false
+	case ast.KindTupleType:
+		tt := m.AsTupleTypeNode()
+		if tt == nil || tt.Elements == nil || len(tt.Elements.Nodes) == 0 {
+			return "", false
+		}
+		for _, e := range tt.Elements.Nodes {
+			if k, ok := saTupleElemKind(e); !ok || (k != "i32" && k != "str" && k != "arr") {
+				return "", false
+			}
+		}
+		return "arr", true
 	default:
 		return "", false
 	}
