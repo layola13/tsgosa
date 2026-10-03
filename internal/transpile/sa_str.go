@@ -90,7 +90,9 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken {
-			return saIsStrExpr(be.Left, scope) || saIsStrExpr(be.Right, scope)
+			// A + chain is string only if some operand is string-VALUED (i32-returning string
+			// calls like charCodeAt do not count; otherwise nested arithmetic misroutes to concat).
+			return saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)
 		}
 		return false
 	case ast.KindParenthesizedExpression:

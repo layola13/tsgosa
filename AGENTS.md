@@ -152,6 +152,7 @@
 - step123（元组类型归数组一次过，落 `transpile.go` 注解核，零新文件）：TupleType 全元可落槽即 arr（嵌套递归；具名/可选/空沿旧门）+ ArrayType 元素种放宽到 arr（嵌套/元组数组；句柄即句柄）+ 字面量/读写/调用经既有 arr 底座自动贯通；274 转正；有意分歧：签名 `(pair: ptr)`，上游 `tUnknown` 默认落 `(pair: i32)`（体按数组形一致）；**286 差分 260→261 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动，`transpile.go` 仅注解核。
 - step124（forEach 解构回调一次过，落 `sa_arr.go` 回调域，零新文件）：数组模式形参逐元越界归零 join 绑 i32（`saDestructureCallbackPattern` 复用声明位语义；名经回调快照先行绑定、体后恢复；空穴跳过，rest/嵌套/对象模式大声拒；封存 `bindCallbackParam:5296-5298` + `destructureArray:5307-5333`）；276 转正；**286 差分 261→262 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - step125（Math rounding 浮点实参一次过，落 `sa_math.go` 求值核，零新文件）：整数恒等保持 + 浮点字面量走 fptosi 转换 + 负零碎调整块（ceil 取负、round 先加 0.5、trunc 直转；封存 `lowerMathRounding:5941-5988` 全形；修正 step22“浮点分支不存在”旧断言）；268 转正；**286 差分 262→263 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
+- step126（串谓词嵌套修正一次过，落 `sa_str.go` 判定核，零新文件）：`saIsStrExpr` 的 `+` 链传递改按串值判定（i32 返回的串方法如 charCodeAt 不计入；否则嵌套算术误判拼接而拒；顶层行为不变，纯判定收紧）；282 转正（另含 3+ 串调用嵌套 `+` 链一族）；**286 差分 263→264 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 3.1 step109+ 增量台账（续跑自 step108）
