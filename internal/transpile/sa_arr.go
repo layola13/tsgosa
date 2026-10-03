@@ -2462,6 +2462,14 @@ func saDestructureCallbackPattern(w printer.EmitTextWriter, pat *ast.Node, arr s
 	return ""
 }
 
+// saCallbackScalarKind resolves the scalar snapshot kind (f64 stays float, else i32).
+func saCallbackScalarKind(kinds []string, i int) string {
+	if i < len(kinds) && kinds[i] == "f64" {
+		return "f64"
+	}
+	return "i32"
+}
+
 func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
 	params := cb.Parameters()
 	if len(params) > len(argVals) {
@@ -2564,7 +2572,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			continue
 		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
-		bind(name, "i32")
+		bind(name, saCallbackScalarKind(kinds, i))
 		saDeclarePlain(scope, name)
 	}
 	body := cb.Body()

@@ -371,6 +371,9 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				} else if pd.Type.Kind == ast.KindUnionType {
 					// union-typed fields lower as ptr handle slots (cf saNameOfType union default).
 					fkind = "arr"
+				} else if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
+					// `any` fields lower as ptr handle slots (cf saNameOfType unknown default).
+					fkind = "arr"
 				} else {
 					ln, col := pos(m.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
@@ -786,6 +789,9 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				}
 			} else if pd.Type.Kind == ast.KindUnionType {
 				// union-typed fields lower as ptr handle slots (cf class record).
+				fkind = "arr"
+			} else if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
+				// `any` fields lower as ptr handle slots (cf class record).
 				fkind = "arr"
 			} else {
 				ln, col := pos(m.Pos())
@@ -2064,7 +2070,11 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 		}
 		if pd.Type != nil {
 			if k, ok := saAnnotKind(pd.Type); ok {
-				if k != "i32" {
+				if k == "f64" {
+					kinds[i] = "f64"
+					continue
+				}
+				if k != "i32" && k != "bool" {
 					return "", "method parameters must be i32"
 				}
 				continue
@@ -2077,13 +2087,22 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 					}
 				}
 			}
-			// 泛型形参：注解擦除，按实参种绑定（`get(e: T)` ← `it: Item` 继承实参布局；
-			// 封存 inlineClassMethod:10236-10243 按实参布局别名，标量快照；非句柄实参沿旧门）。
-			if i < len(argNodes) && argNodes[i] != nil && argNodes[i].Kind == ast.KindIdentifier {
-				if k, ok := scope.types[argNodes[i].Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-					kinds[i] = k
-					continue
+			// 可擦除注解按实参形绑定（泛型 `T`、any、联合等无布局名：实例实参继承布局，
+			// 标量走快照；arr/str 句柄实参无布局绑定，沿旧门；封存 inlineClassMethod 按实参布局别名）。
+			if i < len(argNodes) && argNodes[i] != nil {
+				if argNodes[i].Kind == ast.KindIdentifier {
+					if k, ok := scope.types[argNodes[i].Text()]; ok {
+						if len(k) > 5 && k[:5] == "inst:" {
+							kinds[i] = k
+							continue
+						}
+						if k == "arr" || k == "str" {
+							return "", "method parameters must be i32"
+						}
+					}
 				}
+				kinds[i] = ""
+				continue
 			}
 			return "", "method parameters must be i32"
 		}
@@ -2100,6 +2119,15 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 				return "", msg
 			}
 			argVals = append(argVals, h)
+			continue
+		}
+		// f64 params evaluate as floats (snapshot copies float bits like scalars).
+		if i < len(kinds) && kinds[i] == "f64" {
+			v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			argVals = append(argVals, v)
 			continue
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)

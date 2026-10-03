@@ -161,6 +161,31 @@
 - step132（fs 其余投影面一次过，落 `sa_expr.go` 调用核投影表，零新文件）：投影表数据驱动（symbol/module/StrArgs/Extra/nargs；`&buf` 物化 4096 scratch；封存 `StdProjectionTable:135-154`）+ 通用 lowering（串位展开 `&ptr+len`、i32 直传、Extra 追加、结果归属；readFile unwrap 复用）+ 落字复核顺手修 step131 遗留右括号；172-177/188 转正；**286 差分 272→279 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - step133（net 投影通道一次过，落 `sa_expr.go` 投影表，零新文件）：投影表更名泛化 + tcpConnect/Listen/Accept/Read/Write/Close 六行（StrArgs/Extra/Fallible；sci `net.sai` 符号逐一核对在册）+ fallible u64 句柄经 field-0 i64 读取并释放（`@sa_net_tcp_connect(&p, l, 0)` 全形）；181-187 转正；**286 差分 279→286 同通过，0 分歧——移植验收达成**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - step134（语料外探针缺口六合一，零新文件）：`any`/`unknown` 关键字注解按初值种绑定（`x = 5` 直通；`any[]`/any 形参沿旧门）+ 泛型函数擦除（无约束形参集，裸 `T` 形参/返回缺省 i32；约束/具化/方法箭头泛型沿旧门）+ 联合字段落 arr 句柄槽（类与接口；可折叠联合沿旧门）+ 推断声明透明包装剥离（as/satisfies/non-null/断言/括号；求值核本已直通）+ `readonly T[]` 解包 + 接口方法签名跳过（无布局位；封存 recordLayout 跳过同形）；探针 6 项转正（p_any/p_genfn/p_unionfield/q_as/q_readonly/r_impl）；**286 差分保持 286 同通过，0 回退**；有意分歧：泛型函数单态 i32（上游 ptr 擦除；本仓与无注解缺省一致）+ 块作用域重名仍拒（step109 禁静默错码高于同形）；`async fn` 的 Promise 返回语义待 JEV 裁决，另立项；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
+- step135（探针缺口第二批：any 全位 + 泛型收尾 + f64 补位 + 联合收尾，零新文件）：`any`/`unknown`/`never` 关键字三位一体（形参/返回缺省 i32、字段落 arr 句柄、`any[]` 落 arr、声明走推断；`never` 同擦除）+ 泛型函数/箭头擦除收尾（约束擦除、箭头 T 返回、方法 any/union 形参加入按实参形绑定）+ 联合形参缺省 i32/联合声明走推断/typeof 声明走推断+ f64 补位（重绑定直写、复合 fadd 系、方法/顶层/箭头 f64 形参、调用核 f64 实参）+ bool 方法形参；探针 13 项转正；**286 差分保持 286 同通过，0 回退**；有意分歧：f64 复合按 fadd（上游 `add` 疑草率，正确优先）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
+
+## 后续 TODO（按优先级排队，逐个击破；探针位 /tmp/probe 可复现；每项附证据与验收）
+### P0 移植缺口（UP 过 / TN 拒）
+- [ ] T1 `Promise<T>` 返回（async 或普通函数；探针 t_async2/t_promiseret/p_async）：上游 `@f() -> ptr`。待裁决：(a) 照抄 ptr（需新建 ptr 返回种+直通全链）；(b) 解包为 T（与 await 同步语义一致，推荐）。裁决后立项。
+### P1 加固（正确性/诊断质量，不影响门禁数字）
+- [ ] H1 拒因行列偏移：3:37/`?.`1:41 等错位定位，查 pos() 映射（lowering 本体经排查无辜，纯诊断问题）。
+- [ ] H2 arrNest 方法派生传递：concat/slice/map/from 等新鲜句柄的嵌套标记（step130 硬约束；当前仅字面量/绑定/克隆覆盖，方法派生数组被克隆会浅拷贝）。
+- [ ] H3 `?.()` 可选调用、`static {}` 块、`symbol`、`export =`、`import =`：双方同拒，UP 放行再跟。
+- [ ] H4 对象模式回调 `({x}) =>`：沿旧门（需布局匹配，另立项）。
+- [ ] H5 `delete`/`using`/`bigint`/正则/生成器/`**=`/rest 解构/date 有参构造：双方同拒，UP 放行再跟。
+- [ ] H6 `keyof`/条件/映射类型：keyof 已探双方拒；其余未探针，先探针。
+- [ ] H7 f64 边角：`for (a = 8.5;;)` 初始化位、位运算浮点：未探针，先探针。
+### P2 通道（跨仓，前置在外）
+- [ ] C1 npm/program-link 多文件：阻塞于 satsgo todo/01 + sci node.sai（见 step75）。
+- [ ] C2 tsx/DOM：独立轨道（路二）。
+- [ ] C3 定时器事件循环 Phase 2。
+### P3 已裁决（不修，记共识）
+- D1 块重名遮蔽拒收（step109：禁静默错码高于同形；探针 q_shadow 恒红）。
+- D2 泛型擦除 i32 单态 vs 上游 ptr（step134：与无注解缺省一致，严格优先）。
+- D3 f64 零释放（step128：Plain 永不归属）。
+- D4 `any` 联合实现方式（step135：初值收窄即窄化联合，不建联合种）。
+- D5 f64 复合按 fadd（step135：上游 `add` 疑草率，正确优先）。
+- D6 联合声明走推断（step135：与上游初值种绑定同形）。
+
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 3.1 step109+ 增量台账（续跑自 step108）

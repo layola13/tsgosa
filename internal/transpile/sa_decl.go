@@ -203,7 +203,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saCopyInstFn(scope, h, name)
 			continue
 		}
-		if vd.Type == nil || saIsBareAny(vd.Type) {
+		if vd.Type == nil || saIsEraseAnnotation(vd.Type) {
 			// 无注解推断（形状证据：封存 lowerVarDeclList:1415-1418/1463-1464
 			// 未知注解缺省 i32 + 按初值类型绑定）：数组字面量/数组句柄走 arr 通道，
 			// true/false 走 bool，其余 i32 求值；缺 init 绑 i32 零值（const 缺 init 拒）。
@@ -251,6 +251,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 封存 saNameOfType:197-199 用户类型皆 ptr 句柄 + instantiateLayout:227-230
 			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
 			vkind, ok = saGenericHandleKind(vd.Type, scope)
+		}
+		// 非折叠联合与 typeof 声明按初值种绑定（cf any 擦除；可折叠已由 saAnnotKind 办）。
+		if vd.Type != nil && (vd.Type.Kind == ast.KindUnionType || vd.Type.Kind == ast.KindTypeQuery) {
+			return saLowerInferredDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && vkind != "f64" && !strings.HasPrefix(vkind, "inst:")) {
 			ln, col := pos(d.Pos())
@@ -753,13 +757,13 @@ func saGenericHandleKind(t *ast.TypeNode, scope *saScope) (string, bool) {
 	return "arr", true
 }
 
-// saIsBareAny reports a bare `any` annotation (erased: binds by initializer kind).
-// saIsBareAny reports an `any`/`unknown` annotation (erased: binds by initializer kind).
-func saIsBareAny(t *ast.TypeNode) bool {
+// saIsEraseAnnotation reports an erased annotation (`any`/`unknown`/`never`: binds by
+// initializer kind).
+func saIsEraseAnnotation(t *ast.TypeNode) bool {
 	if t == nil {
 		return false
 	}
-	return t.Kind == ast.KindAnyKeyword || t.Kind == ast.KindUnknownKeyword
+	return t.Kind == ast.KindAnyKeyword || t.Kind == ast.KindUnknownKeyword || t.Kind == ast.KindNeverKeyword
 }
 
 // saAnnotInstKind 消解具名接口/类注解为 `inst:Name`（单标识符、无泛型实参、
@@ -1069,13 +1073,16 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		k, ok := saReturnKindRef(rt, classes, aliasOf)
-		if !ok {
+		if saIsBareTypeParam(rt, saTypeParamSet(saNodeTypeParams(arrow))) {
+			// erased own type parameter defaults to number.
+			retKind, isVoid = "number", false
+		} else if k, ok := saReturnKindRef(rt, classes, aliasOf); !ok {
 			ln, col := pos(arrow.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
 			return
+		} else {
+			retKind, isVoid = k, k == "void"
 		}
-		retKind, isVoid = k, k == "void"
 	} else if k, v, ok := saPrescanRet(nil, arrow, tcx, classes, aliasOf); ok {
 		retKind, isVoid = k, v
 	}
@@ -1343,11 +1350,14 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	// 函数 i32 > checker 推断 > void。checker 回退 void 不得吞掉 value_fn 规则。
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		k, kok := saReturnKindRef(rt, scope.classes, scope.aliasOf)
-		if !kok {
+		if saIsBareTypeParam(rt, saTypeParamSet(saNodeTypeParams(arrow))) {
+			// erased own type parameter defaults to number.
+			retKind, isVoid = "number", false
+		} else if k, kok := saReturnKindRef(rt, scope.classes, scope.aliasOf); !kok {
 			return refuse(arrow, "unsupported return annotation")
+		} else {
+			retKind, isVoid = k, k == "void"
 		}
-		retKind, isVoid = k, k == "void"
 	} else if body.Kind != ast.KindBlock || len(params) > 0 {
 		retKind, isVoid = "i32", false
 	} else if k, v, pok := saPrescanRet(nil, arrow, scope.tcx, scope.classes, scope.aliasOf); pok {
@@ -1435,6 +1445,9 @@ func saSigKinds(paramKinds map[string]string, params []string) []string {
 func saSigParamType(kind string) string {
 	if kind == "i32" || kind == "bool" {
 		return "i32"
+	}
+	if kind == "f64" {
+		return "f64"
 	}
 	return "ptr"
 }

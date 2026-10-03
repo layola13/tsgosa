@@ -820,7 +820,7 @@ func saTypeParamSet(list *ast.TypeParameterList) map[string]bool {
 			continue
 		}
 		pd := tp.AsTypeParameterDeclaration()
-		if pd == nil || pd.Constraint != nil || pd.DefaultType != nil {
+		if pd == nil {
 			continue
 		}
 		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
@@ -873,6 +873,11 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				kinds[name] = "i32"
 				continue
 			}
+			if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
+				// `any` params default to i32 (cf tUnknown signature default).
+				kinds[name] = "i32"
+				continue
+			}
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
 				if pd.Type.Kind == ast.KindTypeReference {
@@ -893,6 +898,11 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						}
 					}
 				}
+				if pd.Type.Kind == ast.KindUnionType {
+					// 非折叠联合形参缺省 i32（cf tUnknown signature default；可折叠已由 saAnnotKind 办）。
+					kinds[name] = "i32"
+					continue
+				}
 				// 标量别名经顶层别名表消解（`c: Count`；封存 annotationType
 				// 别名词消解同形；inst 别名/未知沿旧门拒）。
 				if ak, aok := saResolveAliasKind(pd.Type, aliasOf); aok {
@@ -901,7 +911,7 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					return nil, nil, nil, false
 				}
 			}
-			if k != "i32" && k != "bool" && k != "arr" && k != "str" {
+			if k != "i32" && k != "bool" && k != "arr" && k != "str" && k != "f64" {
 				return nil, nil, nil, false
 			}
 			kinds[name] = k
@@ -1024,7 +1034,7 @@ func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, a
 		return nil, false
 	}
 	for _, v := range kinds {
-		if v != "i32" && v != "bool" && v != "arr" && v != "str" && !(len(v) > 5 && v[:5] == "inst:") {
+		if v != "i32" && v != "bool" && v != "arr" && v != "str" && v != "f64" && !(len(v) > 5 && v[:5] == "inst:") {
 			return nil, false
 		}
 	}
@@ -1247,6 +1257,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		if el != nil && el.Kind == ast.KindNumberKeyword {
 			return "arr", true
 		}
+		if el != nil && (el.Kind == ast.KindAnyKeyword || el.Kind == ast.KindUnknownKeyword) {
+			return "arr", true
+		}
 		// 串元数组（`string[]` 具化 16 字节切片头数组；封存 annotationType
 		// ArrayType 即 tArray 不分元种 + lowerArrayLiteral 逐元 lowerExpr 同形）。
 		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str" || k == "arr") {
@@ -1401,6 +1414,9 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		return "boolean", true
 	case ast.KindStringKeyword:
 		return "string", true
+	case ast.KindAnyKeyword, ast.KindUnknownKeyword:
+		// `any` renders as number (cf tUnknown signature default).
+		return "number", true
 	case ast.KindTypeReference:
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true

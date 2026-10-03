@@ -102,6 +102,37 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	}
 	target, ok := saBoundI32(scope, be.Left)
 	if !ok {
+		// f64 compound (fadd/fsub/fmul/fdiv; direct plain rebind like f64 assign).
+		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+			if k, bound := scope.types[be.Left.Text()]; bound && k == "f64" {
+				r, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+					return false
+				}
+				var fop string
+				switch saBinaryOpKind(be) {
+				case ast.KindPlusEqualsToken:
+					fop = "fadd"
+				case ast.KindMinusEqualsToken:
+					fop = "fsub"
+				case ast.KindAsteriskEqualsToken:
+					fop = "fmul"
+				case ast.KindSlashEqualsToken:
+					fop = "fdiv"
+				default:
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float compound operator is not lowerable"})
+					return false
+				}
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, fop, be.Left.Text(), r))
+				w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), t))
+				return true
+			}
+		}
 		// 串目标仅 `+=` 拼接（两侧串位；混合数值须显式 String()）。
 		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
 			if k, bound := scope.types[be.Left.Text()]; bound && k == "str" &&
@@ -361,7 +392,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false
 	}
-	if k != "i32" && k != "bool" && k != "arr" && k != "str" && !strings.HasPrefix(k, "inst:") {
+	if k != "i32" && k != "bool" && k != "arr" && k != "str" && k != "f64" && !strings.HasPrefix(k, "inst:") {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
 		return false
@@ -410,6 +441,17 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			return false
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		return true
+	}
+	if k == "f64" {
+		// f64 plain rebind (direct write like i32-plain; no release: plain never owned).
+		op, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		return true
 	}
 	var op string

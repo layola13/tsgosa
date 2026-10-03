@@ -808,6 +808,10 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 			}
 			return saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		}
+		// f64 params evaluate as floats.
+		if len(sig.paramKinds) == total && sig.paramKinds[i] == "f64" {
+			return saEvalF64(w, a, scope, pos, refusals, nextTemp)
+		}
 		if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
 			if a != nil && a.Kind == ast.KindIdentifier {
 				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
