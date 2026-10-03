@@ -77,7 +77,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			h, defname, msg := saLowerObjectLiteral(w, vd.Initializer, want, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				ln, col := pos(d.Pos())
+				ln, col := pos(vd.Initializer.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 				return false
 			}
@@ -92,7 +92,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			if saIsArrayCtor(vd.Initializer) {
 				ne := vd.Initializer.AsNewExpression()
 				if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 {
-					ln, col := pos(d.Pos())
+					ln, col := pos(vd.Initializer.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Array takes 1 length argument"})
 					return false
 				}
@@ -147,7 +147,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// `new Date()` 绑定为 date 种（millis 不透明；有参形大声拒）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Date" {
 				if !saIsDateNew(vd.Initializer) {
-					ln, col := pos(d.Pos())
+					ln, col := pos(vd.Initializer.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Date(x) is not lowerable (only arg-less now-shape binds)"})
 					return false
 				}
@@ -175,7 +175,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				cname = ne.Expression.Text()
 			}
 			if _, ok := scope.classes[cname]; !ok {
-				ln, col := pos(d.Pos())
+				ln, col := pos(vd.Initializer.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + cname})
 				return false
 			}
@@ -219,7 +219,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
 						op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
 						if msg != "" || voidCall {
-							ln, col := pos(d.Pos())
+							ln, col := pos(vd.Initializer.Pos())
 							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported date initializer: " + msg})
 							return false
 						}
@@ -288,7 +288,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			op, msg := saEvalF64(w, vd.Initializer, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				ln, col := pos(d.Pos())
+				ln, col := pos(vd.Initializer.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
@@ -352,7 +352,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			op, msg = saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
 		}
 		if msg != "" {
-			ln, col := pos(d.Pos())
+			ln, col := pos(vd.Initializer.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
@@ -396,7 +396,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// 无注解串推断（字面量/模板/tagged 皆串位；tag 门在求值内）。
 		h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 		if msg != "" {
-			ln, col := pos(d.Pos())
+			ln, col := pos(init.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
@@ -414,7 +414,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if saIsArrayCtor(init) {
 			h, msg := saLowerArrayCtor(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				ln, col := pos(d.Pos())
+				ln, col := pos(init.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
@@ -430,7 +430,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if saCallIsStr(init.AsCallExpression(), scope) && !saStrCallIsI32(init.AsCallExpression(), scope) {
 			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				ln, col := pos(d.Pos())
+				ln, col := pos(init.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
@@ -443,7 +443,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if k, ok := saDateCallKind(init.AsCallExpression(), scope); ok && k == "date" {
 			op, voidCall, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
 			if msg != "" || voidCall {
-				ln, col := pos(d.Pos())
+				ln, col := pos(init.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
@@ -488,9 +488,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	if init.Kind == ast.KindConditionalExpression {
 		// 无注解三元推断（i32/串臂与 return 位同核；分歧沿核拒）。
 		ce := init.AsConditionalExpression()
-		t, isStr, msg := saLowerTernaryValue(w, ce, d, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+		t, isStr, msg := saLowerTernaryValue(w, ce, init, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 		if msg != "" {
-			ln, col := pos(d.Pos())
+			ln, col := pos(init.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
@@ -510,7 +510,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(d.Pos())
+		ln, col := pos(init.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 		return false
 	}

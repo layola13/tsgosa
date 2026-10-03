@@ -164,12 +164,18 @@
 - step135（探针缺口第二批：any 全位 + 泛型收尾 + f64 补位 + 联合收尾，零新文件）：`any`/`unknown`/`never` 关键字三位一体（形参/返回缺省 i32、字段落 arr 句柄、`any[]` 落 arr、声明走推断；`never` 同擦除）+ 泛型函数/箭头擦除收尾（约束擦除、箭头 T 返回、方法 any/union 形参加入按实参形绑定）+ 联合形参缺省 i32/联合声明走推断/typeof 声明走推断+ f64 补位（重绑定直写、复合 fadd 系、方法/顶层/箭头 f64 形参、调用核 f64 实参）+ bool 方法形参；探针 13 项转正；**286 差分保持 286 同通过，0 回退**；有意分歧：f64 复合按 fadd（上游 `add` 疑草率，正确优先）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
 - step136（H2 闭环：派生数组嵌套传递 + 回调句柄元，零新文件）：slice/toReversed/with/toSpliced/concat/from/filter 结果透传 arrNest（concat 按源逐片；map 回调恒标量天然 flat；与上游按数组粒度同粗）+ 高阶回调 kinds 通道（嵌套接收者元绑句柄，sort 双元、reduce 次元）+ 回调体裸句柄直通（filter 谓词/identity 形）；派生克隆深拷贝已逐形验证（个别处比上游更深且正确）；**286 差分保持 286 同通过，0 回退**；有意分歧：串数组回调元仍拒（需元种追踪，另立 H8）、sort 句柄相减拒（上游垃圾放行，严格优先）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go`/`transpile.go` 未动。
 - step137（JEV T1 裁决落地：`Promise<T>` 解包为 T，零新文件）：`saUnwrapPromise` 剥 Promise 层（`TypeNode = Node` 别名零转换；裸 Promise/多参/限定名沿旧门）+ 预扫/函数/双箭头返回位先解包再走既有决议（`Promise<T>` 泛型形参自然归一）；探针 3 项转正（t_async2/t_promiseret/p_async，`@f() -> i32`）；**286 差分保持 286 同通过，0 回退**；有意分歧：上游 `-> ptr`（JEV 79% 置信选解包：与 await 同步语义/step18/step134 一致，最小改动）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
+- step138（H1 闭环首刀：初值拒因定位声明点→初值点一次过，落 `sa_decl.go` 13 位，零新文件）：`saLowerVarDeclList` 7 处（对象字面量/new-Array 元数/new-Date 有参/unknown-class/date 调用/f64/i32-bool 求值失败）+ `saLowerInferredDecl` 6 处（串/Array()/String()/Date.parse/三元/i32 fallthrough）wrapper 由 `pos(d.Pos())` 改初值根（有注解臂用 `vd.Initializer`，推断臂用已剥离 `init`；三元 `where` 实参同步 `d→init`；封存 `refuse(n)` 取罪魁节点 `Pos()` 同形）；17 探针中单节点初值位 14 处与上游逐位一致（含 delete 首因 C10/regex C13/bigint C14/Generator C23 旧同位回归）；**286 差分保持 286 同通过，0 回退**（归一 SAI 差 151→151 未动；拒因路径外零字节变）；回归 `go build ./...`+`testrunner`（-count=1）+`vet` 全绿；`gofmt` 仅旧 1423 注释行；`transpile.go`/`main.go` 未动；深层节点（调用嵌套内，如 `1+nosuchfn()` C21 vs C17）/双报计数（ternary/str 内层+wrapper）/文案逐字（kind 名/unknown-fn 体/datenew " binds"/arrc 形门/symbol 核查序）各另立 H1b/H1c/H9。
 
 ## 后续 TODO（按优先级排队，逐个击破；探针位 /tmp/probe 可复现；每项附证据与验收）
 ### P0 移植缺口（UP 过 / TN 拒）
 - [x] T1 `Promise<T>` 返回 → JEV 裁决(a)解包为 T，step137 已落地（async 修饰本已容忍；`Promise` 无参/多参/限定沿旧门）.
+- [ ] T2 `const x: i32 = 7.5` 有注解浮点字面量：UP 过（`x = 7.5` 照写）/本仓拒（step138 已把定位到初值 C17， acceptance 差不动，另立项）。
+- [ ] T3 `new Map(1)` 有参构造：UP 过（容忍）/本仓拒（`saLowerMapNew` 元数门；acceptance 差不动，另立项）。
 ### P1 加固（正确性/诊断质量，不影响门禁数字）
-- [ ] H1 拒因行列偏移：3:37/`?.`1:41 等错位定位，查 pos() 映射（lowering 本体经排查无辜，纯诊断问题）。
+- [x] H1 拒因行列偏移 → step138 已落地首刀（初值 wrapper 13 位移到初值根；单节点初值位 14 处与上游逐位一致）.
+- [ ] H1b 深层罪魁节点定位（`1+nosuchfn()`/`String(nosuchfn())`/`Array(nosuchfn())`/`Date.parse(nosuchfn())`/三元臂内调用：上游指内层调用，本仓止于初值根；需求值链透传失败节点位置，大项另立）.
+- [ ] H1c 双报去重（三元/str 推断臂内层直报+wrapper 复报 2 vs 上游 1；step138 已对齐位置，计数对齐另立）.
+- [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；unknown-fn 体；datenew " binds" 尾；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.
 - [x] H2 arrNest 方法派生传递 → step136 已闭环（slice/toReversed/with/toSpliced/concat/from/filter；map 天然 flat）。
 - [ ] H8 串数组回调元绑定（`strs.forEach((s) => s.length)`；需串元追踪；嵌套已由 H2 覆盖）.
 - [ ] H3 `?.()` 可选调用、`static {}` 块、`symbol`、`export =`、`import =`：双方同拒，UP 放行再跟。
