@@ -149,6 +149,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
+			// 调用结果归属(返前释放；上游 ownTemp 同形).
+			saOwnTemp(scope, t)
 			return t, "i32", ""
 		case "has":
 			if len(argNodes) != 1 {
@@ -161,6 +163,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_contains_key(&%s, &%s)\n", t, recv, ks))
+			// 调用结果归属(返前释放；上游 ownTemp 同形).
+			saOwnTemp(scope, t)
 			return t, "i32", ""
 		case "delete":
 			if len(argNodes) != 1 {
@@ -173,9 +177,13 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_contains_key(&%s, &%s)\n", t, recv, ks))
+			// 调用结果归属(返前释放；上游 ownTemp 同形).
+			saOwnTemp(scope, t)
 			drop := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_remove(&%s, &%s)\n", drop, recv, ks))
+			// 调用结果归属(返前释放；上游 ownTemp 同形).
+			saOwnTemp(scope, drop)
 			return t, "i32", ""
 		case "clear":
 			if len(argNodes) != 0 {
@@ -190,6 +198,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_len(&%s)\n", t, recv))
+			// 调用结果归属(返前释放；上游 ownTemp 同形).
+			saOwnTemp(scope, t)
 			return t, "i32", ""
 		case "keys", "values", "entries":
 			return "", "", "Map." + method + " needs vec/set models (beyond i32 slots)"
@@ -220,6 +230,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_contains(&%s, &%s)\n", t, recv, ks))
+		// 调用结果归属(返前释放；上游 ownTemp 同形).
+		saOwnTemp(scope, t)
 		return t, "i32", ""
 	case "delete":
 		if len(argNodes) != 1 {
@@ -232,9 +244,13 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_contains(&%s, &%s)\n", t, recv, ks))
+		// 调用结果归属(返前释放；上游 ownTemp 同形).
+		saOwnTemp(scope, t)
 		drop := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_remove(&%s, &%s)\n", drop, recv, ks))
+		// 调用结果归属(返前释放；上游 ownTemp 同形).
+		saOwnTemp(scope, drop)
 		return t, "i32", ""
 	case "clear":
 		if len(argNodes) != 0 {
@@ -249,6 +265,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_len(&%s)\n", t, recv))
+		// 调用结果归属(返前释放；上游 ownTemp 同形).
+		saOwnTemp(scope, t)
 		return t, "i32", ""
 	default:
 		return "", "", "Set." + method + " is not a projected surface"

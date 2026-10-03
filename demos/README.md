@@ -9,7 +9,13 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 
 - `out/`、`*.log` 为生成物（gitignore），`main.sai` 可直接打开看 SA。
 - 单测某例：`./run.sh 09_array_methods 11_string_array_iter`
+- `./run.sh --check`：只重生成 `.sai` 并与进仓版逐字节比对（**`.sai` 禁止手改，只能由编译器出**；提交前/CI 自证；不匹配即 FAIL）。
 - 依赖：Go（编 tsgo）、sci 的 `sa` 二进制（`SA_BIN` 环境变量可覆盖，sci 下 `zig build -Dllvm=false` 构建）。
+
+## 铁律：`.sai` 是编译产物
+- `main.sai` 由 `tsgo --sa` 逐例生成后进仓，**绝不手改**（ts→sa 是编译出来的）。
+- `./run.sh --check` 40/40 SA-CLEAN 即自证：进仓版与现编译器输出逐字节一致、可复现。
+- 编译器改了发射，`./run.sh` 重生成后 `git diff` 只应出现发射意图内的 `.sai` 变化；意外漂移用 `--check` 定位。
 
 ## 特性覆盖表（与 AGENTS.md step 对应）
 
@@ -35,5 +41,32 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 18_optional | `?.[]`/`??`/`.length` | 28/281 |
 | 19_destructure | 数组解构+接口对象读 | 16 |
 | 20_console | 多参 console.log | 6/260 |
+
+## 第二批（21–40）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 21_compound | 复合赋值全家 | 7 |
+| 22_f64_cmp | f64 比较→bool 打印 | 128/135 |
+| 23_switch_plain | i32 switch | 67 |
+| 24_find_some_every | find/findIndex/some/every | 26 |
+| 25_reduce | reduce/reduceRight | 26 |
+| 26_sort | sort/toSorted | 26 |
+| 27_slice_concat | slice/concat | 26 |
+| 28_push_unshift | push/unshift/fill/with | H8b/140 |
+| 29_spread_elem | 数组 spread 字面量 | 120 |
+| 30_closure | 箭头值调用 | 111 |
+| 31_math | abs/floor | 20-24 |
+| 32_string_pred | startsWith/includes/endsWith | 25 |
+| 33_nested_struct | 嵌套接口布局 | 91 |
+| 34_generic_fn | 泛型函数擦除 | 134 |
+| 35_map_getset | Map set/get/has | 30 |
+| 36_date_tz | getTimezoneOffset 恒 0 | 29 |
+| 37_interp_calc | 模板内表达式 | 25 |
+| 38_nested_loops | 嵌套 for+continue | 7 |
+| 39_index_find | indexOf/lastIndexOf/includes/at | 26 |
+| 40_array_from | Array.from 切片克隆 | 26 |
+
+已知边界（续）：f64 只比不打（`console.log(f64)` 沿旧门）；`Map.size` 属性形拒（用 get/has）；Date millis 不进 i32；`a[0]` 元素直打两家同出句柄数（parity，绑定串元素仍拒）；串+数 `+` 两家同走指针加（SAI 逐行一致，parity）；`==` 内容相等两家同漏（verifier 侧，parity）；sqrt 二分环两家同被 verifier 拒（后端侧，parity）。
 
 已知边界（demo 写法已规避，对应台账项）：串三元值仅 return 位可放（声明/赋值位拒，H10）；`?.length` 拒（用 `.length`）；`Color.Green` 成员值未用（用 i32 传枚举）；split 结果不可绑定/测长/迭代（用 join…注：join 可转译但 sci verifier 对两家同拒 PhiStateConflict，本集暂不用 join，待后端侧）；for-in 另有 UseAfterMove 缺口（H11，不在本集）。
