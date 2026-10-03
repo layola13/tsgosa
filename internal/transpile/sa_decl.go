@@ -494,6 +494,13 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 	if dl == nil || len(dl.Declarations.Nodes) == 0 {
 		return false
 	}
+	// `using`/`await using` 同旗（后者含 Using 位），显式释放无 SA 域退出钩子，
+	// 顶层亦大声拒（不可静默吞掉；封存 lowerVarDeclList:1395-1398 同门）。
+	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable (explicit resource disposal has no SA-ASM scope-exit hook)"})
+		return true
+	}
 	type fold struct {
 		name  string
 		text  string

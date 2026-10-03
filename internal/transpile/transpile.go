@@ -652,8 +652,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
+		wasTry := false
 		for _, s := range entryStmts {
 			if terminated {
+				// 终结 try 的后继静默跳过（函数体/臂同形；其余仍拒收敛）。
+				if wasTry {
+					continue
+				}
 				ln, col := pos(s.Pos())
 				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
 				break
@@ -662,6 +667,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 				break
 			} else if done {
 				terminated = true
+				wasTry = s != nil && s.Kind == ast.KindTryStatement
 			}
 		}
 		if !terminated {
@@ -1333,9 +1339,14 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		}
 	}
 	terminated := false
+	wasTry := false
 	for _, s := range stmts {
 		if terminated {
-			// 终结后仍有语句：此前静默丢弃，现大声拒（拒则大声）。
+			// 终结 try 的后继作死码静默跳过（saLowerArm 同形；封存
+			// lowerBlockStatement:820-823；其余终结后继仍大声拒）。
+			if wasTry {
+				continue
+			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
 			return
@@ -1344,6 +1355,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 			return
 		} else if done {
 			terminated = true
+			wasTry = s != nil && s.Kind == ast.KindTryStatement
 		}
 	}
 	if !terminated {
@@ -1398,11 +1410,11 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		}
 		return false, false
 	case ast.KindTryStatement:
-		if !saLowerTry(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		done, failed := saLowerTry(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
 			return false, true
 		}
-		tryTerm, finTerm := saTryTerms(s)
-		return tryTerm || finTerm, false
+		return done, false
 	case ast.KindVariableStatement:
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
@@ -1426,8 +1438,8 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		return done, false
 	case ast.KindThrowStatement:
 		// throw 即 panic(2501)，不可恢复（形状证据：封存 saemit.go:153
-		// panicThrow 常量 + :882-884 `panic(%d)` 落字；try 内含 throw
-		// 仍由 saLowerTry 前门大声拒，见 lowerTry 前的 containsThrow 门）。
+		// panicThrow 常量 + :882-884 `panic(%d)` 落字；try 内顶层 throw
+		// 走 throwing 切片绑 catch 形参，见 saLowerThrowingTry）。
 		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
 		return true, false
 	case ast.KindEmptyStatement:
@@ -1541,8 +1553,14 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 
 func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	terminated := false
+	wasTry := false
 	for _, s := range stmts {
 		if terminated {
+			// 终结 try 的后继作死码静默跳过（封存 lowerBlockStatement:820-823
+			// 同形，零汇编风险；其余终结后继仍拒）。
+			if wasTry {
+				continue
+			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
 			return false
@@ -1551,7 +1569,10 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 		if failed {
 			return false
 		}
-		terminated = terminated || done
+		if done {
+			terminated = true
+			wasTry = s != nil && s.Kind == ast.KindTryStatement
+		}
 	}
 	return true
 }

@@ -775,6 +775,236 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	return true
 }
 
+// saTopThrowIndex 取 try 块顶层首个 throw 下标（无则 -1；嵌套 if/循环内
+// 的 throw 不在此列，调用方落既有拒；形状证据：封存 tryLowerThrowingTry:2316-2322）。
+func saTopThrowIndex(stmts []*ast.Node) int {
+	for i, s := range stmts {
+		if s != nil && s.Kind == ast.KindThrowStatement {
+			return i
+		}
+	}
+	return -1
+}
+
+// saHandlerUsesInto 收集子树值使用名（声明名位排除：变量/函数/类/参数/
+// catch 形参标识符名、属性访问字段、标号；其余标识符皆记。误报偏向大声拒）。
+func saHandlerUsesInto(n *ast.Node, uses map[string]bool) {
+	if n == nil {
+		return
+	}
+	switch n.Kind {
+	case ast.KindIdentifier:
+		uses[n.Text()] = true
+		return
+	case ast.KindVariableDeclaration:
+		vd := n.AsVariableDeclaration()
+		if vd.Initializer != nil {
+			saHandlerUsesInto(vd.Initializer, uses)
+		}
+		return
+	case ast.KindFunctionDeclaration, ast.KindClassDeclaration,
+		ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor,
+		ast.KindConstructor:
+		if nm := n.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			// 名位跳过，余部（形参缺省/体）照走。
+			n.ForEachChild(func(c *ast.Node) bool {
+				if c != nil && c != nm.AsNode() {
+					saHandlerUsesInto(c, uses)
+				}
+				return false
+			})
+			return
+		}
+	case ast.KindParameter:
+		pd := n.AsParameterDeclaration()
+		if pd.Initializer != nil {
+			saHandlerUsesInto(pd.Initializer, uses)
+		}
+		if nm := pd.Name(); nm != nil && nm.Kind != ast.KindIdentifier {
+			saHandlerUsesInto(nm.AsNode(), uses)
+		}
+		return
+	case ast.KindPropertyAccessExpression:
+		pa := n.AsPropertyAccessExpression()
+		saHandlerUsesInto(pa.Expression, uses)
+		return
+	case ast.KindLabeledStatement:
+		ls := n.AsLabeledStatement()
+		saHandlerUsesInto(ls.Statement, uses)
+		return
+	case ast.KindBreakStatement:
+		if lbl := n.AsBreakStatement().Label; lbl != nil {
+			_ = lbl
+			return
+		}
+	case ast.KindContinueStatement:
+		if lbl := n.AsContinueStatement().Label; lbl != nil {
+			_ = lbl
+			return
+		}
+	}
+	n.ForEachChild(func(c *ast.Node) bool {
+		saHandlerUsesInto(c, uses)
+		return false
+	})
+}
+
+// saHandlerUses 收集臂内值使用名集。
+func saHandlerUses(stmts []*ast.Node) map[string]bool {
+	uses := map[string]bool{}
+	for _, s := range stmts {
+		saHandlerUsesInto(s, uses)
+	}
+	return uses
+}
+
+// saLowerThrowingTry lowering throwing-try 切片（`try { prefix; throw v; }` 直跑
+// prefix 后把值绑 catch 形参跑 handler，再跑 finally；无 catch 则 finally 后
+// panic(2501)。throw 后语句死，跳过。形状证据：封存 tryLowerThrowingTry:2301-2470）。
+// 返回（终结，失败）。
+func saLowerThrowingTry(w printer.EmitTextWriter, s *ast.Node, ts *ast.TryStatement, tryStmts []*ast.Node, throwIdx int, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	legacy := func() (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw inside try is not lowerable (catch cannot resume after panic)"})
+		return false, true
+	}
+	// Prefix 须直行（顶层终结/嵌套 throw 落既有拒）。
+	for _, p := range tryStmts[:throwIdx] {
+		if p == nil {
+			continue
+		}
+		switch p.Kind {
+		case ast.KindReturnStatement, ast.KindThrowStatement,
+			ast.KindBreakStatement, ast.KindContinueStatement:
+			return legacy()
+		}
+		if saContainsThrow(p) {
+			return legacy()
+		}
+	}
+	// try-local 不得泄入 handler（扁平域下读写本无碍，此门与封存对齐；
+	// const 按值折叠恒可见，不拦）。
+	blocked := map[string]bool{}
+	for _, p := range tryStmts[:throwIdx] {
+		if p == nil {
+			continue
+		}
+		switch p.Kind {
+		case ast.KindVariableStatement:
+			dl := p.AsVariableStatement().DeclarationList.AsVariableDeclarationList()
+			if dl.AsNode().Flags&ast.NodeFlagsConst != 0 {
+				continue
+			}
+			for _, d := range dl.Declarations.Nodes {
+				nm := d.AsVariableDeclaration().Name()
+				if nm == nil || nm.Kind != ast.KindIdentifier {
+					return legacy()
+				}
+				blocked[nm.Text()] = true
+			}
+		case ast.KindFunctionDeclaration, ast.KindClassDeclaration:
+			if nm := p.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				blocked[nm.Text()] = true
+			}
+		}
+	}
+	if len(blocked) > 0 {
+		check := func(stmts []*ast.Node) bool {
+			for n := range saHandlerUses(stmts) {
+				if blocked[n] {
+					return true
+				}
+			}
+			return false
+		}
+		leak := false
+		if ts.CatchClause != nil && ts.CatchClause.AsCatchClause().Block != nil {
+			leak = leak || check(ts.CatchClause.AsCatchClause().Block.AsBlock().Statements.Nodes)
+		}
+		if !leak && ts.FinallyBlock != nil {
+			leak = leak || check(ts.FinallyBlock.AsBlock().Statements.Nodes)
+		}
+		if leak {
+			return legacy()
+		}
+	}
+	// 直跑 prefix（终结即 throw 死，落既有拒）。
+	for _, p := range tryStmts[:throwIdx] {
+		done, failed := saLowerStmt(w, p, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			return false, true
+		}
+		if done {
+			return legacy()
+		}
+	}
+	throwSt := tryStmts[throwIdx]
+	throwExpr := throwSt.AsThrowStatement().Expression
+	if throwExpr != nil {
+		if throwExpr.Kind == ast.KindStringLiteral ||
+			throwExpr.Kind == ast.KindNoSubstitutionTemplateLiteral ||
+			throwExpr.Kind == ast.KindTemplateExpression {
+			ln, col := pos(throwSt.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw value type is not lowerable (catch params carry i32 only)"})
+			return false, true
+		}
+		if throwExpr.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[throwExpr.Text()]; ok && k == "str" {
+				ln, col := pos(throwSt.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw value type is not lowerable (catch params carry i32 only)"})
+				return false, true
+			}
+		}
+	}
+	val, msg := saEvalI32(w, throwExpr, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(throwSt.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false, true
+	}
+	if ts.CatchClause == nil {
+		if ts.FinallyBlock != nil {
+			if !saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+				return false, true
+			}
+		}
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		return true, false
+	}
+	cc := ts.CatchClause.AsCatchClause()
+	if cc.VariableDeclaration != nil {
+		nm := cc.VariableDeclaration.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(cc.VariableDeclaration.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructured catch params are not in the SA-lowerable subset"})
+			return false, true
+		}
+		if _, dup := scope.types[nm.Text()]; dup {
+			ln, col := pos(cc.VariableDeclaration.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + nm.Text()})
+			return false, true
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", nm.Text(), val))
+		scope.types[nm.Text()] = "i32"
+	}
+	if cc.Block == nil {
+		return legacy()
+	}
+	catchStmts := cc.Block.AsBlock().Statements.Nodes
+	if !saLowerArm(w, catchStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return false, true
+	}
+	catchTerm := saArmTerminates(catchStmts)
+	if ts.FinallyBlock != nil {
+		finStmts := ts.FinallyBlock.AsBlock().Statements.Nodes
+		if !saLowerArm(w, finStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return catchTerm || saArmTerminates(finStmts), false
+	}
+	return catchTerm, false
+}
+
 // saContainsThrow 报告子树是否含 throw（函数边界重置；证据：封存 lowerTry 前的
 // containsThrow 门——SA-ASM 无异常边，throw 即 panic 不可恢复）。
 func saContainsThrow(n *ast.Node) bool {
@@ -803,9 +1033,25 @@ func saContainsThrow(n *ast.Node) bool {
 }
 
 // saTryTerms 报告 try/finally 的终结性（try 终结或 finally 终结即终结；
-// 缺省块视为空）。
+// 缺省块视为空；throwing 切片走 catch/finally 静态终结，与动态一致）。
 func saTryTerms(s *ast.Node) (bool, bool) {
 	ts := s.AsTryStatement()
+	if ts.TryBlock != nil {
+		if idx := saTopThrowIndex(ts.TryBlock.AsBlock().Statements.Nodes); idx >= 0 {
+			catchTerm := false
+			if ts.CatchClause != nil && ts.CatchClause.AsCatchClause().Block != nil {
+				catchTerm = saArmTerminates(ts.CatchClause.AsCatchClause().Block.AsBlock().Statements.Nodes)
+			}
+			finTerm := false
+			if ts.FinallyBlock != nil {
+				finTerm = saArmTerminates(ts.FinallyBlock.AsBlock().Statements.Nodes)
+			}
+			if ts.CatchClause == nil {
+				return true, finTerm
+			}
+			return catchTerm, finTerm
+		}
+	}
 	tryTerm := false
 	if ts.TryBlock != nil {
 		tryTerm = saArmTerminates(ts.TryBlock.AsBlock().Statements.Nodes)
@@ -817,29 +1063,40 @@ func saTryTerms(s *ast.Node) (bool, bool) {
 	return tryTerm, finTerm
 }
 
-// saLowerTry lowering try（形状证据：封存 lowerTry:2271-2300：无 throw 时
-// try 体直跑、catch 死代码跳过、finally 必跑；含 throw 大声拒。
+// saLowerTry lowering try（形状证据：封存 lowerTry:2271-2300 +
+// tryLowerThrowingTry:2301-2470）：无 throw 时 try 体直跑、catch 死代码跳过、
+// finally 必跑；throwing 切片（prefix 直跑 + 顶层 throw 绑 catch 形参跑 handler
+// 再跑 finally，无 catch 则 finally 后 panic(2501)）；其余含 throw 大声拒。
+// 返回（终结，失败）：终结恒 false——终结后继语句作死码照发（合法 SA，不可达
+// 而已；封存 lowerBlockStatement:820-823 静默跳过，薄口照发以保 unreachable
+// 门禁一致）；终结证明走静态 saTryTerms（epilogue/if 分析）。
 // 局限（与封存一致）：try 体内 abrupt 退出（return/break）跳过后随 finally
 // 代码，finally 仅直落路径精确）。
-func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	ts := s.AsTryStatement()
+	if ts.TryBlock != nil {
+		if idx := saTopThrowIndex(ts.TryBlock.AsBlock().Statements.Nodes); idx >= 0 {
+			return saLowerThrowingTry(w, s, ts, ts.TryBlock.AsBlock().Statements.Nodes, idx, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		}
+	}
 	if saContainsThrow(s) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw inside try is not lowerable (catch cannot resume after panic)"})
-		return false
+		return false, true
 	}
 	if ts.TryBlock != nil {
 		if !saLowerArm(w, ts.TryBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-			return false
+			return false, true
 		}
 	}
 	// catch 永不可达（无 throw）：整块跳过，不绑定。
 	if ts.FinallyBlock != nil {
 		if !saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-			return false
+			return false, true
 		}
 	}
-	return true
+	tryTerm, finTerm := saTryTerms(s)
+	return tryTerm || finTerm, false
 }
 
 // saBindPendingLabels 将待绑标号附到刚压栈的目标上（`a: b: for` 双绑同环；
