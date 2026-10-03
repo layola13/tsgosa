@@ -731,7 +731,8 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 					fkind = "arr"
 				}
 			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
-				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok && sub.isIface {
+				// 类/接口类型嵌套字段皆 8B 句柄（布局表同形；实例与接口对象皆句柄）。
+				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 					fkind = "inst"
 					if def.fsub == nil {
 						def.fsub = map[string]string{}
@@ -1237,15 +1238,24 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			if !ok {
 				return "", "", "nested field " + o.fname + " has no recorded sub layout"
 			}
-			if o.init == nil || o.init.Kind != ast.KindObjectLiteralExpression {
-				return "", "", "nested field " + o.fname + " needs an object literal"
+			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
+				v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+				continue
 			}
-			v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", "", msg
+			// 实例直存（已绑定实例句柄值；种门：须为同布局实例）。
+			if o.init != nil && o.init.Kind == ast.KindIdentifier {
+				k, ok := scope.types[o.init.Text()]
+				if !ok || k != "inst:"+sub {
+					return "", "", "nested field " + o.fname + " needs an object literal or matching instance"
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], o.init.Text()))
+				continue
 			}
-			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
-			continue
+			return "", "", "nested field " + o.fname + " needs an object literal"
 		}
 		v, msg := saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
 		if msg != "" {
