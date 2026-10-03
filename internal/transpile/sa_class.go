@@ -34,22 +34,25 @@ type saStaticVal struct {
 
 // saClassDef 是类定义（字段表 + 构造 + 方法表；接口以 isIface 记，
 // 方法/构造恒空，不可 new；parent 为单继承父名，空即无；statics 为
-// 静态字面量折叠表，不占实例槽；fkinds 为字段种表，i32/str，str 域 8 字节对齐）。
+// 静态字面量折叠表，不占实例槽；staticMethods 为静态方法内联体
+// （`C.m()` 类名分发，this 置空；实例项永不持有，见 saRecordClassNamed）；
+// fkinds 为字段种表，i32/str，str 域 8 字节对齐）。
 type saClassDef struct {
-	name       string
-	fields     []saClassField
-	offsets    map[string]int
-	fkinds     map[string]string
-	size       int
-	methods    map[string]*ast.Node
-	getters    map[string]*ast.Node
-	setters    map[string]*ast.Node
-	statics    map[string]saStaticVal
-	ctor       *ast.Node
-	ctorOwner  string
-	parent     string
-	isIface    bool
-	isAbstract bool
+	name          string
+	fields        []saClassField
+	offsets       map[string]int
+	fkinds        map[string]string
+	size          int
+	methods       map[string]*ast.Node
+	staticMethods map[string]*ast.Node
+	getters       map[string]*ast.Node
+	setters       map[string]*ast.Node
+	statics       map[string]saStaticVal
+	ctor          *ast.Node
+	ctorOwner     string
+	parent        string
+	isIface       bool
+	isAbstract    bool
 }
 
 // saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str 句柄头指针 8/8；
@@ -221,6 +224,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					def.methods[k] = v
 				}
 			}
+			// 静态方法同例继承（子类覆写；形状证据：封存 inheritClass staticMethods 拷贝）。
+			if def.staticMethods == nil {
+				def.staticMethods = map[string]*ast.Node{}
+			}
+			for k, v := range bdef.staticMethods {
+				if _, ok := def.staticMethods[k]; !ok {
+					def.staticMethods[k] = v
+				}
+			}
 			// 存取器随方法同例继承（子类覆写；形状证据：封存 inheritClass:167-198）。
 			if def.getters == nil {
 				def.getters = map[string]*ast.Node{}
@@ -342,9 +354,21 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				return false
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
-				return false
+				// 静态方法另表记录，`C.m()` 类名分发内联（实例项永不持有同名，
+				// 防遮蔽/元数错位；静态调用走 saInlineStaticMethod；形状证据：
+				// 封存 recordClassNamed 静态另表 + lowerClassStaticCall）。
+				if def.staticMethods == nil {
+					def.staticMethods = map[string]*ast.Node{}
+				}
+				if _, dup := def.staticMethods[mn.Text()]; dup && ownMethods[mn.Text()] {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate method " + mn.Text()})
+					return false
+				}
+				// 覆写语义：子类同名直接覆盖继承静态（形状证据：封存 inheritClass 同例）。
+				ownMethods[mn.Text()] = true
+				def.staticMethods[mn.Text()] = m
+				continue
 			}
 			if _, dup := def.methods[mn.Text()]; dup && ownMethods[mn.Text()] {
 				ln, col := pos(m.Pos())
@@ -1556,6 +1580,26 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 	if mn.Body() == nil {
 		return "", method + " has no body (overload signatures do not inline)"
 	}
+	return saInlineMethodCore(w, recv, def.name, def, mn, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+}
+
+// saInlineStaticMethod 内联 `C.m(args)`（无实例，this 置空使实例态诚实拒，
+// 其余静态走同一分发；形状证据：封存 lowerClassStaticCall）。
+func saInlineStaticMethod(w printer.EmitTextWriter, className string, def *saClassDef, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	mn, ok := def.staticMethods[method]
+	if !ok {
+		return "", "unknown static method " + method
+	}
+	if mn.Body() == nil {
+		return "", method + " has no body (overload signatures do not inline)"
+	}
+	return saInlineMethodCore(w, "", def.name, def, mn, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+}
+
+// saInlineMethodCore 是实例/静态共享内联核：形参绑定（通法同例），
+// thisSelf 别接收者（静态置空），体经值槽汇合；形状证据：封存
+// inlineClassMethod:10188-10280。
+func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
 	params := mn.Parameters()
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -1611,7 +1655,7 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 		argVals = append(argVals, v)
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
-	scope.thisSelf, scope.thisClass = recv, def.name
+	scope.thisSelf, scope.thisClass = thisSelf, className
 	// 返回种按声明注解（str 走串槽；余下走 i32 槽）。
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(mn); ok && k == "str" {

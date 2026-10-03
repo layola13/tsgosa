@@ -260,9 +260,21 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return saEvalNamedCall(w, recv, ce, scope, pos, refusals, nextTemp)
 			}
 		}
-		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
-			if _, ok := scope.classes[pa.Expression.Text()]; ok {
-				return "", false, "static class members are not lowerable"
+		// `C.m()` 内联静态方法（无实例，this 置空使实例态诚实拒；局部/
+		// 函数遮蔽类绑定时走原路，未知静态落 loud 拒；`#` 私名走私域门；
+		// 形状证据：封存 lowerClassStaticCall 分发位）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil &&
+			!strings.HasPrefix(pa.Name().Text(), "#") {
+			if def, ok := scope.classes[pa.Expression.Text()]; ok {
+				if _, shadowed := scope.types[pa.Expression.Text()]; !shadowed {
+					if _, shadowed := scope.funcs[pa.Expression.Text()]; !shadowed {
+						op, msg := saInlineStaticMethod(w, pa.Expression.Text(), def, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+						if msg != "" {
+							return "", false, msg
+						}
+						return op, false, ""
+					}
+				}
 			}
 		}
 		// Map/Set 成员调用（基为 map/set 绑定；未知成员由总线定位）。
@@ -657,6 +669,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return v, ""
 		}
 		// 实例字段读（`o.f`/`this.f`；静态成员大声拒；私有域按词法属主解）。
+		// this 置空（静态体内）时成员读即越界，沿裸 this 同门拒。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && scope.thisSelf == "" {
+			return "", "this outside a class method is not lowerable"
+		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {

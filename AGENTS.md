@@ -96,6 +96,7 @@
 - step66（for 宏一次过，落 `sa_ctrl.go`，零新文件）：规范计数循环（`let i=L0; i<L1; step`，非负整数字面界+正字面步进，`i++/++i/i+=K/i=i+K`）走 `EXPAND FOR_INIT/CHECK/NEXT` + `control.sal`（`canonicalForShape:1902-1955` + `tryLowerForMacro:1962-2037`；continue 落增量前，doIncr 沿既有规则）；`<=`/标识符界/递减/调用界保 legacy 原形无宏无import。
 - step67（switch 宏一次过，落 `sa_ctrl.go` + 终结一处，零新文件）：2/3 臂走 `EXPAND SWITCH_2/3`（值前置求值，体/break/default/终结镜 legacy，无 default 宏臂落空；`tryLowerSwitchMacro:2502-2588`），1/4+ 臂保 legacy；穷尽 switch 静态终结（有 default 且臂皆终结，供 epilogue）；子句未知 kind 消息改 kind 名。
 - step68（entry 单文件锁形，零改动验证）：裸脚本合成/改名调用（`@main(` 唯一）/递归改名/无执行体不变/碰撞拒因全过；modstate（`sa_modstate_set_u64`）与多文件 program-link 随 defer 域（可变顶层槽/program Phase1），本轮只锁单文件面。
+- step69（静态方法调用一次过，落 `sa_class.go` + `sa_expr.go` 调用核/值位各一处，零新文件）：`staticMethods` 另表 + 继承拷贝（子类覆写；实例项永不持有）+ `saInlineMethodCore` 共享核（形参种导向/spread/元数/void 全复用实例路，`thisSelf=""` 使实例态经既有门诚实拒）+ 类名基分发（`#` 私名走私域门；局部/函数遮蔽类绑定走原路；未知静落 loud 拒）+ 值位 `this.` 置空精确门（沿裸 this 同文，消 length 误报；级联 `unsupported callback body` 与实例路同形）；门：静态存取器/静态字段非字面（沿既有拒）/方法值引用一律拒（`methodOwner` 私有属主精化随私有方法域另立——私方法本就拒，无静默错码）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
