@@ -34,11 +34,12 @@ type saStaticVal struct {
 
 // saClassDef 是类定义（字段表 + 构造 + 方法表；接口以 isIface 记，
 // 方法/构造恒空，不可 new；parent 为单继承父名，空即无；statics 为
-// 静态字面量折叠表，不占实例槽）。
+// 静态字面量折叠表，不占实例槽；fkinds 为字段种表，i32/str，str 域 8 字节对齐）。
 type saClassDef struct {
 	name       string
 	fields     []saClassField
 	offsets    map[string]int
+	fkinds     map[string]string
 	size       int
 	methods    map[string]*ast.Node
 	getters    map[string]*ast.Node
@@ -49,6 +50,27 @@ type saClassDef struct {
 	parent     string
 	isIface    bool
 	isAbstract bool
+}
+
+// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str 句柄头指针 8/8；
+// 形状证据：封存 widthOf:268-279 + alignTo:281-289）。
+func saFieldWidth(kind string) (int, int) {
+	if kind == "str" {
+		return 8, 8
+	}
+	return 4, 4
+}
+
+// saAlignOff 按种对齐推进偏移。
+func saAlignOff(off int, kind string) int {
+	_, align := saFieldWidth(kind)
+	if align <= 1 {
+		return off
+	}
+	if r := off % align; r != 0 {
+		return off + (align - r)
+	}
+	return off
 }
 
 // saTopLevelClassExpr 识别顶层 `const C = class...` / `const D = class E...`
@@ -122,7 +144,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + name})
 		return false
 	}
-	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
@@ -182,6 +204,11 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			for _, f := range bdef.fields {
 				def.fields = append(def.fields, f)
 				def.offsets[f.name] = f.offset
+				if fk := bdef.fkinds[f.name]; fk != "" {
+					def.fkinds[f.name] = fk
+				} else {
+					def.fkinds[f.name] = "i32"
+				}
 			}
 			for k, v := range bdef.methods {
 				if _, ok := def.methods[k]; !ok {
@@ -220,7 +247,18 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 	if ast.HasModifier(st, ast.ModifierFlagsAbstract) {
 		def.isAbstract = true
 	}
-	off := len(def.fields) * 4
+	// 自有域起点为基布局末端（按基域种宽；无基则 0）。
+	off := 0
+	for _, f := range def.fields {
+		fk := def.fkinds[f.name]
+		if fk == "" {
+			fk = "i32"
+		}
+		sz, _ := saFieldWidth(fk)
+		if end := f.offset + sz; end > off {
+			off = end
+		}
+	}
 	for _, m := range members {
 		if len(m.Decorators()) > 0 {
 			ln, col := pos(m.Pos())
@@ -249,16 +287,20 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			}
 			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
 			// 9691-9743 不读 Initializer；初值语义随 alloc，见 AGENTS step47）。
-			// 字段恒 i32（number/i32 注解；其余宽度无槽）。
+			// 字段种：i32/bool 恒 4 字节槽，string 为头指针 8 字节槽
+			// （封存 widthOf；其余宽度无槽）。
+			fkind := "i32"
 			if pd.Type != nil {
-				if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
+				if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str") {
 					ln, col := pos(m.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32"})
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32 or string"})
 					return false
+				} else if k == "str" {
+					fkind = "str"
 				}
 			}
 			if _, dup := def.offsets[fn.Text()]; dup {
-				// 继承字段重声明：守基偏移（同宽恒成立，i32 薄口）。
+				// 继承字段重声明：守基偏移（同宽同种恒成立）。
 				// 形状证据：封存 recordClassNamed:9717-9733。
 				if def.parent == "" || ownFields[fn.Text()] {
 					ln, col := pos(m.Pos())
@@ -268,9 +310,12 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				continue
 			}
 			ownFields[fn.Text()] = true
+			off = saAlignOff(off, fkind)
 			def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 			def.offsets[fn.Text()] = off
-			off += 4
+			def.fkinds[fn.Text()] = fkind
+			sz, _ := saFieldWidth(fkind)
+			off += sz
 		case ast.KindConstructor:
 			if def.ctor != nil {
 				ln, col := pos(m.Pos())
@@ -444,7 +489,7 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate type " + name})
 		return false
 	}
-	def := &saClassDef{name: name, offsets: map[string]int{}, methods: map[string]*ast.Node{}, isIface: true}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true}
 	off := 0
 	ownIface := map[string]bool{}
 	// 接口 extends 基展平（类型级；未知基尽力跳过，checker 拥有类型错；
@@ -479,9 +524,16 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 					if _, dup := def.offsets[f.name]; dup {
 						continue
 					}
+					fk := base.fkinds[f.name]
+					if fk == "" {
+						fk = "i32"
+					}
+					off = saAlignOff(off, fk)
 					def.fields = append(def.fields, saClassField{name: f.name, offset: off})
 					def.offsets[f.name] = off
-					off += 4
+					def.fkinds[f.name] = fk
+					sz, _ := saFieldWidth(fk)
+					off += sz
 				}
 			}
 		}
@@ -489,7 +541,7 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	for _, m := range decl.Members.Nodes {
 		if m.Kind != ast.KindPropertySignature {
 			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface member is not lowerable (i32 props only)"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface member is not lowerable (i32/str props only)"})
 			return false
 		}
 		fn := m.Name()
@@ -499,11 +551,16 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			return false
 		}
 		pd := m.AsPropertySignatureDeclaration()
+		fkind := "i32"
 		if pd.Type != nil {
-			if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
+			// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
+			// string 为头指针 8 字节槽；余下（数组/嵌套/多联合）无槽，拒。
+			if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str") {
 				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32 or string"})
 				return false
+			} else if k == "str" {
+				fkind = "str"
 			}
 		}
 		if _, dup := def.offsets[fn.Text()]; dup {
@@ -516,9 +573,12 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			continue
 		}
 		ownIface[fn.Text()] = true
+		off = saAlignOff(off, fkind)
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
-		off += 4
+		def.fkinds[fn.Text()] = fkind
+		sz, _ := saFieldWidth(fkind)
+		off += sz
 	}
 	def.size = off
 	classes[name] = def
@@ -783,14 +843,39 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	}
 	for _, o := range ops {
 		if o.spread >= 0 {
-			// spread 逐域复制（源序；后者覆盖前者；全 i32 故无类型门）。
+			// spread 逐域复制（源序；后者覆盖前者；种错配拒，封存 9095 原文）。
 			src := spreads[o.spread]
 			for _, f := range src.def.fields {
+				sk := src.def.fkinds[f.name]
+				if sk == "" {
+					sk = "i32"
+				}
+				dk := def.fkinds[f.name]
+				if dk == "" {
+					dk = "i32"
+				}
+				if sk != dk {
+					return "", "", fmt.Sprintf("spread field %s type mismatch (%s vs %s)", f.name, sk, dk)
+				}
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
+				if sk == "str" {
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src.h, src.def.offsets[f.name]))
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], t))
+					continue
+				}
 				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, src.h, src.def.offsets[f.name]))
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], t))
 			}
+			continue
+		}
+		if fk := def.fkinds[o.fname]; fk == "str" {
+			// str 域具化存头指针（封存 9109 `store ... as <type>` 同形）。
+			v, msg := saEvalStr(w, o.init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
 			continue
 		}
 		v, msg := saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
@@ -966,6 +1051,12 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 		if !ok {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pa.Name().Text() + " is not in the " + owner + " layout"})
+			return false
+		}
+		// str 域构造 wiring 另轮贯通（右值恒 i32 求值，种错配诚实拒）。
+		if def.fkinds[pa.Name().Text()] == "str" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string field " + pa.Name().Text() + " constructor wiring is not lowerable yet"})
 			return false
 		}
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
@@ -1205,17 +1296,24 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	if !ok {
 		return "", "unknown field " + field
 	}
+	// str 域读走句柄间接，另轮贯通；此处诚实拒（禁静默错读）。
+	if def.fkinds[field] == "str" {
+		return "", "string field " + field + " reads need handle load (not lowerable yet)"
+	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, h, off))
 	return t, ""
 }
 
-// saLowerClassFieldStore 写 `o.f = v`（偏移 store）。
+// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 位；str 域另轮）。
 func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef, field, v string) string {
 	off, ok := def.offsets[field]
 	if !ok {
 		return "unknown field " + field
+	}
+	if def.fkinds[field] == "str" {
+		return "string field " + field + " stores need handle store (not lowerable yet)"
 	}
 	w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	return ""
