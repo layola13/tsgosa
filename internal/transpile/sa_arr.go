@@ -57,10 +57,10 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
-// 取址 + i32 读回；OOB 得 0；release 为空操作故略）。
+// 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
-// 取址 + i32 读回；OOB 得 0；release 为空操作故略）。
+// 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
 func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
 	freshT := func() string {
 		t := fmt.Sprintf("t_%d", *nextTemp)
@@ -99,6 +99,9 @@ func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, 
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	dest := freshT()
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	// join 槽读后即死，就地释放（ownTemp+releaseIfOwnedTemp 同效；槽为本函数
+	// 内新鲜临时量，无外部分支能消费/释放，故无条件释放 sound）。
+	w.Write(fmt.Sprintf("  !%s\n", slot))
 	return dest
 }
 
@@ -471,7 +474,7 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	lenT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
-	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	cT := fmt.Sprintf("t_%d", *nextTemp)
@@ -620,7 +623,7 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	lenT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
-	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	cT := fmt.Sprintf("t_%d", *nextTemp)
@@ -2187,13 +2190,23 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		ok    bool
 		alias string
 		aok   bool
+		own   *saOwn
+		ownOk bool
 	}
 	keep := map[string]saved{}
 	bind := func(name, kind string) {
 		if _, done := keep[name]; !done {
 			old, ok := scope.types[name]
 			oa, aok := scope.mathAlias[name]
-			keep[name] = saved{kind: old, ok: ok, alias: oa, aok: aok}
+			// 归属记录同快照（值拷贝：回调体内经同一指针改旗标不得污染快照，
+			// 恢复时原样贴回；封存 bindCallbackParam 遮蔽同形）。
+			var oc saOwn
+			oo, ook := scope.ownState[name]
+			if ook && oo != nil {
+				oc = *oo
+				oo = &oc
+			}
+			keep[name] = saved{kind: old, ok: ok, alias: oa, aok: aok, own: oo, ownOk: ook}
 		}
 		scope.types[name] = kind
 	}
@@ -2208,6 +2221,11 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				scope.mathAlias[name] = s.alias
 			} else {
 				delete(scope.mathAlias, name)
+			}
+			if s.ownOk {
+				scope.ownState[name] = s.own
+			} else {
+				delete(scope.ownState, name)
 			}
 		}
 	}
@@ -2452,6 +2470,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		saOwnTemp(scope, slot)
 		init := "-1"
 		if method == "find" || method == "findLast" {
 			init = "0"
@@ -2503,11 +2522,13 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
 		return out, "i32", ""
 	case "some", "every":
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		saOwnTemp(scope, slot)
 		init, stop := "0", "1"
 		if method == "every" {
 			init, stop = "1", "0"
@@ -2558,6 +2579,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
 		return out, "i32", ""
 	}
 	return "", "", "unreachable"

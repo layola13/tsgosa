@@ -1223,6 +1223,9 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	} else {
 		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	}
+	// 头槽归属（嵌套递归同记；具名绑定时消费，余下返前释放；
+	// 封存 lowerObjectLiteral 尾 declareOwned(h) 同形）。
+	saOwnTemp(scope, h)
 	for _, o := range ops {
 		if o.spread >= 0 {
 			// spread 逐域复制（源序；后者覆盖前者；种错配拒，封存 9095 原文）。
@@ -1371,6 +1374,9 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	} else {
 		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	}
+	// 头槽归属（嵌套递归同记；具名绑定时消费，余下返前释放；
+	// 封存 lowerObjectLiteral 尾 declareOwned(h) 同形）。
+	saOwnTemp(scope, h)
 	if def.ctor == nil {
 		if len(argNodes) != 0 {
 			return "", "new " + name + " takes 0 arguments"

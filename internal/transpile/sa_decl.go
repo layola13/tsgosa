@@ -83,6 +83,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "inst:" + defname
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
 			continue
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
@@ -109,6 +111,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = "arr"
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
 				continue
 			}
 			// `new Map()`/`new Set()` 绑定为 map/set 种（零参；有参形大声拒）。
@@ -136,6 +140,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = kind
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
 				continue
 			}
 			// `new Date()` 绑定为 date 种（millis 不透明；有参形大声拒）。
@@ -158,6 +164,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				h := saLowerDateNew(w, scope, nextTemp)
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = "date"
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
 				continue
 			}
 			// 实例声明（`const o: C = new C(...)` 注解须同名；`let o = new C()` 推断）。
@@ -189,6 +197,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "inst:" + cname
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
 			continue
 		}
 		if vd.Type == nil {
@@ -314,6 +324,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "str"
+		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		return true
 	}
@@ -331,6 +342,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "arr"
+			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
 			return true
 		}
@@ -346,6 +358,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "str"
+			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
 			return true
 		}
@@ -406,6 +419,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		w.Write(fmt.Sprintf("  %s = %s\n", name, t))
 		if isStr {
 			scope.types[name] = "str"
+			saConsumeOwn(scope, t)
 			saDeclareOwned(scope, name)
 		} else {
 			scope.types[name] = "i32"
@@ -424,6 +438,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = k
+		saConsumeOwn(scope, op)
 		saDeclareOwned(scope, name)
 	} else {
 		saEmitScalarInit(w, name, op, scope)
@@ -948,6 +963,13 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 			}
 			saReleaseAllOwnedExcept(w, scope, "")
 			w.Write("  ret\n")
+		} else if saEndsWithBareSwitchLabel(stmts) {
+			saReleaseAllOwnedExcept(w, scope, "")
+			if isVoid {
+				w.Write("  ret\n")
+			} else {
+				w.Write("  ret 0\n")
+			}
 		}
 		return true
 	}

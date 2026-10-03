@@ -433,7 +433,7 @@ func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	}
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
@@ -867,7 +867,7 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 		w.Write(fmt.Sprintf("  jmp %s\n", bodyL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
@@ -914,7 +914,7 @@ func saLowerForMacro(w printer.EmitTextWriter, s *ast.Node, fs *ast.ForStatement
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	w.Write(fmt.Sprintf("  EXPAND FOR_CHECK %s, %s, %s, %s\n", ctr, hi, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
@@ -953,7 +953,7 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	endL := fmt.Sprintf("L_do_end_%d", *nextLabel)
 	*nextLabel++
 	w.Write(fmt.Sprintf("%s:\n", loopL))
-	scope.loops = append(scope.loops, saLoop{top: loopL, cont: condL, end: endL})
+	scope.loops = append(scope.loops, saLoop{top: loopL, cont: condL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
@@ -1031,7 +1031,7 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
 	*nextLabel++
-	scope.loops = append(scope.loops, saLoop{end: endL})
+	scope.loops = append(scope.loops, saLoop{end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, true)
 	testLabels := make([]string, len(parts)+1)
 	bodyLabels := make([]string, len(parts))
@@ -1121,7 +1121,7 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	}
 	defaultL := fmt.Sprintf("L_case_default_%d", *nextLabel)
 	*nextLabel++
-	scope.loops = append(scope.loops, saLoop{end: endL})
+	scope.loops = append(scope.loops, saLoop{end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, true)
 	needImport("sa_std/control.sal")
 	if len(parts) == 2 {
@@ -1499,7 +1499,7 @@ func saBindPendingLabels(scope *saScope, breakOnly bool) {
 		scope.labels = map[string]saLoop{}
 	}
 	fr := scope.loops[len(scope.loops)-1]
-	ld := saLoop{end: fr.end}
+	ld := saLoop{end: fr.end, depth: fr.depth}
 	if !breakOnly {
 		ld.top = fr.top
 		ld.cont = fr.cont
@@ -1533,7 +1533,7 @@ func saLowerLabeled(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 		endL := fmt.Sprintf("L_lbl_end_%d", *nextLabel)
 		*nextLabel++
 		scope.pending = append(scope.pending, lbl)
-		scope.loops = append(scope.loops, saLoop{end: endL})
+		scope.loops = append(scope.loops, saLoop{end: endL, depth: len(scope.ownOrder)})
 		saBindPendingLabels(scope, true)
 		armOK := saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		scope.loops = scope.loops[:len(scope.loops)-1]
@@ -1598,6 +1598,7 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 			return false
 		}
 		if isBreak {
+			saReleaseDeeperThan(w, scope, ld.depth)
 			w.Write(fmt.Sprintf("  jmp %s\n", ld.end))
 			return true
 		}
@@ -1606,6 +1607,7 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "continue to non-loop label " + nm + " is not lowerable"})
 			return false
 		}
+		saReleaseDeeperThan(w, scope, ld.depth)
 		w.Write(fmt.Sprintf("  jmp %s\n", ld.cont))
 		return true
 	}
@@ -1620,6 +1622,7 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 	}
 	fr := scope.loops[len(scope.loops)-1]
 	if isBreak {
+		saReleaseDeeperThan(w, scope, fr.depth)
 		w.Write(fmt.Sprintf("  jmp %s\n", fr.end))
 		return true
 	}
@@ -1628,6 +1631,7 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "continue to non-loop target"})
 		return false
 	}
+	saReleaseDeeperThan(w, scope, fr.depth)
 	w.Write(fmt.Sprintf("  jmp %s\n", fr.cont))
 	return true
 }
@@ -1716,6 +1720,18 @@ func saContainsIf(stmts []*ast.Node) bool {
 
 // saStmtTerminates 判定单条语句是否终结控制流（return、break/continue，
 // 或两臂皆终结的 if/else）。while/声明/赋值落空（须后继收尾）。
+// saEndsWithBareSwitchLabel 报告语句列是否以穷尽 switch 收尾（臂全终结而
+// endswitch 标号后无终结符，函数尾即悬空标号，真机 `FallthroughForbidden`；
+// 封存上游函数 epilogue `if !e.terminated` 恒补 return 同形——本仓穷尽 switch
+// 判终结（上游恒不断），故仅在此形补结构终结 `ret`，缺 return 拒因不受影响）。
+func saEndsWithBareSwitchLabel(stmts []*ast.Node) bool {
+	if len(stmts) == 0 {
+		return false
+	}
+	last := stmts[len(stmts)-1]
+	return last != nil && last.Kind == ast.KindSwitchStatement && saStmtTerminates(last)
+}
+
 func saStmtTerminates(s *ast.Node) bool {
 	if s == nil {
 		return false
@@ -1807,14 +1823,16 @@ type saOwn struct {
 	released bool // 已发 `!`
 }
 
-// saDeclareOwned 登记归属绑定（形参、temp 源初值、句柄；首登获准，复登只
-// 置堆位；封存 declareOwned:11048-11060）。
+// saDeclareOwned 登记归属绑定（形参、temp 源初值、句柄；复登即新值新命——
+// 置堆并复位旗标，封存 markRebound:11100-11106 新值待未来释放同形）。
 func saDeclareOwned(scope *saScope, name string) {
 	if scope.ownState == nil {
 		scope.ownState = map[string]*saOwn{}
 	}
 	if b, ok := scope.ownState[name]; ok {
 		b.heap = true
+		b.released = false
+		b.consumed = false
 		return
 	}
 	scope.ownState[name] = &saOwn{heap: true}
@@ -1822,11 +1840,15 @@ func saDeclareOwned(scope *saScope, name string) {
 }
 
 // saDeclarePlain 登记非归属标量绑定（立即数/具名源初值；封存 declarePlain:11079-11091）。
+// 复登即新值：清堆并复位旗标（回调遮蔽恢复由调用方快照归属表，见 saCallbackValue）。
 func saDeclarePlain(scope *saScope, name string) {
 	if scope.ownState == nil {
 		scope.ownState = map[string]*saOwn{}
 	}
-	if _, ok := scope.ownState[name]; ok {
+	if b, ok := scope.ownState[name]; ok {
+		b.heap = false
+		b.released = false
+		b.consumed = false
 		return
 	}
 	scope.ownState[name] = &saOwn{}
@@ -1933,15 +1955,52 @@ func saStoreLocal(w printer.EmitTextWriter, dst, src string, scope *saScope, nex
 	b.heap = false
 }
 
-// saReleaseExceptOp 返前释放便捷口：返回操作数为具名绑定即除外，否则全释。
-func saReleaseExceptOp(w printer.EmitTextWriter, scope *saScope, op string) {
-	except := ""
-	if op != "" && !saIsTempOp(op) {
-		if _, ok := scope.types[op]; ok {
-			except = op
+// saOwnTemp 登记归属临时量（封存 ownTemp:11280-11282：即 declareOwned；
+// temps 亦入 ownOrder，返前释放同覆盖）。
+func saOwnTemp(scope *saScope, t string) {
+	saDeclareOwned(scope, t)
+}
+
+// saReleaseOwnedTemp 释归属临时量（具名绑定永不经此口；封存
+// releaseIfOwnedTemp:11286-11293）。
+func saReleaseOwnedTemp(w printer.EmitTextWriter, scope *saScope, t string) {
+	if !saIsTempOp(t) {
+		return
+	}
+	if b := saOwnOf(scope, t); b != nil && b.heap && !b.consumed && !b.released {
+		w.Write(fmt.Sprintf("  !%s\n", t))
+		b.released = true
+	}
+}
+
+// saReleaseDeeperThan 跳前释放：释下标深于 depth 的归属 live 绑定
+// （逆声明序；封存 releaseForJump:11366-11385：只释被抛弃的臂/块域，
+// 外层域存活以保 join 点状态一致）。
+func saReleaseDeeperThan(w printer.EmitTextWriter, scope *saScope, depth int) {
+	if depth < 0 {
+		depth = 0
+	}
+	if depth > len(scope.ownOrder) {
+		return
+	}
+	done := map[string]bool{}
+	for i := len(scope.ownOrder) - 1; i >= depth; i-- {
+		name := scope.ownOrder[i]
+		if done[name] {
+			continue
+		}
+		done[name] = true
+		if b := saOwnOf(scope, name); b != nil && b.heap && !b.consumed && !b.released {
+			w.Write(fmt.Sprintf("  !%s\n", name))
+			b.released = true
 		}
 	}
-	saReleaseAllOwnedExcept(w, scope, except)
+}
+
+// saReleaseExceptOp 返前释放便捷口：返回操作数（具名或临时量）即除外，
+// 否则全释（封存 releaseAllOwnedExcept(except=v) 按名精确除外，不分具名/temp）。
+func saReleaseExceptOp(w printer.EmitTextWriter, scope *saScope, op string) {
+	saReleaseAllOwnedExcept(w, scope, op)
 }
 
 // saIsTempOp 报告操作数是否为编译临时量 `t_N`（封存 isTempName 同形）。

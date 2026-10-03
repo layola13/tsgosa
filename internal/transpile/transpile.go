@@ -717,6 +717,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		if !terminated {
 			saReleaseAllOwnedExcept(w, escope, "")
 			w.Write("  ret 0\n")
+		} else if saEndsWithBareSwitchLabel(entryStmts) {
+			saReleaseAllOwnedExcept(w, escope, "")
+			w.Write("  ret 0\n")
 		}
 	}
 	var head strings.Builder
@@ -1265,9 +1268,10 @@ type saFuncSig struct {
 // cont 为 continue 落点：while 即 top；for 落增量前（证据：封存 lowerFor:2072-2084
 // 跳 top 会跳过增量导致死循环，故增量存在且体用 continue 时另立 cont 标号）。
 type saLoop struct {
-	top  string
-	cont string
-	end  string
+	top   string
+	cont  string
+	end   string
+	depth int // 入栈时 ownOrder 长度（break/continue 跳前释深于此的归属绑定）
 }
 
 // saScope 是单函数子集作用域：名->种 + 循环栈（扁平单作用域，无遮蔽；重声明拒）
@@ -1462,6 +1466,15 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		}
 		saReleaseAllOwnedExcept(w, scope, "")
 		w.Write("  ret\n")
+	} else if saEndsWithBareSwitchLabel(stmts) {
+		// 穷尽 switch 收尾：endswitch 标号悬空，补死结构终结（不可达，
+		// 缺 return 判定不受影响；封存上游函数尾恒补 return 同形）。
+		saReleaseAllOwnedExcept(w, scope, "")
+		if isVoid {
+			w.Write("  ret\n")
+		} else {
+			w.Write("  ret 0\n")
+		}
 	}
 }
 

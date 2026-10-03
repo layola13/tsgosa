@@ -569,6 +569,8 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s\n", t, call))
+	// 调用结果临时量归属（用后仍须返前释放；封存 lowerCall 各分支 ownTemp）。
+	saOwnTemp(scope, t)
 	return t, false, ""
 }
 

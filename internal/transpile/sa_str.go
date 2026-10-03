@@ -50,6 +50,7 @@ func saLowerStringLiteral(w printer.EmitTextWriter, text string, scope *saScope,
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
 	w.Write(fmt.Sprintf("  store %s + 0, &%s as ptr\n", h, cname))
 	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(text)))
+	saOwnTemp(scope, h)
 	return h
 }
 
@@ -472,6 +473,12 @@ func saRenderInterp64(w printer.EmitTextWriter, v string, scope *saScope, nextTe
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", vslice))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", vslice, numbuf))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", vslice, nlen))
+	saOwnTemp(scope, numbuf)
+	saOwnTemp(scope, numlen)
+	saOwnTemp(scope, rc)
+	saOwnTemp(scope, vslice)
+	saReleaseOwnedTemp(w, scope, rc)
+	saReleaseOwnedTemp(w, scope, nlen)
 	return vslice
 }
 
@@ -499,6 +506,12 @@ func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", vslice))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", vslice, numbuf))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", vslice, nlen))
+	saOwnTemp(scope, numbuf)
+	saOwnTemp(scope, numlen)
+	saOwnTemp(scope, rc)
+	saOwnTemp(scope, vslice)
+	saReleaseOwnedTemp(w, scope, rc)
+	saReleaseOwnedTemp(w, scope, nlen)
 	return vslice
 }
 
@@ -523,6 +536,15 @@ func saConcatSlices(w printer.EmitTextWriter, left, right string, scope *saScope
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, optr))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, olen))
+	saOwnTemp(scope, obuf)
+	saOwnTemp(scope, optr)
+	saOwnTemp(scope, olen)
+	saOwnTemp(scope, out)
+	for _, t := range []string{lptr, llen, rptr, rlen, optr, olen, obuf} {
+		saReleaseOwnedTemp(w, scope, t)
+	}
+	saReleaseOwnedTemp(w, scope, left)
+	saReleaseOwnedTemp(w, scope, right)
 	return out
 }
 
@@ -594,6 +616,7 @@ func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 	scope.types[name] = "str"
+	saConsumeOwn(scope, h)
 	saDeclareOwned(scope, name)
 	return true
 }
