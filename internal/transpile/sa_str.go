@@ -406,7 +406,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // saToSlice 任一可文本化操作数转切片（串直通；i32/bool 经 interp；其余拒）。
 // 供模板/console/String() 共用（renderInterpValue 哲学：同 sa_fmt 现货）。
 func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	if saIsStrExpr(e, scope) {
+	if saIsStrValue(e, scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
 	// date 串方法直通串位（toISOString/toString 系）。
@@ -738,6 +738,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, sym, strings.Join(all, ", ")))
+		// extern 调用结果归属(用后/返前释放；上游 callStr ownTemp 同形).
+		saOwnTemp(scope, t)
 		return t
 	}
 	switch method {
@@ -994,6 +996,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, s))
 		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, l))
+		// 切片柄归属(返前释放；extern 结果同口径).
+		saOwnTemp(scope, out)
 		return out, false, ""
 	case "split":
 		return "", false, "split needs string arrays (beyond i32 slots)"

@@ -1,0 +1,11 @@
+# 生成物忽略,但 main.sai 随批进仓(用户检查 SA 用)
+subset-report.txt
+actual.stdout
+run.stderr
+diff.txt
+build.log
+tsgo.log
+demo
+*.sa.bc
+bin/
+.sa_cache/

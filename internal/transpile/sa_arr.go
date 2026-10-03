@@ -743,6 +743,8 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		}
 	} else {
 		w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
+		// 每轮重绑复位归属旗标(上游 assignLocal markRebound 同形).
+		saMarkRebound(scope, binding)
 		saDeclareInitOwn(scope, binding, elemT)
 		// 嵌套字面量直巡的行绑定记 arr（行即内层句柄，`row[0]`/`row.length`
 		// 可用；扁平直巡仍记 i32；变量被巡元素种未知，沿旧 i32 门）。
@@ -771,6 +773,11 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		scope.types[binding] = bindKind
 	}
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	// 行绑定每轮尾释放(堆存活才落字;break/continue 经深释放,返前经释放全部).
+	if b := saOwnOf(scope, binding); b != nil && b.heap && !b.consumed && !b.released {
+		w.Write(fmt.Sprintf("  !%s\n", binding))
+		b.released = true
+	}
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
@@ -783,6 +790,23 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	// 字面量接收 temp 巡后释放(绑定名/链 temp 为 no-op；上游同形).
+	// 巡后释本域归属(具名+临时,逆序;已消费/已释放/非堆跳过；上游 releaseScope 同形).
+	// 外层绑定早于本域基址,不在此列；体臂条目已随臂退出截断.
+	{
+		done := map[string]bool{}
+		for i := len(scope.ownOrder) - 1; i >= saved.owned; i-- {
+			name := scope.ownOrder[i]
+			if done[name] {
+				continue
+			}
+			done[name] = true
+			if b := saOwnOf(scope, name); saIsTempOp(name) && b != nil && b.heap && !b.consumed && !b.released {
+				w.Write(fmt.Sprintf("  !%s\n", name))
+				b.released = true
+			}
+		}
+	}
 	return true
 }
 
@@ -865,6 +889,23 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	// 字面量接收 temp 巡后释放(绑定名/链 temp 为 no-op；上游同形).
+	// 巡后释本域归属(具名+临时,逆序;已消费/已释放/非堆跳过；上游 releaseScope 同形).
+	// 外层绑定早于本域基址,不在此列；体臂条目已随臂退出截断.
+	{
+		done := map[string]bool{}
+		for i := len(scope.ownOrder) - 1; i >= saved.owned; i-- {
+			name := scope.ownOrder[i]
+			if done[name] {
+				continue
+			}
+			done[name] = true
+			if b := saOwnOf(scope, name); saIsTempOp(name) && b != nil && b.heap && !b.consumed && !b.released {
+				w.Write(fmt.Sprintf("  !%s\n", name))
+				b.released = true
+			}
+		}
+	}
 	return true
 }
 
@@ -2793,6 +2834,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
 	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	saOwnTemp(scope, slot)
 	endL := fmt.Sprintf("L_cb_end_%d", *nextLabel)
 	*nextLabel++
 	kind := "i32"
@@ -2818,9 +2860,11 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	*nextTemp++
 	if kind == "str" {
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
 		return out, ""
 	}
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	saReleaseOwnedTemp(w, scope, slot)
 	return out, ""
 }
 
