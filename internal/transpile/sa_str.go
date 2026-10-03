@@ -74,6 +74,15 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		return true
 	case ast.KindIdentifier:
 		k, ok := scope.types[e.Text()]
+		if ok && k == "str" {
+			return true
+		}
+		// 槽名须无局部遮蔽（任一绑定优先；封存 modStrRecv:656-660）。
+		if _, bound := scope.types[e.Text()]; !bound {
+			if ms, ok := scope.modVars[e.Text()]; ok && ms.w == "str" {
+				return true
+			}
+		}
 		return ok && k == "str"
 	case ast.KindCallExpression:
 		return saCallIsStr(e.AsCallExpression(), scope)
@@ -234,6 +243,11 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return saLowerStringLiteral(w, text, scope, nextTemp), ""
 			}
 			return "", "not a string expression"
+		}
+		// 顶层可变串槽读（具化 16 字节头；方法/`.length` 经此自动通；
+		// 形状证据：封存 modStrRecv:653-666 + emitModLoadString:941-962）。
+		if ms, ok := scope.modVars[nm]; ok && ms.w == "str" {
+			return saModLoadStr(w, ms, scope, nextTemp), ""
 		}
 		if nm == "undefined" {
 			return "", "not a string expression"

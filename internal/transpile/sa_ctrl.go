@@ -112,10 +112,10 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 				return true
 			}
 		}
-		// 顶层可变槽复合赋值（读-改-写回；先读后右值，与上游同序；
+		// 顶层可变槽复合赋值（读-改-写回；先读后右值，与上游同序；i32 独占；
 		// 形状证据：封存 lowerCompoundAssign:3373-3437 标识符分支）。
 		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
-			if ms, ok := scope.modVars[be.Left.Text()]; ok {
+			if ms, ok := scope.modVars[be.Left.Text()]; ok && ms.w == "i32" {
 				if _, shadowed := scope.types[be.Left.Text()]; !shadowed {
 					cur := saModLoadI32(w, ms, scope, nextTemp)
 					r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
@@ -130,6 +130,16 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
 					saModStoreI32(w, ms, t, scope, nextTemp)
 					return true
+				}
+			}
+		}
+		// 串槽复合即计算串存储，沿字面存储门大声拒（封存 emitModStoreStringDispatch:808-820）。
+		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+			if ms, ok := scope.modVars[be.Left.Text()]; ok && ms.w == "str" {
+				if _, shadowed := scope.types[be.Left.Text()]; !shadowed {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("module state %s stores string literals and string constants only (computed strings are not lowerable yet)", ms.qual)})
+					return false
 				}
 			}
 		}
@@ -321,8 +331,18 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	name := be.Left.Text()
 	k, ok := scope.types[name]
 	if !ok {
-		// 顶层可变槽语句写（`x = v`；形状证据同值位；右值 i32 求值后存槽）。
+		// 顶层可变槽语句写（i32/串按宽分发；形状证据同值位）。
 		if ms, ok := scope.modVars[name]; ok {
+			if ms.w == "str" {
+				text, ok := saModStrText(be.Right, scope)
+				if !ok {
+					ln, col := pos(s.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("module state %s stores string literals and string constants only (computed strings are not lowerable yet)", ms.qual)})
+					return false
+				}
+				saModStoreStr(w, ms, text, scope, nextTemp)
+				return true
+			}
 			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(s.Pos())
@@ -454,6 +474,19 @@ func saBodyHasContinue(n *ast.Node) bool {
 	return found
 }
 
+// saModSlotTarget 取未遮蔽 i32 槽目标（for 头专用；局部遮蔽优先；
+// 形状证据：封存 lowerCompoundAssign:3373-3437 标识符分支同形）。
+func saModSlotTarget(e *ast.Node, scope *saScope) (*saModState, bool) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if ms, ok := scope.modVars[e.Text()]; ok && ms.w == "i32" {
+			if _, shadowed := scope.types[e.Text()]; !shadowed {
+				return ms, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // saLowerForInit lowering for 初始化位（变量声明表走声明路径；表达式须为赋值形）。
 func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if init == nil {
@@ -480,6 +513,17 @@ func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, po
 			return false
 		}
 		name := be.Left.Text()
+		// 槽计数器（不绑定局部，直存槽；封存 lowerCompoundAssign 标识符分支同形）。
+		if ms, ok := saModSlotTarget(be.Left, scope); ok {
+			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer: " + msg})
+				return false
+			}
+			saModStoreI32(w, ms, op, scope, nextTemp)
+			return true
+		}
 		if _, ok := scope.types[name]; !ok {
 			// 初始化位允许首次绑定（`for (i = 0;;)`），视同 let 隐式声明。
 			scope.types[name] = "i32"
@@ -518,6 +562,19 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		}
 		target, ok := saBoundI32(scope, un.Operand)
 		if !ok {
+			// 槽增量（读-改-写回，无旧值临时量；与增量位同形）。
+			if ms, ok := saModSlotTarget(un.Operand, scope); ok {
+				op := "add"
+				if un.Operator == ast.KindMinusMinusToken {
+					op = "sub"
+				}
+				cur := saModLoadI32(w, ms, scope, nextTemp)
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, cur))
+				saModStoreI32(w, ms, t, scope, nextTemp)
+				return true
+			}
 			break
 		}
 		op := "add"
@@ -533,6 +590,19 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		}
 		target, ok := saBoundI32(scope, un.Operand)
 		if !ok {
+			// 槽增量（读-改-写回，无旧值临时量；与增量位同形）。
+			if ms, ok := saModSlotTarget(un.Operand, scope); ok {
+				op := "add"
+				if un.Operator == ast.KindMinusMinusToken {
+					op = "sub"
+				}
+				cur := saModLoadI32(w, ms, scope, nextTemp)
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, cur))
+				saModStoreI32(w, ms, t, scope, nextTemp)
+				return true
+			}
 			break
 		}
 		op := "add"
@@ -547,6 +617,17 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			// `x = <i32>` 赋值形增量（与语句位同门）。
 			target, okT := saBoundI32(scope, be.Left)
 			if !okT {
+				// 槽赋值形增量（直存槽；与初始化位同形）。
+				if ms, ok := saModSlotTarget(be.Left, scope); ok {
+					r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(incr.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+						return false
+					}
+					saModStoreI32(w, ms, r, scope, nextTemp)
+					return true
+				}
 				break
 			}
 			r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
@@ -564,6 +645,21 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		}
 		target, okT := saBoundI32(scope, be.Left)
 		if !okT {
+			// 槽复合增量（读-改-写回；与语句位同形）。
+			if ms, ok := saModSlotTarget(be.Left, scope); ok {
+				cur := saModLoadI32(w, ms, scope, nextTemp)
+				r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(incr.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+					return false
+				}
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+				saModStoreI32(w, ms, t, scope, nextTemp)
+				return true
+			}
 			break
 		}
 		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)

@@ -957,9 +957,12 @@ func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx) (ret
 // modWiden:822-882（同宽 trunc 839-851）。
 // 单文件无前缀：键域前缀为空（多文件前缀见 modKeyOf:107-110，单文件投影）。
 type saModState struct {
+	qual string // 饰名（拒因定位；封存 modState.qual:39-55）
+	w    string // "i32" | "str"（i64/u64/f64/obj 后步；封存 modWidthOf:70-82 子集）
 	key  uint64
-	flag uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341）
-	init string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0）
+	key2 uint64 // len 槽（串独有；封存 modStrKeyOf:112-117）
+	flag uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341；串恒置位）
+	init string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0；串恒有初值）
 }
 
 // saModFnv1a64 即 FNV-1a 64（封存 fnv1a64:84-97）。
@@ -978,6 +981,13 @@ func saModKeyOf(qual string) (uint64, uint64) {
 	base := "satsgo modstate v1\x00\x00" + qual
 	const mask = uint64(0x7FFFFFFFFFFFFFFF)
 	return saModFnv1a64("val\x00"+base) & mask, saModFnv1a64("flag\x00"+base) & mask
+}
+
+// saModStrKeyOf 派生串 ptr/len/flag 三槽键（各异域；封存 modStrKeyOf:112-117）。
+func saModStrKeyOf(qual string) (ptr, ln, flag uint64) {
+	base := "satsgo modstate v1\x00\x00" + qual
+	const mask = uint64(0x7FFFFFFFFFFFFFFF)
+	return saModFnv1a64("strptr\x00"+base) & mask, saModFnv1a64("strlen\x00"+base) & mask, saModFnv1a64("strflag\x00"+base) & mask
 }
 
 // saIsModAssignOp 报告赋值类操作符（`=`/复合/逻辑赋值；`==` 系比较除外）。
@@ -1065,33 +1075,64 @@ func saModInitI32(init *ast.Node) (imm string, zero, ok bool) {
 	}
 }
 
+// saModSlotInit 分类槽初值（i32：沿 saModInitI32；串：字面/纯模板，文本直喂落字；
+// 注解须同宽（bool 熨平 i32）；串无初值交旧门；封存 modInitOf:281-319 子集）。
+func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
+	if vd.Initializer != nil {
+		switch vd.Initializer.Kind {
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+			w, lit = "str", vd.Initializer.Text()
+		default:
+			imm, z, ok2 := saModInitI32(vd.Initializer)
+			if !ok2 {
+				return "", "", false, false
+			}
+			w, lit, zero = "i32", imm, z
+		}
+	} else {
+		w, zero = "i32", true
+	}
+	if vd.Type != nil {
+		k, ok2 := saAnnotKind(vd.Type)
+		if !ok2 {
+			return "", "", false, false
+		}
+		switch {
+		case w == "i32" && (k == "i32" || k == "bool"):
+		case w == "str" && k == "str":
+		default:
+			return "", "", false, false
+		}
+	}
+	if w == "str" && vd.Initializer == nil {
+		return "", "", false, false
+	}
+	return w, lit, zero, true
+}
+
 // saModClaimName 判定单 declarator 是否归槽（具名 + 文件内被赋值 + `let`/`var` +
-// i32 初值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
-func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool) (string, bool) {
+// i32/串初值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
+func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool) (string, string, bool) {
 	if vd == nil {
-		return "", false
+		return "", "", false
 	}
 	nm := vd.Name()
 	if nm == nil || nm.Kind != ast.KindIdentifier {
-		return "", false
+		return "", "", false
 	}
 	name := nm.Text()
 	if !assigned[name] {
-		return "", false
+		return "", "", false
 	}
 	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindArrowFunction {
-		return "", false
+		return "", "", false
 	}
-	if _, _, ok := saModInitI32(vd.Initializer); !ok {
-		return "", false
-	}
-	if vd.Type != nil {
-		if k, ok := saAnnotKind(vd.Type); !ok || (k != "i32" && k != "bool") {
-			return "", false
-		}
+	w, _, _, ok := saModSlotInit(vd)
+	if !ok {
+		return "", "", false
 	}
 	_ = d
-	return name, true
+	return name, w, true
 }
 
 // saRecordModStates 预注册顶层 i32 槽（`const` 永不入槽；重名/碰撞大声拒；
@@ -1115,7 +1156,7 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 		}
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			name, ok := saModClaimName(d, vd, assigned)
+			name, w, ok := saModClaimName(d, vd, assigned)
 			if !ok {
 				continue
 			}
@@ -1134,12 +1175,19 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + name + " collides with an existing definition"})
 				continue
 			}
-			imm, zero, _ := saModInitI32(vd.Initializer)
+			_, lit, zero, _ := saModSlotInit(vd)
+			if w == "str" {
+				// 串双槽（ptr+len 独立键域；标志恒置位，空串亦物化；封存
+				// registerModState:360-367 + modIsZero 串分支）。
+				ptr, ln, flag := saModStrKeyOf(name)
+				out[name] = &saModState{qual: name, w: "str", key: ptr, key2: ln, flag: flag, init: lit}
+				continue
+			}
 			key, flag := saModKeyOf(name)
-			ms := &saModState{key: key}
+			ms := &saModState{qual: name, w: "i32", key: key}
 			if !zero {
 				ms.flag = flag
-				ms.init = imm
+				ms.init = lit
 			}
 			out[name] = ms
 		}
@@ -1161,7 +1209,7 @@ func saTryModState(st *ast.Node, assigned map[string]bool) bool {
 		return false
 	}
 	for _, d := range vs.DeclarationList.AsVariableDeclarationList().Declarations.Nodes {
-		if _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned); ok {
+		if _, _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned); ok {
 			return true
 		}
 	}
@@ -1236,4 +1284,100 @@ func saModStoreI32(w printer.EmitTextWriter, ms *saModState, val string, scope *
 	saEmitModEnsure(w, ms, scope, nextTemp)
 	saEmitModSetRaw(w, ms.key, u, scope, nextTemp)
 	return u
+}
+
+// saModStrText 取字面串存储文本（字面/纯模板/已折叠串常量；计算串交旧门大声拒；
+// 封存 modStringText:765-787）。
+func saModStrText(rhs *ast.Node, scope *saScope) (string, bool) {
+	if rhs == nil {
+		return "", false
+	}
+	switch rhs.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return rhs.Text(), true
+	case ast.KindIdentifier:
+		if text, ok := scope.topConsts[rhs.Text()]; ok && scope.topStr[rhs.Text()] {
+			return text, true
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// saModMaterialize 具化字面串为 16 字节头并回读 (ptr, len)（init 与存共用；
+// 封存 emitModInitString:730-742）。
+func saModMaterialize(w printer.EmitTextWriter, text string, scope *saScope, nextTemp *int) (pv, ln string) {
+	h := saLowerStringLiteral(w, text, scope, nextTemp)
+	pv = fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", pv, h))
+	ln = fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+	return pv, ln
+}
+
+// saEmitModEnsureStr 串惰性一次守卫（标志恒置位，空串亦物化；封存
+// emitModEnsure:689-724 + emitModInitString:730-742）。
+func saEmitModEnsureStr(w printer.EmitTextWriter, ms *saModState, scope *saScope, nextTemp *int) {
+	f := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", f, ms.flag))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	doneL := fmt.Sprintf("L_ms_done_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	initL := fmt.Sprintf("L_ms_init_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, f))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, doneL, initL))
+	w.Write(fmt.Sprintf("%s:\n", initL))
+	pv, ln := saModMaterialize(w, ms.init, scope, nextTemp)
+	pu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", pu, pv))
+	saEmitModSetRaw(w, ms.key, pu, scope, nextTemp)
+	saEmitModSetRaw(w, ms.key2, ln, scope, nextTemp)
+	saEmitModSetRaw(w, ms.flag, "1", scope, nextTemp)
+	w.Write(fmt.Sprintf("  jmp %s\n", doneL))
+	w.Write(fmt.Sprintf("%s:\n", doneL))
+	scope.addImport("sa_std/modstate.sai")
+}
+
+// saModLoadStr 串槽读（守卫 + 双槽取 + 16 字节头；封存 emitModLoadString:941-962）。
+func saModLoadStr(w printer.EmitTextWriter, ms *saModState, scope *saScope, nextTemp *int) string {
+	saEmitModEnsureStr(w, ms, scope, nextTemp)
+	tp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", tp, ms.key))
+	tl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", tl, ms.key2))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, tp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, tl))
+	scope.addImport("sa_std/modstate.sai")
+	return h
+}
+
+// saModStoreStr 串槽存（字面直存；调用方已取文本；返回具化头即赋值值；
+// 封存 emitModStoreString:789-806）。
+func saModStoreStr(w printer.EmitTextWriter, ms *saModState, text string, scope *saScope, nextTemp *int) string {
+	saEmitModEnsureStr(w, ms, scope, nextTemp)
+	h := saLowerStringLiteral(w, text, scope, nextTemp)
+	pv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", pv, h))
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+	pu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", pu, pv))
+	saEmitModSetRaw(w, ms.key, pu, scope, nextTemp)
+	saEmitModSetRaw(w, ms.key2, ln, scope, nextTemp)
+	return h
 }

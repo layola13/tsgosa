@@ -70,7 +70,7 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			}
 			return text, ""
 		}
-		if ms, ok := scope.modVars[nm]; ok {
+		if ms, ok := scope.modVars[nm]; ok && ms.w == "i32" {
 			return saModLoadI32(w, ms, scope, nextTemp), ""
 		}
 		if nm == "undefined" {
@@ -620,10 +620,10 @@ func saLowerPostfixUnary(w printer.EmitTextWriter, un *ast.PostfixUnaryExpressio
 func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	target, ok := saBoundI32(scope, operand)
 	if !ok {
-		// 顶层可变槽自增（读-改-写回；旧值/新值语义同本地；
+		// 顶层可变槽自增（读-改-写回；旧值/新值语义同本地；i32 独占，串槽大声拒；
 		// 形状证据：封存 emitModIncDec:1191-1228）。
 		if operand != nil && operand.Kind == ast.KindIdentifier {
-			if ms, ok := scope.modVars[operand.Text()]; ok {
+			if ms, ok := scope.modVars[operand.Text()]; ok && ms.w == "i32" {
 				if _, shadowed := scope.types[operand.Text()]; !shadowed {
 					cur := saModLoadI32(w, ms, scope, nextTemp)
 					op := "add"
@@ -638,6 +638,12 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 						return nw, ""
 					}
 					return cur, ""
+				}
+			}
+			// 串槽自增形状证据：封存 emitModIncDec:1195-1199 串拒因。
+			if ms, ok := scope.modVars[operand.Text()]; ok && ms.w == "str" {
+				if _, shadowed := scope.types[operand.Text()]; !shadowed {
+					return "", fmt.Sprintf("++/-- on string module state %s is not lowerable", ms.qual)
 				}
 			}
 		}
@@ -1001,10 +1007,18 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			target, ok := saBoundI32(scope, be.Left)
 			if !ok {
 				// 顶层可变槽写（`x = v`；局部遮蔽优先上；返回右值；
-				// 形状证据：封存 emitModStore 系列 + modWiden:822-882）。
+				// i32/串按宽分发，计算串大声拒；
+				// 形状证据：封存 emitModStore 系列 + modWiden:822-882 + emitModStoreStringDispatch:808-820）。
 				if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
 					if ms, ok := scope.modVars[be.Left.Text()]; ok {
 						if _, shadowed := scope.types[be.Left.Text()]; !shadowed {
+							if ms.w == "str" {
+								text, ok := saModStrText(be.Right, scope)
+								if !ok {
+									return "", fmt.Sprintf("module state %s stores string literals and string constants only (computed strings are not lowerable yet)", ms.qual)
+								}
+								return saModStoreStr(w, ms, text, scope, nextTemp), ""
+							}
 							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 							if msg != "" {
 								return "", msg
