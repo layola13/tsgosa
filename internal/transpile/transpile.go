@@ -1568,60 +1568,10 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
 		ce := rs.Expression.AsConditionalExpression()
-		condOp, msg := saCondOperand(w, ce.Condition, scope, pos, refusals, nextTemp)
+		t, _, msg := saLowerTernaryValue(w, ce, s, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
-			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})
 			return false, true
 		}
-		if saIsStrValue(ce.WhenTrue, scope) || saIsStrValue(ce.WhenFalse, scope) {
-			// 串臂三元走槽汇合（两侧须皆串位；形状证据：封存 lowerTernary:8498-8515）。
-			if !saIsStrValue(ce.WhenTrue, scope) || !saIsStrValue(ce.WhenFalse, scope) {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms disagree (string vs non-string)"})
-				return false, true
-			}
-			tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
-			fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
-			if msgA != "" || msgB != "" {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be string operands"})
-				return false, true
-			}
-			slot := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-			tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
-			*nextLabel++
-			fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
-			*nextLabel++
-			endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
-			*nextLabel++
-			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
-			w.Write(fmt.Sprintf("%s:\n", tL))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
-			w.Write(fmt.Sprintf("%s:\n", fL))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
-			w.Write(fmt.Sprintf("%s:\n", endL))
-			res := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
-			w.Write(fmt.Sprintf("  ret %s\n", res))
-			return true, false
-		}
-		a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
-		b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
-		if msgA != "" || msgB != "" {
-			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be i32 operands"})
-			return false, true
-		}
-		needImport("sa_std/control.sal")
-		t := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", t, condOp, a, b))
 		w.Write(fmt.Sprintf("  ret %s\n", t))
 		return true, false
 	}

@@ -374,6 +374,23 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 	}
+	if vd.Initializer.Kind == ast.KindConditionalExpression {
+		// 无注解三元推断（i32/串臂与 return 位同核；分歧沿核拒）。
+		ce := vd.Initializer.AsConditionalExpression()
+		t, isStr, msg := saLowerTernaryValue(w, ce, d, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, t))
+		if isStr {
+			scope.types[name] = "str"
+		} else {
+			scope.types[name] = "i32"
+		}
+		return true
+	}
 	op, msg := saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(d.Pos())
