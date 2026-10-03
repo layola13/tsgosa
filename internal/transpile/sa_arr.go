@@ -149,6 +149,15 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
 		return t, ""
 	}
+	// 链式下标基（`pairs[0].length` 经句柄总线递归求内层句柄；与读位同形）。
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
+		if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+			return t, ""
+		}
+	}
 	// Map/Set 用 `.size()` 方法（属性形大声拒）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[pa.Expression.Text()]; ok && (k == "map" || k == "set") {
