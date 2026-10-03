@@ -116,6 +116,37 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
 // 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
+// saLowerOptionalIndex lowers `a?.[i]` (null base reads 0, otherwise the checked-index
+// join; null is the zero handle).
+func saLowerOptionalIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	nullL := fmt.Sprintf("L_idx_null_%d", *nextLabel)
+	*nextLabel++
+	chkL := fmt.Sprintf("L_idx_chk_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_idx_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, base))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, chkL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", chkL))
+	v := saLowerCheckedIndex(w, base, idx, nextLabel, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest
+}
+
 func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
 	freshT := func() string {
 		t := fmt.Sprintf("t_%d", *nextTemp)
@@ -175,12 +206,10 @@ func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTe
 	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", ptrT, rhs))
 }
 
-// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`（基为绑定数组或数组值调用；
-// `?.[]` 拒；下标走 i32 求值，读回走越界归零 join）。
+// saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`/`a?.[i]`（基为绑定数组或数组值调用；
+// `?.` 空基归零；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	if ea.QuestionDotToken != nil {
-		return "", "optional index access not lowerable"
-	}
+	isOpt := ea.QuestionDotToken != nil
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", "index base must be bound array"
@@ -188,6 +217,10 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
+	}
+	if isOpt {
+		// `a?.[i]` (null base reads 0, otherwise checked-index join).
+		return saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp), ""
 	}
 	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
 }
