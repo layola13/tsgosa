@@ -805,33 +805,15 @@ func saObjPropName(p *ast.Node) (string, bool) {
 	return "", false
 }
 
-// saStaticLiteral 折叠静态字面量初值（断言/括号剥离后：数字面→i32 文本，
+// saStaticLiteral 折叠静态字面量初值（上游 ast.SkipOuterExpressions +
+// OEKAssertions 精确四 kind 解包，括号保持不透明与上游调用形一致；数字面→i32 文本，
 // 串/反引号字面→原文（具化路径与字面量同字节），true/false→1/0；
-// 形状证据：封存 staticLiteralText:9444-9468）。
+// 形状证据：封存 staticLiteralText 去孤岛 p1）。
 func saStaticLiteral(n *ast.Node) (string, string, bool) {
-	for n != nil {
-		switch n.Kind {
-		case ast.KindAsExpression:
-			n = n.AsAsExpression().Expression
-			continue
-		case ast.KindSatisfiesExpression:
-			n = n.AsSatisfiesExpression().Expression
-			continue
-		case ast.KindNonNullExpression:
-			n = n.AsNonNullExpression().Expression
-			continue
-		case ast.KindParenthesizedExpression:
-			n = n.AsParenthesizedExpression().Expression
-			continue
-		case ast.KindTypeAssertionExpression:
-			n = n.AsTypeAssertion().Expression
-			continue
-		}
-		break
-	}
 	if n == nil {
 		return "", "", false
 	}
+	n = ast.SkipOuterExpressions(n, ast.OEKAssertions)
 	switch n.Kind {
 	case ast.KindNumericLiteral:
 		return n.Text(), "i32", true
