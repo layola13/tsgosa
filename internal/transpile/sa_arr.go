@@ -391,6 +391,12 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	if base, ok := saArrBase(scope, e); ok {
 		return base, true
 	}
+	// 链基（`pairs[0]`/`q.r.a` 经句柄总线；失败静默下探旧门）。
+	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression) {
+		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
+			return h, true
+		}
+	}
 	ln, col := pos(where.Pos())
 	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("%s base must be bound array", what)})
 	return "", false

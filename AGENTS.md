@@ -125,6 +125,7 @@
 - step95（链数组基一次过，落`sa_arr.go`一处，零新文件）：句柄总线`PropertyAccess`分支增链基（`q.r.a`经内层句柄，叶子须arr；与链读同形）；2项等价（链下标/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step96（链length一次过，落`sa_arr.go`一处，零新文件）：`saLowerLengthExpr`增`PropertyAccess`链分支（经句柄总线；与下标基同形）；2项等价（链/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step97（类类型嵌套字段一次过，落`sa_class.go`两处，零新文件）：记录门放行布局表内任意类/接口名（`inst`8B句柄）+构造增实例直存（须同布局，错配沿旧门）；读链经`saChainBase`自动通；2项等价（类嵌套/接口回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
+- step98（链for-of被巡一次过，落`sa_arr.go`一处，零新文件）：`saForArrHandle`绑定后增链基（下标/属性链经句柄总线，失败静默下探旧门）；2项等价（链巡/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
