@@ -90,6 +90,7 @@
 - step60（String.raw 一次过，落 `sa_str.go` + 源码穿线，零新文件）：`String.raw` 不煮（raw 头尾 + 常规渲染插值逐片拼接；`lowerTaggedTemplate:8772-8783` + `lowerRawTemplate:8787-8821`；NoSub 经源码切片，`scope.src` 穿线；余下标签拒因逐字对齐）；raw 转义保持字面、多字节前缀切片与煮模板对照全过；门：无源文本/坏形状/custom 标签一律拒。
 - step61（类装饰器堵漏一次过，落 `sa_class.go` 1 门，零新文件）：`@sealed class` 此前静默吞掉，现 `saRecordClassNamed` 首查 `Decorators()` 落拒因（声明/表达式同门；`saemit.go:749-754` 同形；函数装饰器两侧皆放行一致）；`TestLoudDecoratorUsing` 五式（类/成员/using×3）全过。
 - step62（panic 码锁验证，零改动）：裸 `panic` 审计为零（`panic\(\d+\)` 全覆盖：throw/throwing-try 2501，date 后端态 2503）；三式全过无裸落字；DOM 2502（整套 airlock 子系统）、i64 返回、`Date.parse`/node 2503 调用随 node 阶段（`sa_plugin_node` 直接映射时）另立项，本轮只锁码表不断言未实现面。
+- step63（私有字段一次过，落 `sa_class.go` + 读写/存/`in`/静态接线，零新文件）：`#x` 按属主 mangle（`#C#x`，`privFieldKey:8208`），读/存/构造连线按词法属主解（域外/未声明/super 拒因逐字对齐 `8218-8282`），`#x in o` 品牌静态折叠，`static #K` 类名基+属主一致折叠；方法实例形参直传绑定（`add(o: C)` 跨实例同属主读，子类实例兼容基形参，回调变参种表数组侧零行为变）；7 式（3 通形 + 4 拒因）全过；门：私有方法/getter、私有静态方法、bool/str 方法形参仍拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

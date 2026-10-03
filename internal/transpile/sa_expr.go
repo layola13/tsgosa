@@ -631,6 +631,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		pa := e.AsPropertyAccessExpression()
 		// super.f 读基布局（存取器走基 getter 内联；形状证据：封存 checkSuperAccess:253-278）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
+			// 私有域永不过 super（TS 恒错；封存 8273-8282）。
+			if strings.HasPrefix(pa.Name().Text(), "#") {
+				return "", fmt.Sprintf("private field %s is not accessible via super", pa.Name().Text())
+			}
 			bdef, h, msg := saSuperBase(scope)
 			if msg != "" {
 				return "", msg
@@ -652,13 +656,25 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if v, ok := saNumberConst(pa); ok {
 			return v, ""
 		}
-		// 实例字段读（`o.f`/`this.f`；静态成员大声拒）。
+		// 实例字段读（`o.f`/`this.f`；静态成员大声拒；私有域按词法属主解）。
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {
 				return "", msg
 			}
-			if _, ok := def.offsets[pa.Name().Text()]; ok {
+			fname := pa.Name().Text()
+			if strings.HasPrefix(fname, "#") {
+				key, msg := saPrivResolve(def, fname, scope.thisClass)
+				if msg != "" {
+					return "", msg
+				}
+				t, msg := saLowerClassFieldLoad(w, h, def, key, scope, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return t, ""
+			}
+			if _, ok := def.offsets[fname]; ok {
 				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
@@ -680,6 +696,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return v, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			// 私有静态读（`C.#K`，类名基 + 属主一致；封存 8029-8064）。
+			if def, key, msg, ok := saPrivStaticKey(pa.Expression, pa.Name().Text(), scope); msg != "" {
+				return "", msg
+			} else if ok {
+				sv := def.statics[key]
+				if sv.kind == "str" {
+					return "", "string " + pa.Name().Text() + " in i32 expression"
+				}
+				return sv.text, ""
+			}
 			// 类名基静态字面量折叠（`C.K`；串在 i32 位拒；封存 lowerExpr:8013-8041）。
 			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
 				if kind == "str" {
@@ -758,6 +784,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindSuperKeyword && lpa.Name() != nil {
+						if strings.HasPrefix(lpa.Name().Text(), "#") {
+							return "", fmt.Sprintf("private field %s is not accessible via super", lpa.Name().Text())
+						}
 						bdef, h, msg := saSuperBase(scope)
 						if msg != "" {
 							return "", msg
@@ -801,13 +830,21 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						if msg != "" {
 							return "", msg
 						}
-						if _, ok := def.offsets[lpa.Name().Text()]; ok {
-							if def.fkinds[lpa.Name().Text()] == "str" {
+						fname := lpa.Name().Text()
+						if strings.HasPrefix(fname, "#") {
+							key, msg := saPrivResolve(def, fname, scope.thisClass)
+							if msg != "" {
+								return "", msg
+							}
+							fname = key
+						}
+						if _, ok := def.offsets[fname]; ok {
+							if def.fkinds[fname] == "str" {
 								sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
 								if msg != "" {
 									return "", msg
 								}
-								if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), sop); msg != "" {
+								if msg := saLowerClassFieldStore(w, h, def, fname, sop); msg != "" {
 									return "", msg
 								}
 								return sop, ""
@@ -816,7 +853,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 							if msg != "" {
 								return "", msg
 							}
-							if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), op); msg != "" {
+							if msg := saLowerClassFieldStore(w, h, def, fname, op); msg != "" {
 								return "", msg
 							}
 							return op, ""
@@ -974,6 +1011,31 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // 形状证据：封存 lowerBinary:3135-3177。品牌检查/动态键一律拒）。
 func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	verdict := ""
+	// 私有品牌检查（`#x in o` 按属主静态折叠；封存 lowerExpr 私有 `in` 相）。
+	if be.Left != nil && be.Left.Kind == ast.KindPrivateIdentifier {
+		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[be.Right.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if def, ok := scope.classes[k[5:]]; ok {
+					key, msg := saPrivResolve(def, be.Left.Text(), scope.thisClass)
+					if msg != "" {
+						return "", msg
+					}
+					if _, ok := def.offsets[key]; ok {
+						verdict = "1"
+					} else {
+						verdict = "0"
+					}
+				}
+			}
+		}
+		if verdict == "" {
+			return "", "in operator needs a literal key and a known-layout object"
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
+		return t, ""
+	}
 	if be.Left != nil && be.Left.Kind == ast.KindStringLiteral {
 		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
 			if k, ok := scope.types[be.Right.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {

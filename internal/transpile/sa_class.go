@@ -275,10 +275,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 		case ast.KindPropertyDeclaration:
 			pd := m.AsPropertyDeclaration()
 			fn := m.Name()
-			if fn == nil || fn.Kind != ast.KindIdentifier {
+			if fn == nil || (fn.Kind != ast.KindIdentifier && fn.Kind != ast.KindPrivateIdentifier) {
 				ln, col := pos(m.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed/private field names are not lowerable"})
 				return false
+			}
+			// 私有字段按属主 mangle（`#x` → `#C#x`，遮蔽属主各占槽；封存 8208）。
+			fkey := fn.Text()
+			if fn.Kind == ast.KindPrivateIdentifier {
+				fkey = saPrivKey(name, fn.Text())
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 静态字面量折叠记表（不占实例槽；封存 recordClassNamed:9703-9711）；
@@ -287,7 +292,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					if def.statics == nil {
 						def.statics = map[string]saStaticVal{}
 					}
-					def.statics[fn.Text()] = saStaticVal{text: text, kind: kind}
+					def.statics[fkey] = saStaticVal{text: text, kind: kind}
 					continue
 				}
 			}
@@ -305,21 +310,21 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					fkind = "str"
 				}
 			}
-			if _, dup := def.offsets[fn.Text()]; dup {
+			if _, dup := def.offsets[fkey]; dup {
 				// 继承字段重声明：守基偏移（同宽同种恒成立）。
 				// 形状证据：封存 recordClassNamed:9717-9733。
-				if def.parent == "" || ownFields[fn.Text()] {
+				if def.parent == "" || ownFields[fkey] {
 					ln, col := pos(m.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fn.Text()})
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fkey})
 					return false
 				}
 				continue
 			}
-			ownFields[fn.Text()] = true
+			ownFields[fkey] = true
 			off = saAlignOff(off, fkind)
-			def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
-			def.offsets[fn.Text()] = off
-			def.fkinds[fn.Text()] = fkind
+			def.fields = append(def.fields, saClassField{name: fkey, offset: off})
+			def.offsets[fkey] = off
+			def.fkinds[fkey] = fkind
 			sz, _ := saFieldWidth(fkind)
 			off += sz
 		case ast.KindConstructor:
@@ -712,7 +717,17 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 		return false
 	}
 	atClass := func(d *saClassDef) bool {
-		if d.fkinds[field] == "str" {
+		key := field
+		if strings.HasPrefix(field, "#") {
+			if scope.thisClass == "" {
+				return false
+			}
+			key = saPrivKey(scope.thisClass, field)
+			if _, ok := d.offsets[key]; !ok {
+				return false
+			}
+		}
+		if d.fkinds[key] == "str" {
 			return true
 		}
 		if gn, ok := d.getters[field]; ok {
@@ -728,6 +743,12 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 		if d, ok := scope.classes[nm]; ok {
 			if sv, ok := d.statics[field]; ok {
 				return sv.kind == "str"
+			}
+			// 私有静态串判定（类名基 + 属主一致）。
+			if _, key, msg, ok := saPrivStaticKey(base, field, scope); ok && msg == "" {
+				if sv, ok := d.statics[key]; ok {
+					return sv.kind == "str"
+				}
 			}
 			return false
 		}
@@ -802,6 +823,64 @@ func saMethodReturnKind(mn *ast.Node) (string, bool) {
 		return "", false
 	}
 	return saAnnotKind(typ)
+}
+
+// saPrivKey 映射私有字段到属主（`#x` 在 C 中 → `#C#x`，遮蔽属主各占槽；
+// 公共名直通；形状证据：封存 privFieldKey:8208-8213）。
+func saPrivKey(owner, fname string) string {
+	if !strings.HasPrefix(fname, "#") {
+		return fname
+	}
+	return "#" + owner + fname
+}
+
+// saPrivResolve 按词法属主解 `#` 成员（scope.thisClass；布局缺席/域外大声拒；
+// 公共名直通。形状证据：封存 privResolveOwned:8218-8228 + privResolve:8230-8241）。
+// 返回（布局键，拒因）。
+func saPrivResolve(def *saClassDef, raw, owner string) (string, string) {
+	if !strings.HasPrefix(raw, "#") {
+		return raw, ""
+	}
+	if owner == "" {
+		return "", fmt.Sprintf("private field %s is not accessible outside a class method", raw)
+	}
+	key := saPrivKey(owner, raw)
+	if _, ok := def.offsets[key]; !ok {
+		// 静态私名走 statics 表。
+		if _, ok := def.statics[key]; !ok {
+			return "", fmt.Sprintf("private field %s is not declared in class %s", raw, owner)
+		}
+	}
+	return key, ""
+}
+
+// saPrivStaticKey 解析私有静态读（`C.#K`，类名基 + 属主一致；
+// 封存 8029-8064）。返回（定义，布局键，拒因，命中）。
+func saPrivStaticKey(base *ast.Node, field string, scope *saScope) (*saClassDef, string, string, bool) {
+	if field == "" || !strings.HasPrefix(field, "#") {
+		return nil, "", "", false
+	}
+	if base == nil || base.Kind != ast.KindIdentifier {
+		return nil, "", "", false
+	}
+	nm := base.Text()
+	def, ok := scope.classes[nm]
+	if !ok {
+		return nil, "", "", false
+	}
+	owner := scope.thisClass
+	if owner == "" {
+		return nil, "", fmt.Sprintf("private static %s is not accessible outside a class method", field), false
+	}
+	if owner != nm {
+		return nil, "", fmt.Sprintf("private static %s is not declared in class %s", field, owner), false
+	}
+	key := saPrivKey(nm, field)
+	if _, ok := def.statics[key]; !ok {
+		// 非字面 legacy 私有静态走实例槽，类名基不可读（与公共 legacy 同形，下探）。
+		return nil, "", "", false
+	}
+	return def, key, "", true
 }
 
 // saStaticFold 读静态字面量（类名/实例/`this` 基；私有名不碰；
@@ -1200,7 +1279,11 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
 			continue
 		}
-		if def.fkinds[pa.Name().Text()] == "str" {
+		fname := pa.Name().Text()
+		if strings.HasPrefix(fname, "#") {
+			fname = saPrivKey(owner, fname)
+		}
+		if def.fkinds[fname] == "str" {
 			want[bin.Right.Text()] = true
 		}
 	}
@@ -1252,10 +1335,21 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + owner})
 			return false
 		}
-		off, ok := def.offsets[pa.Name().Text()]
+		// 构造体内 this 即属主类本身（私有域按属主解）。
+		fname := pa.Name().Text()
+		if strings.HasPrefix(fname, "#") {
+			key, msg := saPrivResolve(def, fname, owner)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			fname = key
+		}
+		off, ok := def.offsets[fname]
 		if !ok {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pa.Name().Text() + " is not in the " + owner + " layout"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + fname + " is not in the " + owner + " layout"})
 			return false
 		}
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
@@ -1270,7 +1364,7 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			return false
 		}
 		// str 域存头指针（右值已按种求值）。
-		if def.fkinds[pa.Name().Text()] == "str" {
+		if def.fkinds[fname] == "str" {
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 			continue
 		}
@@ -1422,6 +1516,36 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 	return saWireCtorBody(w, h, base, bdef.ctor, paramVal, scope, pos, refusals, nextTemp)
 }
 
+// saInstArg 求实例实参句柄（绑定标识符/`this`；子类实例可传基形参，
+// 展平布局前缀一致，读基域安全）。
+func saInstArg(a *ast.Node, want string, scope *saScope) (string, string) {
+	var have, h string
+	switch {
+	case a != nil && a.Kind == ast.KindIdentifier:
+		nm := a.Text()
+		k, ok := scope.types[nm]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return "", "method instance argument must be a bound instance"
+		}
+		have, h = k[5:], nm
+	case a != nil && a.Kind == ast.KindThisKeyword && scope.thisSelf != "":
+		have, h = scope.thisClass, scope.thisSelf
+	default:
+		return "", "method instance argument must be a bound instance"
+	}
+	for c := have; c != ""; {
+		if c == want {
+			return h, ""
+		}
+		d, ok := scope.classes[c]
+		if !ok {
+			break
+		}
+		c = d.parent
+	}
+	return "", "method instance argument class mismatch (want " + want + ")"
+}
+
 // saInlineMethod 内联 `obj.m(args)`（形参快照 + this 指向 + 槽汇合；
 // 形状证据：封存 inlineClassMethod:10188-10280；体复用 saCallbackValue）。
 func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
@@ -1441,21 +1565,44 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 		return "", "method takes exact arguments"
 	}
 	// 方法形参恒 i32（回调快照绑定只存标量；句柄形参无改写机制，大声拒）。
-	for _, p := range params {
+	// 实例注解直传绑定（`add(o: C)` 跨实例同属主读；封存方法实例形参位）。
+	kinds := make([]string, len(params))
+	for i, p := range params {
 		pd := p.AsParameterDeclaration()
 		if pd == nil {
 			return "", "method parameter shape is not lowerable"
 		}
 		if pd.Type != nil {
-			if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
-				return "", "method parameters must be i32"
+			if k, ok := saAnnotKind(pd.Type); ok {
+				if k != "i32" {
+					return "", "method parameters must be i32"
+				}
+				continue
 			}
+			if pd.Type.Kind == ast.KindTypeReference {
+				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+					if _, ok := scope.classes[ref.TypeName.Text()]; ok {
+						kinds[i] = "inst:" + ref.TypeName.Text()
+						continue
+					}
+				}
+			}
+			return "", "method parameters must be i32"
 		}
 	}
 	var argVals []string
-	for _, a := range argNodes {
+	for i, a := range argNodes {
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
 			return "", "method arguments must be values"
+		}
+		// 实例形参实参直传句柄（子类实例可传基形参，展平前缀一致）。
+		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
+			h, msg := saInstArg(a, kinds[i][5:], scope)
+			if msg != "" {
+				return "", msg
+			}
+			argVals = append(argVals, h)
+			continue
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -1470,7 +1617,7 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 	if k, ok := saMethodReturnKind(mn); ok && k == "str" {
 		wantKind = "str"
 	}
-	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, kinds)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg

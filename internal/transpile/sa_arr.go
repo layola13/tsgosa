@@ -1900,7 +1900,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 // 形状证据：封存 callbackValue:5194-5250 + bindCallbackParam:5255-5305。
 // 本薄口回调恒 i32 位（串回调值大声拒）；具名遮蔽存取恢复；return 拦截经
 // scope.inlineRet，嵌套回调栈式保存恢复）。
-func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
 	params := cb.Parameters()
 	if len(params) > len(argVals) {
 		return "", "callback declares too many parameters"
@@ -1934,6 +1934,11 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			}
 		}
 	}
+	// 变参 kinds 为方法实例形参并行表（nil 种恒 i32，供数组回调）。
+	kinds := []string(nil)
+	if len(paramKinds) > 0 {
+		kinds = paramKinds[0]
+	}
 	for i, p := range params {
 		pd := p.AsParameterDeclaration()
 		if pd == nil {
@@ -1950,8 +1955,13 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			return "", "callback parameter shape is not lowerable"
 		}
 		// 标量快照拷贝（形状证据：封存 bindCallbackParam:5289-5294）。
-		// 句柄不入参（薄口回调恒 i32 位；具柄形参无改写MECHANISM，大声拒）。
+		// 实例句柄直传绑定（方法实例形参经变参 kinds 表）。
 		name := nm.Text()
+		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			bind(name, kinds[i])
+			continue
+		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
 		bind(name, "i32")
 	}

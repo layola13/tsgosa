@@ -263,6 +263,16 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// 封存 lowerExpr:8013-8041）。
 		pa := e.AsPropertyAccessExpression()
 		if pa.Name() != nil {
+			// 私有静态串折叠（`C.#S`；非串沿标识符口径拒）。
+			if def, key, msg, ok := saPrivStaticKey(pa.Expression, pa.Name().Text(), scope); msg != "" {
+				return "", msg
+			} else if ok {
+				sv := def.statics[key]
+				if sv.kind == "str" {
+					return saLowerStringLiteral(w, sv.text, scope, nextTemp), ""
+				}
+				return "", pa.Name().Text() + " is not a string"
+			}
 			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
 				if kind == "str" {
 					return op, ""
@@ -281,8 +291,16 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if saCouldBeInst(pa.Expression, scope) {
 				h, def, msg := saInstBase(pa.Expression, scope)
 				if msg == "" {
-					if _, ok := def.offsets[pa.Name().Text()]; ok && def.fkinds[pa.Name().Text()] == "str" {
-						t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+					fname := pa.Name().Text()
+					if strings.HasPrefix(fname, "#") {
+						key, msg := saPrivResolve(def, fname, scope.thisClass)
+						if msg != "" {
+							return "", msg
+						}
+						fname = key
+					}
+					if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "str" {
+						t, msg := saLowerClassFieldLoad(w, h, def, fname, scope, nextTemp)
 						if msg == "" {
 							return t, ""
 						}
