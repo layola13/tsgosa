@@ -155,6 +155,7 @@
 - step126（串谓词嵌套修正一次过，落 `sa_str.go` 判定核，零新文件）：`saIsStrExpr` 的 `+` 链传递改按串值判定（i32 返回的串方法如 charCodeAt 不计入；否则嵌套算术误判拼接而拒；顶层行为不变，纯判定收紧）；282 转正（另含 3+ 串调用嵌套 `+` 链一族）；**286 差分 263→264 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - step127（可选下标值位一次过，落 `sa_arr.go` 下标读域，零新文件）：`a?.[i]` 空基归零 + 越界归零 join（空检外槽嵌套既有 checked-index；封存上游可选链下标位）；281 的 `get` 半形转正，整例待浮点三元（f64 域，另步）；**286 差分保持 264 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`transpile.go`/`main.go` 未动。
 - step128（f64 值域一次过，落 `transpile.go` 注解核 + `sa_decl.go` 声明门 + `sa_expr.go` 求值核，零新文件）：`f64`/`f32` 注解记 f64 种 + 声明绑定 Plain（无归属释放；`a = 7.5` 直绑）+ 二元按任一侧浮点走 fadd/fsub/fmul/fdiv 与 fcmp 全集（sci 实有助记符；操作数侧浮点直通、余下走 i32 求值；封存 lowerBinary 浮点分支）+ 浮点三元经 f64 槽汇合（字面量直存、整数经 sitofp；`.5` 补零；封存 281 三元 f64 形）+ f64 临时量记种（推断/三元/返回位贯通；i32 位误用大声拒）；262 与 281 转正；有意分歧：f64 绑定零释放（上游分支内 `!c` 等；本仓 Plain 无释更稳）、`3.0` 按解析文本 `3` 落字（与上游同形）；**286 差分 264→266 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动，`transpile.go` 仅注解核。
+- step129（复合赋值移位/位运算一次过，落 `sa_ctrl.go` 算符表，零新文件）：`<<=`/`>>=`/`>>>=`/`&=`/`|=`/`^=` 补齐 shl/ashr/lshr/and/or/xor（语句位经既有读改写回，封存 `lowerCompoundAssign:3373-3417` 全集；`>>>=` 等位 `for` 头增量另域）；266 转正；**286 差分 266→267 同通过，0 回退**；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 全仓干净（含本步对齐）；`transpile.go`/`main.go` 未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 3.1 step109+ 增量台账（续跑自 step108）

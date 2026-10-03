@@ -26,7 +26,10 @@ func saCompoundOp(op ast.Kind) (string, bool) {
 	mapped, ok := map[ast.Kind]string{
 		ast.KindPlusEqualsToken: "add", ast.KindMinusEqualsToken: "sub",
 		ast.KindAsteriskEqualsToken: "mul", ast.KindSlashEqualsToken: "div",
-		ast.KindPercentEqualsToken: "srem",
+		ast.KindPercentEqualsToken:          "srem",
+		ast.KindLessThanLessThanEqualsToken: "shl", ast.KindGreaterThanGreaterThanEqualsToken: "ashr",
+		ast.KindGreaterThanGreaterThanGreaterThanEqualsToken: "lshr",
+		ast.KindAmpersandEqualsToken:                         "and", ast.KindBarEqualsToken: "or", ast.KindCaretEqualsToken: "xor",
 	}[op]
 	return mapped, ok
 }
