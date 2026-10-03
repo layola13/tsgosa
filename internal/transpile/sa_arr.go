@@ -762,6 +762,17 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 				}
 			}
 		}
+		// 嵌套链 arr 基（`q.r.a` 经内层句柄；叶子须 arr；与链读同形）。
+		if pa.Name() != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+			if ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				if off, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "arr" {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, ch, off))
+					return t, ""
+				}
+			}
+		}
 		return "", "not an array expression"
 	case ast.KindElementAccessExpression:
 		ea := e.AsElementAccessExpression()
