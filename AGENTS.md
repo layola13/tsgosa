@@ -123,6 +123,7 @@
 - step93（嵌套链写一次过，落`sa_expr.go`一处，零新文件）：`q.p.a = v`经`saChainBase`解内层句柄按叶子种存（i32/str/arr；inst叶拒需构造句柄；链setter沿旧门）；2项等价（链写/实例回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - step94（串链读一次过，落`sa_str.go`一处，零新文件）：`q.p.s`经`saChainBase`解内层句柄按布局读（叶子须str，非串沿旧门；与i32链读同形）；2项等价（串链/串回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step95（链数组基一次过，落`sa_arr.go`一处，零新文件）：句柄总线`PropertyAccess`分支增链基（`q.r.a`经内层句柄，叶子须arr；与链读同形）；2项等价（链下标/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
+- step96（链length一次过，落`sa_arr.go`一处，零新文件）：`saLowerLengthExpr`增`PropertyAccess`链分支（经句柄总线；与下标基同形）；2项等价（链/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
