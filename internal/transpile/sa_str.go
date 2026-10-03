@@ -96,6 +96,17 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		return saIsStrExpr(e.AsNonNullExpression().Expression, scope)
 	case ast.KindTypeAssertionExpression:
 		return saIsStrExpr(e.AsTypeAssertion().Expression, scope)
+	case ast.KindTaggedTemplateExpression:
+		// 仅 `String.raw` 为串值（余下标签求值拒；判定先行）。
+		tt := e.AsTaggedTemplateExpression()
+		if tt.Tag != nil && tt.Tag.Kind == ast.KindPropertyAccessExpression {
+			pa := tt.Tag.AsPropertyAccessExpression()
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" &&
+				pa.Name() != nil && pa.Name().Text() == "raw" {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -198,7 +209,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		return saLowerStringLiteral(w, kind, scope, nextTemp), ""
 	case ast.KindTaggedTemplateExpression:
-		return "", "tagged templates are not lowerable (String.raw needs raw source text)"
+		return saLowerTaggedTemplate(w, e, scope, pos, refusals, nextTemp)
 	case ast.KindIdentifier:
 		nm := e.Text()
 		if k, ok := scope.types[nm]; ok {
@@ -963,6 +974,88 @@ func saClampRange(w printer.EmitTextWriter, bp, bl, start, end string, substring
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen, f, s))
 	return nptr, nlen
+}
+
+// saRawTemplateText 取模板片 raw 文本（转义不煮；NoSub 由源码切片，
+// 解析器不填其 RawText；形状证据：封存 rawTemplateText:8742-8753）。
+func saRawTemplateText(n *ast.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case ast.KindTemplateHead:
+		return n.AsTemplateHead().RawText
+	case ast.KindTemplateMiddle:
+		return n.AsTemplateMiddle().RawText
+	case ast.KindTemplateTail:
+		return n.AsTemplateTail().RawText
+	default:
+		return n.Text()
+	}
+}
+
+// saLowerTaggedTemplate lowering 标签模板（`String.raw` 不煮：raw 片 +
+// 常规渲染插值逐片拼接；其余标签大声拒；形状证据：封存 lowerTaggedTemplate:8772-8783）。
+func saLowerTaggedTemplate(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	tt := n.AsTaggedTemplateExpression()
+	if tt.Tag != nil && tt.Tag.Kind == ast.KindPropertyAccessExpression {
+		pa := tt.Tag.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" &&
+			pa.Name() != nil && pa.Name().Text() == "raw" {
+			return saLowerRawTemplate(w, tt.Template, scope, pos, refusals, nextTemp)
+		}
+	}
+	ln, col := pos(n.Pos())
+	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "tagged templates are not lowerable (tag functions have no first-class value; String.raw is the only supported tag)"})
+	return "", "tagged templates are not lowerable (tag functions have no first-class value; String.raw is the only supported tag)"
+}
+
+// saLowerRawTemplate lowering `String.raw` 模板（raw 头尾 + 插值渲染逐片拼接；
+// NoSub 经源码切片（位字节精确）；形状证据：封存 lowerRawTemplate:8787-8821 +
+// rawNoSubText:8759-8765）。
+func saLowerRawTemplate(w printer.EmitTextWriter, tpl *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if tpl != nil && tpl.Kind == ast.KindNoSubstitutionTemplateLiteral {
+		p, en := tpl.Pos(), tpl.End()
+		if p < 0 || en > len(scope.src) || en-p < 2 || scope.src[p] != '`' {
+			ln, col := pos(tpl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "String.raw literal has no recoverable source text"})
+			return "", "String.raw literal has no recoverable source text"
+		}
+		return saLowerStringLiteral(w, scope.src[p+1:en-1], scope, nextTemp), ""
+	}
+	if tpl == nil || tpl.Kind != ast.KindTemplateExpression {
+		ln, col := pos(tpl.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "tagged template shape is not lowerable"})
+		return "", "tagged template shape is not lowerable"
+	}
+	tp := tpl.AsTemplateExpression()
+	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/fmt.sai")
+	var acc string
+	if tp.Head != nil {
+		acc = saLowerStringLiteral(w, saRawTemplateText(tp.Head), scope, nextTemp)
+	} else {
+		acc = saLowerStringLiteral(w, "", scope, nextTemp)
+	}
+	if tp.TemplateSpans != nil {
+		for _, sp := range tp.TemplateSpans.Nodes {
+			span := sp.AsTemplateSpan()
+			part, msg := saToSlice(w, span.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			acc = saConcatSlices(w, acc, part, scope, nextTemp)
+			tail := ""
+			if span.Literal != nil {
+				tail = saRawTemplateText(span.Literal)
+			}
+			if tail != "" {
+				tailH := saLowerStringLiteral(w, tail, scope, nextTemp)
+				acc = saConcatSlices(w, acc, tailH, scope, nextTemp)
+			}
+		}
+	}
+	return acc, ""
 }
 
 // saLowerTemplate 模板字面量（头 +  spans 插值 + tails 逐片拼接；
