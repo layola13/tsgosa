@@ -298,6 +298,15 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 				}
 			}
+			// 命名空间拍扁串读（`N.S` 具化；非串沿串门拒）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				if text, ok := scope.topConsts[pa.Expression.Text()+"."+pa.Name().Text()]; ok {
+					if scope.topStr[pa.Expression.Text()+"."+pa.Name().Text()] {
+						return saLowerStringLiteral(w, text, scope, nextTemp), ""
+					}
+					return "", "not a string expression"
+				}
+			}
 			// 串/计算枚举成员读拒（整数成员串位沿既有串门拒）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 				if _, ok := scope.enums[pa.Expression.Text()]; ok {

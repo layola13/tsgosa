@@ -602,6 +602,105 @@ func saIsAmbientModule(st *ast.Node) bool {
 	return false
 }
 
+// saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
+// 为 `N.K` 拍扁纯量（数字/串/true/false；复用顶层折叠值域，不含 Math 别名与
+// 标识符链）。非 export/非纯量/函数/类/嵌套 namespace 成员一律整块不折，
+// 调用方沿旧拒（loud；命名空间函数/跨文件链接另立大项）。
+// 形状证据：封存 nsPreScan qualified 注册 + lowerPendingNamespaces 常量子集。
+func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	if st == nil || st.Kind != ast.KindModuleDeclaration {
+		return false
+	}
+	if saIsAmbientModule(st) {
+		return false
+	}
+	md := st.AsModuleDeclaration()
+	nm := md.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return false
+	}
+	if md.Body == nil || md.Body.Kind != ast.KindModuleBlock {
+		return false
+	}
+	ns := nm.Text()
+	type fold struct {
+		name string
+		text string
+		str  bool
+	}
+	var folds []fold
+	seen := map[string]bool{}
+	for _, m := range md.Body.AsModuleBlock().Statements.Nodes {
+		if m == nil || m.Kind != ast.KindVariableStatement {
+			return false
+		}
+		if !ast.HasModifier(m, ast.ModifierFlagsExport) {
+			return false
+		}
+		vs := m.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			return false
+		}
+		dl := vs.DeclarationList.AsVariableDeclarationList()
+		if dl == nil || len(dl.Declarations.Nodes) == 0 {
+			return false
+		}
+		if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+			ln, col := pos(m.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable (explicit resource disposal has no SA-ASM scope-exit hook)"})
+			return true
+		}
+		for _, d := range dl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil {
+				return false
+			}
+			vnm := vd.Name()
+			if vnm == nil || vnm.Kind != ast.KindIdentifier {
+				return false
+			}
+			if seen[vnm.Text()] {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate const " + ns + "." + vnm.Text()})
+				return true
+			}
+			seen[vnm.Text()] = true
+			init := vd.Initializer
+			if init == nil {
+				return false
+			}
+			switch init.Kind {
+			case ast.KindNumericLiteral:
+				if saIsFloatLit(init.Text()) {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
+					return true
+				}
+				folds = append(folds, fold{name: vnm.Text(), text: init.Text()})
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				folds = append(folds, fold{name: vnm.Text(), text: init.Text(), str: true})
+			case ast.KindTrueKeyword:
+				folds = append(folds, fold{name: vnm.Text(), text: "1"})
+			case ast.KindFalseKeyword:
+				folds = append(folds, fold{name: vnm.Text(), text: "0"})
+			default:
+				return false
+			}
+		}
+	}
+	if len(folds) == 0 {
+		return false
+	}
+	for _, f := range folds {
+		key := ns + "." + f.name
+		consts[key] = f.text
+		if f.str {
+			strs[key] = true
+		}
+	}
+	return true
+}
+
 // saLowerArrowConst lowering 顶层 `const f = (...)=>...`/`= function...`
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值

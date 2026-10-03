@@ -810,6 +810,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 				}
 			}
+			// 命名空间拍扁纯量读（`N.K` 键；串在 i32 位沿静态折叠同门拒）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				if text, ok := scope.topConsts[pa.Expression.Text()+"."+pa.Name().Text()]; ok {
+					if scope.topStr[pa.Expression.Text()+"."+pa.Name().Text()] {
+						return "", "string " + pa.Name().Text() + " in i32 expression"
+					}
+					return text, ""
+				}
+			}
 		}
 		// 整数枚举成员折叠（`E.A` → 字面量；串/计算成员拒，整数成员照折；
 		// 未知成员大声拒；形状证据：封存 recordEnum:9308-9342 + 7961-8000）。

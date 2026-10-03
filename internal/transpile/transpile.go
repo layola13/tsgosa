@@ -567,6 +567,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals) {
 			handledTop[st] = true
+			continue
+		}
+		// 单层运行时 namespace 纯量拍扁（`N.K` 键；函数/嵌套沿旧拒）。
+		if saFoldNamespaceConsts(st, topConsts, topStr, pos, &refusals) {
+			handledTop[st] = true
 		}
 	}
 	strPool := &saStrPool{seen: map[string]string{}}
@@ -625,8 +630,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			ast.KindClassDeclaration:
 			continue
 		case ast.KindModuleDeclaration:
-			// 环境模块块擦除（无运行时码；运行时 namespace 另立大项）。
+			// 环境模块块擦除（无运行时码）；已拍扁的运行时 namespace 纯量无码。
 			if saIsAmbientModule(st) {
+				continue
+			}
+			if handledTop[st] {
 				continue
 			}
 		case ast.KindImportDeclaration:
