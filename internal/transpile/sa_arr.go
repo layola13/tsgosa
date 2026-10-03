@@ -1984,6 +1984,8 @@ func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope 
 	w.Write(fmt.Sprintf("%s:\n", cendL))
 	saPropArrNest(scope, recv, dh)
 	saPropArrStr(scope, recv, dh)
+	// 切片柄归属(返前释放；上游同形).
+	saOwnTemp(scope, dh)
 	return dh
 }
 

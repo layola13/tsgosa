@@ -96,4 +96,31 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 
 已知边界（续2）：字段初值忽略（两家同形，读出 alloc 语义值）；switch 无 fallthrough（两家同形，臂独立）；flatMap/flat 绑定拒（两家同拒）；`s += s = ` 串重绑两家皆不通（上游段错误，H13）；trim/repeat 运行时段错误（上游 trim 连解析错，H14）；57 原 `s+=` 已换 String/Math 可跑形。
 
+## 第四批（61–80）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 61_spread_call | spread 实参展开调用 | 38 |
+| 62_pow | `**` 幂 | 21 |
+| 63_minmax_spread | Math.max/min spread 归约 | 24 |
+| 64_slice_negative | 负下标 slice 钳位 | 26 |
+| 65_bit_ops | 位运算/移位 | 5/129 |
+| 66_nested_arrays | 嵌套数组下标读 | 80 |
+| 67_multi_concat | 多元 `+` 拼接 | 25 |
+| 68_gcd | Euclid 辗转相除 | 7 |
+| 69_prime | 素数判定循环 | 7 |
+| 70_fizzbuzz | else-if 链（endif 修复回归） | step145 |
+| 71_nested_if | 嵌套 if/else | step145 |
+| 72_early_return | 卫语句早返 | 2 |
+| 73_bubble_sort | 冒泡排序 | 7/26 |
+| 74_max_loop | 循环求 max | 7 |
+| 75_count_char | charAt 计数 | 25 |
+| 76_sum_avg | 求和取整平均 | 7 |
+| 77_2d_sum | 嵌套字面量直巡求和 | 83 |
+| 78_fib_iter | 迭代 fibonacci | 3 |
+| 79_copy_loop | 数组拷贝循环 | 12 |
+| 80_range_sum | 1..100 求和 | 7 |
+
+已知边界（续3）：绑定嵌套数组 for-of 行未记 arr（字面量直巡可，H15）；`run.sh` 对 tsgo 二进制加新鲜度检查（旧二进制曾致误报）。
+
 已知边界（demo 写法已规避，对应台账项）：串三元值仅 return 位可放（声明/赋值位拒，H10）；`?.length` 拒（用 `.length`）；`Color.Green` 成员值未用（用 i32 传枚举）；split 结果不可绑定/测长/迭代（用 join…注：join 可转译但 sci verifier 对两家同拒 PhiStateConflict，本集暂不用 join，待后端侧）；for-in 另有 UseAfterMove 缺口（H11，不在本集）。

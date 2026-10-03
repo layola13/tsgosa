@@ -1754,9 +1754,21 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 		if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false
 		}
+		// then 臂落空直入 else 即错臂执行（fizzbuzz 5,3,1 实证）；非终结臂须跳 end（上游同形）。
+		// 无跳则不落标：双终结臂后裸 endif 标号触 FallthroughForbidden。
+		needEnd := !saArmTerminates(thenStmts)
+		endifLabel := ""
+		if needEnd {
+			endifLabel = fmt.Sprintf("L_endif_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  jmp %s\n", endifLabel))
+		}
 		w.Write(elseLabel + ":\n")
 		if !saLowerArm(w, elseStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false
+		}
+		if needEnd {
+			w.Write(endifLabel + ":\n")
 		}
 		return true
 	}
