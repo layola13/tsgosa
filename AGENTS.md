@@ -114,6 +114,7 @@
 - step84（三元值核两处共用一次过，落`sa_expr.go`值核+`sa_decl.go`推断臂+`transpile.go`return位改调，零新文件）：`saLowerTernaryValue`（i32 SELECT/串槽汇合，分歧沿核拒）+无注解声明三元臂（i32/str记种）+return位改调（净删52行归属表达式域）；4项等价（i32/串推断+return回归/分歧拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧`sa_class.go ///`行；JEV blast local_only；`main.go`未动。
 - step85（三元进求值总线一次过，落`sa_expr/sa_str.go`各一臂，零新文件）：`saEvalI32`/`saEvalStr`增`Conditional`分支共用值核（串种交叉沿既有门拒；bool经`saEvalBool`回退自动通）；5项等价（有注解串/bool/赋值/串赋值/return回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧行；JEV blast local_only；`transpile.go`/`main.go`未动。
 - step86（串switch一次过，落`sa_ctrl.go`三处，零新文件）：disc/case值i32优先败则串（legacy链+2/3臂宏同门，混合臂eq恒假落default；拒因文案不变）；3项等价（串1臂/串2臂宏/i32回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
+- step87（类链/操作符锁形，零改码）：switch变量形（形参/disc/顶层量case）/setter实例与静态作值/方法返实例链（两边同拒）/super读调写/`new`直读直调（两边同拒）/`in`通/`instanceof`两边同拒，20+实测全与上游同形；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；零改码，只记台账。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
