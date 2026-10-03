@@ -104,6 +104,14 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		if k, ok := scope.types[e.Text()]; ok && k == "str" && retKind != "string" {
 			return "", "string return needs string annotation"
 		}
+		// 实例返回：具名同种句柄直传（`return p`；封存 lowerReturn 值位同形；
+		// 种错配沿既有 i32 门拒，fresh temp 非调用源沿旧门拒）。
+		if strings.HasPrefix(retKind, "inst:") {
+			if k, ok := scope.types[e.Text()]; ok && k == retKind {
+				return e.Text(), ""
+			}
+			return "", "struct return needs matching struct value"
+		}
 	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
@@ -454,6 +462,27 @@ func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, arg
 // saEvalNamedCall lowering具名直调（`f(...)` 与 `f.call(thisArg, ...)` 脱糖共用；
 // 形参种导向求值 + spread 展开 + 元数门 + void 形；
 // 形状证据：封存 lowerCallDesugar:4512-4581）。
+// saCallRetKind 取具名调用的签名返回种（源级名 number/boolean/string/inst:X；
+// 局部箭头别名 `fn:<gen>` 透到被调；方法调用/未知被调 false。实例声明与
+// 实例赋值核对被调返回用，封存 lowerCall 签名分发同源 funcs 表）。
+func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	name := ce.Expression.Text()
+	if k, ok := scope.types[name]; ok && strings.HasPrefix(k, "fn:") {
+		gen := strings.TrimPrefix(k, "fn:")
+		if sig, ok := scope.funcs[gen]; ok && sig.retKind != "" {
+			return sig.retKind, true
+		}
+		return "", false
+	}
+	if sig, ok := scope.funcs[name]; ok && sig.retKind != "" {
+		return sig.retKind, true
+	}
+	return "", false
+}
+
 func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	callName := name
 	if name == "main" && scope.mainRenamed {

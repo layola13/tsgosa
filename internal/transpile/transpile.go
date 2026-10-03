@@ -511,12 +511,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		}
 		isVoid := false
 		retKind := ""
-		if k, v, ok := saPrescanRet(fn.Type, st, tcx); ok {
+		if k, v, ok := saPrescanRet(fn.Type, st, tcx, classes, aliasOf); ok {
 			retKind = k
 			isVoid = v
 		}
 		var pk []string
-		if kinds, ok := saParamKinds(fn, classes); ok {
+		if kinds, ok := saParamKinds(fn, classes, aliasOf); ok {
 			if names, ok := saParamNames(fn); ok {
 				for _, n := range names {
 					pk = append(pk, kinds[n])
@@ -550,12 +550,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		nparams := len(nodes)
 		isVoid := false
 		retKind := ""
-		if k, v, ok := saPrescanRet(saArrowReturnNode(arrow), arrow, tcx); ok {
+		if k, v, ok := saPrescanRet(saArrowReturnNode(arrow), arrow, tcx, classes, aliasOf); ok {
 			retKind = k
 			isVoid = v
 		}
 		var pk []string
-		if _, kinds, _, ok := saSynthArrowParams(arrow, classes); ok {
+		if _, kinds, _, ok := saSynthArrowParams(arrow, classes, aliasOf); ok {
 			if names, ok := saArrowParamNames(arrow); ok {
 				for _, n := range names {
 					pk = append(pk, kinds[n])
@@ -758,15 +758,15 @@ type saDestructurePending struct {
 // （`__darg` 冲突追 `_`，封存 :5359-5368）。模式种：数组注解 `i32[]` 记 arr，
 // 类/接口注解记 `inst:Name`（调用点句柄直传，复用 arr/inst 求值位）；无注解数组
 // 模式记 arr，无注解对象模式无布局可查、大声拒。
-func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef) ([]string, map[string]string, []saDestructurePending, bool) {
+func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if fn.Parameters != nil {
 		nodes = fn.Parameters.Nodes
 	}
-	return saSynthParamNodes(nodes, classes)
+	return saSynthParamNodes(nodes, classes, aliasOf)
 }
 
-func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef) ([]string, map[string]string, []saDestructurePending, bool) {
+func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) ([]string, map[string]string, []saDestructurePending, bool) {
 	kinds := map[string]string{}
 	var pendings []saDestructurePending
 	taken := map[string]bool{}
@@ -799,7 +799,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef) (
 						}
 					}
 				}
-				return nil, nil, nil, false
+				// 标量别名经顶层别名表消解（`c: Count`；封存 annotationType
+				// 别名词消解同形；inst 别名/未知沿旧门拒）。
+				if ak, aok := saResolveAliasKind(pd.Type, aliasOf); aok {
+					k, ok = ak, true
+				} else {
+					return nil, nil, nil, false
+				}
 			}
 			if k != "i32" && k != "bool" && k != "arr" && k != "str" {
 				return nil, nil, nil, false
@@ -905,8 +911,8 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 // 无注解缺省 i32（形状证据：封存 lowerFunction:946 `ptype := tI32`）。
 // 类/接口注解（`p: Pt`）记 `inst:Pt`（实例句柄直传）。
 // 绑定模式形参走隐藏句柄（`__darg`，数组记 arr、对象记 `inst:Name`；封存 :5347-5371）。
-func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef) (map[string]string, bool) {
-	_, kinds, _, ok := saSynthParams(fn, classes)
+func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (map[string]string, bool) {
+	_, kinds, _, ok := saSynthParams(fn, classes, aliasOf)
 	if !ok {
 		return nil, false
 	}
@@ -1374,7 +1380,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	// 返回签名与预扫同源（注解 > checker 推断 > void；非法注解沿既有拒）。
 	retKind, isVoid := "void", true
 	if fn.Type != nil {
-		k, ok := saReturnKind(fn.Type)
+		k, ok := saReturnKindRef(fn.Type, classes, aliasOf)
 		if !ok {
 			ln, col := pos(st.Pos())
 			msg := "unsupported return annotation"
@@ -1385,7 +1391,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 			return
 		}
 		retKind, isVoid = k, k == "void"
-	} else if k, v, ok := saPrescanRet(nil, st, tcx); ok {
+	} else if k, v, ok := saPrescanRet(nil, st, tcx, classes, aliasOf); ok {
 		retKind, isVoid = k, v
 	}
 	emitName := name
@@ -1399,7 +1405,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function " + name + " has no body (overload signatures are not lowerable)"})
 		return
 	}
-	paramKinds, ok := saParamKinds(fn, classes)
+	paramKinds, ok := saParamKinds(fn, classes, aliasOf)
 	if !ok {
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
@@ -1407,12 +1413,9 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	}
 	sig := "@" + emitName + "(" + saSigParamList(paramKinds, params) + ")"
 	if !isVoid {
-		if retKind == "string" {
-			// 字符串返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:`）。
-			sig += " -> ptr"
-		} else {
-			sig += " -> i32"
-		}
+		// 串/实例返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:` 与
+		// `@make(x: i32, y: i32) -> ptr:`）。
+		sig += saSigRetSuffix(retKind)
 	}
 	sig += ":\n"
 	w.Write(sig)
@@ -1439,7 +1442,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		saDeclareOwned(scope, p)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒）。
-	if _, _, pendings, ok := saSynthParams(fn, scope.classes); ok && len(pendings) > 0 {
+	if _, _, pendings, ok := saSynthParams(fn, scope.classes, scope.aliasOf); ok && len(pendings) > 0 {
 		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
 			return
 		}

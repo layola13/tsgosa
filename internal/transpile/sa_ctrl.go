@@ -3,6 +3,8 @@ package transpile
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
 )
@@ -356,10 +358,35 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false
 	}
-	if k != "i32" && k != "bool" && k != "arr" && k != "str" {
+	if k != "i32" && k != "bool" && k != "arr" && k != "str" && !strings.HasPrefix(k, "inst:") {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
 		return false
+	}
+	if strings.HasPrefix(k, "inst:") {
+		// 实例重绑定（字面量现场构造 + 旧值先释；封存 lowerCompoundAssign
+		// 标识符分支读-改-写回同序；句柄对拷无显式 clone 语义，沿上游拒）。
+		if be.Right == nil || be.Right.Kind != ast.KindObjectLiteralExpression {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct reassignment needs an object literal"})
+			return false
+		}
+		defname := strings.TrimPrefix(k, "inst:")
+		h, _, msg := saLowerObjectLiteral(w, be.Right, defname, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		saRebindRelease(w, scope, name)
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		saConsumeOwn(scope, h)
+		// 新鲜句柄入位：置堆 + 复位（saStoreLocal live+temp 分支同形）。
+		if b := saOwnOf(scope, name); b != nil {
+			b.heap = true
+		}
+		saMarkRebound(scope, name)
+		return true
 	}
 	if k == "arr" {
 		// 数组句柄拷贝（绑定直传；数组返回调用亦直传）。

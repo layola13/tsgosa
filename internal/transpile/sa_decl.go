@@ -238,7 +238,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 封存 lowerVarDeclList:1462 注解语义消解同形；失败沿旧门）。
 			vkind, ok = saResolveAliasKind(vd.Type, scope.aliasOf)
 		}
-		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str") {
+		if !ok {
+			// 具名接口/类注解记 inst（调用返回与字面量初值核对布局；
+			// 形参与 saSynthParamNodes 类/接口分支同形）。
+			vkind, ok = saAnnotInstKind(vd.Type, scope.classes)
+		}
+		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && !strings.HasPrefix(vkind, "inst:")) {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
 			return false
@@ -253,6 +258,34 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			if !saLowerStrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
 				return false
 			}
+			continue
+		}
+		if strings.HasPrefix(vkind, "inst:") {
+			// 实例注解配调用初值（被调返回种须同名；`p = make(…)` 封存
+			// lowerCall 值返回同形；字面量/`new` 初值已在前分支办）。
+			if vd.Initializer == nil || vd.Initializer.Kind != ast.KindCallExpression {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
+				return false
+			}
+			got, ok := saCallRetKind(vd.Initializer.AsCallExpression(), scope)
+			if !ok || got != vkind {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct call return mismatch for " + name})
+				return false
+			}
+			op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" || voidCall {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported struct call: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = vkind
+			if saIsTempOp(op) {
+				saConsumeOwn(scope, op)
+			}
+			saDeclareOwned(scope, name)
 			continue
 		}
 		if vd.Initializer == nil {
@@ -454,12 +487,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 
 // saSynthArrowParams 合成箭头/函数表达式形参表（与 saSynthParams 同核；
 // 形状证据：封存 lowerArrowBinding:1074-1098，模式走同 hiddenDestructuredParam）。
-func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef) ([]string, map[string]string, []saDestructurePending, bool) {
+func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if pl := arrow.ParameterList(); pl != nil {
 		nodes = pl.Nodes
 	}
-	return saSynthParamNodes(nodes, classes)
+	return saSynthParamNodes(nodes, classes, aliasOf)
 }
 
 // saArrowParamNames 合成箭头形参名表（标识符直通；模式取隐藏名，与 saParamNames 同序）。
@@ -585,6 +618,62 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 			return "", false
 		}
 		cur = nr.TypeName.Text()
+	}
+	return "", false
+}
+
+// saReturnKindRef 消解返回注解（saReturnKind 标量集之外）：单标识符别名经
+// 别名表映回 number/boolean/string（`type Count = i32`；arr 别名在返回位仍拒，
+// 无用例）；具名接口/类经 classes 表记 `inst:Name`（`-> ptr`，封存上游实发
+// `@make(x: i32, y: i32) -> ptr:`）。泛型实例化/未知名沿旧门 false。
+// 注意 160 分歧：上游把 i32 别名参数/返回标 `ptr`（疑似未消解回退），本仓按
+// 别名语义消解为 i32——值流一致且更忠实，禁静默错码高于逐字同形。
+func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if k, ok := saReturnKind(t); ok {
+		return k, true
+	}
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	if k, ok := saResolveAliasKind(t, aliasOf); ok {
+		switch k {
+		case "i32":
+			return "number", true
+		case "bool":
+			return "boolean", true
+		case "str":
+			return "string", true
+		}
+		return "", false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	if ref.TypeArguments != nil {
+		return "", false
+	}
+	if _, ok := classes[ref.TypeName.Text()]; ok {
+		return "inst:" + ref.TypeName.Text(), true
+	}
+	return "", false
+}
+
+// saAnnotInstKind 消解具名接口/类注解为 `inst:Name`（单标识符、无泛型实参、
+// 经 classes 表；形参/返回/声明三处注解同源）。
+func saAnnotInstKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	if ref.TypeArguments != nil {
+		return "", false
+	}
+	if _, ok := classes[ref.TypeName.Text()]; ok {
+		return "inst:" + ref.TypeName.Text(), true
 	}
 	return "", false
 }
@@ -869,7 +958,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	// 形参种先行（签名注解与归属登记同源；封存 lowerArrowBinding 先合成形参同形）。
-	_, kinds, arrowPendings, ok := saSynthArrowParams(arrow, classes)
+	_, kinds, arrowPendings, ok := saSynthArrowParams(arrow, classes, aliasOf)
 	if !ok {
 		ln, col := pos(arrow.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
@@ -877,14 +966,14 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		k, ok := saReturnKind(rt)
+		k, ok := saReturnKindRef(rt, classes, aliasOf)
 		if !ok {
 			ln, col := pos(arrow.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
 			return
 		}
 		retKind, isVoid = k, k == "void"
-	} else if k, v, ok := saPrescanRet(nil, arrow, tcx); ok {
+	} else if k, v, ok := saPrescanRet(nil, arrow, tcx, classes, aliasOf); ok {
 		retKind, isVoid = k, v
 	}
 	emitName := name
@@ -893,11 +982,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	sig := "@" + emitName + "(" + saSigParamList(kinds, params) + ")"
 	if !isVoid {
-		if retKind == "string" {
-			sig += " -> ptr"
-		} else {
-			sig += " -> i32"
-		}
+		sig += saSigRetSuffix(retKind)
 	}
 	sig += ":\n"
 	w.Write(sig)
@@ -1148,21 +1233,21 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	paramKinds, synthOK := map[string]string(nil), false
 	var pendings []saDestructurePending
 	var captured []string
-	if params, paramKinds, pendings, synthOK = saSynthArrowParams(arrow, scope.classes); !synthOK {
+	if params, paramKinds, pendings, synthOK = saSynthArrowParams(arrow, scope.classes, scope.aliasOf); !synthOK {
 		return refuse(arrow, "unsupported parameter annotation (i32/bool/arr/str/inst only)")
 	}
 	// 返回种（严格上游序，封存 :1099-1112）：显注解 > 表达式体/有形参即值
 	// 函数 i32 > checker 推断 > void。checker 回退 void 不得吞掉 value_fn 规则。
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		k, kok := saReturnKind(rt)
+		k, kok := saReturnKindRef(rt, scope.classes, scope.aliasOf)
 		if !kok {
 			return refuse(arrow, "unsupported return annotation")
 		}
 		retKind, isVoid = k, k == "void"
 	} else if body.Kind != ast.KindBlock || len(params) > 0 {
 		retKind, isVoid = "i32", false
-	} else if k, v, pok := saPrescanRet(nil, arrow, scope.tcx); pok {
+	} else if k, v, pok := saPrescanRet(nil, arrow, scope.tcx, scope.classes, scope.aliasOf); pok {
 		retKind, isVoid = k, v
 	}
 	captured = saArrowCaptures(body, name, params, scope)
@@ -1186,11 +1271,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	}
 	buf.Write("@" + gen + "(" + saSigParamList(allKinds, sigNames) + ")")
 	if !isVoid {
-		if retKind == "string" {
-			buf.Write(" -> ptr")
-		} else {
-			buf.Write(" -> i32")
-		}
+		buf.Write(saSigRetSuffix(retKind))
 	}
 	buf.Write(":\n")
 	inner := &saScope{types: map[string]string{}, funcs: scope.funcs, enums: scope.enums,
@@ -1224,6 +1305,15 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	scope.funcs[gen] = saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured}
 	scope.types[name] = "fn:" + gen
 	return true
+}
+
+// saSigRetSuffix 返回签名后缀（string/inst 句柄即 ptr，其余 i32；
+ // 封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
+func saSigRetSuffix(retKind string) string {
+	if retKind == "string" || strings.HasPrefix(retKind, "inst:") {
+		return " -> ptr"
+	}
+	return " -> i32"
 }
 
 // saSigKinds 按形参序摊平种表（调用核按位定向求值用；捕获实参由
@@ -1348,9 +1438,9 @@ func saInferredReturnKind(fnNode *ast.Node, tcx *saTypeCtx) (string, bool) {
 
 // saPrescanRet 定单个函数/箭头的 SA 返回签名（显式注解 > checker 推断 > void；
 // 三处签名表——函数预扫/箭头预扫/定义发射——必须同源，否则调用点与定义错位丢值）。
-func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx) (retKind string, isVoid, ok bool) {
+func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (retKind string, isVoid, ok bool) {
 	if typeNode != nil {
-		if k, good := saReturnKind(typeNode); good {
+		if k, good := saReturnKindRef(typeNode, classes, aliasOf); good {
 			return k, k == "void", true
 		}
 		return "", false, false
