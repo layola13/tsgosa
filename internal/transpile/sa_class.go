@@ -40,12 +40,14 @@ type saStaticVal struct {
 // （`C.m()` 类名分发，this 置空；实例项永不持有，见 saRecordClassNamed）；
 // staticGetters/staticSetters 为静态存取器内联体（`C.g`/`C.s = v` 类名分发，
 // 空 this 内联，镜像 staticMethods；实例项永不持有）；
-// fkinds 为字段种表，i32/str，str 域 8 字节对齐）。
+// fkinds 为字段种表，i32/str/arr/inst，句柄种 8 字节对齐；
+// fsub 为嵌套字段的子布局名（fkinds inst 时有效）。
 type saClassDef struct {
 	name          string
 	fields        []saClassField
 	offsets       map[string]int
 	fkinds        map[string]string
+	fsub          map[string]string
 	size          int
 	methods       map[string]*ast.Node
 	staticMethods map[string]*ast.Node
@@ -61,10 +63,10 @@ type saClassDef struct {
 	isAbstract    bool
 }
 
-// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr 句柄 8/8；
+// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst 句柄 8/8；
 // 形状证据：封存 widthOf:268-279 + alignTo:281-289）。
 func saFieldWidth(kind string) (int, int) {
-	if kind == "str" || kind == "arr" {
+	if kind == "str" || kind == "arr" || kind == "inst" {
 		return 8, 8
 	}
 	return 4, 4
@@ -223,6 +225,12 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					def.fkinds[f.name] = fk
 				} else {
 					def.fkinds[f.name] = "i32"
+				}
+				if sub, ok := bdef.fsub[f.name]; ok {
+					if def.fsub == nil {
+						def.fsub = map[string]string{}
+					}
+					def.fsub[f.name] = sub
 				}
 			}
 			for k, v := range bdef.methods {
@@ -686,6 +694,12 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 					def.fields = append(def.fields, saClassField{name: f.name, offset: off})
 					def.offsets[f.name] = off
 					def.fkinds[f.name] = fk
+					if sub, ok := base.fsub[f.name]; ok {
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[f.name] = sub
+					}
 					sz, _ := saFieldWidth(fk)
 					off += sz
 				}
@@ -708,15 +722,30 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		fkind := "i32"
 		if pd.Type != nil {
 			// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
-			// string/arr 为句柄 8 字节槽；余下（嵌套/多联合）无槽，拒。
-			if k, ok := saAnnotKind(pd.Type); !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
+			// string/arr 为句柄 8 字节槽；已记录接口名（TypeReference）为嵌套
+			// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；余下无槽，拒。
+			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+				if k == "str" {
+					fkind = "str"
+				} else if k == "arr" {
+					fkind = "arr"
+				}
+			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok && sub.isIface {
+					fkind = "inst"
+					if def.fsub == nil {
+						def.fsub = map[string]string{}
+					}
+					def.fsub[fn.Text()] = sub.name
+				} else {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string, array or recorded interface"})
+					return false
+				}
+			} else {
 				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string or array"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string, array or recorded interface"})
 				return false
-			} else if k == "str" {
-				fkind = "str"
-			} else if k == "arr" {
-				fkind = "arr"
 			}
 		}
 		if _, dup := def.offsets[fn.Text()]; dup {
@@ -1174,7 +1203,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				}
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
-				if sk == "str" || sk == "arr" {
+				if sk == "str" || sk == "arr" || sk == "inst" {
 					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src.h, src.def.offsets[f.name]))
 					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], t))
 					continue
@@ -1196,6 +1225,22 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		if fk := def.fkinds[o.fname]; fk == "arr" {
 			// arr 域存句柄（字面量递归/绑定直传经句柄总线）。
 			v, msg := saArrValueOf(w, o.init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+			continue
+		}
+		if fk := def.fkinds[o.fname]; fk == "inst" {
+			// 嵌套接口域：内层字面按子布局构造存句柄（与上游子布局内联同形）。
+			sub, ok := def.fsub[o.fname]
+			if !ok {
+				return "", "", "nested field " + o.fname + " has no recorded sub layout"
+			}
+			if o.init == nil || o.init.Kind != ast.KindObjectLiteralExpression {
+				return "", "", "nested field " + o.fname + " needs an object literal"
+			}
+			v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
@@ -2006,10 +2051,72 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
 		return t, ""
 	}
+	if def.fkinds[field] == "inst" {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		return t, ""
+	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, h, off))
 	return t, ""
+}
+
+// saChainBase 解对象链基（`q.p`→内层句柄；递归支持多层；
+// 叶子由调用方按表读/存；非 inst 链节一律失败，调用方沿旧门）。
+func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
+	pa := e.AsPropertyAccessExpression()
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return "", nil, "chained base must be an identifier field"
+	}
+	leaf := pa.Name().Text()
+	var h string
+	var def *saClassDef
+	switch {
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword:
+		if scope.thisSelf == "" {
+			return "", nil, "this outside a class method is not lowerable"
+		}
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return "", nil, "unknown class " + scope.thisClass
+		}
+		h, def = scope.thisSelf, d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier:
+		k, ok := scope.types[pa.Expression.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return "", nil, "chained base is not a bound instance"
+		}
+		d, ok := scope.classes[k[5:]]
+		if !ok {
+			return "", nil, "unknown class " + k[5:]
+		}
+		h, def = pa.Expression.Text(), d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression:
+		ih, idef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", nil, msg
+		}
+		h, def = ih, idef
+	default:
+		return "", nil, "chained base is not a bound instance"
+	}
+	off, ok := def.offsets[leaf]
+	if !ok {
+		return "", nil, "unknown field " + leaf
+	}
+	if def.fkinds[leaf] != "inst" {
+		return "", nil, "chained field " + leaf + " is not a nested object"
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+	sub, ok := scope.classes[def.fsub[leaf]]
+	if !ok {
+		return "", nil, "nested field " + leaf + " has no recorded sub layout"
+	}
+	return t, sub, ""
 }
 
 // saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str/arr 存句柄）。

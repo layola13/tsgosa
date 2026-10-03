@@ -797,6 +797,25 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if v, ok := saNumberConst(pa); ok {
 			return v, ""
 		}
+		// 嵌套对象链读（`q.p.a` 经内层句柄逐级解；叶子按布局读/getter 内联；
+		// 非 inst 链节沿旧门；形状证据：封存 lowerMemberChain）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
+			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				if _, ok := cdef.offsets[pa.Name().Text()]; ok {
+					t, msg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return t, ""
+				}
+				v, msg := saInlineGetter(w, ch, cdef, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return v, ""
+			}
+		}
 		// 实例字段读（`o.f`/`this.f`；静态成员大声拒；私有域按词法属主解）。
 		// this 置空（静态体内）时成员读即越界，沿裸 this 同门拒。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && scope.thisSelf == "" {

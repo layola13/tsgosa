@@ -118,6 +118,7 @@
 - step88（集合/对象锁形，零改码）：Map基础/Set方法/无参Date/void值/嵌套调用全通；有参Date/Date.now（i64）/split串数组/RegExp沿既有记账边界拒；嵌套对象布局（接口嵌套/数组字段+`q.p.a`链读）上游通本仓拒，需布局递归+链读大项另立；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；零改码，只记台账。
 - step89（类数组字段一次过，落`sa_class.go`槽/存/求值+`sa_arr.go`基分支，零新文件）：`arr`8B槽+记录门/参数属性门放行（拒因更新）+显式/隐式wire存ptr+new侧按形参种直定求值+super字面量臂+`this.a`/`c.a`句柄基+字段读写ptr；3项等价（字段初值忽略与上游同形/ctor wiring/实例回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
 - step90（接口数组字段一次过，落`sa_class.go`三处，零新文件）：记录门放行`arr`（8B槽）+字面量构造`arr`臂（句柄总线存ptr）+spread复制`arr`按ptr；读`r.a[1]`经step89句柄基自动通；2项等价（数组接口/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
+- step91（接口嵌套字段一次过，落`sa_class.go`表+门+构造+`sa_expr.go`链读，零新文件）：`fsub`子布局名表+继承展平拷贝+记录门放行已记录接口（`inst`8B句柄）+字面量子布局构造存句柄+spread按ptr+`saChainBase`递归解句柄+链读（布局读/getter内联）；2项等价（嵌套正形/数组回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧行；JEV blast local_only；`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
