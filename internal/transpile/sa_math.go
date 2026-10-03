@@ -512,9 +512,18 @@ func saEvalMathMethod(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	return "", false, "unsupported Math method " + method
 }
 
-// saTryMathAliasDecl 记录 `const f = Math.<m>` 及链式 `const g = f`（只记表，
-// 不落字；形状证据：封存 lowerVarDeclList 前的 mathAliases:2957-2964 + 别名调用
-// lowerMathCall:3795-3804）。返回 true 表示已认领。
+// saSeedTopMaths 注入顶层 Math 别名（局部已记遮蔽顶层；封存 mathAliases 全局表位）。
+func saSeedTopMaths(scope *saScope, topMaths map[string]string) {
+	for k, v := range topMaths {
+		if scope.mathAlias == nil {
+			scope.mathAlias = map[string]string{}
+		}
+		if _, ok := scope.mathAlias[k]; !ok {
+			scope.mathAlias[k] = v
+		}
+	}
+}
+
 // saTryMathAliasDecl 记录 `const f = Math.<m>` 及链式 `const g = f`（只记表，
 // 不落字；形状证据：封存 lowerVarDeclList 前的 mathAliases:2957-2964 + 别名调用
 // lowerMathCall:3795-3804）。返回 true 表示已认领。

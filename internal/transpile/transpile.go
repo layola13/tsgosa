@@ -536,6 +536,17 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		}
 		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk}
 	}
+	// 预扫二c：顶层纯量折叠（`var K = 42` 内联、`var S = "hi"` 串池化、
+	// `var f = Math.g` 别名；非纯留发射环拒；形状证据：封存 tryTopLevelConst:2894-2972）。
+	topConsts := map[string]string{}
+	topStr := map[string]bool{}
+	topMaths := map[string]string{}
+	handledTop := map[*ast.Node]bool{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals) {
+			handledTop[st] = true
+		}
+	}
 	strPool := &saStrPool{seen: map[string]string{}}
 	emitted := map[string]bool{}
 	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；
@@ -612,7 +623,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, classes, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+				saLowerArrowConst(w, name, arrow, funcs, enums, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+				continue
+			}
+			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
+			if handledTop[st] {
 				continue
 			}
 			ln, col := pos(st.Pos())
@@ -629,12 +644,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, classes, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+		saLowerFunction(w, st, funcs, enums, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
+		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		for _, s := range entryStmts {
 			if terminated {
@@ -1098,6 +1114,8 @@ type saScope struct {
 	funcs       map[string]saFuncSig
 	enums       map[string]map[string]int64
 	classes     map[string]*saClassDef
+	topConsts   map[string]string
+	topStr      map[string]bool
 	thisSelf    string
 	thisClass   string
 	mainRenamed bool
@@ -1153,7 +1171,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1215,7 +1233,8 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	saSeedTopMaths(scope, topMaths)
 	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {
 		ln, col := pos(st.Pos())

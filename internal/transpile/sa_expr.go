@@ -64,6 +64,12 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			}
 			return nm, ""
 		}
+		if text, ok := scope.topConsts[nm]; ok {
+			if scope.topStr[nm] {
+				return "", "string " + nm + " in condition"
+			}
+			return text, ""
+		}
 		return "", "unknown condition variable " + nm
 	case ast.KindTrueKeyword:
 		return "1", ""
@@ -561,6 +567,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "boolean " + nm + " in i32 expression"
 			}
 			return nm, ""
+		}
+		// 顶层纯量折叠读（局部遮蔽优先上；封存 lowerExpr:2775）。
+		if text, ok := scope.topConsts[nm]; ok {
+			if scope.topStr[nm] {
+				return "", "string " + nm + " in i32 expression"
+			}
+			return text, ""
 		}
 		return "", "unknown variable " + nm
 	case ast.KindThisKeyword:

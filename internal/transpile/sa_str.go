@@ -196,6 +196,13 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return "", nm + " is not a string"
 		}
+		// 顶层串常量折叠读（具化；非串顶层量沿串门拒；封存 lowerExpr:2775）。
+		if text, ok := scope.topConsts[nm]; ok {
+			if scope.topStr[nm] {
+				return saLowerStringLiteral(w, text, scope, nextTemp), ""
+			}
+			return "", "not a string expression"
+		}
 		return "", "unknown variable " + nm
 	case ast.KindCallExpression:
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)

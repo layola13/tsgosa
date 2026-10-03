@@ -76,6 +76,7 @@
 - step46（对象 spread 一次过，落 `sa_class.go`零新文件）：`{...o, y:20}` 按源序布局复制（后 prop 覆盖先生效；源：inst 绑定/`this`/字面量递归；`saemit.go:lowerObjectLiteral:9009+`，键集去重 9066-9076 + 源序重放 9086-9103；零初始化省略：目标每域必有来源；全 i32 无类型门）；门：动态键/无布局源/键集失配/方法一律拒（消息逐字对齐封存）。
 - step47（顶层类表达式一次过，落 `sa_class.go` + transpile.go 接线 9 行，零新文件）：`const C = class...`/`const D = class E...` 按绑定名记录布局（自身具名记同体别名；声明与表达式同形，`saemit.go:recordClassNamed:9586-9611`）+ 字段初值放行忽略（布局只记槽位；初值语义随 alloc，`v: i32 = 4` 读出为 alloc 语义值）；门：static/局部类表达式/具名冲突一律拒（static 折叠另轮）。附：transpile.go 禁巨无霸同步执行——step43b 箭头 lowering（`saLowerArrowConst` + 识别/形参/返回注解 4 helper，约 200 行）迁 `sa_decl.go`（声明域），transpile.go 1721→1513 行，行为零变（7 项等价用例全过）。
 - step48（静态字面量折叠一次过，落 `sa_class.go` + `sa_expr.go`/`sa_str.go` 读位接线，零新文件）：`static K = 字面量` 记折叠表不占实例槽（`saemit.go:recordClassNamed:9703-9711` + `staticLiteralText:9444-9468`，断言/括号剥离，数字/串/反引号/bool），类名/实例/`this` 基读位折叠（串具化，`lowerExpr:8013-8041`），继承下沉未覆写静态；非字面静态走 legacy 实例槽（s2 形；i32 恒 4 字节故 `v` 在 +4，与封存 +8 的宽度差见注）；门：静态方法/存取器/私静/静态写/串↔i32 错位一律拒（跨文件 link 另域）。
+- step49（顶层纯量折叠一次过，落 `sa_decl.go` + 三处读位/三处作用域接线，零新文件）：`var K = 42` 内联文本、`var S = "hi"` 串池化、`var f = Math.g` 别名（复 `saMathMethodName` 投影门；链式别名同函数内；`saemit.go:tryTopLevelConst:2894-2972`，两遍验全纯再记，部分纯洁不记）；读位局部遮蔽优先；i32/条件/串三位接线（串错位沿既有串门拒）；门：require 等非纯、float 顶层量、自增/赋值可变顶层一律拒（可变顶层槽另域 modstate）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

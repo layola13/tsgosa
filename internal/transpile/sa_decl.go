@@ -477,11 +477,92 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 	return nm.Text(), init, true
 }
 
+// saFoldTopLevelConst 折叠顶层纯量声明（`var K = 42` 内联文本、
+// `var S = "hi"` 串池化、`var f = Math.g` 别名；两遍：验全纯再记，
+// 部分纯洁不记半吊子；非纯（require 等）返回 false 留发射环拒。
+// 可变顶层（函数内赋值）无槽，另域 modstate。
+// 形状证据：封存 tryTopLevelConst:2894-2972。
+func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	if st.Kind != ast.KindVariableStatement {
+		return false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) == 0 {
+		return false
+	}
+	type fold struct {
+		name  string
+		text  string
+		str   bool
+		math  string
+		alias bool
+	}
+	var folds []fold
+	for _, d := range dl.Declarations.Nodes {
+		vd := d.AsVariableDeclaration()
+		if vd == nil {
+			return false
+		}
+		nm := vd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			return false
+		}
+		init := vd.Initializer
+		if init == nil {
+			return false
+		}
+		switch init.Kind {
+		case ast.KindNumericLiteral:
+			if saIsFloatLit(init.Text()) {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
+				return true
+			}
+			folds = append(folds, fold{name: nm.Text(), text: init.Text()})
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+			folds = append(folds, fold{name: nm.Text(), text: init.Text(), str: true})
+		case ast.KindTrueKeyword:
+			folds = append(folds, fold{name: nm.Text(), text: "1"})
+		case ast.KindFalseKeyword:
+			folds = append(folds, fold{name: nm.Text(), text: "0"})
+		case ast.KindPropertyAccessExpression:
+			m, ok := saMathMethodName(init)
+			if !ok {
+				return false
+			}
+			folds = append(folds, fold{name: nm.Text(), math: m, alias: true})
+		case ast.KindIdentifier:
+			m, ok := maths[init.Text()]
+			if !ok {
+				return false
+			}
+			folds = append(folds, fold{name: nm.Text(), math: m, alias: true})
+		default:
+			return false
+		}
+	}
+	for _, f := range folds {
+		if f.alias {
+			maths[f.name] = f.math
+			continue
+		}
+		consts[f.name] = f.text
+		if f.str {
+			strs[f.name] = true
+		}
+	}
+	return true
+}
+
 // saLowerArrowConst lowering 顶层 `const f = (...)=>...`/`= function...`
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -527,7 +608,8 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	saSeedTopMaths(scope, topMaths)
 	if _, kinds, _, ok := saSynthArrowParams(arrow, scope.classes); ok {
 		for k, v := range kinds {
 			scope.types[k] = v
