@@ -69,4 +69,31 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 
 已知边界（续）：f64 只比不打（`console.log(f64)` 沿旧门）；`Map.size` 属性形拒（用 get/has）；Date millis 不进 i32；`a[0]` 元素直打两家同出句柄数（parity，绑定串元素仍拒）；串+数 `+` 两家同走指针加（SAI 逐行一致，parity）；`==` 内容相等两家同漏（verifier 侧，parity）；sqrt 二分环两家同被 verifier 拒（后端侧，parity）。
 
+## 第三批（41–60）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 41_inheritance | 类继承+基字段 | 34 |
+| 42_static_method | 静态方法调用 | 69 |
+| 43_pop_shift | pop/shift/reverse | 26 |
+| 44_to_reversed | toReversed 非变异 | 26 |
+| 45_char_at | charAt 取字 | 25 |
+| 46_char_code | charCodeAt 取码 | 25 |
+| 47_rest_params | rest 形参打包 | 121 |
+| 48_default_params | 缺省参数回放 | 71 |
+| 49_fib | 递归 fibonacci | 3 |
+| 50_logic_assign | `||=`/`&&=` 短路赋值 | 44 |
+| 51_nullish | null `??` 缺省 | 35 |
+| 52_typeof_guard | typeof 空守卫 | 31 |
+| 53_do_while | do-while | 3-11 |
+| 54_try_finally | try/finally 直跑 | 3-11/54 |
+| 55_labels | 标号 continue | 14 |
+| 56_obj_spread | 对象 spread 复制 | 46 |
+| 57_str_num | String()/Math.max-min | 25/20-24 |
+| 58_at_index | at 下标读 | 26 |
+| 59_class_fields | 字段初值忽略+方法 | 28（初值忽略） |
+| 60_in_operator | `in` 布局折叠 | 35 |
+
+已知边界（续2）：字段初值忽略（两家同形，读出 alloc 语义值）；switch 无 fallthrough（两家同形，臂独立）；flatMap/flat 绑定拒（两家同拒）；`s += s = ` 串重绑两家皆不通（上游段错误，H13）；trim/repeat 运行时段错误（上游 trim 连解析错，H14）；57 原 `s+=` 已换 String/Math 可跑形。
+
 已知边界（demo 写法已规避，对应台账项）：串三元值仅 return 位可放（声明/赋值位拒，H10）；`?.length` 拒（用 `.length`）；`Color.Green` 成员值未用（用 i32 传枚举）；split 结果不可绑定/测长/迭代（用 join…注：join 可转译但 sci verifier 对两家同拒 PhiStateConflict，本集暂不用 join，待后端侧）；for-in 另有 UseAfterMove 缺口（H11，不在本集）。

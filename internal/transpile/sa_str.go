@@ -754,6 +754,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_string_code_point_at(%s, %s, %s)\n", t, bp, bl, a))
+		// 码点结果归属(返前释放；上游同形).
+		saOwnTemp(scope, t)
 		return t, false, ""
 	case "codePointAt":
 		if len(args) != 1 {
@@ -915,6 +917,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, addr))
 		w.Write(fmt.Sprintf("  store %s + 8, 1 as u64\n", out))
+		// 取字柄归属(返前释放；上游同形).
+		saOwnTemp(scope, out)
 		return out, false, ""
 	case "trim", "trimStart", "trimEnd":
 		// ascii 三件套合成（形状证据：封存 lowerStringMethod:7304-7335）。
@@ -924,6 +928,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		full := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_end_len(%s, %s)\n", full, bp, bl))
+		// trim 指数结果归属(返前释放；上游同形).
+		saOwnTemp(scope, start)
+		saOwnTemp(scope, full)
 		s, l := start, full
 		if method == "trimStart" {
 			rest := fmt.Sprintf("t_%d", *nextTemp)
@@ -949,6 +956,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, nptr))
 		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, l))
+		// 修剪柄归属(返前释放；上游同位缺失，上游另有空操作数错).
+		saOwnTemp(scope, out)
 		return out, false, ""
 	case "concat":
 		// 逐片折叠 @sa_string_concat（形状证据：封存 lowerStringMethod:7336-7347；

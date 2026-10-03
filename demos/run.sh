@@ -20,6 +20,9 @@ SA_BIN=${SA_BIN:-/content/sa_all/sci/zig-out/bin/sa}
 if [ ! -x "$TSGO_BIN" ]; then
   echo "building tsgo ..."
   (cd "$TSGOSA" && go build -o "$TSGO_BIN" ./cmd/tsgo) || exit 2
+elif [ -n "$(find "$TSGOSA/cmd/tsgo" "$TSGOSA/internal/transpile" -name '*.go' -newer "$TSGO_BIN" 2>/dev/null | head -1)" ]; then
+  echo "rebuilding stale tsgo ..."
+  (cd "$TSGOSA" && go build -o "$TSGO_BIN" ./cmd/tsgo) || exit 2
 fi
 if [ ! -x "$SA_BIN" ]; then
   echo "error: sa backend not found at $SA_BIN (build sci: zig build -Dllvm=false)" >&2
