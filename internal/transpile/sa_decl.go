@@ -213,6 +213,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 						}
 						w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 						scope.types[name] = "date"
+						saDeclareInitOwn(scope, name, op)
 						continue
 					}
 				}
@@ -252,6 +253,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = 0\n", name))
 			scope.types[name] = vkind
+			saDeclarePlain(scope, name)
 			continue
 		}
 		if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
@@ -274,8 +276,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
-		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = vkind
+		saDeclareInitOwn(scope, name, op)
 	}
 	return true
 }
@@ -289,6 +292,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		w.Write(fmt.Sprintf("  %s = 0\n", name))
 		scope.types[name] = "i32"
+		saDeclarePlain(scope, name)
 		return true
 	}
 	if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
@@ -310,6 +314,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "str"
+		saDeclareOwned(scope, name)
 		return true
 	}
 	if _, ok := saArrBase(scope, vd.Initializer); ok {
@@ -326,6 +331,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "arr"
+			saDeclareOwned(scope, name)
 			return true
 		}
 		if k, ok := saArrCallRet(vd.Initializer.AsCallExpression(), scope); ok && k == "arr" {
@@ -340,6 +346,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "str"
+			saDeclareOwned(scope, name)
 			return true
 		}
 		if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
@@ -351,6 +358,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = "date"
+			saDeclareInitOwn(scope, name, op)
 			return true
 		}
 	}
@@ -361,8 +369,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
-		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "bool"
+		saDeclareInitOwn(scope, name, op)
 		return true
 	}
 	if vd.Initializer.Kind == ast.KindIdentifier {
@@ -373,13 +382,15 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
-			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			saEmitScalarInit(w, name, op, scope)
 			scope.types[name] = "bool"
+			saDeclarePlain(scope, name)
 			return true
 		}
 		if k, ok := scope.types[vd.Initializer.Text()]; ok && k == "date" {
-			w.Write(fmt.Sprintf("  %s = %s\n", name, vd.Initializer.Text()))
+			saEmitScalarInit(w, name, vd.Initializer.Text(), scope)
 			scope.types[name] = "date"
+			saDeclarePlain(scope, name)
 			return true
 		}
 	}
@@ -395,8 +406,10 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		w.Write(fmt.Sprintf("  %s = %s\n", name, t))
 		if isStr {
 			scope.types[name] = "str"
+			saDeclareOwned(scope, name)
 		} else {
 			scope.types[name] = "i32"
+			saDeclareInitOwn(scope, name, t)
 		}
 		return true
 	}
@@ -406,12 +419,16 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 		return false
 	}
-	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 	// 句柄读回种传递（字段读已记临时量种；字面量/绑定名沿既有 i32）。
+	// 句柄直传（上游此处拒，本仓沿既有直传口径；快照只对标量，`add` 不可作用 ptr）。
 	if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = k
+		saDeclareOwned(scope, name)
 	} else {
+		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "i32"
+		saDeclareInitOwn(scope, name, op)
 	}
 	return true
 }
@@ -555,6 +572,31 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 		cur = nr.TypeName.Text()
 	}
 	return "", false
+}
+
+// saDeclareInitOwn 按初值操作数登记归属（temp 源归属并消费源，具名/
+// 立即数源普通；封存 assignLocal fresh 分支：temp→declareOwned，
+// named/imm→declarePlain）。
+// saEmitScalarInit 按初值源落声明存：具名源快照（`y = add x, 0`，读后源
+// 仍 live，后续 `!x` 合法），temp/imm 直赋；封存 assignLocal fresh+named
+// 分支快照同形（:11130-11140）。
+func saEmitScalarInit(w printer.EmitTextWriter, name, op string, scope *saScope) {
+	if !saIsTempOp(op) {
+		if _, ok := scope.types[op]; ok {
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, op))
+			return
+		}
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+}
+
+func saDeclareInitOwn(scope *saScope, name, op string) {
+	if saIsTempOp(op) {
+		saConsumeOwn(scope, op)
+		saDeclareOwned(scope, name)
+		return
+	}
+	saDeclarePlain(scope, name)
 }
 
 // saIsTopLevelArrowConst 识别顶层 `const f = (...)=>...`/`= function...`
@@ -811,6 +853,13 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameters"})
 		return
 	}
+	// 形参种先行（签名注解与归属登记同源；封存 lowerArrowBinding 先合成形参同形）。
+	_, kinds, arrowPendings, ok := saSynthArrowParams(arrow, classes)
+	if !ok {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
+		return
+	}
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
 		k, ok := saReturnKind(rt)
@@ -827,7 +876,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	if emitName == "main" && mainRenamed {
 		emitName = "main__user"
 	}
-	sig := "@" + emitName + "(" + strings.Join(params, ", ") + ")"
+	sig := "@" + emitName + "(" + saSigParamList(kinds, params) + ")"
 	if !isVoid {
 		if retKind == "string" {
 			sig += " -> ptr"
@@ -845,17 +894,12 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf}
 	saSeedTopMaths(scope, topMaths)
-	if _, kinds, _, ok := saSynthArrowParams(arrow, scope.classes); ok {
-		for k, v := range kinds {
-			scope.types[k] = v
-		}
-	} else {
-		ln, col := pos(arrow.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
-		return
+	for _, p := range params {
+		scope.types[p] = kinds[p]
+		saDeclareOwned(scope, p)
 	}
-	if _, _, pendings, ok := saSynthArrowParams(arrow, scope.classes); ok && len(pendings) > 0 {
-		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
+	if len(arrowPendings) > 0 {
+		if !saDrainDestructuredParams(w, arrowPendings, scope, pos, refusals, nextLabel, nextTemp) {
 			return
 		}
 	}
@@ -883,6 +927,7 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 			if !isVoid {
 				return refuse(arrow, "missing return")
 			}
+			saReleaseAllOwnedExcept(w, scope, "")
 			w.Write("  ret\n")
 			return true
 		}
@@ -901,6 +946,7 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 			if !isVoid {
 				return refuse(arrow, "missing return")
 			}
+			saReleaseAllOwnedExcept(w, scope, "")
 			w.Write("  ret\n")
 		}
 		return true
@@ -912,6 +958,7 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 	if msg != "" {
 		return refuse(body, msg)
 	}
+	saReleaseExceptOp(w, scope, op)
 	w.Write(fmt.Sprintf("  ret %s\n", op))
 	return true
 }
@@ -1108,7 +1155,14 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	*scope.arrowSeq++
 	gen := fmt.Sprintf("__arrow_%d", *scope.arrowSeq)
 	sigNames := append(append([]string{}, params...), captured...)
-	buf.Write("@" + gen + "(" + strings.Join(sigNames, ", ") + ")")
+	allKinds := map[string]string{}
+	for k, v := range paramKinds {
+		allKinds[k] = v
+	}
+	for _, cp := range captured {
+		allKinds[cp] = scope.types[cp]
+	}
+	buf.Write("@" + gen + "(" + saSigParamList(allKinds, sigNames) + ")")
 	if !isVoid {
 		if retKind == "string" {
 			buf.Write(" -> ptr")
@@ -1130,6 +1184,10 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	// 捕获以同名尾参入内层作用域（体读名即读形参；封存 declareOwned 补登）。
 	for _, cp := range captured {
 		inner.types[cp] = scope.types[cp]
+	}
+	// 形参+捕获按签名序归属登记（逆序释放依赖此序）。
+	for _, p := range sigNames {
+		saDeclareOwned(inner, p)
 	}
 	if len(pendings) > 0 {
 		if !saDrainDestructuredParams(buf, pendings, inner, pos, refusals, nextLabel, nextTemp) {
@@ -1154,6 +1212,25 @@ func saSigKinds(paramKinds map[string]string, params []string) []string {
 		out = append(out, paramKinds[p])
 	}
 	return out
+}
+
+// saSigParamType 把形参种映成签名注解（i32/bool 即 i32，其余 ptr 句柄；
+// 形状证据：封存上游实发 `@__arrow_1(x: i32, base: i32)`、`@g(p: ptr, s: ptr)`、
+// `@h(f: i32)`——真机 `sa check` 拒无注解签名 `InvalidFunctionSig`）。
+func saSigParamType(kind string) string {
+	if kind == "i32" || kind == "bool" {
+		return "i32"
+	}
+	return "ptr"
+}
+
+// saSigParamList 按形参序拼 `名: 种` 签名段（与 saSigKinds 同序）。
+func saSigParamList(paramKinds map[string]string, params []string) string {
+	parts := make([]string, 0, len(params))
+	for _, p := range params {
+		parts = append(parts, p+": "+saSigParamType(paramKinds[p]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ── 返回类型 checker 推断（satsgo typecheck.go 同款，单文件特化） ──

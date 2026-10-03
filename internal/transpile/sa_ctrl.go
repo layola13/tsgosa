@@ -157,7 +157,7 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
-	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	saStoreLocal(w, target, t, scope, nextTemp)
 	return true
 }
 
@@ -394,7 +394,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
 		return false
 	}
-	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+	saStoreLocal(w, name, op, scope, nextTemp)
 	return true
 }
 
@@ -538,7 +538,7 @@ func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, po
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer: " + msg})
 			return false
 		}
-		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		saStoreLocal(w, name, op, scope, nextTemp)
 		return true
 	}
 }
@@ -552,7 +552,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
-		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+		saStoreLocal(w, target, t, scope, nextTemp)
 	}
 	switch incr.Kind {
 	case ast.KindPostfixUnaryExpression:
@@ -1373,8 +1373,8 @@ func saLowerThrowingTry(w printer.EmitTextWriter, s *ast.Node, ts *ast.TryStatem
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + nm.Text()})
 			return false, true
 		}
-		w.Write(fmt.Sprintf("  %s = %s\n", nm.Text(), val))
 		scope.types[nm.Text()] = "i32"
+		saStoreLocal(w, nm.Text(), val, scope, nextTemp)
 	}
 	if cc.Block == nil {
 		return legacy()
@@ -1694,7 +1694,9 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 	if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 		return false
 	}
-	if saContainsIf(thenStmts) {
+	// 臂终结（return/jmp 收尾）则免 join 跳转——落在终结符后即不可达陷阱，
+	// 真机 `FallthroughForbidden`；封存上游同位：终结臂无 `jmp L_endif`。
+	if saContainsIf(thenStmts) && !saArmTerminates(thenStmts) {
 		w.Write(fmt.Sprintf("  jmp %s\n", endifLabel))
 	}
 	w.Write(endifLabel + ":\n")
@@ -1791,18 +1793,188 @@ func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {
 	return []*ast.Node{n}, true
 }
 
-// saScopeEnter 开块域并返回可回滚快照（形状证据：封存 pushScope:11027-11029
-// 的作用域栈 + lowerIf:1758 / lowerWhile:1817 / lowerDoWhile:1968 / lowerFor:
-// 2046（for 另在 2004 为体再开一层）/ lowerForOf:2137 / lowerSwitch 臂:2642
-// 与 tryLowerSwitchMacro 臂:2563 / KindBlock:847-848 各 pushScope 同形）。
+// ── 归属记录与 `!` 释放（所有权模型 v3 端口）──
+// 形状证据总纲：封存 Scope/ownership:11004-11023（Owned：形参、调用结果、
+// alloc 结果、具名串/数组/结构体句柄；Non-owned：立即数、纯临时量、普通标量
+// 绑定；`!` 对非归属仍合法）+ declareOwned/declareAlias/declarePlain +
+// setHeap/isOwnedTemp/consume/markRebound/rebindRelease:11048-11102 +
+// releaseAllOwnedExcept:11338-11360（return 释放除返回值外一切，绑定留位标
+// 已释放）+ releaseScope:11306-11336（块出口释顶层域，终结块静默）。
+// 本仓 types 扁平，故归属表亦随快照-回滚进出（与种表同命）。
+type saOwn struct {
+	heap     bool // 归属：须释放/移动/返回（形参、temp 源绑定、句柄）
+	consumed bool // 已移动走
+	released bool // 已发 `!`
+}
+
+// saDeclareOwned 登记归属绑定（形参、temp 源初值、句柄；首登获准，复登只
+// 置堆位；封存 declareOwned:11048-11060）。
+func saDeclareOwned(scope *saScope, name string) {
+	if scope.ownState == nil {
+		scope.ownState = map[string]*saOwn{}
+	}
+	if b, ok := scope.ownState[name]; ok {
+		b.heap = true
+		return
+	}
+	scope.ownState[name] = &saOwn{heap: true}
+	scope.ownOrder = append(scope.ownOrder, name)
+}
+
+// saDeclarePlain 登记非归属标量绑定（立即数/具名源初值；封存 declarePlain:11079-11091）。
+func saDeclarePlain(scope *saScope, name string) {
+	if scope.ownState == nil {
+		scope.ownState = map[string]*saOwn{}
+	}
+	if _, ok := scope.ownState[name]; ok {
+		return
+	}
+	scope.ownState[name] = &saOwn{}
+	scope.ownOrder = append(scope.ownOrder, name)
+}
+
+// saOwnOf 查归属记录（temps 永不登记，封存 isTempName 跳过同形）。
+func saOwnOf(scope *saScope, name string) *saOwn {
+	if scope.ownState == nil {
+		return nil
+	}
+	return scope.ownState[name]
+}
+
+// saConsumeOwn 标记移动走（归属且未释放者；封存 consume:11099-11106）。
+func saConsumeOwn(scope *saScope, name string) {
+	if b := saOwnOf(scope, name); b != nil && b.heap && !b.released {
+		b.consumed = true
+	}
+}
+
+// saReleaseAllOwnedExcept 返前释放：逆声明序释全部归属 live 者，返回值除外
+// （封存 releaseAllOwnedExcept:11338-11360；绑定留位，防早返后外层名失联）。
+func saReleaseAllOwnedExcept(w printer.EmitTextWriter, scope *saScope, except string) {
+	done := map[string]bool{}
+	for i := len(scope.ownOrder) - 1; i >= 0; i-- {
+		name := scope.ownOrder[i]
+		if name == except || done[name] {
+			continue
+		}
+		done[name] = true
+		if b := saOwnOf(scope, name); b != nil && b.heap && !b.consumed && !b.released {
+			w.Write(fmt.Sprintf("  !%s\n", name))
+			b.released = true
+		}
+	}
+}
+
+// saRebindRelease 重绑定前释 live 具名寄存器（temps 为循环携带 SSA 值，
+// 直接重绑；封存 rebindRelease:11089-11097）。
+func saRebindRelease(w printer.EmitTextWriter, scope *saScope, dst string) {
+	if saIsTempOp(dst) {
+		return
+	}
+	if b := saOwnOf(scope, dst); b != nil && b.heap && !b.consumed && !b.released {
+		w.Write(fmt.Sprintf("  !%s\n", dst))
+		b.released = true
+	}
+}
+
+// saMarkRebound 标 fresh 绑定（新值待未来释放；封存 markRebound:11100-11106）。
+func saMarkRebound(scope *saScope, dst string) {
+	if b := saOwnOf(scope, dst); b != nil {
+		b.released = false
+		b.consumed = false
+	}
+}
+
+// saStoreLocal 按赋值纪律落标量 `dst = src`（封存 assignLocal:11108-11171）：
+// fresh+temp 直搬+归属；fresh+named 快照+普通；fresh+imm 直赋+普通；
+// live 先 rebindRelease，再 named 双 temp 快照、temp/imm 直赋，并置堆位
+// （temp 源置堆+复位，named/imm 源清堆；imm 源不复位，沿上原文）。
+func saStoreLocal(w printer.EmitTextWriter, dst, src string, scope *saScope, nextTemp *int) {
+	b := saOwnOf(scope, dst)
+	fresh := b == nil
+	srcIsTemp := saIsTempOp(src)
+	_, srcIsNamed := scope.types[src]
+	if fresh {
+		if srcIsTemp {
+			w.Write(fmt.Sprintf("  %s = %s\n", dst, src))
+			saConsumeOwn(scope, src)
+			saDeclareOwned(scope, dst)
+			return
+		}
+		if srcIsNamed && !srcIsTemp {
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", dst, src))
+			saDeclarePlain(scope, dst)
+			return
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", dst, src))
+		saDeclarePlain(scope, dst)
+		return
+	}
+	saRebindRelease(w, scope, dst)
+	if srcIsNamed && !srcIsTemp {
+		c1 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		c2 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", c1, src))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", c2, c1))
+		w.Write(fmt.Sprintf("  %s = %s\n", dst, c2))
+		b.heap = false
+		saMarkRebound(scope, dst)
+		return
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", dst, src))
+	if srcIsTemp {
+		saConsumeOwn(scope, src)
+		b.heap = true
+		saMarkRebound(scope, dst)
+		return
+	}
+	b.heap = false
+}
+
+// saReleaseExceptOp 返前释放便捷口：返回操作数为具名绑定即除外，否则全释。
+func saReleaseExceptOp(w printer.EmitTextWriter, scope *saScope, op string) {
+	except := ""
+	if op != "" && !saIsTempOp(op) {
+		if _, ok := scope.types[op]; ok {
+			except = op
+		}
+	}
+	saReleaseAllOwnedExcept(w, scope, except)
+}
+
+// saIsTempOp 报告操作数是否为编译临时量 `t_N`（封存 isTempName 同形）。
+func saIsTempOp(op string) bool {
+	if len(op) < 3 || op[0] != 't' || op[1] != '_' {
+		return false
+	}
+	for i := 2; i < len(op); i++ {
+		if op[i] < '0' || op[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// saScopeEnter 开块域（上游各 arm/loop 体各自 pushScope 同形：封存 lowerIf:1758 /
+// lowerWhile:1817 / lowerDoWhile:1968 / lowerFor:2046（for 另在 2004 为体再开一层）/
+// lowerForOf:2137 / lowerSwitch 臂:2642 与 tryLowerSwitchMacro 臂:2563 / KindBlock:847-848）。
 // 本仓 types 是扁平种表，故以「快照-回滚」等价实现逐层进出：块内新登记的
 // 名字出块即不可见，同名兄弟块可复用（顺序复用同寄存器，语义等价）。
-func saScopeEnter(scope *saScope) map[string]string {
+// saScopeSaved 块域快照（种表 + 归属表截断点；归属旗标沿上游持久化，
+// 不回滚——封存 releaseScope 释后标 released 跨早返仍有效 :11352-11356）。
+type saScopeSaved struct {
+	types map[string]string
+	owned int
+}
+
+func saScopeEnter(scope *saScope) saScopeSaved {
 	saved := make(map[string]string, len(scope.types))
 	for k, v := range scope.types {
 		saved[k] = v
 	}
-	return saved
+	return saScopeSaved{types: saved, owned: len(scope.ownOrder)}
 }
 
 // saScopeExit 闭块域：丢弃块内新登记的名字，还原被遮蔽名的外层种（封存
@@ -1810,15 +1982,20 @@ func saScopeEnter(scope *saScope) map[string]string {
 // 仍可见名的块内重名一律先被 `duplicate local` 大声拒（封存无此门且
 // 会静默复用同寄存器致外层读错值——铁律 4「禁静默错码」高于逐字同形，
 // 见 AGENTS.md §4 差分门禁）。
-func saScopeExit(scope *saScope, saved map[string]string) {
+func saScopeExit(scope *saScope, saved saScopeSaved) {
 	for k := range scope.types {
-		if _, ok := saved[k]; !ok {
+		if _, ok := saved.types[k]; !ok {
 			delete(scope.types, k)
 		}
 	}
-	for k, v := range saved {
+	for k, v := range saved.types {
 		scope.types[k] = v
 	}
+	// 归属表截断：块内新登记名出块即除名（种表同命；旗标不回滚）。
+	for _, name := range scope.ownOrder[saved.owned:] {
+		delete(scope.ownState, name)
+	}
+	scope.ownOrder = scope.ownOrder[:saved.owned]
 }
 
 // saLowerArm 处理臂/循环体语句（经 saLowerStmt 与函数体共用全语句集）。

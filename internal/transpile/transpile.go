@@ -715,6 +715,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			}
 		}
 		if !terminated {
+			saReleaseAllOwnedExcept(w, escope, "")
 			w.Write("  ret 0\n")
 		}
 	}
@@ -957,6 +958,7 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 				v := saLowerCheckedIndex(w, q.hid, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 				w.Write(fmt.Sprintf("  %s = %s\n", name, v))
 				scope.types[name] = "i32"
+				saDeclareInitOwn(scope, name, v)
 				idx++
 			}
 			continue
@@ -1296,6 +1298,8 @@ type saScope struct {
 	inlineRet   *saInlineRet
 	tcx         *saTypeCtx   // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
 	aliasOf       map[string]*ast.TypeNode // 顶层 `type X` 表（注解别名消解；无码）
+	ownOrder    []string              // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
+	ownState    map[string]*saOwn     // 名→归属记录（堆/已消费/已释放）
 	pendingFns  *[]string    // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
 	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
 }
@@ -1389,7 +1393,13 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function " + name + " has no body (overload signatures are not lowerable)"})
 		return
 	}
-	sig := "@" + emitName + "(" + strings.Join(params, ", ") + ")"
+	paramKinds, ok := saParamKinds(fn, classes)
+	if !ok {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
+		return
+	}
+	sig := "@" + emitName + "(" + saSigParamList(paramKinds, params) + ")"
 	if !isVoid {
 		if retKind == "string" {
 			// 字符串返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:`）。
@@ -1417,14 +1427,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf}
 	saSeedTopMaths(scope, topMaths)
-	paramKinds, ok := saParamKinds(fn, scope.classes)
-	if !ok {
-		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
-		return
-	}
-	for k, v := range paramKinds {
-		scope.types[k] = v
+	for _, p := range params {
+		scope.types[p] = paramKinds[p]
+		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
+		saDeclareOwned(scope, p)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒）。
 	if _, _, pendings, ok := saSynthParams(fn, scope.classes); ok && len(pendings) > 0 {
@@ -1454,6 +1460,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
 			return
 		}
+		saReleaseAllOwnedExcept(w, scope, "")
 		w.Write("  ret\n")
 	}
 }
@@ -1591,6 +1598,7 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "return value in void function refused"})
 			return false, true
 		}
+		saReleaseAllOwnedExcept(w, scope, "")
 		w.Write("  ret\n")
 		return true, false
 	}
@@ -1600,6 +1608,7 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		if msg != "" {
 			return false, true
 		}
+		saReleaseExceptOp(w, scope, t)
 		w.Write(fmt.Sprintf("  ret %s\n", t))
 		return true, false
 	}
@@ -1610,6 +1619,7 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return false, true
 	}
+	saReleaseExceptOp(w, scope, op)
 	w.Write(fmt.Sprintf("  ret %s\n", op))
 	return true, false
 }

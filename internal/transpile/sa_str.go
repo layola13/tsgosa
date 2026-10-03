@@ -583,6 +583,7 @@ func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		w.Write(fmt.Sprintf("  %s = 0\n", name))
 		scope.types[name] = "str"
+		saDeclarePlain(scope, name)
 		return true
 	}
 	h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
@@ -593,6 +594,7 @@ func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 	scope.types[name] = "str"
+	saDeclareOwned(scope, name)
 	return true
 }
 

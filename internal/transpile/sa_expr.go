@@ -674,7 +674,7 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
-		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+		saStoreLocal(w, target, t, scope, nextTemp)
 		return t, ""
 	}
 	old := fmt.Sprintf("t_%d", *nextTemp)
@@ -683,7 +683,7 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
-	w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+	saStoreLocal(w, target, t, scope, nextTemp)
 	return old, ""
 }
 

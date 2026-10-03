@@ -292,6 +292,7 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		v := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 		w.Write(fmt.Sprintf("  %s = %s\n", name, v))
 		scope.types[name] = "i32"
+		saDeclareInitOwn(scope, name, v)
 		idx++
 	}
 	return true
@@ -320,6 +321,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "arr"
+		saDeclareOwned(scope, name)
 		return true
 	}
 	// 数组构造式（`Array(n)`/`Array(a, b)`；`new Array(n)` 由声明位直办）。
@@ -332,12 +334,14 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "arr"
+		saDeclareOwned(scope, name)
 		return true
 	}
 	// 绑定句柄与数组返回调用皆直传（slice/concat/map 等新鲜句柄）。
 	if src, msg := saArrValueOf(w, vd.Initializer, scope, pos, refusals, nextTemp); msg == "" {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
 		scope.types[name] = "arr"
+		saDeclareOwned(scope, name)
 		return true
 	}
 	ln, col := pos(d.Pos())
@@ -524,10 +528,12 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			v := saLowerCheckedIndex(w, elemT, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 			w.Write(fmt.Sprintf("  %s = %s\n", nm.Text(), v))
 			scope.types[nm.Text()] = "i32"
+			saDeclareInitOwn(scope, nm.Text(), v)
 			idx++
 		}
 	} else {
 		w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
+		saDeclareInitOwn(scope, binding, elemT)
 		// 嵌套字面量直巡的行绑定记 arr（行即内层句柄，`row[0]`/`row.length`
 		// 可用；扁平直巡仍记 i32；变量被巡元素种未知，沿旧 i32 门）。
 		bindKind := "i32"
@@ -624,6 +630,7 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	w.Write(fmt.Sprintf("  %s = %s\n", binding, idx))
 	scope.types[binding] = "i32"
+	saDeclareInitOwn(scope, binding, idx)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
@@ -2234,6 +2241,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
 		bind(name, "i32")
+		saDeclarePlain(scope, name)
 	}
 	body := cb.Body()
 	if body == nil {
