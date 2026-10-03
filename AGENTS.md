@@ -69,7 +69,7 @@
 - step39（`delete`/`await` 对齐，落 `sa_expr.go`）：`delete` 显式拒（静态布局不可删域，`lowerExpr:2742-2745`）；`await v` 值透传（悬挂在内层调用门拒，`lowerExpr:2863-2871`）。
 - step41（重载签名擦除，落 `transpile.go`零新文件）：无体声明预扫不注册/发射不落字/入口改名不参与（实现体唯一定义；`saemit.go:642+758`）；孤签名零定义调用点按未知函数诚实拒（`saemit.go:983`）；JS 管线同形擦除（仅实现体落字），本次即底座复用替换。
 - step42（未初始化声明补齐，落 `sa_str.go`零新文件）：`let s: string;` 绑空句柄零值（`s = 0`，后赋重绑；`saemit.go:lowerVarDeclList:1405-1434`）；`let x: number;` 既有 `x = 0` 不变；`const` 缺 init 仍拒；数组缺 init 仍按 step12 大声拒。
-- step43（解构形参一次过，落 `transpile.go`零新文件）：`{x,y}:Point`/`[a,b]:i32[]` 合成隐藏句柄形参 `__darg`（兄弟名冲突追 `_`；`saemit.go:hiddenDestructuredParam:5347-5371`）+ 体顶按域展开（数组逐元越界归零 join，对象按布局 `load hid+off`；`destructureArray:5309-5333`/`destructureObject:5465-5509`/`drain:5376-5410`）；签名/预扫/调用元数按隐藏名一致（arr/inst 种导向句柄直传）；门：rest/缺省/嵌套/未知域/无布局一律拒（箭头顶层 `const f=()=>` 另域，本轮仍拒）。
+- step43（解构形参一次过，落 `transpile.go`零新文件）：`{x,y}:Point`/`[a,b]:i32[]` 合成隐藏句柄形参 `__darg`（兄弟名冲突追 `_`；`saemit.go:hiddenDestructuredParam:5347-5371`）+ 体顶按域展开（数组逐元越界归零 join，对象按布局 `load hid+off`；`destructureArray:5309-5333`/`destructureObject:5465-5509`/`drain:5376-5410`）；签名/预扫/调用元数按隐藏名一致（arr/inst 种导向句柄直传）；顶层 `const f=()=>`/`=function` 同形 out-of-line（块/表达式体；`tryTopLevelArrow:1015-1032`/`lowerArrowBinding:1058-1098`；生成器/async 拒）；门：rest/缺省/嵌套/未知域/无布局/局部箭头一律拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
