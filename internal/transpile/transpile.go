@@ -606,6 +606,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			ast.KindExportDeclaration, ast.KindExportAssignment, ast.KindNamespaceExportDeclaration,
 			ast.KindClassDeclaration:
 			continue
+		case ast.KindModuleDeclaration:
+			// 环境模块块擦除（无运行时码；运行时 namespace 另立大项）。
+			if saIsAmbientModule(st) {
+				continue
+			}
 		case ast.KindImportDeclaration:
 			imp := st.AsImportDeclaration()
 			if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {

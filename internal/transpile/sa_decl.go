@@ -565,6 +565,23 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 	return true
 }
 
+// saIsAmbientModule 报告类型-only 模块块（`declare` 修饰、串名
+// （`declare module "./x"`）、`declare global`；皆擦除；形状证据：封存
+// isAmbientModule:94-105）。
+func saIsAmbientModule(st *ast.Node) bool {
+	if st == nil || st.Kind != ast.KindModuleDeclaration {
+		return false
+	}
+	if ast.HasModifier(st, ast.ModifierFlagsAmbient) {
+		return true
+	}
+	md := st.AsModuleDeclaration()
+	if nm := md.Name(); nm != nil && nm.Kind == ast.KindStringLiteral {
+		return true
+	}
+	return false
+}
+
 // saLowerArrowConst lowering 顶层 `const f = (...)=>...`/`= function...`
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
