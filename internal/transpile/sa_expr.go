@@ -339,6 +339,56 @@ func saIsTimerName(name string) bool {
 	return false
 }
 
+// saIsLiteralDefault 报告缺省表达式是否可短调回放（纯字面量：数字/串/无替换
+// 模板/true/false/null/undefined；标识符/调用/含洞模板重绑 caller 作用域或 duplicat
+// 副作用，一律不回放；形状证据：封存 padDefaultArgs）。
+func saIsLiteralDefault(n *ast.Node) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case ast.KindNumericLiteral, ast.KindStringLiteral,
+		ast.KindNoSubstitutionTemplateLiteral, ast.KindTrueKeyword,
+		ast.KindFalseKeyword, ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	default:
+		return false
+	}
+}
+
+// saPadDefaultArgs 在短调点回放省略的尾部缺省（JS 逐调用求值；调用方作用域求值，
+// 种导向经 evalOne；非字面量大声拒；形状证据：封存 padDefaultArgs）。
+func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, args []string, evalOne func(int, *ast.Node, int) (string, string)) ([]string, string) {
+	if len(args) >= sig.params {
+		return args, ""
+	}
+	if len(sig.defaults) != sig.params || len(sig.defaultExprs) != sig.params {
+		return args, ""
+	}
+	out := append([]string{}, args...)
+	for i := len(args); i < sig.params; i++ {
+		if i >= len(sig.defaults) || !sig.defaults[i] {
+			return args, ""
+		}
+		var init *ast.Node
+		if i < len(sig.defaultExprs) {
+			init = sig.defaultExprs[i]
+		}
+		if init == nil {
+			return nil, fmt.Sprintf("omitted default argument %d of %s has no recorded default (short calls need a literal default)", i+1, fname)
+		}
+		if !saIsLiteralDefault(init) {
+			return nil, fmt.Sprintf("omitted default argument %d of %s is not a literal (non-literal defaults do not replay at short calls)", i+1, fname)
+		}
+		v, msg := evalOne(i, init, sig.params)
+		if msg != "" {
+			return nil, msg
+		}
+		out = append(out, v)
+	}
+	return out, ""
+}
+
 // saEvalNamedCall lowering具名直调（`f(...)` 与 `f.call(thisArg, ...)` 脱糖共用；
 // 形参种导向求值 + spread 展开 + 元数门 + void 形；
 // 形状证据：封存 lowerCallDesugar:4512-4581）。
@@ -410,8 +460,12 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 			}
 			args = spread
 		} else {
+			evalTotal := len(nodes)
+			if len(nodes) <= sig.params {
+				evalTotal = sig.params
+			}
 			for i, a := range nodes {
-				op, msg := evalOne(i, a, len(nodes))
+				op, msg := evalOne(i, a, evalTotal)
 				if msg != "" {
 					return "", false, msg
 				}
@@ -420,7 +474,13 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		}
 	}
 	if len(args) != sig.params {
-		return "", false, fmt.Sprintf("arity mismatch for %s: want %d, got %d", name, sig.params, len(args))
+		if padded, msg := saPadDefaultArgs(w, name, sig, args, evalOne); msg != "" {
+			return "", false, msg
+		} else if len(padded) == sig.params {
+			args = padded
+		} else {
+			return "", false, fmt.Sprintf("arity mismatch for %s: want %d, got %d", name, sig.params, len(args))
+		}
 	}
 	call := fmt.Sprintf("call @%s(%s)", callName, strings.Join(args, ", "))
 	if sig.isVoid {

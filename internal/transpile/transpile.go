@@ -504,7 +504,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 				}
 			}
 		}
-		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk}
+		var defs []bool
+		var dexprs []*ast.Node
+		if fn.Parameters != nil {
+			defs, dexprs = saFuncDefaultTables(fn.Parameters.Nodes)
+		}
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
 	}
 	// 预扫二b：顶层箭头/函数表达式 `const f = (...)=>...` 记调用签名
 	// （与函数声明同表；形状证据：封存 tryTopLevelArrow:1015-1032 +
@@ -538,7 +543,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 				}
 			}
 		}
-		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk}
+		defs, dexprs := saFuncDefaultTables(nodes)
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
 	}
 	// 预扫二c：顶层纯量折叠（`var K = 42` 内联、`var S = "hi"` 串池化、
 	// `var f = Math.g` 别名；非纯留发射环拒；形状证据：封存 tryTopLevelConst:2894-2972）。
@@ -728,11 +734,14 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef) (
 	taken := map[string]bool{}
 	for _, p := range paramNodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+		if pd == nil || pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return nil, nil, nil, false
 		}
 		nm := pd.Name()
 		if nm == nil {
+			return nil, nil, nil, false
+		}
+		if nm.Kind != ast.KindIdentifier && pd.Initializer != nil {
 			return nil, nil, nil, false
 		}
 		if nm.Kind == ast.KindIdentifier {
@@ -825,11 +834,14 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 	taken := map[string]bool{}
 	for _, p := range fn.Parameters.Nodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+		if pd == nil || pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return nil, false
 		}
 		nm := pd.Name()
 		if nm == nil {
+			return nil, false
+		}
+		if nm.Kind != ast.KindIdentifier && pd.Initializer != nil {
 			return nil, false
 		}
 		if nm.Kind == ast.KindIdentifier {
@@ -1199,12 +1211,16 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	}
 }
 
-// saFuncSig 是调用核的签名表项（名->形参数/是否 void/返回种/形参种）。
+// saFuncSig 是调用核的签名表项（名->形参数/是否 void/返回种/形参种/缺省表）。
+// defaults 与 defaultExprs 与形参同长：有 Initializer 即 true（字面量短调回放，
+// 非字面量短调大声拒；形状证据：封存 funcDefaults/funcDefaultExpr + padDefaultArgs）。
 type saFuncSig struct {
-	params     int
-	isVoid     bool
-	retKind    string
-	paramKinds []string
+	params       int
+	isVoid       bool
+	retKind      string
+	paramKinds   []string
+	defaults     []bool
+	defaultExprs []*ast.Node
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels

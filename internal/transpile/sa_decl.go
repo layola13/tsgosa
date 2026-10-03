@@ -408,11 +408,14 @@ func saArrowParamNames(arrow *ast.Node) ([]string, bool) {
 	taken := map[string]bool{}
 	for _, p := range nodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+		if pd == nil || pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return nil, false
 		}
 		nm := pd.Name()
 		if nm == nil {
+			return nil, false
+		}
+		if nm.Kind != ast.KindIdentifier && pd.Initializer != nil {
 			return nil, false
 		}
 		if nm.Kind == ast.KindIdentifier {
@@ -431,6 +434,22 @@ func saArrowParamNames(arrow *ast.Node) ([]string, bool) {
 		out = append(out, hid)
 	}
 	return out, true
+}
+
+// saFuncDefaultTables 记录每形参缺省（与形参同长；有 Initializer 即 true，
+// 缺省表达式原节点供短调字面量回放；非字面量短调大声拒；形状证据：封存
+// funcDefaults/funcDefaultExpr + padDefaultArgs）。
+func saFuncDefaultTables(nodes []*ast.Node) ([]bool, []*ast.Node) {
+	defs := make([]bool, len(nodes))
+	dexprs := make([]*ast.Node, len(nodes))
+	for i, p := range nodes {
+		pd := p.AsParameterDeclaration()
+		if pd != nil && pd.Initializer != nil {
+			defs[i] = true
+			dexprs[i] = pd.Initializer
+		}
+	}
+	return defs, dexprs
 }
 
 // saArrowReturnNode 取箭头/函数表达式的返回注解（无注解 nil；形状证据：
