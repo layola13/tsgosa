@@ -1257,7 +1257,7 @@ func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
 			return "", "Array(...) elements must be plain values"
 		}
-		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		v, msg := saArrayLiteralElem(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
 		}
@@ -2450,12 +2450,12 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
 			return "", "callbacks are not concat values"
 		}
-		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		v, msg := saArrayLiteralElem(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
 		}
 		saLowerArrayPush(w, h, v, scope, nextTemp)
-		strOK = false
+		strOK = strOK && saIsStrExpr(a, scope)
 	}
 	if strOK {
 		saMarkArrStr(scope, h)
@@ -3296,7 +3296,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 1 {
 			return "", "", "push needs 1 argument"
 		}
-		v, msg := i32arg(0)
+		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3387,7 +3387,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 1 {
 			return "", "", "unshift needs 1 argument"
 		}
-		v, msg := i32arg(0)
+		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3438,7 +3438,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 1 {
 			return "", "", "fill needs 1 argument"
 		}
-		v, msg := i32arg(0)
+		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3615,7 +3615,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if msg != "" {
 			return "", "", msg
 		}
-		val, msg := i32arg(1)
+		val, msg := saArrayLiteralElem(w, argNodes[1], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
