@@ -37,8 +37,8 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
 		return false
 	}
-	base, ok := saArrBase(scope, ea.Expression)
-	if !ok {
+	base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
 		return false
@@ -68,8 +68,8 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
 			return false
 		}
-		base, ok := saArrBase(scope, ea.Expression)
-		if !ok {
+		base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
 			return false

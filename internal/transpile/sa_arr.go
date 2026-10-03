@@ -166,6 +166,30 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	return t, ""
 }
 
+// saArrStoreBase 求下标存基（绑定直传；链式下标基递归读回内层句柄；
+// 字面量/调用基仍拒——写临时无意义，沿既有 loud 门）。
+func saArrStoreBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if base, ok := saArrBase(scope, e); ok {
+		return base, ""
+	}
+	if e != nil && e.Kind == ast.KindElementAccessExpression {
+		ea := e.AsElementAccessExpression()
+		if ea.QuestionDotToken != nil {
+			return "", "optional index access not lowerable"
+		}
+		inner, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return saLowerCheckedIndex(w, inner, idx, scope.nextLabel, nextTemp), ""
+	}
+	return "", "not a bound array"
+}
+
 // saArrBase 报告绑定数组变量的句柄名（未绑定/非数组即失败）。
 func saArrBase(scope *saScope, n *ast.Node) (string, bool) {
 	if n == nil || n.Kind != ast.KindIdentifier {
@@ -690,6 +714,7 @@ func saIsArrJoinCall(ce *ast.CallExpression, scope *saScope) bool {
 }
 
 // saArrValueOf 求数组句柄（绑定直传；字面量构造；数组返回调用；括号类直通）。
+// 链式下标基（`pairs[0]`）递归读回内层句柄值（与上游 lowerExpr 递归同形）。
 func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
 		return "", "missing expression"
@@ -700,6 +725,20 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 	switch e.Kind {
 	case ast.KindArrayLiteralExpression:
 		return saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
+	case ast.KindElementAccessExpression:
+		ea := e.AsElementAccessExpression()
+		if ea.QuestionDotToken != nil {
+			return "", "optional index access not lowerable"
+		}
+		inner, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return saLowerCheckedIndex(w, inner, idx, scope.nextLabel, nextTemp), ""
 	case ast.KindCallExpression:
 		ce := e.AsCallExpression()
 		if k, ok := saArrCallRet(ce, scope); ok && k == "arr" {

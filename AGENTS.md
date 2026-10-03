@@ -108,6 +108,7 @@
 - step78（顶层纯量前向读止血一次过，落`sa_decl.go`一处，零新文件）：`saFoldTopLevelConst`两段收后写改逐declarator即收即写，`Identifier`初值增按名折叠（`maths`别名优先，`consts/strs`值+串性透传；未定义沿旧拒），同句/跨句前向读转正，前向未定义仍拒；5项等价（同句/跨句/串链/未定义拒/纯量回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`transpile.go`/`main.go`未动。
 - step79（namespace前向读止血一次过，落`sa_decl.go`一处，零新文件）：`saFoldNamespaceConsts`改即收即写，`Identifier`初值增同NS按名折叠（`N.`键串性透传；未定义沿旧拒），与step78顶层同形；4项等价（同句/跨语句/纯量回归/未定义拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step80（嵌套数组句柄+for-of数组模式一次过，落`sa_arr.go`一域，零新文件）：字面量元遇`ArrayLiteral`递归构造内层slice存句柄值（外层esz恒4，与上游lowerExpr递归同形）+for-of数组模式解构（元为内层句柄逐元越界归零join绑i32，空穴跳过rest/嵌套名/dup大声拒，对象模式沿旧拒）；4项等价（嵌套+for-of/扁平回归/rest拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
+- step81（链式下标读存一次过，落`sa_arr.go`基总线+`sa_ctrl.go`两存点，零新文件）：`saArrValueOf`增`ElementAccess`分支（递归读回内层句柄值，与上游lowerExpr递归同形）+`saArrStoreBase`（绑定直传/链式递归，字面量调用基沿既有loud拒写临时）+元素赋值/复合赋值换基；4项等价（链读/链写/扁平回归/复合）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
