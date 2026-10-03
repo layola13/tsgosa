@@ -137,19 +137,73 @@ func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	return res, false, ""
 }
 
-// saEvalMathRounding 求 `Math.floor/ceil/round/trunc(x)`（形状证据：封存
-// lowerMathRounding:5941-5945：整数操作数恒等 `out = add v, 0`；浮点转换分支
-// 在本薄口不存在——i32 子集内浮点字面早由 saEvalI32 大声拒，故恒等即全量）。
-// saEvalMathRounding 求 `Math.floor/ceil/round/trunc(x)`（形状证据：封存
-// lowerMathRounding:5941-5945：整数操作数恒等 `out = add v, 0`；浮点转换分支
-// 在本薄口不存在——i32 子集内浮点字面早由 saEvalI32 大声拒，故恒等即全量）。
-func saEvalMathRounding(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+// saEvalMathRounding 求 `Math.floor/ceil/round/trunc(x)`（整数操作数恒等 `out = add v, 0`；
+// 浮点字面量实参走 fptosi 转换 + 负零碎调整块；形状证据：封存 lowerMathRounding:5941-5988 全形）。
+// saEvalMathRounding 求 `Math.floor/ceil/round/trunc(x)`（整数操作数恒等 `out = add v, 0`；
+// 浮点字面量实参走 fptosi 转换 + 负零碎调整块；形状证据：封存 lowerMathRounding:5941-5988 全形）。
+// saLowerMathRoundingFloat 落浮点字面量实参的 floor/ceil/round/trunc 转换
+// （fptosi + 负零碎调整块；ceil 取负、round 先加 0.5、trunc 直转；封存 lowerMathRounding:5947-5988）。
+func saLowerMathRoundingFloat(w printer.EmitTextWriter, method, v string, scope *saScope, nextTemp *int) string {
+	fresh := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	farg := v
+	negateOut := false
+	if method == "ceil" {
+		fn := fresh()
+		w.Write(fmt.Sprintf("  %s = fneg %s\n", fn, v))
+		farg = fn
+		negateOut = true
+	} else if method == "round" {
+		fh := fresh()
+		w.Write(fmt.Sprintf("  %s = fadd %s, 0.5\n", fh, v))
+		farg = fh
+	} else if method == "trunc" {
+		ft := fresh()
+		w.Write(fmt.Sprintf("  %s = fptosi %s\n", ft, v))
+		return ft
+	}
+	t := fresh()
+	w.Write(fmt.Sprintf("  %s = fptosi %s\n", t, farg))
+	isNeg := fresh()
+	w.Write(fmt.Sprintf("  %s = fcmp_lt %s, 0.0\n", isNeg, farg))
+	back := fresh()
+	w.Write(fmt.Sprintf("  %s = sitofp %s\n", back, t))
+	isFrac := fresh()
+	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", isFrac, farg, back))
+	need := fresh()
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", need, isNeg, isFrac))
+	adjL := fmt.Sprintf("L_fl_adj_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_fl_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", need, adjL, endL))
+	w.Write(fmt.Sprintf("%s:\n", adjL))
+	dec := fresh()
+	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", dec, t))
+	w.Write(fmt.Sprintf("  %s = %s\n", t, dec))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	if negateOut {
+		out := fresh()
+		w.Write(fmt.Sprintf("  %s = sub 0, %s\n", out, t))
+		return out
+	}
+	return t
+}
+
+func saEvalMathRounding(w printer.EmitTextWriter, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {
 		args = ce.Arguments.Nodes
 	}
 	if len(args) != 1 {
 		return "", false, "Math rounding needs 1 argument"
+	}
+	if args[0] != nil && args[0].Kind == ast.KindNumericLiteral && saIsFloatLit(args[0].Text()) {
+		return saLowerMathRoundingFloat(w, method, args[0].Text(), scope, nextTemp), false, ""
 	}
 	v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -499,7 +553,7 @@ func saEvalMathMethod(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	case "pow":
 		return saEvalMathPow(w, ce, scope, pos, refusals, nextTemp)
 	case "floor", "ceil", "round", "trunc":
-		return saEvalMathRounding(w, ce, scope, pos, refusals, nextTemp)
+		return saEvalMathRounding(w, method, ce, scope, pos, refusals, nextTemp)
 	case "min", "max":
 		return saEvalMathMinMax(w, method, ce, scope, pos, refusals, nextTemp)
 	case "sqrt":
