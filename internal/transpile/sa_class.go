@@ -16,9 +16,11 @@ import (
 // wireCtorStatement:9968-10001（仅 this.f = param wiring）+
 // inlineClassMethod:10188-10280（recv 别 this + 槽汇合，与回调同构，
 // 复用 saCallbackValue）+ lowerClassMethodCall:10152-10163。
-// 本薄口子集：单类、i32 字段（number/i32 注解，4 字节槽）、构造 wiring、
+// 本薄口子集：单类、i32/str 字段（number/i32 注解 4 字节槽，string 8 字节头指针）、
+// 构造 wiring（含参数属性 `constructor(private x: i32)` 按上游 RuntimeSyntax
+// 合成字段 + super() 后注入 `this.p = p`，显式 wiring 优先）、
 // 方法内联（i32 形参/体）；继承/抽象/静态/访问器/装饰器/私有名/计算名/
-// 参数属性/字段初值一律大声拒。
+// 字段初值仍忽略（布局只记槽位）。
 
 // saClassField 是类字段（名 + 字节偏移；i32 恒 4 字节）。
 type saClassField struct {
@@ -421,6 +423,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			return false
 		}
 	}
+	// 参数属性按上游 RuntimeSyntax 合成字段追加（显式/继承槽位优先，重复跳过；
+	// 可访问性抹平为普通槽；无标注/非标识大声拒；形状证据：封存
+	// recordParamPropFields + visitClassDeclaration 合成 PropertyDeclaration）。
+	if def.ctor != nil {
+		if !saRecordParamPropFields(def, def.ctor, &off, pos, refusals) {
+			return false
+		}
+	}
 	// 默认派生构造：无 ctor 的子类继承基 ctor 节点（ctorOwner 指向基；
 	// 形状证据：封存 recordClassNamed:9819-9828）。
 	if def.ctor != nil {
@@ -453,6 +463,67 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			}
 			classes[own.Text()] = def
 		}
+	}
+	return true
+}
+
+// saParamPropNames 列出构造器中标识符参数属性名（上游 getParameterProperties
+// 标识符子集；非标识形状在记录期已拒，此处跳过；形状证据：封存 paramPropNames）。
+func saParamPropNames(ctor *ast.Node) []string {
+	var out []string
+	for _, p := range ctor.Parameters() {
+		if !ast.IsParameterPropertyDeclaration(p, ctor) {
+			continue
+		}
+		if nm := p.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			out = append(out, nm.Text())
+		}
+	}
+	return out
+}
+
+// saRecordParamPropFields 将构造器参数属性记为实例字段（上游
+// RuntimeSyntaxTransformer.visitClassDeclaration 按标识符参数属性合成
+// PropertyDeclaration；检测谓词同源 ast.IsParameterPropertyDeclaration）。
+// 可访问性抹平为普通槽；已存在槽（显式成员或继承）跳过（重复为 checker 错，
+// 现有槽位获胜）；无标注/非标识大声拒；形状证据：封存 recordParamPropFields。
+func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	for _, p := range ctor.Parameters() {
+		if !ast.IsParameterPropertyDeclaration(p, ctor) {
+			continue
+		}
+		nm := p.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter property names must be identifiers"})
+			return false
+		}
+		fname := nm.Text()
+		if _, dup := def.offsets[fname]; dup {
+			continue
+		}
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.Type == nil {
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter property " + fname + " needs a type annotation (slot width)"})
+			return false
+		}
+		k, ok := saAnnotKind(pd.Type)
+		if !ok || (k != "i32" && k != "bool" && k != "str") {
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32 or string"})
+			return false
+		}
+		fkind := "i32"
+		if k == "str" {
+			fkind = "str"
+		}
+		*off = saAlignOff(*off, fkind)
+		def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+		def.offsets[fname] = *off
+		def.fkinds[fname] = fkind
+		sz, _ := saFieldWidth(fkind)
+		*off += sz
 	}
 	return true
 }
@@ -1311,20 +1382,104 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 			want[bin.Right.Text()] = true
 		}
 	}
+	// 参数属性隐式 wiring 的 str 位（无显式 `this.p = p` 语句，但 new 侧实参须按串求值；
+	// 形状证据：封存 recordParamPropFields 种表 + wireCtorBody 注入）。
+	for _, p := range ctor.Parameters() {
+		if !ast.IsParameterPropertyDeclaration(p, ctor) {
+			continue
+		}
+		nm := p.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		if def.fkinds[nm.Text()] == "str" {
+			want[nm.Text()] = true
+		}
+	}
 	return want
 }
 
-// saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param`；
-// 形状证据：封存 wireCtorBody:10075-10147 + wireSuperCtorStatement:383-472）。
+// saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param` +
+// 参数属性隐式 `this.p = p` 注在顶层 super() 后（无 super 置顶），显式 wiring 优先；
+// 形状证据：封存 wireCtorBody + wireCtorFieldStore + visitConstructorBody/Worker）。
 func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	body := ctor.Body()
 	if body == nil {
 		return true
 	}
-	for _, s := range body.Statements() {
+	stmts := body.Statements()
+	wired := map[string]bool{}
+	for _, s := range stmts {
+		if s == nil || s.Kind != ast.KindExpressionStatement {
+			continue
+		}
+		ex := s.AsExpressionStatement().Expression
+		if ex == nil || ex.Kind != ast.KindBinaryExpression {
+			continue
+		}
+		bin := ex.AsBinaryExpression()
+		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
+			bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression {
+			continue
+		}
+		pa := bin.Left.AsPropertyAccessExpression()
+		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {
+			continue
+		}
+		wired[pa.Name().Text()] = true
+	}
+	inject := func() bool {
+		def, ok := scope.classes[owner]
+		if !ok {
+			ln, col := pos(ctor.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + owner})
+			return false
+		}
+		for _, pname := range saParamPropNames(ctor) {
+			if wired[pname] {
+				continue
+			}
+			v, ok := paramVal[pname]
+			if !ok {
+				ln, col := pos(ctor.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter property " + pname + " has no argument"})
+				return false
+			}
+			off, ok := def.offsets[pname]
+			if !ok {
+				ln, col := pos(ctor.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pname + " is not in the " + owner + " layout"})
+				return false
+			}
+			if def.fkinds[pname] == "str" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+				continue
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
+		}
+		return true
+	}
+	superIdx := -1
+	for i, s := range stmts {
+		if saIsSuperCall(s) {
+			superIdx = i
+			break
+		}
+	}
+	if superIdx < 0 {
+		if !inject() {
+			return false
+		}
+	}
+	for i, s := range stmts {
 		if saIsSuperCall(s) {
 			if !saWireSuperCtor(w, h, owner, s, paramVal, scope, pos, refusals, nextTemp) {
 				return false
+			}
+			if i == superIdx {
+				if !inject() {
+					return false
+				}
 			}
 			continue
 		}
