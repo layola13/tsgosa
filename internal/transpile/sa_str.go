@@ -203,6 +203,9 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return "", "not a string expression"
 		}
+		if nm == "undefined" {
+			return "", "not a string expression"
+		}
 		return "", "unknown variable " + nm
 	case ast.KindCallExpression:
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)

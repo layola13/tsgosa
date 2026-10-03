@@ -967,6 +967,74 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 	return true
 }
 
+// saUnionScalarKind 取联合中唯一的非空标量种（null/undefined 吸收为 0；
+// 多非空/全空/类接口成员一律拒。封存 annotationType:166-206 联合落
+// tUnknown(i32) 是 checker 缺席时的粗 fallback；薄口无 checker，语法定种：
+// null 吸收后单一种直通（`i32|null`→i32 与封存测试一致，`string|null`→str）。
+func saUnionScalarKind(n *ast.Node) (string, bool) {
+	ut := n.AsUnionTypeNode()
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	kind := ""
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			// `null` 类型即空字面类型（LiteralType 包 NullKeyword）。
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+			return "", false
+		}
+		var k string
+		switch m.Kind {
+		case ast.KindNumberKeyword:
+			k = "i32"
+		case ast.KindBooleanKeyword:
+			k = "bool"
+		case ast.KindStringKeyword:
+			k = "str"
+		case ast.KindArrayType:
+			at := m.AsArrayTypeNode()
+			if at == nil || at.ElementType == nil {
+				return "", false
+			}
+			if ek, ok := saAnnotKind(at.ElementType); !ok || ek != "i32" {
+				return "", false
+			}
+			k = "arr"
+		case ast.KindTypeReference:
+			if ref := m.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+				switch ref.TypeName.Text() {
+				case "i32":
+					k = "i32"
+				case "boolean":
+					k = "bool"
+				default:
+					return "", false
+				}
+			} else {
+				return "", false
+			}
+		default:
+			return "", false
+		}
+		if kind != "" {
+			return "", false
+		}
+		kind = k
+	}
+	if kind == "" {
+		return "", false
+	}
+	return kind, true
+}
+
 // saAnnotKind 映射类型注解到子集种类（证据：封存 annotationType:166-210）。
 // number/i32 标量；number[]/i32[] 为 i32 数组（16 字节头 + 4 字节槽，见 lowerArrayLiteral）。
 func saAnnotKind(t *ast.TypeNode) (string, bool) {
@@ -981,6 +1049,8 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 	case ast.KindStringKeyword:
 		// 字符串为 16 字节 {ptr,len} 句柄（证据：封存 tString:141）。
 		return "str", true
+	case ast.KindUnionType:
+		return saUnionScalarKind(t.AsNode())
 	case ast.KindArrayType:
 		el := t.AsArrayTypeNode().ElementType
 		if el != nil && el.Kind == ast.KindNumberKeyword {
@@ -1076,6 +1146,18 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	case ast.KindTypeReference:
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true
+		}
+		return "", false
+	case ast.KindUnionType:
+		if k, ok := saUnionScalarKind(t.AsNode()); ok {
+			switch k {
+			case "i32":
+				return "number", true
+			case "bool":
+				return "boolean", true
+			case "str":
+				return "string", true
+			}
 		}
 		return "", false
 	default:

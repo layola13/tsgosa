@@ -70,6 +70,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			}
 			return text, ""
 		}
+		if nm == "undefined" {
+			return "0", ""
+		}
 		return "", "unknown condition variable " + nm
 	case ast.KindTrueKeyword:
 		return "1", ""
@@ -551,6 +554,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return "1", ""
 	case ast.KindFalseKeyword:
 		return "0", ""
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		// 子集 null/undefined 即 0（越界归零、`== null` 句柄、缺值；
+		// 形状证据：封存 lowerExpr:2731-2734）。
+		return "0", ""
 	case ast.KindIdentifier:
 		nm := e.Text()
 		if k, ok := scope.types[nm]; ok {
@@ -574,6 +581,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "string " + nm + " in i32 expression"
 			}
 			return text, ""
+		}
+		// 未绑定 `undefined` 即 0（子集 null 即 0；遮蔽/顶层量优先上）。
+		if nm == "undefined" {
+			return "0", ""
 		}
 		return "", "unknown variable " + nm
 	case ast.KindThisKeyword:
