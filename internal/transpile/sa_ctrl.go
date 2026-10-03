@@ -851,12 +851,16 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	return true
 }
 
+// saCasePart 是 switch 一臂（case 子句节点；default 另记）。
+type saCasePart struct {
+	node *ast.Node
+}
+
 // saLowerSwitch lowering switch（形状证据：封存 lowerSwitch:2599-2675 legacy 链：
 // 每 case 一 test 标号（eq 比较 -> body/下一 test）+ body 标号；
 // 体终结则省尾 jmp；default 落空点；break 经栈到 end（无 continue 目标）。
-// 2/3 臂宏形 SWITCH_2/3 暂不采用，统一 legacy 链）。
+// 2/3 臂走上游 SWITCH_2/3 宏（证据：封存 tryLowerSwitchMacro:2502-2588）。
 func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
-	_ = needImport
 	sw := s.AsSwitchStatement()
 	disc, msg := saEvalI32(w, sw.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -865,15 +869,12 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		return false
 	}
 	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
-	type casePart struct {
-		node *ast.Node
-	}
-	var parts []casePart
+	var parts []saCasePart
 	var defaultNode *ast.Node
 	for _, cl := range clauses {
 		switch cl.Kind {
 		case ast.KindCaseClause:
-			parts = append(parts, casePart{node: cl})
+			parts = append(parts, saCasePart{node: cl})
 		case ast.KindDefaultClause:
 			if defaultNode != nil {
 				ln, col := pos(cl.Pos())
@@ -883,9 +884,13 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			defaultNode = cl
 		default:
 			ln, col := pos(cl.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("switch clause kind %d is not lowerable", int(cl.Kind))})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("switch clause %s is not lowerable", cl.Kind.String())})
 			return false
 		}
+	}
+	// 2/3 臂走宏；余下（1/4+ 臂）保 legacy 链。
+	if len(parts) == 2 || len(parts) == 3 {
+		return saLowerSwitchMacro(w, s, disc, parts, defaultNode, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	}
 	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
 	*nextLabel++
@@ -936,6 +941,74 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		}
 		if !saArmTerminates(defaultNode.AsCaseOrDefaultClause().Statements.Nodes) {
 			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		}
+	} else {
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	return true
+}
+
+// saLowerSwitchMacro lowering 2/3 臂 switch（上游 SWITCH_2/3 分发宏；
+// 体/break/default/域/终结纪律镜 legacy，唯 test 链（eq+br）入宏；
+// 无 default 时宏 default 臂落空到 end；形状证据：封存 tryLowerSwitchMacro:2502-2588）。
+func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, parts []saCasePart, defaultNode *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = s
+	// case 值前置求值（legacy 与体交错，运行时序由标号固定；两形各求值一次）。
+	vals := make([]string, len(parts))
+	for i, p := range parts {
+		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
+		if vmsg != "" {
+			ln, col := pos(p.node.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+			return false
+		}
+		vals[i] = val
+	}
+	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
+	*nextLabel++
+	bodyLabels := make([]string, len(parts))
+	for i := range parts {
+		bodyLabels[i] = fmt.Sprintf("L_case_b_%d", *nextLabel)
+		*nextLabel++
+	}
+	defaultL := fmt.Sprintf("L_case_default_%d", *nextLabel)
+	*nextLabel++
+	scope.loops = append(scope.loops, saLoop{end: endL})
+	saBindPendingLabels(scope, true)
+	needImport("sa_std/control.sal")
+	if len(parts) == 2 {
+		w.Write(fmt.Sprintf("  EXPAND SWITCH_2 %s, %s, %s, %s, %s, %s\n", disc, vals[0], bodyLabels[0], vals[1], bodyLabels[1], defaultL))
+	} else {
+		w.Write(fmt.Sprintf("  EXPAND SWITCH_3 %s, %s, %s, %s, %s, %s, %s, %s\n", disc, vals[0], bodyLabels[0], vals[1], bodyLabels[1], vals[2], bodyLabels[2], defaultL))
+	}
+	lowerBody := func(stmts []*ast.Node) bool {
+		if !saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false
+		}
+		if !saArmTerminates(stmts) {
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		}
+		return true
+	}
+	lowered := true
+	for i, p := range parts {
+		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
+		if !lowerBody(p.node.AsCaseOrDefaultClause().Statements.Nodes) {
+			lowered = false
+			break
+		}
+	}
+	if !lowered {
+		scope.loops = scope.loops[:len(scope.loops)-1]
+		return false
+	}
+	w.Write(fmt.Sprintf("%s:\n", defaultL))
+	if defaultNode != nil {
+		if !lowerBody(defaultNode.AsCaseOrDefaultClause().Statements.Nodes) {
+			scope.loops = scope.loops[:len(scope.loops)-1]
+			return false
 		}
 	} else {
 		w.Write(fmt.Sprintf("  jmp %s\n", endL))
@@ -1517,6 +1590,30 @@ func saStmtTerminates(s *ast.Node) bool {
 			return false
 		}
 		return saArmTerminates(thenStmts) && saArmTerminates(elseStmts)
+	case ast.KindSwitchStatement:
+		// 穷尽 switch（有 default 且每臂终结）即终结：必有一臂跑，
+		// 臂皆终结则整体终结；无 default 可落空。
+		sw := s.AsSwitchStatement()
+		if sw.CaseBlock == nil {
+			return false
+		}
+		hasDefault := false
+		for _, cl := range sw.CaseBlock.AsCaseBlock().Clauses.Nodes {
+			switch cl.Kind {
+			case ast.KindDefaultClause:
+				hasDefault = true
+				if !saArmTerminates(cl.AsCaseOrDefaultClause().Statements.Nodes) {
+					return false
+				}
+			case ast.KindCaseClause:
+				if !saArmTerminates(cl.AsCaseOrDefaultClause().Statements.Nodes) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return hasDefault
 	default:
 		return false
 	}

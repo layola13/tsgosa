@@ -1440,7 +1440,7 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		if !saLowerSwitch(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return false, true
 		}
-		return false, false
+		return saStmtTerminates(s), false
 	case ast.KindTryStatement:
 		done, failed := saLowerTry(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if failed {

@@ -94,6 +94,7 @@
 - step64（ambient 擦除一次过，落 `sa_decl.go` 判定 + 发射跳过，零新文件）：`declare module/global/namespace` 与串名模块皆擦除无码（`isAmbientModule:94-105` 同形；`export as namespace` 既有擦除）；运行时 namespace 仍拒（展平大项另立）；门：函数体内 ambient 仍拒（顶层口径）。
 - step65（labels 锁形一次过，落 `sa_ctrl.go` 消息对齐，零新文件）：标号循环/块/switch 与 6 拒因（未定义/break-continue、块 continue、重名、表达式标号、顺序复用放行）全过；标号拒因改 kind 名（`KindExpressionStatement`），与封存断言逐字对齐。
 - step66（for 宏一次过，落 `sa_ctrl.go`，零新文件）：规范计数循环（`let i=L0; i<L1; step`，非负整数字面界+正字面步进，`i++/++i/i+=K/i=i+K`）走 `EXPAND FOR_INIT/CHECK/NEXT` + `control.sal`（`canonicalForShape:1902-1955` + `tryLowerForMacro:1962-2037`；continue 落增量前，doIncr 沿既有规则）；`<=`/标识符界/递减/调用界保 legacy 原形无宏无import。
+- step67（switch 宏一次过，落 `sa_ctrl.go` + 终结一处，零新文件）：2/3 臂走 `EXPAND SWITCH_2/3`（值前置求值，体/break/default/终结镜 legacy，无 default 宏臂落空；`tryLowerSwitchMacro:2502-2588`），1/4+ 臂保 legacy；穷尽 switch 静态终结（有 default 且臂皆终结，供 epilogue）；子句未知 kind 消息改 kind 名。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
