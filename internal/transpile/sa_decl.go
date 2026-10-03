@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
+	"github.com/microsoft/typescript-go/internal/checker"
 	"github.com/microsoft/typescript-go/internal/printer"
 )
 
@@ -605,7 +606,7 @@ func saIsAmbientModule(st *ast.Node) bool {
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -624,13 +625,18 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameters"})
 		return
 	}
-	retKind, ok := saReturnKind(saArrowReturnNode(arrow))
-	if !ok {
-		ln, col := pos(arrow.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
-		return
+	retKind, isVoid := "void", true
+	if rt := saArrowReturnNode(arrow); rt != nil {
+		k, ok := saReturnKind(rt)
+		if !ok {
+			ln, col := pos(arrow.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
+			return
+		}
+		retKind, isVoid = k, k == "void"
+	} else if k, v, ok := saPrescanRet(nil, arrow, tcx); ok {
+		retKind, isVoid = k, v
 	}
-	isVoid := retKind == "void"
 	emitName := name
 	if emitName == "main" && mainRenamed {
 		emitName = "main__user"
@@ -718,4 +724,110 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	w.Write(fmt.Sprintf("  ret %s\n", op))
+}
+
+// ── 返回类型 checker 推断（satsgo typecheck.go 同款，单文件特化） ──
+// typeCtx 在 transpileWorker 同口径 program 上绑定 + 取 checker（NoCheck 仅关
+// 诊断，不关 checker 构造；IsolatedModules 单文件等价独立绑定；形状证据：
+// 封存 newTypeCtx + inferredReturnType + scalarReturnKind + prescanRet）。
+type saTypeCtx struct {
+	check *checker.Checker
+	done  func()
+}
+
+func (t *saTypeCtx) close() {
+	if t != nil && t.done != nil {
+		t.done()
+	}
+}
+
+// saScalarReturnKind 映射单个 checker 类型到 SA 返回种（注解表镜像：
+// number→"number"，string→"string"，boolean→"boolean"，void/undefined→"void"；
+// any/unknown/异形一律 false，调用方沿既有 loud 拒）。
+func saScalarReturnKind(ty *checker.Type) (string, bool) {
+	if ty == nil {
+		return "", false
+	}
+	f := ty.Flags()
+	switch {
+	case f&checker.TypeFlagsAnyOrUnknown != 0:
+		return "", false
+	case f&checker.TypeFlagsStringLike != 0:
+		return "string", true
+	case f&checker.TypeFlagsNumberLike != 0:
+		return "number", true
+	case f&checker.TypeFlagsBooleanLike != 0:
+		return "boolean", true
+	case f&checker.TypeFlagsVoid != 0 || f&checker.TypeFlagsUndefined != 0:
+		return "void", true
+	}
+	return "", false
+}
+
+// saInferredReturnKind 取函数节点的 checker 签名返回种（联合须全体一致，
+// checker 拼 `boolean` 为 `true|false` 与注解 `boolean` 同形；分歧/any/异形
+// false；无 ctx 或 checker 异常一律 false，调用方回退既有 void 门）。
+func saInferredReturnKind(fnNode *ast.Node, tcx *saTypeCtx) (string, bool) {
+	if tcx == nil || tcx.check == nil || fnNode == nil {
+		return "", false
+	}
+	var out string
+	ok := false
+	func() {
+		defer func() { _ = recover() }()
+		ty := tcx.check.GetTypeAtLocation(fnNode)
+		if ty == nil {
+			return
+		}
+		sigs := tcx.check.GetSignaturesOfType(ty, checker.SignatureKindCall)
+		if len(sigs) == 0 {
+			return
+		}
+		rt := tcx.check.GetReturnTypeOfSignature(sigs[0])
+		if rt == nil {
+			return
+		}
+		var flats []*checker.Type
+		if rt.Flags()&checker.TypeFlagsUnionOrIntersection != 0 {
+			flats = rt.Types()
+		} else {
+			flats = []*checker.Type{rt}
+		}
+		if len(flats) == 0 {
+			return
+		}
+		got := ""
+		have := false
+		for _, m := range flats {
+			s, good := saScalarReturnKind(m)
+			if !good {
+				return
+			}
+			if !have {
+				got, have = s, true
+			} else if got != s {
+				return
+			}
+		}
+		out, ok = got, have
+	}()
+	if !ok {
+		return "", false
+	}
+	return out, true
+}
+
+// saPrescanRet 定单个函数/箭头的 SA 返回签名（显式注解 > checker 推断 > void；
+// 三处签名表——函数预扫/箭头预扫/定义发射——必须同源，否则调用点与定义错位丢值）。
+func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx) (retKind string, isVoid, ok bool) {
+	if typeNode != nil {
+		if k, good := saReturnKind(typeNode); good {
+			return k, k == "void", true
+		}
+		return "", false, false
+	}
+	if k, good := saInferredReturnKind(fnNode, tcx); good {
+		return k, k == "void", true
+	}
+	return "void", true, true
 }

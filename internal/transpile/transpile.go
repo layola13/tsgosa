@@ -294,7 +294,6 @@ type SAOutput struct {
 // step2：if/else → EXPAND IF_ELSE/IF_TRUE + @import "sa_std/control.sal"；
 // return c?a:b（i32 字面臂）→ EXPAND SELECT；false 恒假消死臂；嵌套 if 带 jmp。
 func TranspileSA(ctx context.Context, input string, options Options) *SAOutput {
-	_ = ctx
 	var opts *core.CompilerOptions
 	if options.CompilerOptions != nil {
 		opts = options.CompilerOptions.Clone()
@@ -375,7 +374,20 @@ func TranspileSA(ctx context.Context, input string, options Options) *SAOutput {
 		}
 	}()
 	_ = cur
-	sai, refusals := saLowerSourceFile(sf, input)
+	// 返回类型 checker 推断 ctx（复用本 program 的 checker，与 sf 节点同源；
+	// 失败回退 void 门；形状证据：封存 newTypeCtx + prescanRet）。
+	var tcx *saTypeCtx
+	func() {
+		defer func() { _ = recover() }()
+		if c, done := program.GetTypeChecker(ctx); c != nil {
+			tcx = &saTypeCtx{check: c, done: done}
+			return
+		}
+	}()
+	if tcx != nil {
+		defer tcx.close()
+	}
+	sai, refusals := saLowerSourceFile(sf, input, tcx)
 	return &SAOutput{SAI: sai, Refusals: refusals}
 }
 
@@ -401,7 +413,7 @@ func saPos(offs []int, p int) (int, int) {
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
-func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
+func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, []SARefusal) {
 	w := printer.NewTextWriter("\n", 2)
 	var refusals []SARefusal
 	var importOrder []string
@@ -492,9 +504,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		}
 		isVoid := false
 		retKind := ""
-		if k, ok := saReturnKind(fn.Type); ok {
+		if k, v, ok := saPrescanRet(fn.Type, st, tcx); ok {
 			retKind = k
-			isVoid = k == "void"
+			isVoid = v
 		}
 		var pk []string
 		if kinds, ok := saParamKinds(fn, classes); ok {
@@ -531,9 +543,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 		nparams := len(nodes)
 		isVoid := false
 		retKind := ""
-		if k, ok := saReturnKind(saArrowReturnNode(arrow)); ok {
+		if k, v, ok := saPrescanRet(saArrowReturnNode(arrow), arrow, tcx); ok {
 			retKind = k
-			isVoid = k == "void"
+			isVoid = v
 		}
 		var pk []string
 		if _, kinds, _, ok := saSynthArrowParams(arrow, classes); ok {
@@ -638,7 +650,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -659,7 +671,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
@@ -1307,7 +1319,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1321,17 +1333,23 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameters"})
 		return
 	}
-	retKind, ok := saReturnKind(fn.Type)
-	if !ok {
-		ln, col := pos(st.Pos())
-		msg := "unsupported return annotation"
-		if fn.Type != nil && fn.Type.Kind == ast.KindUnionType {
-			msg = "unsupported return annotation: union"
+	// 返回签名与预扫同源（注解 > checker 推断 > void；非法注解沿既有拒）。
+	retKind, isVoid := "void", true
+	if fn.Type != nil {
+		k, ok := saReturnKind(fn.Type)
+		if !ok {
+			ln, col := pos(st.Pos())
+			msg := "unsupported return annotation"
+			if fn.Type != nil && fn.Type.Kind == ast.KindUnionType {
+				msg = "unsupported return annotation: union"
+			}
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return
 		}
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-		return
+		retKind, isVoid = k, k == "void"
+	} else if k, v, ok := saPrescanRet(nil, st, tcx); ok {
+		retKind, isVoid = k, v
 	}
-	isVoid := retKind == "void"
 	emitName := name
 	if emitName == "main" && mainRenamed {
 		// 入口合成抢 `@main`，用户定义改名（形状证据：封存 planEntry:99-101）。
