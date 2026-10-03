@@ -341,8 +341,8 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			}
 			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
 			// 9691-9743 不读 Initializer；初值语义随 alloc，见 AGENTS step47）。
-			// 字段种：i32/bool 恒 4 字节槽，string 为头指针 8 字节槽
-			// （封存 widthOf；其余宽度无槽）。
+			// 字段种：i32/bool 恒 4 字节槽，string/arr（含函数类型与未记录用户类型）
+			// 为头指针 8 字节槽（封存 widthOf；余下无槽，拒）。
 			fkind := "i32"
 			if pd.Type != nil {
 				if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
@@ -359,10 +359,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 						}
 						def.fsub[fkey] = sub.name
 					} else {
-						ln, col := pos(m.Pos())
-						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
-						return false
+						// 未记录用户类型（含泛型形参 `T`）落 ptr 句柄槽（8B；封存
+						// saNameOfType:197-199 用户类型皆 ptr 句柄 + recordClassNamed:9713-9716
+						// 无注解/未知皆槽位 + widthOf 默认 8,8；本仓句柄种为 arr）。
+						fkind = "arr"
 					}
+				} else if pd.Type.Kind == ast.KindFunctionType {
+					// 函数类型字段落 ptr 句柄槽（构造捕获箭头逐实例记表，去虚化回放；
+					// 封存 recordClassNamed:9713-9716 + wireCtorFieldStore:10022-10033）。
+					fkind = "arr"
 				} else {
 					ln, col := pos(m.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
@@ -1400,6 +1405,7 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	// wiring 目标种预扫（`this.f = param` 的 f 种决定实参求值器；str 域走串求值）。
 	wantStr := saCtorWiringKinds(def.ctor, owner, scope)
 	paramVal := map[string]string{}
+	fnArgs := map[string]*ast.Node{} // 构造箭头实参（`this.f = k` 捕获位消费）
 	for i, p := range params {
 		pd := p.AsParameterDeclaration()
 		if pd == nil {
@@ -1414,7 +1420,16 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		}
 		a := argNodes[i]
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
-			return "", "constructor arguments must be values"
+			// 函数值实参：仅构造 wiring 捕获位消费（`this.f = k` 记表 + 零槽；参数属性配函数值大声拒；
+			// 封存 wireCtorFieldStore:10022-10033）。
+			if ast.IsParameterPropertyDeclaration(p, def.ctor) {
+				return "", "parameter property " + nm.Text() + " cannot be a function value"
+			}
+			if fnArgs == nil {
+				fnArgs = map[string]*ast.Node{}
+			}
+			fnArgs[nm.Text()] = a
+			continue
 		}
 		if pd.Type != nil {
 			if k, ok := saAnnotKind(pd.Type); ok && k == "arr" {
@@ -1463,7 +1478,7 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	if body == nil {
 		return h, ""
 	}
-	if !saWireCtorBody(w, h, owner, def.ctor, paramVal, scope, pos, refusals, nextTemp) {
+	if !saWireCtorBody(w, h, owner, def.ctor, paramVal, fnArgs, scope, pos, refusals, nextTemp) {
 		return "", "unwirable"
 	}
 	return h, ""
@@ -1576,7 +1591,7 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 // saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param` +
 // 参数属性隐式 `this.p = p` 注在顶层 super() 后（无 super 置顶），显式 wiring 优先；
 // 形状证据：封存 wireCtorBody + wireCtorFieldStore + visitConstructorBody/Worker）。
-func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, fnArgs map[string]*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	body := ctor.Body()
 	if body == nil {
 		return true
@@ -1712,6 +1727,21 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 		}
 		v, ok := paramVal[bin.Right.Text()]
 		if !ok {
+			// 函数值 wiring（`this.f = k` 且 k 为箭头/函数表达式实参）：捕获记表 + 零槽
+			// （封存 wireCtorFieldStore:10022-10033 `store h+off, 0 as <saname>` 同形）；其余沿旧门。
+			if anode, isFn := fnArgs[bin.Right.Text()]; isFn && anode != nil &&
+				(anode.Kind == ast.KindArrowFunction || anode.Kind == ast.KindFunctionExpression) {
+				z := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = 0\n", z))
+				askind := "i32"
+				if fk := def.fkinds[fname]; fk == "str" || fk == "arr" || fk == "inst" {
+					askind = "ptr"
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as %s\n", h, off, z, askind))
+				saRecordInstFn(scope, h, fname, anode)
+				continue
+			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
@@ -1881,7 +1911,7 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 			return false
 		}
 	}
-	return saWireCtorBody(w, h, base, bdef.ctor, paramVal, scope, pos, refusals, nextTemp)
+	return saWireCtorBody(w, h, base, bdef.ctor, paramVal, nil, scope, pos, refusals, nextTemp)
 }
 
 // saInstArg 求实例实参句柄（绑定标识符/`this`；子类实例可传基形参，
@@ -1912,6 +1942,72 @@ func saInstArg(a *ast.Node, want string, scope *saScope) (string, string) {
 		c = d.parent
 	}
 	return "", "method instance argument class mismatch (want " + want + ")"
+}
+
+// saRecordInstFn 登记实例函数字段捕获（`new C(arrow)` 经构造 wiring `this.f = k` 落位；
+// 去虚化点按 (handle, field) 回放捕获箭头；形状证据：封存 wireCtorFieldStore:10022-10033
+// instFnFields + trackBinding:1533-1537 别名透传）。
+func saRecordInstFn(scope *saScope, h, field string, arrow *ast.Node) {
+	if scope.instFn == nil {
+		scope.instFn = map[string]map[string]*ast.Node{}
+	}
+	if scope.instFn[h] == nil {
+		scope.instFn[h] = map[string]*ast.Node{}
+	}
+	scope.instFn[h][field] = arrow
+}
+
+// saCopyInstFn 透传实例函数字段捕获（具名绑定/句柄直传沿用捕获表；无表即无操作）。
+func saCopyInstFn(scope *saScope, from, to string) {
+	fields, ok := scope.instFn[from]
+	if !ok {
+		return
+	}
+	if scope.instFn[to] == nil {
+		scope.instFn[to] = map[string]*ast.Node{}
+	}
+	for f, n := range fields {
+		scope.instFn[to][f] = n
+	}
+}
+
+// saInlineInstanceCallback 回放实例函数字段捕获（`this.pick(e)` 按调用实参内联捕获箭头；
+// 句柄实参直传（种由实参绑定查表），标量经 i32 求值；箭头/函数值实参大声拒；
+// 形状证据：封存 inlineInstanceCallback:4585-4601 经 callbackValue 同形）。
+func saInlineInstanceCallback(w printer.EmitTextWriter, anode *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	params := anode.Parameters()
+	if len(argNodes) != len(params) {
+		return "", "instance callback takes exact arguments"
+	}
+	argVals := make([]string, 0, len(argNodes))
+	kinds := make([]string, 0, len(argNodes))
+	for _, a := range argNodes {
+		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
+			return "", "function arguments to instance callbacks are not lowerable"
+		}
+		if a != nil && a.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				argVals = append(argVals, a.Text())
+				kinds = append(kinds, k)
+				continue
+			}
+		}
+		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		argVals = append(argVals, v)
+		kinds = append(kinds, "")
+	}
+	v, msg := saCallbackValue(w, anode, argVals, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, kinds)
+	if msg != "" {
+		return "", msg
+	}
+	return v, ""
 }
 
 // saInlineMethod 内联 `obj.m(args)`（形参快照 + this 指向 + 槽汇合；
@@ -1973,6 +2069,14 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 						kinds[i] = "inst:" + ref.TypeName.Text()
 						continue
 					}
+				}
+			}
+			// 泛型形参：注解擦除，按实参种绑定（`get(e: T)` ← `it: Item` 继承实参布局；
+			// 封存 inlineClassMethod:10236-10243 按实参布局别名，标量快照；非句柄实参沿旧门）。
+			if i < len(argNodes) && argNodes[i] != nil && argNodes[i].Kind == ast.KindIdentifier {
+				if k, ok := scope.types[argNodes[i].Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+					kinds[i] = k
+					continue
 				}
 			}
 			return "", "method parameters must be i32"

@@ -276,6 +276,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if msg != "" {
 				return "", false, msg
 			}
+			// this.函数字段去虚化（`this.pick(e)` 回放实例捕获箭头，先于方法分发；
+			// 形状证据：封存 lowerPropertyCall:4269-4280）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && pa.Name() != nil {
+				if tbl, ok := scope.instFn[h]; ok {
+					if anode, ok := tbl[pa.Name().Text()]; ok {
+						op, msg := saInlineInstanceCallback(w, anode, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+						if msg != "" {
+							return "", false, msg
+						}
+						return op, false, ""
+					}
+				}
+			}
 			op, msg := saInlineMethod(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
 				return "", false, msg

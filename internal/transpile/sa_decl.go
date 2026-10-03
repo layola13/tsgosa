@@ -199,6 +199,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			scope.types[name] = "inst:" + cname
 			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
+			// 实例函数字段捕获随具名绑定透传（`const b = new C(arrow)` 后去虚化；封存 trackBinding:1533-1537）。
+			saCopyInstFn(scope, h, name)
 			continue
 		}
 		if vd.Type == nil {
@@ -480,6 +482,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		scope.types[name] = k
 		saConsumeOwn(scope, op)
 		saDeclareOwned(scope, name)
+		saCopyInstFn(scope, op, name)
 	} else {
 		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "i32"
