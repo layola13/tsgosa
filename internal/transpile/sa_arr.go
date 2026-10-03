@@ -2253,6 +2253,39 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 // 形状证据：封存 callbackValue:5194-5250 + bindCallbackParam:5255-5305。
 // 本薄口回调恒 i32 位（串回调值大声拒）；具名遮蔽存取恢复；return 拦截经
 // scope.inlineRet，嵌套回调栈式保存恢复）。
+// saDestructureCallbackPattern展开回调数组模式形参（`([a, b]) =>`；实参须为数组句柄，
+// 逐元越界归零join绑i32；空穴跳过，rest/嵌套大声拒；名登记由调用方快照先行，体后恢复。
+// (evidences: bindCallbackParam + destructureArray + bindPatternName in archive.)
+// returns msg (empty means success).
+func saDestructureCallbackPattern(w printer.EmitTextWriter, pat *ast.Node, arr string, scope *saScope, pos func(int) (int, int), nextLabel, nextTemp *int) string {
+	idx := 0
+	for _, el := range pat.AsBindingPattern().Elements.Nodes {
+		if el.Kind != ast.KindBindingElement {
+			idx++
+			continue
+		}
+		be := el.AsBindingElement()
+		if be.DotDotDotToken != nil {
+			return "rest elements in destructuring are not lowerable"
+		}
+		nm := be.Name()
+		if nm == nil {
+			idx++
+			continue
+		}
+		if nm.Kind != ast.KindIdentifier {
+			return "nested destructuring shape is not lowerable"
+		}
+		name := nm.Text()
+		v := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), nextLabel, nextTemp)
+		w.Write(fmt.Sprintf("  %s = %s\n", name, v))
+		scope.types[name] = "i32"
+		saDeclareInitOwn(scope, name, v)
+		idx++
+	}
+	return ""
+}
+
 func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
 	params := cb.Parameters()
 	if len(params) > len(argVals) {
@@ -2318,7 +2351,31 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			return "", "callback parameter shape is not lowerable"
 		}
 		nm := pd.Name()
-		if nm == nil || nm.Kind != ast.KindIdentifier {
+		if nm == nil {
+			done()
+			return "", "callback parameter shape is not lowerable"
+		}
+		if nm.Kind == ast.KindArrayBindingPattern {
+			// array pattern params destructure the handle element-wise (cf declaration destructure).
+			if i >= len(argVals) {
+				done()
+				return "", "callback declares too many parameters"
+			}
+			for _, el := range nm.AsNode().AsBindingPattern().Elements.Nodes {
+				if el.Kind != ast.KindBindingElement {
+					continue
+				}
+				if bn := el.AsBindingElement().Name(); bn != nil && bn.Kind == ast.KindIdentifier {
+					bind(bn.Text(), "i32")
+				}
+			}
+			if msg := saDestructureCallbackPattern(w, nm.AsNode(), argVals[i], scope, pos, nextLabel, nextTemp); msg != "" {
+				done()
+				return "", msg
+			}
+			continue
+		}
+		if nm.Kind != ast.KindIdentifier {
 			done()
 			return "", "callback parameter shape is not lowerable"
 		}
