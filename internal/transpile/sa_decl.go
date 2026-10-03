@@ -723,7 +723,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -774,7 +774,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
 	saSeedTopMaths(scope, topMaths)
 	if _, kinds, _, ok := saSynthArrowParams(arrow, scope.classes); ok {
 		for k, v := range kinds {
@@ -947,4 +947,293 @@ func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx) (ret
 		return k, k == "void", true
 	}
 	return "void", true, true
+}
+
+// ── 顶层可变模块状态（step106；i32 标量 `let`/`var` 切片；str/obj/i64/f64/复合赋值仍沿旧门）──
+// 形状证据总纲：封存 modstate.go:1-28（无全局/AOT 只读→注册表槽位/惰性一次/键域隔离/+
+// 被赋值名永不折叠 26-28）+ assignedNames:150-214 + modClaim:560-591 +
+// preRegisterModStates:593-616 + tryModState:618-635 + registerModState:343-385 +
+// emitModSetRaw:668-687 + emitModEnsure:689-724 + emitModLoad:901-938（i32 分支 933-937）+
+// modWiden:822-882（同宽 trunc 839-851）。
+// 单文件无前缀：键域前缀为空（多文件前缀见 modKeyOf:107-110，单文件投影）。
+type saModState struct {
+	key  uint64
+	flag uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341）
+	init string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0）
+}
+
+// saModFnv1a64 即 FNV-1a 64（封存 fnv1a64:84-97）。
+func saModFnv1a64(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+// saModKeyOf 派生值/标志槽键（同域字符串；63 位掩码；封存 modKeyOf:105-110 +
+// modKeyMask:99-103；单文件前缀为空）。
+func saModKeyOf(qual string) (uint64, uint64) {
+	base := "satsgo modstate v1\x00\x00" + qual
+	const mask = uint64(0x7FFFFFFFFFFFFFFF)
+	return saModFnv1a64("val\x00"+base) & mask, saModFnv1a64("flag\x00"+base) & mask
+}
+
+// saIsModAssignOp 报告赋值类操作符（`=`/复合/逻辑赋值；`==` 系比较除外）。
+func saIsModAssignOp(op ast.Kind) bool {
+	switch op {
+	case ast.KindEqualsToken,
+		ast.KindPlusEqualsToken, ast.KindMinusEqualsToken,
+		ast.KindAsteriskEqualsToken, ast.KindSlashEqualsToken, ast.KindPercentEqualsToken,
+		ast.KindLessThanLessThanEqualsToken, ast.KindGreaterThanGreaterThanEqualsToken,
+		ast.KindGreaterThanGreaterThanGreaterThanEqualsToken,
+		ast.KindAmpersandEqualsToken, ast.KindBarEqualsToken, ast.KindCaretEqualsToken:
+		return true
+	}
+	return saIsLogicAssignOp(op)
+}
+
+// saAssignedNames 全文件收集赋值目标裸名（`=`/复合/`++`/`--`；跨作用域过近似仅多建槽，
+// 局部遮蔽仍优先，sound；封存 assignedNames:150-157）。
+func saAssignedNames(stmts []*ast.Node) map[string]bool {
+	out := map[string]bool{}
+	mark := func(n *ast.Node) {
+		if n != nil && n.Kind == ast.KindIdentifier {
+			out[n.Text()] = true
+		}
+	}
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil {
+			return
+		}
+		switch n.Kind {
+		case ast.KindBinaryExpression:
+			if be := n.AsBinaryExpression(); be != nil && be.OperatorToken != nil && saIsModAssignOp(be.OperatorToken.Kind) {
+				mark(be.Left)
+			}
+		case ast.KindPrefixUnaryExpression:
+			if un := n.AsPrefixUnaryExpression(); un != nil && (un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
+				mark(un.Operand)
+			}
+		case ast.KindPostfixUnaryExpression:
+			if un := n.AsPostfixUnaryExpression(); un != nil && (un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
+				mark(un.Operand)
+			}
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+	}
+	return out
+}
+
+// saModInitI32 分类 i32 槽初值（nil/缺省零快道；整字面/布尔/`-`整；其余交旧路；
+// 封存 modInitOf:281-319 子集 + modIsZero:321-341 子集）。
+func saModInitI32(init *ast.Node) (imm string, zero, ok bool) {
+	if init == nil {
+		return "", true, true
+	}
+	switch init.Kind {
+	case ast.KindNumericLiteral:
+		t := init.Text()
+		if saIsFloatLit(t) {
+			return "", false, false
+		}
+		i := t
+		if len(i) > 0 && i[0] == '-' {
+			i = i[1:]
+		}
+		return t, i == "0", true
+	case ast.KindTrueKeyword:
+		return "1", false, true
+	case ast.KindFalseKeyword:
+		return "0", true, true
+	case ast.KindPrefixUnaryExpression:
+		un := init.AsPrefixUnaryExpression()
+		if un != nil && un.Operator == ast.KindMinusToken && un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral && !saIsFloatLit(un.Operand.Text()) {
+			return "-" + un.Operand.Text(), un.Operand.Text() == "0", true
+		}
+		return "", false, false
+	default:
+		return "", false, false
+	}
+}
+
+// saModClaimName 判定单 declarator 是否归槽（具名 + 文件内被赋值 + `let`/`var` +
+// i32 初值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
+func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool) (string, bool) {
+	if vd == nil {
+		return "", false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	name := nm.Text()
+	if !assigned[name] {
+		return "", false
+	}
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindArrowFunction {
+		return "", false
+	}
+	if _, _, ok := saModInitI32(vd.Initializer); !ok {
+		return "", false
+	}
+	if vd.Type != nil {
+		if k, ok := saAnnotKind(vd.Type); !ok || (k != "i32" && k != "bool") {
+			return "", false
+		}
+	}
+	_ = d
+	return name, true
+}
+
+// saRecordModStates 预注册顶层 i32 槽（`const` 永不入槽；重名/碰撞大声拒；
+// 声明无码；封存 preRegisterModStates:593-616 + registerModState:343-385 子集）。
+func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) map[string]*saModState {
+	out := map[string]*saModState{}
+	for _, st := range stmts {
+		if st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil {
+			continue
+		}
+		if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst != 0 {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			name, ok := saModClaimName(d, vd, assigned)
+			if !ok {
+				continue
+			}
+			if _, dup := out[name]; dup {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + name + " is already declared (redefinition is not lowerable)"})
+				continue
+			}
+			if _, dup := funcs[name]; dup {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + name + " collides with an existing definition"})
+				continue
+			}
+			if _, dup := classes[name]; dup {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + name + " collides with an existing definition"})
+				continue
+			}
+			imm, zero, _ := saModInitI32(vd.Initializer)
+			key, flag := saModKeyOf(name)
+			ms := &saModState{key: key}
+			if !zero {
+				ms.flag = flag
+				ms.init = imm
+			}
+			out[name] = ms
+		}
+	}
+	return out
+}
+
+// saTryModState 消费槽绑定声明（无码；任一 declarator 被认领即整句消费；
+// 封存 tryModState:618-635 子集）。
+func saTryModState(st *ast.Node, assigned map[string]bool) bool {
+	if st.Kind != ast.KindVariableStatement {
+		return false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil || vs.DeclarationList.AsVariableDeclarationList() == nil {
+		return false
+	}
+	if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst != 0 {
+		return false
+	}
+	for _, d := range vs.DeclarationList.AsVariableDeclarationList().Declarations.Nodes {
+		if _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// saEmitModSetRaw 原始 u64 槽存 + house 状态检查（非零 panic；封存 emitModSetRaw:668-687）。
+func saEmitModSetRaw(w printer.EmitTextWriter, key uint64, val string, scope *saScope, nextTemp *int) {
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_set_u64(%d, %s)\n", st, key, val))
+	bad := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	badL := fmt.Sprintf("L_ms_bad_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_ms_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", bad, st))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bad, badL, okL))
+	w.Write(fmt.Sprintf("%s:\n", badL))
+	w.Write(fmt.Sprintf("  panic(%d)\n", 1403))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	scope.addImport("sa_std/modstate.sai")
+}
+
+// saEmitModEnsure 惰性一次守卫（零快道无字；封存 emitModEnsure:689-724 子集）。
+func saEmitModEnsure(w printer.EmitTextWriter, ms *saModState, scope *saScope, nextTemp *int) {
+	if ms.flag == 0 {
+		return
+	}
+	f := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", f, ms.flag))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	doneL := fmt.Sprintf("L_ms_done_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	initL := fmt.Sprintf("L_ms_init_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, f))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, doneL, initL))
+	w.Write(fmt.Sprintf("%s:\n", initL))
+	iv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", iv, ms.init))
+	saEmitModSetRaw(w, ms.key, iv, scope, nextTemp)
+	saEmitModSetRaw(w, ms.flag, "1", scope, nextTemp)
+	w.Write(fmt.Sprintf("  jmp %s\n", doneL))
+	w.Write(fmt.Sprintf("%s:\n", doneL))
+	scope.addImport("sa_std/modstate.sai")
+}
+
+// saModLoadI32 槽读（守卫 + 取 u64 + 窄化；i32 分支封存 emitModLoad:933-937）。
+func saModLoadI32(w printer.EmitTextWriter, ms *saModState, scope *saScope, nextTemp *int) string {
+	saEmitModEnsure(w, ms, scope, nextTemp)
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", t, ms.key))
+	n := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", n, t))
+	scope.addImport("sa_std/modstate.sai")
+	return n
+}
+
+// saModStoreI32 槽写（先加宽、后守卫、再落存；加宽暂存即赋值值，封存
+// emitModStore:1157-1189 + modWiden:839-851 同宽 trunc 子集）。
+func saModStoreI32(w printer.EmitTextWriter, ms *saModState, val string, scope *saScope, nextTemp *int) string {
+	u := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", u, val))
+	saEmitModEnsure(w, ms, scope, nextTemp)
+	saEmitModSetRaw(w, ms.key, u, scope, nextTemp)
+	return u
 }

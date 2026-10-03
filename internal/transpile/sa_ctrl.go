@@ -300,6 +300,17 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	name := be.Left.Text()
 	k, ok := scope.types[name]
 	if !ok {
+		// 顶层可变槽语句写（`x = v`；形状证据同值位；右值 i32 求值后存槽）。
+		if ms, ok := scope.modVars[name]; ok {
+			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
+				return false
+			}
+			saModStoreI32(w, ms, op, scope, nextTemp)
+			return true
+		}
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to unknown variable " + name})
 		return false

@@ -70,6 +70,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			}
 			return text, ""
 		}
+		if ms, ok := scope.modVars[nm]; ok {
+			return saModLoadI32(w, ms, scope, nextTemp), ""
+		}
 		if nm == "undefined" {
 			return "0", ""
 		}
@@ -723,6 +726,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return nm, ""
 		}
+		// 顶层可变槽读（局部遮蔽优先上；被赋值名永不折叠故与 topConsts 无交；
+		// 形状证据：封存 modStateOf:265-279 + emitModLoad:901-938）。
+		if ms, ok := scope.modVars[nm]; ok {
+			return saModLoadI32(w, ms, scope, nextTemp), ""
+		}
 		// 顶层纯量折叠读（局部遮蔽优先上；封存 lowerExpr:2775）。
 		if text, ok := scope.topConsts[nm]; ok {
 			if scope.topStr[nm] {
@@ -971,6 +979,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			target, ok := saBoundI32(scope, be.Left)
 			if !ok {
+				// 顶层可变槽写（`x = v`；局部遮蔽优先上；返回右值；
+				// 形状证据：封存 emitModStore 系列 + modWiden:822-882）。
+				if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+					if ms, ok := scope.modVars[be.Left.Text()]; ok {
+						if _, shadowed := scope.types[be.Left.Text()]; !shadowed {
+							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
+							return saModStoreI32(w, ms, op, scope, nextTemp), ""
+						}
+					}
+				}
 				// super.f 写基布局（存取器走基 setter 内联；形状证据同读位）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()

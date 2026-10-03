@@ -558,13 +558,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		defs, dexprs := saFuncDefaultTables(nodes)
 		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
 	}
-	// 预扫二c：顶层纯量折叠（`var K = 42` 内联、`var S = "hi"` 串池化、
-	// `var f = Math.g` 别名；非纯留发射环拒；形状证据：封存 tryTopLevelConst:2894-2972）。
+	// 预扫二c：顶层可变槽登记（`let x = 1` 被赋值即入槽，声明无码；`const` 永不入槽；
+	// 形状证据：封存 preRegisterModStates:593-616）+ 纯量折叠（未被认领者；被赋值名永不折叠，
+	// 封存 modstate.go:26-28）。
+	assigned := saAssignedNames(sf.AsSourceFile().Statements.Nodes)
+	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
 	handledTop := map[*ast.Node]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		// 槽绑定声明无码（封存 tryModState:618-635；注册期拒因已落袋，此处只消费）。
+		if saTryModState(st, assigned) {
+			handledTop[st] = true
+			continue
+		}
 		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals) {
 			handledTop[st] = true
 			continue
@@ -658,7 +666,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -679,12 +687,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		wasTry := false
@@ -1269,6 +1277,7 @@ type saScope struct {
 	classes     map[string]*saClassDef
 	topConsts   map[string]string
 	topStr      map[string]bool
+	modVars     map[string]*saModState
 	thisSelf    string
 	thisClass   string
 	mainRenamed bool
@@ -1327,7 +1336,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1395,7 +1404,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
 	saSeedTopMaths(scope, topMaths)
 	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {

@@ -133,6 +133,7 @@
 - step103（静态嵌套链基一次过，落`sa_class.go`一处，零新文件）：`saChainBase`标识符基增类名基址分支（实例绑定优先，非inst/函数遮蔽沿旧门拒，类名直作基址`load C+off as ptr`；形状证据：封存 lowerMemberChain:8243-8308 + 基回裸名:2819 + 类布局入表:9837-9840）；外层链读经既有分发自动通；4项等价（静态嵌套/继承嵌套/实例链/遮蔽拒）全过；回归`go vet transpile/`+`testrunner`探针全绿；`transpile.go`/`main.go`未动。
 - step104（静态嵌套写侧收紧一次过，落`sa_expr.go`一处，零新文件）：嵌套链写增裸类根守卫（类名直作基址只读，写侧跳过链写下探旧门大声拒；形状证据：封存 lowerFieldStore:8366 `layoutOfVar`写口 vs layoutOfNode:408 读口）；实例链写不受影响；3项等价（静态读通/静态写拒/实例写通）全过；回归`go vet transpile/`全绿；`transpile.go`/`main.go`未动。
 - step105（super嵌套链基一次过，落`sa_class.go`一处，零新文件）：`saChainBase`增super基（同接收者展平偏移，经`saSuperBase`解基布局；形状证据：封存 lowerMemberChain:8254-8260 + lowerFieldStore:8325-8330）；读/写经既有分发自动通；3项等价（super嵌套/静态读/实例写回归）全过；回归`go vet transpile/`全绿；`transpile.go`/`main.go`未动。
+- step106（顶层i32可变槽一次过，落`sa_decl.go`域内+三处一行业务装配，零新文件）：`saAssignedNames`全文件赋值扫描（过近似sound，封存 assignedNames:150-214）+`saRecordModStates`预注册（`const`永不入槽，被赋值名永不折叠，封存 modClaim:560-591/preRegister:593-616/tryModState:618-635；键与上游逐位一致，单文件前缀空）+`saEmitModEnsure/SetRaw/LoadI32/StoreI32`（惰性一次/状态检查/取存，封存 668-687/689-724/901-938/1157-1189；写序先加宽后守卫同源）；读挂`saEvalI32`/条件位（局部优先），写挂值位与语句位（局部优先）；7项等价（非零/零/无初值/const回归/未赋值折叠/遮蔽/条件读）与上游通拒一致，发射除既有方言（缩进/`ret`/`!`释放）外逐行同形；回归`go vet transpile/`+嵌套四形全绿；`main.go`未动，`transpile.go`仅签名穿参+消费门（无巨无霸）；残缺：str/obj/i64/f64槽与复合/`++`赋值仍沿旧门大声拒（后步）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
