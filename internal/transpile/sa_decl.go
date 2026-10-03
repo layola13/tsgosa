@@ -521,14 +521,8 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "using declarations are not lowerable (explicit resource disposal has no SA-ASM scope-exit hook)"})
 		return true
 	}
-	type fold struct {
-		name  string
-		text  string
-		str   bool
-		math  string
-		alias bool
-	}
-	var folds []fold
+	// 逐 declarator 即收即写（后 declarator 可前向读同句/前句已折纯量；
+	// 静默错译止血，形状证据：封存 multi-const 逐 declarator + 按名折叠）。
 	for _, d := range dl.Declarations.Nodes {
 		vd := d.AsVariableDeclaration()
 		if vd == nil {
@@ -549,37 +543,35 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
 				return true
 			}
-			folds = append(folds, fold{name: nm.Text(), text: init.Text()})
+			consts[nm.Text()] = init.Text()
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
-			folds = append(folds, fold{name: nm.Text(), text: init.Text(), str: true})
+			consts[nm.Text()] = init.Text()
+			strs[nm.Text()] = true
 		case ast.KindTrueKeyword:
-			folds = append(folds, fold{name: nm.Text(), text: "1"})
+			consts[nm.Text()] = "1"
 		case ast.KindFalseKeyword:
-			folds = append(folds, fold{name: nm.Text(), text: "0"})
+			consts[nm.Text()] = "0"
 		case ast.KindPropertyAccessExpression:
 			m, ok := saMathMethodName(init)
 			if !ok {
 				return false
 			}
-			folds = append(folds, fold{name: nm.Text(), math: m, alias: true})
+			maths[nm.Text()] = m
 		case ast.KindIdentifier:
-			m, ok := maths[init.Text()]
-			if !ok {
-				return false
+			if m, ok := maths[init.Text()]; ok {
+				maths[nm.Text()] = m
+				continue
 			}
-			folds = append(folds, fold{name: nm.Text(), math: m, alias: true})
+			if t, ok := consts[init.Text()]; ok {
+				consts[nm.Text()] = t
+				if strs[init.Text()] {
+					strs[nm.Text()] = true
+				}
+				continue
+			}
+			return false
 		default:
 			return false
-		}
-	}
-	for _, f := range folds {
-		if f.alias {
-			maths[f.name] = f.math
-			continue
-		}
-		consts[f.name] = f.text
-		if f.str {
-			strs[f.name] = true
 		}
 	}
 	return true
