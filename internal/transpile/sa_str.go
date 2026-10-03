@@ -279,6 +279,25 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return "", pa.Name().Text() + " is not a string"
 			}
+			// 类名基静态 str getter 读（`C.gs` 空 this 内联；声明返回种为准；
+			// 遮蔽门与 i32 读位同形；形状证据：封存 lowerClassStaticCall 存取器位）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				if def, ok := scope.classes[pa.Expression.Text()]; ok {
+					if _, shadowed := scope.types[pa.Expression.Text()]; !shadowed {
+						if _, shadowed := scope.funcs[pa.Expression.Text()]; !shadowed {
+							if gn, ok := def.staticGetters[pa.Name().Text()]; ok {
+								if k, ok := saMethodReturnKind(gn); ok && k == "str" {
+									v, msg := saInlineStaticGetter(w, pa.Expression.Text(), def, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+									if msg == "" {
+										return v, ""
+									}
+									return "", msg
+								}
+							}
+						}
+					}
+				}
+			}
 			// 串/计算枚举成员读拒（整数成员串位沿既有串门拒）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 				if _, ok := scope.enums[pa.Expression.Text()]; ok {

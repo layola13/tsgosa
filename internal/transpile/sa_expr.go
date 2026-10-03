@@ -789,8 +789,26 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return op, ""
 			}
-			if _, ok := scope.classes[pa.Expression.Text()]; ok {
-				return "", "static class members are not lowerable"
+			// 类名基静态存取器读（`C.g` 空 this 内联；裸类读实例 getter 大声拒；
+			// 未知静态下探 loud（枚举/Math/值位门），与 `C.m()` 同形；
+			// 镜像 `C.m()` 静态分发，遮蔽门同形；形状证据：封存 lowerClassStaticCall 存取器位）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				if def, ok := scope.classes[pa.Expression.Text()]; ok {
+					if _, shadowed := scope.types[pa.Expression.Text()]; !shadowed {
+						if _, shadowed := scope.funcs[pa.Expression.Text()]; !shadowed {
+							if _, ok := def.staticGetters[pa.Name().Text()]; ok {
+								v, msg := saInlineStaticGetter(w, pa.Expression.Text(), def, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								return v, ""
+							}
+							if _, ok := def.getters[pa.Name().Text()]; ok {
+								return "", fmt.Sprintf("getter %s.%s is an instance getter (static reads need a static getter)", pa.Expression.Text(), pa.Name().Text())
+							}
+						}
+					}
+				}
 			}
 		}
 		// 整数枚举成员折叠（`E.A` → 字面量；串/计算成员拒，整数成员照折；
@@ -942,6 +960,32 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 							return "", msg
 						}
 						return op, ""
+					}
+				}
+				// 类名基静态存取器写（`C.s = v` 空 this 内联，返回右值；
+				// 裸类写实例 setter 大声拒；遮蔽门与读位同形）。
+				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+					lpa := be.Left.AsPropertyAccessExpression()
+					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil {
+						if def, ok := scope.classes[lpa.Expression.Text()]; ok {
+							if _, shadowed := scope.types[lpa.Expression.Text()]; !shadowed {
+								if _, shadowed := scope.funcs[lpa.Expression.Text()]; !shadowed {
+									if _, ok := def.staticSetters[lpa.Name().Text()]; ok {
+										op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", msg
+										}
+										if msg := saInlineStaticSetter(w, lpa.Expression.Text(), def, lpa.Name().Text(), op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
+											return "", msg
+										}
+										return op, ""
+									}
+									if _, ok := def.setters[lpa.Name().Text()]; ok {
+										return "", fmt.Sprintf("setter %s.%s is an instance setter (static writes need a static setter)", lpa.Expression.Text(), lpa.Name().Text())
+									}
+								}
+							}
+						}
 					}
 				}
 				return "", "assignment to unknown/non-i32 variable"

@@ -38,6 +38,8 @@ type saStaticVal struct {
 // 方法/构造恒空，不可 new；parent 为单继承父名，空即无；statics 为
 // 静态字面量折叠表，不占实例槽；staticMethods 为静态方法内联体
 // （`C.m()` 类名分发，this 置空；实例项永不持有，见 saRecordClassNamed）；
+// staticGetters/staticSetters 为静态存取器内联体（`C.g`/`C.s = v` 类名分发，
+// 空 this 内联，镜像 staticMethods；实例项永不持有）；
 // fkinds 为字段种表，i32/str，str 域 8 字节对齐）。
 type saClassDef struct {
 	name          string
@@ -49,6 +51,8 @@ type saClassDef struct {
 	staticMethods map[string]*ast.Node
 	getters       map[string]*ast.Node
 	setters       map[string]*ast.Node
+	staticGetters map[string]*ast.Node
+	staticSetters map[string]*ast.Node
 	statics       map[string]saStaticVal
 	ctor          *ast.Node
 	ctorOwner     string
@@ -155,7 +159,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + name})
 		return false
 	}
-	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}, staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{}}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
@@ -250,6 +254,23 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 			for k, v := range bdef.setters {
 				if _, ok := def.setters[k]; !ok {
 					def.setters[k] = v
+				}
+			}
+			// 静态存取器随静态方法同例继承（子类覆写；封存 inheritClass staticGetters/Setters 拷贝）。
+			if def.staticGetters == nil {
+				def.staticGetters = map[string]*ast.Node{}
+			}
+			for k, v := range bdef.staticGetters {
+				if _, ok := def.staticGetters[k]; !ok {
+					def.staticGetters[k] = v
+				}
+			}
+			if def.staticSetters == nil {
+				def.staticSetters = map[string]*ast.Node{}
+			}
+			for k, v := range bdef.staticSetters {
+				if _, ok := def.staticSetters[k]; !ok {
+					def.staticSetters[k] = v
 				}
 			}
 			// 静态字面量随继承下沉（子类未覆写则继承；形状证据：封存 inheritClass statics 拷贝）。
@@ -390,9 +411,32 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				return false
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
-				return false
+				// 静态存取器另表记录，`C.g`/`C.s = v` 类名分发内联（实例项永不持有，
+				// 镜像 staticMethods；形状证据：封存 recordClassNamed 静态存取器拆分）。
+				if m.Kind == ast.KindGetAccessor {
+					if def.staticGetters == nil {
+						def.staticGetters = map[string]*ast.Node{}
+					}
+					if _, dup := def.staticGetters[an.Text()]; dup && ownMethods[an.Text()] {
+						ln, col := pos(m.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate getter " + an.Text()})
+						return false
+					}
+					ownMethods[an.Text()] = true
+					def.staticGetters[an.Text()] = m
+				} else {
+					if def.staticSetters == nil {
+						def.staticSetters = map[string]*ast.Node{}
+					}
+					if _, dup := def.staticSetters[an.Text()]; dup && ownMethods[an.Text()] {
+						ln, col := pos(m.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate setter " + an.Text()})
+						return false
+					}
+					ownMethods[an.Text()] = true
+					def.staticSetters[an.Text()] = m
+				}
+				continue
 			}
 			if _, dup := def.offsets[an.Text()]; dup {
 				ln, col := pos(m.Pos())
@@ -1833,11 +1877,44 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 		}
 		return "", "unknown field " + name
 	}
+	if gn.Body() == nil {
+		return "", def.name + "." + name + " has no body (overload signatures do not inline)"
+	}
 	if len(gn.Parameters()) != 0 {
 		return "", "getter " + name + " takes 0 parameters"
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
+	wantKind := "i32"
+	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
+		wantKind = "str"
+	}
+	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	if msg != "" {
+		return "", msg
+	}
+	return v, ""
+}
+
+// saInlineStaticGetter 内联 `C.g` 读（空 this，实例态经既有门诚实拒；
+// 镜像 saInlineStaticMethod；形状证据：封存 lowerClassStaticCall 存取器位）。
+func saInlineStaticGetter(w printer.EmitTextWriter, className string, def *saClassDef, name string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	gn, ok := def.staticGetters[name]
+	if !ok {
+		if _, ok := def.staticSetters[name]; ok {
+			return "", name + " is write-only (setter has no getter)"
+		}
+		return "", "unknown static member " + name
+	}
+	if gn.Body() == nil {
+		return "", def.name + "." + name + " has no body (overload signatures do not inline)"
+	}
+	if len(gn.Parameters()) != 0 {
+		return "", "getter " + name + " takes 0 parameters"
+	}
+	savedSelf, savedClass := scope.thisSelf, scope.thisClass
+	scope.thisSelf, scope.thisClass = "", def.name
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
 		wantKind = "str"
@@ -1856,11 +1933,33 @@ func saInlineSetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	if !ok {
 		return "unknown field " + name
 	}
+	if sn.Body() == nil {
+		return def.name + "." + name + " has no body (overload signatures do not inline)"
+	}
 	if len(sn.Parameters()) != 1 {
 		return "setter " + name + " takes 1 parameter"
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
+	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	return msg
+}
+
+// saInlineStaticSetter 内联 `C.s = v` 写（空 this；镜像 saInlineStaticGetter）。
+func saInlineStaticSetter(w printer.EmitTextWriter, className string, def *saClassDef, name, val string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) string {
+	sn, ok := def.staticSetters[name]
+	if !ok {
+		return "unknown static member " + name
+	}
+	if sn.Body() == nil {
+		return def.name + "." + name + " has no body (overload signatures do not inline)"
+	}
+	if len(sn.Parameters()) != 1 {
+		return "setter " + name + " takes 1 parameter"
+	}
+	savedSelf, savedClass := scope.thisSelf, scope.thisClass
+	scope.thisSelf, scope.thisClass = "", def.name
 	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
