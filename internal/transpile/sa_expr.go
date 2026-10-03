@@ -316,6 +316,17 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	return saEvalNamedCall(w, ce.Expression.Text(), ce, scope, pos, refusals, nextTemp)
 }
 
+// saIsTimerName 报告异步定时器裸全局名（setTimeout/clearTimeout/
+// setInterval/clearInterval/setImmediate/queueMicrotask；封存 node_timers.go:16-23）。
+func saIsTimerName(name string) bool {
+	switch name {
+	case "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+		"setImmediate", "queueMicrotask":
+		return true
+	}
+	return false
+}
+
 // saEvalNamedCall lowering具名直调（`f(...)` 与 `f.call(thisArg, ...)` 脱糖共用；
 // 形参种导向求值 + spread 展开 + 元数门 + void 形；
 // 形状证据：封存 lowerCallDesugar:4512-4581）。
@@ -345,6 +356,12 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 	}
 	sig, ok := scope.funcs[name]
 	if !ok {
+		// 异步定时器裸全局专用拒因（先于 unknown；事件循环回调分发
+		// Phase 2，无同步 JS 形；形状证据：封存 node_timers.go:16-33）。
+		// 方法形（`x.setTimeout`）不触此门，走各自表面。
+		if saIsTimerName(name) {
+			return "", false, name + " needs an event loop with callback dispatch (async timers are Phase 2)"
+		}
 		return "", false, "unknown function " + name
 	}
 	var args []string

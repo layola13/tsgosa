@@ -82,6 +82,7 @@
 - step52（length 字段优先，零改动验证）：`h.length`（`Header{kind,length}`）已出 `load h + 4 as i32`——实例字段读分发先于尾部 `saLowerLengthExpr` 切片别名（`sa_expr.go` 属性读 case 结构使然）；数组/串 `length` 仍走 `+8 as u64`，类实例 `length` 字段与 `this` 读同形；5 项全过，无码可改，只记验证。
 - step53（typeof 串相等，零改动验证）：`typeof fn/s == "function"/"string"` 折叠与 `s == "hi"` 内容相等（`call @sa_string_index_of`，非裸地址比）已通，未知全局 `typeof self` 大声拒；3 项全过，无码可改，只记验证。
 - step54（throwing-try 切片一次过 + using 顶层堵漏，落 `sa_ctrl.go` + 接线，零新文件）：`try { prefix; throw v; }` 直跑 prefix 后值绑 catch 形参（`e = v`）跑 handler 再跑 finally，无 catch 则 finally 后 `panic(2501)`，throw 后语句死跳过（`saemit.go:tryLowerThrowingTry:2301-2470`；泄漏门/串值门/解构形参门逐字对齐）；终结 try 后继死码静默跳过（三处循环，封存 `lowerBlockStatement:820-823` 同形，其余终结后继仍拒；静态 `saTryTerms` 供 epilogue）；using 顶层静默吞掉堵漏（fold 前查 Using 旗， exact 门消息）。13 项（8 通形+5 拒因）全过；回归零回退（switch 缺口 HEAD 已有，另项）。
+- step55（async 同步解包一次过 + timer 拒因对齐，落 `sa_expr.go` 调用核，零新文件）：`await f()` 解包直调（`async` 修饰忽略，`call @fetch/@wrap`；封存 `TestAsyncSyncUnwrapHonest` 前两式已通）；6 裸定时器（setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/queueMicrotask）落 Phase-2 专用拒因（`node_timers.go:16-33` 原文），先于 unknown；遮蔽/方法形不触此门。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
