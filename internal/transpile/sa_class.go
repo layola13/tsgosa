@@ -495,7 +495,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 	// 可访问性抹平为普通槽；无标注/非标识大声拒；形状证据：封存
 	// recordParamPropFields + visitClassDeclaration 合成 PropertyDeclaration）。
 	if def.ctor != nil {
-		if !saRecordParamPropFields(def, def.ctor, &off, pos, refusals) {
+		if !saRecordParamPropFields(def, def.ctor, &off, classes, pos, refusals) {
 			return false
 		}
 	}
@@ -555,7 +555,7 @@ func saParamPropNames(ctor *ast.Node) []string {
 // PropertyDeclaration；检测谓词同源 ast.IsParameterPropertyDeclaration）。
 // 可访问性抹平为普通槽；已存在槽（显式成员或继承）跳过（重复为 checker 错，
 // 现有槽位获胜）；无标注/非标识大声拒；形状证据：封存 recordParamPropFields。
-func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	for _, p := range ctor.Parameters() {
 		if !ast.IsParameterPropertyDeclaration(p, ctor) {
 			continue
@@ -577,23 +577,40 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, pos func
 			return false
 		}
 		k, ok := saAnnotKind(pd.Type)
-		if !ok || (k != "i32" && k != "bool" && k != "str" && k != "arr") {
-			ln, col := pos(p.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string or array"})
-			return false
+		if ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+			fkind := "i32"
+			if k == "str" {
+				fkind = "str"
+			} else if k == "arr" {
+				fkind = "arr"
+			}
+			*off = saAlignOff(*off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+			def.offsets[fname] = *off
+			def.fkinds[fname] = fkind
+			sz, _ := saFieldWidth(fkind)
+			*off += sz
+			continue
 		}
-		fkind := "i32"
-		if k == "str" {
-			fkind = "str"
-		} else if k == "arr" {
-			fkind = "arr"
+		// 布局表内类/接口名嵌套句柄（与接口门/类字段门同形）。
+		if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+			if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
+				if def.fsub == nil {
+					def.fsub = map[string]string{}
+				}
+				def.fsub[fname] = sub.name
+				*off = saAlignOff(*off, "inst")
+				def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+				def.offsets[fname] = *off
+				def.fkinds[fname] = "inst"
+				sz, _ := saFieldWidth("inst")
+				*off += sz
+				continue
+			}
 		}
-		*off = saAlignOff(*off, fkind)
-		def.fields = append(def.fields, saClassField{name: fname, offset: *off})
-		def.offsets[fname] = *off
-		def.fkinds[fname] = fkind
-		sz, _ := saFieldWidth(fkind)
-		*off += sz
+		ln, col := pos(p.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
+		return false
 	}
 	return true
 }
@@ -1596,7 +1613,7 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pname + " is not in the " + owner + " layout"})
 				return false
 			}
-			if def.fkinds[pname] == "str" || def.fkinds[pname] == "arr" {
+			if def.fkinds[pname] == "str" || def.fkinds[pname] == "arr" || def.fkinds[pname] == "inst" {
 				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 				continue
 			}
