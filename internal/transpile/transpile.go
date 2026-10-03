@@ -513,10 +513,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		}
 		isVoid := false
 		retKind := ""
-		if saIsBareTypeParam(fn.Type, saTypeParamSet(fn.TypeParameters)) {
+		rtype := saUnwrapPromise(fn.Type)
+		if saIsBareTypeParam(rtype, saTypeParamSet(fn.TypeParameters)) {
 			// erased own type parameter defaults to number.
 			retKind, isVoid = "number", false
-		} else if k, v, ok := saPrescanRet(fn.Type, st, tcx, classes, aliasOf); ok {
+		} else if k, v, ok := saPrescanRet(rtype, st, tcx, classes, aliasOf); ok {
 			retKind = k
 			isVoid = v
 		}
@@ -796,6 +797,21 @@ func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, 
 // saTypeParamSet collects own unconstrained type parameter names (generic erasure
 // targets; constrained or defaulted params stay loud downstream).
 // saIsBareTypeParam reports a bare reference to an own erased type parameter.
+// saUnwrapPromise strips Promise<> layers (sync-subset erasure per JEV T1 verdict:
+// unwrap to T, cf await-sync-unwrap; non-Promise passes through).
+func saUnwrapPromise(t *ast.TypeNode) *ast.TypeNode {
+	for t != nil && t.Kind == ast.KindTypeReference {
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+			ref.TypeName.Text() != "Promise" || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 ||
+			ref.TypeArguments.Nodes[0] == nil {
+			break
+		}
+		t = ref.TypeArguments.Nodes[0]
+	}
+	return t
+}
+
 func saIsBareTypeParam(t *ast.TypeNode, tparams map[string]bool) bool {
 	if t == nil || t.Kind != ast.KindTypeReference {
 		return false
@@ -1631,14 +1647,15 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	// 返回签名与预扫同源（注解 > checker 推断 > void；非法注解沿既有拒）。
 	retKind, isVoid := "void", true
 	// erased own type parameter defaults to number.
-	if saIsBareTypeParam(fn.Type, saTypeParamSet(fn.TypeParameters)) {
+	rtype := saUnwrapPromise(fn.Type)
+	if saIsBareTypeParam(rtype, saTypeParamSet(fn.TypeParameters)) {
 		retKind, isVoid = "number", false
 	} else if fn.Type != nil {
-		k, ok := saReturnKindRef(fn.Type, classes, aliasOf)
+		k, ok := saReturnKindRef(rtype, classes, aliasOf)
 		if !ok {
 			ln, col := pos(st.Pos())
 			msg := "unsupported return annotation"
-			if fn.Type != nil && fn.Type.Kind == ast.KindUnionType {
+			if fn.Type != nil && rtype.Kind == ast.KindUnionType {
 				msg = "unsupported return annotation: union"
 			}
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})

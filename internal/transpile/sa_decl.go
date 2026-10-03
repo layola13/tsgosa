@@ -1073,10 +1073,11 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		if saIsBareTypeParam(rt, saTypeParamSet(saNodeTypeParams(arrow))) {
+		rtype := saUnwrapPromise(rt)
+		if saIsBareTypeParam(rtype, saTypeParamSet(saNodeTypeParams(arrow))) {
 			// erased own type parameter defaults to number.
 			retKind, isVoid = "number", false
-		} else if k, ok := saReturnKindRef(rt, classes, aliasOf); !ok {
+		} else if k, ok := saReturnKindRef(rtype, classes, aliasOf); !ok {
 			ln, col := pos(arrow.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
 			return
@@ -1350,10 +1351,11 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	// 函数 i32 > checker 推断 > void。checker 回退 void 不得吞掉 value_fn 规则。
 	retKind, isVoid := "void", true
 	if rt := saArrowReturnNode(arrow); rt != nil {
-		if saIsBareTypeParam(rt, saTypeParamSet(saNodeTypeParams(arrow))) {
+		rtype := saUnwrapPromise(rt)
+		if saIsBareTypeParam(rtype, saTypeParamSet(saNodeTypeParams(arrow))) {
 			// erased own type parameter defaults to number.
 			retKind, isVoid = "number", false
-		} else if k, kok := saReturnKindRef(rt, scope.classes, scope.aliasOf); !kok {
+		} else if k, kok := saReturnKindRef(rtype, scope.classes, scope.aliasOf); !kok {
 			return refuse(arrow, "unsupported return annotation")
 		} else {
 			retKind, isVoid = k, k == "void"

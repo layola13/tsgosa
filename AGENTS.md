@@ -163,10 +163,11 @@
 - step134（语料外探针缺口六合一，零新文件）：`any`/`unknown` 关键字注解按初值种绑定（`x = 5` 直通；`any[]`/any 形参沿旧门）+ 泛型函数擦除（无约束形参集，裸 `T` 形参/返回缺省 i32；约束/具化/方法箭头泛型沿旧门）+ 联合字段落 arr 句柄槽（类与接口；可折叠联合沿旧门）+ 推断声明透明包装剥离（as/satisfies/non-null/断言/括号；求值核本已直通）+ `readonly T[]` 解包 + 接口方法签名跳过（无布局位；封存 recordLayout 跳过同形）；探针 6 项转正（p_any/p_genfn/p_unionfield/q_as/q_readonly/r_impl）；**286 差分保持 286 同通过，0 回退**；有意分歧：泛型函数单态 i32（上游 ptr 擦除；本仓与无注解缺省一致）+ 块作用域重名仍拒（step109 禁静默错码高于同形）；`async fn` 的 Promise 返回语义待 JEV 裁决，另立项；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
 - step135（探针缺口第二批：any 全位 + 泛型收尾 + f64 补位 + 联合收尾，零新文件）：`any`/`unknown`/`never` 关键字三位一体（形参/返回缺省 i32、字段落 arr 句柄、`any[]` 落 arr、声明走推断；`never` 同擦除）+ 泛型函数/箭头擦除收尾（约束擦除、箭头 T 返回、方法 any/union 形参加入按实参形绑定）+ 联合形参缺省 i32/联合声明走推断/typeof 声明走推断+ f64 补位（重绑定直写、复合 fadd 系、方法/顶层/箭头 f64 形参、调用核 f64 实参）+ bool 方法形参；探针 13 项转正；**286 差分保持 286 同通过，0 回退**；有意分歧：f64 复合按 fadd（上游 `add` 疑草率，正确优先）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
 - step136（H2 闭环：派生数组嵌套传递 + 回调句柄元，零新文件）：slice/toReversed/with/toSpliced/concat/from/filter 结果透传 arrNest（concat 按源逐片；map 回调恒标量天然 flat；与上游按数组粒度同粗）+ 高阶回调 kinds 通道（嵌套接收者元绑句柄，sort 双元、reduce 次元）+ 回调体裸句柄直通（filter 谓词/identity 形）；派生克隆深拷贝已逐形验证（个别处比上游更深且正确）；**286 差分保持 286 同通过，0 回退**；有意分歧：串数组回调元仍拒（需元种追踪，另立 H8）、sort 句柄相减拒（上游垃圾放行，严格优先）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go`/`transpile.go` 未动。
+- step137（JEV T1 裁决落地：`Promise<T>` 解包为 T，零新文件）：`saUnwrapPromise` 剥 Promise 层（`TypeNode = Node` 别名零转换；裸 Promise/多参/限定名沿旧门）+ 预扫/函数/双箭头返回位先解包再走既有决议（`Promise<T>` 泛型形参自然归一）；探针 3 项转正（t_async2/t_promiseret/p_async，`@f() -> i32`）；**286 差分保持 286 同通过，0 回退**；有意分歧：上游 `-> ptr`（JEV 79% 置信选解包：与 await 同步语义/step18/step134 一致，最小改动）；回归 `go build ./...`+`testrunner/ast/checker`（-count=1）+`vet` 全绿；`gofmt` 告警皆旧行；`main.go` 未动。
 
 ## 后续 TODO（按优先级排队，逐个击破；探针位 /tmp/probe 可复现；每项附证据与验收）
 ### P0 移植缺口（UP 过 / TN 拒）
-- [ ] T1 `Promise<T>` 返回（async 或普通函数；探针 t_async2/t_promiseret/p_async）：上游 `@f() -> ptr`。待裁决：(a) 照抄 ptr（需新建 ptr 返回种+直通全链）；(b) 解包为 T（与 await 同步语义一致，推荐）。裁决后立项。
+- [x] T1 `Promise<T>` 返回 → JEV 裁决(a)解包为 T，step137 已落地（async 修饰本已容忍；`Promise` 无参/多参/限定沿旧门）.
 ### P1 加固（正确性/诊断质量，不影响门禁数字）
 - [ ] H1 拒因行列偏移：3:37/`?.`1:41 等错位定位，查 pos() 映射（lowering 本体经排查无辜，纯诊断问题）。
 - [x] H2 arrNest 方法派生传递 → step136 已闭环（slice/toReversed/with/toSpliced/concat/from/filter；map 天然 flat）。
