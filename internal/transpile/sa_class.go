@@ -921,6 +921,12 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 			return atClass(d)
 		}
 	}
+	// 嵌套链基（`q.p.s` 内节纯查表；不落字；私名嵌套沿旧门）。
+	if base != nil && base.Kind == ast.KindPropertyAccessExpression {
+		if sub, ok := saChainSubDef(base.AsPropertyAccessExpression(), scope); ok {
+			return atClass(sub)
+		}
+	}
 	return false
 }
 
