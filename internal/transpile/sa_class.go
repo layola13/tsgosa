@@ -113,6 +113,12 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 // 字段初值表达式忽略（布局只记槽位；封存 recordClassNamed:9691-9743
 // 不读 Initializer，初值不求值）。
 func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	// 类装饰器无一等值语义，大声拒（成员装饰器另门；封存 TestLoudDecoratorUsing 同形）。
+	if len(st.Decorators()) > 0 {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class decorators are not lowerable"})
+		return false
+	}
 	var members []*ast.Node
 	var heritage *ast.HeritageClauseList
 	switch st.Kind {
