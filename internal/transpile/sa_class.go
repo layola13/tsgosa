@@ -512,37 +512,99 @@ func saObjPropName(p *ast.Node) (string, bool) {
 }
 
 // saLowerObjectLiteral 具化结构体（alloc 布局 + 逐域 store；i32 值；
-// 简写读绑定；spread/方法/动态键拒；want 非空时须命中该接口。
-// 形状证据：封存 lowerObjectLiteral:9009+）。
+// 简写读绑定；字面计算键折叠；spread 按源序布局复制（后 prop 覆盖先生效）。
+// want 非空时须命中该接口。
+// 形状证据：封存 lowerObjectLiteral:9009+（spread 相 9026-9044 + 键集去重
+// 9066-9076 + 源序重放 9086-9103；零初始化在薄口省略：目标每域必有来源）。
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
-	type op struct {
-		fname string
-		init  *ast.Node
+	type spreadSrc struct {
+		h   string
+		def *saClassDef
 	}
+	type op struct {
+		spread int // spreads 下标，-1 为普通 store
+		fname  string
+		init   *ast.Node
+	}
+	var spreads []spreadSrc
 	var ops []op
 	var keys []string
 	for _, p := range ol.Properties.Nodes {
+		if p.Kind == ast.KindSpreadAssignment {
+			se := p.AsSpreadAssignment().Expression.AsNode()
+			var sh string
+			var sdef *saClassDef
+			switch {
+			case se.Kind == ast.KindIdentifier:
+				nm := se.Text()
+				k, ok := scope.types[nm]
+				if !ok {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				if len(k) <= 5 || k[:5] != "inst:" {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				d, ok := scope.classes[k[5:]]
+				if !ok {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				sh, sdef = nm, d
+			case se.Kind == ast.KindThisKeyword && scope.thisSelf != "":
+				d, ok := scope.classes[scope.thisClass]
+				if !ok {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				sh, sdef = scope.thisSelf, d
+			case se.Kind == ast.KindObjectLiteralExpression:
+				h, lname, msg := saLowerObjectLiteral(w, se, "", scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				d, ok := scope.classes[lname]
+				if !ok {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				sh, sdef = h, d
+			default:
+				return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+			}
+			spreads = append(spreads, spreadSrc{h: sh, def: sdef})
+			ops = append(ops, op{spread: len(spreads) - 1})
+			for _, f := range sdef.fields {
+				keys = append(keys, f.name)
+			}
+			continue
+		}
 		switch p.Kind {
 		case ast.KindPropertyAssignment:
 			fname, ok := saObjPropName(p)
 			if !ok {
 				return "", "", "computed property names must be literals (dynamic keys have no static layout)"
 			}
-			ops = append(ops, op{fname: fname, init: p.AsPropertyAssignment().Initializer})
+			ops = append(ops, op{spread: -1, fname: fname, init: p.AsPropertyAssignment().Initializer})
 			keys = append(keys, fname)
 		case ast.KindShorthandPropertyAssignment:
 			fname, ok := saObjPropName(p)
 			if !ok {
 				return "", "", "computed property names must be literals (dynamic keys have no static layout)"
 			}
-			ops = append(ops, op{fname: fname, init: p.Name()})
+			ops = append(ops, op{spread: -1, fname: fname, init: p.Name()})
 			keys = append(keys, fname)
 		default:
-			return "", "", "object literal property is not lowerable (spread/methods refused)"
+			return "", "", "object literal property is not lowerable (methods refused)"
 		}
 	}
-	def, msg := saMatchIface(keys, scope.classes)
+	// 键集去重后匹配（覆盖不增域；封存 9066-9076）。
+	seen := map[string]bool{}
+	var uniq []string
+	for _, k := range keys {
+		if !seen[k] {
+			seen[k] = true
+			uniq = append(uniq, k)
+		}
+	}
+	def, msg := saMatchIface(uniq, scope.classes)
 	if msg != "" {
 		return "", "", msg
 	}
@@ -557,6 +619,17 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	}
 	for _, o := range ops {
+		if o.spread >= 0 {
+			// spread 逐域复制（源序；后者覆盖前者；全 i32 故无类型门）。
+			src := spreads[o.spread]
+			for _, f := range src.def.fields {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, src.h, src.def.offsets[f.name]))
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], t))
+			}
+			continue
+		}
 		v, msg := saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
