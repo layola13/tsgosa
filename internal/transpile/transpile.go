@@ -428,6 +428,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 	pos := func(p int) (int, int) { return saPos(offs, p) }
 	nextLabel := 1
 	nextTemp := 1
+	// 文件级 out-of-line 局部箭头缓冲（封存 pendingFuncs:336，末尾 :576-579 排空）。
+	var pendingFns []string
+	arrowSeq := 0
 	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
 	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
 	funcs := map[string]saFuncSig{}
@@ -687,12 +690,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		for _, s := range entryStmts {
@@ -717,7 +720,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		head.WriteString("@import \"" + imp + "\"\n")
 	}
 	head.WriteString(strPool.buf.String())
-	return head.String() + w.String(), refusals
+	out := head.String() + w.String()
+	// out-of-line 局部箭头排在全部定义之后（封存 :576-579 排空 pendingFuncs 同序）。
+	for _, fn := range pendingFns {
+		out += fn
+	}
+	return out, refusals
 }
 
 func saFuncName(fn *ast.FunctionDeclaration) (string, bool) {
@@ -1243,6 +1251,7 @@ type saFuncSig struct {
 	paramKinds   []string
 	defaults     []bool
 	defaultExprs []*ast.Node
+	arrowCaps    []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
@@ -1281,6 +1290,9 @@ type saScope struct {
 	src         string
 	addImport   func(string)
 	inlineRet   *saInlineRet
+	tcx         *saTypeCtx   // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
+	pendingFns  *[]string    // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
+	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -1330,7 +1342,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1398,7 +1410,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq}
 	saSeedTopMaths(scope, topMaths)
 	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {

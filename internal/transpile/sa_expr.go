@@ -472,7 +472,12 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		}
 		return h, false, ""
 	}
-	if _, shadowed := scope.types[name]; shadowed {
+	if k, shadowed := scope.types[name]; shadowed {
+		// 局部箭头别名 `fn:<gen>`：转 out-of-line 被调（形状证据：封存
+		// arrowAliases:588 + lowerCall 的 arrowAlias 分支）。
+		if strings.HasPrefix(k, "fn:") {
+			return saEvalFuncCall(w, name, strings.TrimPrefix(k, "fn:"), scope.funcs[strings.TrimPrefix(k, "fn:")], ce, scope, pos, refusals, nextTemp)
+		}
 		return "", false, name + " is not a function"
 	}
 	if m, ok := scope.mathAlias[name]; ok {
@@ -488,6 +493,15 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		}
 		return "", false, "unknown function " + name
 	}
+	return saEvalFuncCall(w, name, callName, sig, ce, scope, pos, refusals, nextTemp)
+}
+
+// saEvalFuncCall 按签名求实参并发射 `call @callee(...)`：普通函数与局部箭头
+// 别名（`fn:<gen>` → 转 @gen）共用同一条定向求值/补参/元数门。
+// 形状证据：封存 lowerCall:1414-1520（形参种定向、spread、default 补参、
+// 元数精确匹配、void 句用值返 nil）。
+func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	callName := callee
 	var args []string
 	evalOne := func(i int, a *ast.Node, total int) (string, string) {
 		// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
@@ -544,6 +558,9 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 			return "", false, fmt.Sprintf("arity mismatch for %s: want %d, got %d", name, sig.params, len(args))
 		}
 	}
+	// 局部箭头捕获：调用点把捕获名按序追加为尾随实参（封存 lowerCall 的
+	// captureSig 实参拼接 :1336-1343 同序）。
+	args = append(args, sig.arrowCaps...)
 	call := fmt.Sprintf("call @%s(%s)", callName, strings.Join(args, ", "))
 	if sig.isVoid {
 		w.Write(fmt.Sprintf("  %s\n", call))

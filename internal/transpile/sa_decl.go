@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -249,9 +250,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
-			ln, col := pos(d.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function initializer not lowerable"})
-			return false
+			// 局部箭头落 out-of-line 被调 + 调用别名（封存 lowerArrowBinding
+			// 局部分支 :1058-1254）。
+			if !saLowerLocalArrow(w, name, vd.Initializer, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp) {
+				return false
+			}
+			continue
 		}
 		var op string
 		var msg string
@@ -283,9 +287,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		return true
 	}
 	if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
-		ln, col := pos(d.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function initializer not lowerable"})
-		return false
+		// 局部箭头落 out-of-line 被调 + 调用别名（封存 lowerArrowBinding
+		// 局部分支 :1058-1254）。
+		return saLowerLocalArrow(w, name, vd.Initializer, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 	}
 	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
@@ -790,57 +794,301 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 			return
 		}
 	}
+	if !saLowerArrowBody(w, arrow, body, isVoid, retKind, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return
+	}
+}
+
+// saLowerArrowBody lowering 箭头体（块体逐语句/终结判 + 缺尾 ret 补；表达式体单值
+// ret）。顶层箭头与局部箭头共用同一条体路径。
+// 形状证据：封存 lowerArrowBinding 体内 lowering（:1174-1253 体作用域 save/restore
+// 后逐语句）与表达式体 `ret <expr>`（:1224-1232）。
+func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node, isVoid bool, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	refuse := func(n *ast.Node, msg string) bool {
+		ln, col := pos(n.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
 	if body.Kind == ast.KindBlock {
 		stmts, ok := saBlockStmts(body)
 		if !ok {
-			ln, col := pos(arrow.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
-			return
+			return refuse(arrow, "unsupported body")
 		}
 		if len(stmts) == 0 {
 			if !isVoid {
-				ln, col := pos(arrow.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-				return
+				return refuse(arrow, "missing return")
 			}
 			w.Write("  ret\n")
-			return
+			return true
 		}
 		terminated := false
 		for _, s := range stmts {
 			if terminated {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
-				return
+				return refuse(s, "unreachable code after terminating statement")
 			}
 			if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
-				return
+				return false
 			} else if done {
 				terminated = true
 			}
 		}
 		if !terminated {
 			if !isVoid {
-				ln, col := pos(arrow.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-				return
+				return refuse(arrow, "missing return")
 			}
 			w.Write("  ret\n")
 		}
-		return
+		return true
 	}
 	if isVoid {
-		ln, col := pos(body.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported void arrow expression body"})
-		return
+		return refuse(body, "unsupported void arrow expression body")
 	}
 	op, msg := saEvalReturnOperand(w, body, retKind, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(body.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-		return
+		return refuse(body, msg)
 	}
 	w.Write(fmt.Sprintf("  ret %s\n", op))
+	return true
+}
+
+// ── 局部箭头值（out-of-line 被调 + 尾随捕获形参）──
+// 形状证据：封存 lowerArrowBinding:1058-1254（局部 topLevel=false 分支：
+// 生成 `@prefix__arrow_N(params..., captures...)` 落 pendingFuncs 末尾排空
+// :576-579，局部名记调用别名 arrowAliases:588 + declarePlain:1256-1258），
+// 捕获集取自由标识符减形参/体内声明/全局/被调名，命中外层绑定者按排序
+// 追加为尾参（:1120-1141 + captureSig:1336-1343）。
+// 本仓以 `scope.types[name] = "fn:<gen>"` 承载别名（块域随 saScopeExit
+// 一起回滚，且重复声明照旧 `duplicate local`）；非调用位读到 "fn:" 种沿
+// i32/串读位既有异种门大声拒，绝不当值用。
+
+// saPureTypeKinds 纯类型子树（值使用集永不入；镜像封存 pureTypeKinds:20-46）。
+var saPureTypeKinds = map[ast.Kind]bool{
+	ast.KindTypeReference: true, ast.KindTypeQuery: true, ast.KindTypeLiteral: true,
+	ast.KindTupleType: true, ast.KindArrayType: true, ast.KindUnionType: true,
+	ast.KindIntersectionType: true, ast.KindFunctionType: true, ast.KindConstructorType: true,
+	ast.KindTypeOperator: true, ast.KindIndexedAccessType: true, ast.KindMappedType: true,
+	ast.KindLiteralType: true, ast.KindOptionalType: true, ast.KindRestType: true,
+	ast.KindTypeParameter: true, ast.KindTypePredicate: true, ast.KindThisType: true,
+	ast.KindTemplateLiteralType: true, ast.KindParenthesizedType: true,
+	ast.KindMethodSignature: true, ast.KindPropertySignature: true,
+	ast.KindCallSignature: true, ast.KindConstructSignature: true,
+	ast.KindIndexSignature: true,
+}
+
+// saBindingNameKinds 绑定名（非使用）子树（镜像封存 bindingNameKinds:52-70）。
+var saBindingNameKinds = map[ast.Kind]bool{
+	ast.KindVariableDeclaration: true, ast.KindParameter: true, ast.KindBindingElement: true,
+	ast.KindFunctionDeclaration: true, ast.KindFunctionExpression: true,
+	ast.KindClassDeclaration: true, ast.KindClassExpression: true,
+	ast.KindEnumDeclaration: true, ast.KindEnumMember: true,
+	ast.KindInterfaceDeclaration: true, ast.KindTypeAliasDeclaration: true,
+	ast.KindMethodDeclaration: true, ast.KindGetAccessor: true, ast.KindSetAccessor: true,
+	ast.KindPropertyAssignment: true, ast.KindPropertyAccessExpression: true,
+}
+
+// saValueUsedNames 收集值位标识符（镜像封存 valueUsedNames:80-131：绑定名跳过、
+// 纯类型子树不入、heritage 保留）。捕获集与别域堵漏共用。
+func saValueUsedNames(stmts []*ast.Node) map[string]bool {
+	used := map[string]bool{}
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind == ast.KindIdentifier {
+			used[n.Text()] = true
+			return
+		}
+		var skip *ast.Node
+		if saBindingNameKinds[n.Kind] {
+			if nm := n.Name(); nm != nil {
+				skip = nm
+			}
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			if skip != nil && c == skip {
+				return false
+			}
+			if saPureTypeKinds[c.Kind] {
+				return false
+			}
+			walk(c)
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+	}
+	return used
+}
+
+// saArrowDeclaredNames 收集箭头体内的声明名（镜像封存 collectDeclaredNames:1352-1370）。
+func saArrowDeclaredNames(n *ast.Node, out map[string]bool) {
+	if n == nil {
+		return
+	}
+	switch n.Kind {
+	case ast.KindVariableDeclaration, ast.KindParameter, ast.KindBindingElement:
+		if nm := n.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			out[nm.Text()] = true
+		}
+	case ast.KindFunctionDeclaration, ast.KindClassDeclaration,
+		ast.KindInterfaceDeclaration, ast.KindEnumDeclaration:
+		if nm := n.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			out[nm.Text()] = true
+		}
+	}
+	n.ForEachChild(func(c *ast.Node) bool {
+		saArrowDeclaredNames(c, out)
+		return false
+	})
+}
+
+// saArrowCaptures 取箭头体自由标识符中命中外层绑定者（排序；封存 :1120-1141）。
+func saArrowCaptures(body *ast.Node, name string, paramNames []string, scope *saScope) []string {
+	var stmts []*ast.Node
+	if body != nil {
+		if body.Kind == ast.KindBlock {
+			if b := body.AsBlock(); b != nil && b.Statements != nil {
+				stmts = b.Statements.Nodes
+			}
+		} else {
+			stmts = []*ast.Node{body}
+		}
+	}
+	uses := saValueUsedNames(stmts)
+	decls := map[string]bool{name: true}
+	for _, p := range paramNames {
+		decls[p] = true
+	}
+	saArrowDeclaredNames(body, decls)
+	for fn := range scope.funcs {
+		decls[fn] = true
+	}
+	for _, g := range []string{"console", "Math", "String", "Number", "Array", "Map", "Set",
+		"undefined", "null", "true", "false", "Object", "JSON", "Date", "RegExp", "Promise"} {
+		decls[g] = true
+	}
+	caps := []string{}
+	for id := range uses {
+		if decls[id] {
+			continue
+		}
+		if _, ok := scope.types[id]; ok {
+			caps = append(caps, id)
+			continue
+		}
+		if _, ok := scope.mathAlias[id]; ok {
+			caps = append(caps, id)
+		}
+	}
+	sort.Strings(caps)
+	return caps
+}
+
+// saLowerLocalArrow lowering 局部 `let f = (…) => …` / `= function …`：
+// 生成 out-of-line `@__arrow_N` 并把局部名记为调用别名（不落字）。
+// 返回 false 即已落拒因。形状证据：封存 lowerArrowBinding:1058-1254。
+func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	refuse := func(n *ast.Node, msg string) bool {
+		ln, col := pos(n.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	if arrow.Kind == ast.KindFunctionExpression {
+		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
+			return refuse(arrow, "generators are not lowerable")
+		}
+	}
+	if ast.HasModifier(arrow, ast.ModifierFlagsAsync) {
+		return refuse(arrow, "async functions are not lowerable")
+	}
+	body := arrow.Body()
+	if body == nil {
+		return refuse(arrow, "function value "+name+" has no body")
+	}
+	params, ok := saArrowParamNames(arrow)
+	if !ok {
+		return refuse(arrow, "unsupported parameters")
+	}
+	paramKinds, synthOK := map[string]string(nil), false
+	var pendings []saDestructurePending
+	var captured []string
+	if params, paramKinds, pendings, synthOK = saSynthArrowParams(arrow, scope.classes); !synthOK {
+		return refuse(arrow, "unsupported parameter annotation (i32/bool/arr/str/inst only)")
+	}
+	// 返回种（严格上游序，封存 :1099-1112）：显注解 > 表达式体/有形参即值
+	// 函数 i32 > checker 推断 > void。checker 回退 void 不得吞掉 value_fn 规则。
+	retKind, isVoid := "void", true
+	if rt := saArrowReturnNode(arrow); rt != nil {
+		k, kok := saReturnKind(rt)
+		if !kok {
+			return refuse(arrow, "unsupported return annotation")
+		}
+		retKind, isVoid = k, k == "void"
+	} else if body.Kind != ast.KindBlock || len(params) > 0 {
+		retKind, isVoid = "i32", false
+	} else if k, v, pok := saPrescanRet(nil, arrow, scope.tcx); pok {
+		retKind, isVoid = k, v
+	}
+	captured = saArrowCaptures(body, name, params, scope)
+	// 函数值捕获无值形可传，大声拒（体读到 "fn:" 种在既有读门亦拒；此处先定位）。
+	for _, cp := range captured {
+		if strings.HasPrefix(scope.types[cp], "fn:") {
+			return refuse(arrow, "function value capture "+cp+" is not lowerable")
+		}
+	}
+	// out-of-line 发射：换新 builder 与作用域状态（封存 :1174-1253 save/restore）。
+	buf := printer.NewTextWriter("\n", 2)
+	*scope.arrowSeq++
+	gen := fmt.Sprintf("__arrow_%d", *scope.arrowSeq)
+	sigNames := append(append([]string{}, params...), captured...)
+	buf.Write("@" + gen + "(" + strings.Join(sigNames, ", ") + ")")
+	if !isVoid {
+		if retKind == "string" {
+			buf.Write(" -> ptr")
+		} else {
+			buf.Write(" -> i32")
+		}
+	}
+	buf.Write(":\n")
+	inner := &saScope{types: map[string]string{}, funcs: scope.funcs, enums: scope.enums,
+		enumNonInt: scope.enumNonInt, classes: scope.classes, topConsts: scope.topConsts,
+		topStr: scope.topStr, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
+		nextLabel: scope.nextLabel, retKind: retKind, strPool: scope.strPool, src: scope.src,
+		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq}
+	// 内层继承外层 math 别名（Math.* 方法体内可用；顶层 maths 已在外层种入）。
+	saSeedTopMaths(inner, scope.mathAlias)
+	for k, v := range paramKinds {
+		inner.types[k] = v
+	}
+	// 捕获以同名尾参入内层作用域（体读名即读形参；封存 declareOwned 补登）。
+	for _, cp := range captured {
+		inner.types[cp] = scope.types[cp]
+	}
+	if len(pendings) > 0 {
+		if !saDrainDestructuredParams(buf, pendings, inner, pos, refusals, nextLabel, nextTemp) {
+			return false
+		}
+	}
+	if !saLowerArrowBody(buf, arrow, body, isVoid, retKind, inner, pos, refusals, needImport, nextLabel, nextTemp) {
+		return false
+	}
+	*scope.pendingFns = append(*scope.pendingFns, buf.String())
+	// 签名入表（调用核按名分发；arrowCaps 有序记尾随捕获实参）+ 局部名记别名。
+	scope.funcs[gen] = saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured}
+	scope.types[name] = "fn:" + gen
+	return true
+}
+
+// saSigKinds 按形参序摊平种表（调用核按位定向求值用；捕获实参由
+// arrowCaps 另行追加，不占形参种位）。
+func saSigKinds(paramKinds map[string]string, params []string) []string {
+	out := make([]string, 0, len(params))
+	for _, p := range params {
+		out = append(out, paramKinds[p])
+	}
+	return out
 }
 
 // ── 返回类型 checker 推断（satsgo typecheck.go 同款，单文件特化） ──
