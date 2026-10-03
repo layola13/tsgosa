@@ -1175,13 +1175,13 @@ func saLowerLabeled(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 		if len(scope.pending) > 0 {
 			scope.pending = nil
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %d did not bind (internal invariant)", int(inner.Kind))})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %s did not bind (internal invariant)", inner.Kind.String())})
 			return false, true
 		}
 		return done, false
 	default:
 		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %d is not lowerable (loops, switch and blocks only)", int(inner.Kind))})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %s is not lowerable (loops, switch and blocks only)", inner.Kind.String())})
 		return false, true
 	}
 }
