@@ -138,6 +138,14 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
+		// 类方法串返回（`c.get(): string`；声明种为准，体求值走内联）。
+		if pa.Name() != nil {
+			if mn, ok := saLookupMethod(pa.Expression, pa.Name().Text(), scope); ok {
+				if k, ok := saMethodReturnKind(mn); ok && k == "str" {
+					return true
+				}
+			}
+		}
 		return false
 	}
 	return saIsStrExpr(pa.Expression, scope)
@@ -260,6 +268,16 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 							return t, ""
 						}
 						return "", msg
+					}
+					// str getter 内联（声明返回种为准；求值走内联体）。
+					if gn, ok := def.getters[pa.Name().Text()]; ok {
+						if k, ok := saMethodReturnKind(gn); ok && k == "str" {
+							v, msg := saInlineGetter(w, h, def, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+							if msg == "" {
+								return v, ""
+							}
+							return "", msg
+						}
 					}
 				}
 			}

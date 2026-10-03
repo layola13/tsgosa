@@ -695,14 +695,25 @@ func saStaticLiteral(n *ast.Node) (string, string, bool) {
 	return "", "", false
 }
 
-// saIsStrFieldRead 纯判定属性读是否为 str 位（静态串折叠/实例 str 域；
-// 不落字，供串位语法门；求值见 saEvalStr 属性分支）。
+// saIsStrFieldRead 纯判定属性读是否为 str 位（静态串折叠/实例 str 域/
+// str getter；不落字，供串位语法门；求值见 saEvalStr 属性分支）。
 func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 	if pa == nil || pa.Name() == nil {
 		return false
 	}
 	field := pa.Name().Text()
 	if strings.HasPrefix(field, "#") {
+		return false
+	}
+	atClass := func(d *saClassDef) bool {
+		if d.fkinds[field] == "str" {
+			return true
+		}
+		if gn, ok := d.getters[field]; ok {
+			if k, ok := saMethodReturnKind(gn); ok && k == "str" {
+				return true
+			}
+		}
 		return false
 	}
 	base := pa.Expression
@@ -716,17 +727,75 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 		}
 		if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
 			if d, ok := scope.classes[k[5:]]; ok {
-				return d.fkinds[field] == "str"
+				return atClass(d)
 			}
 		}
 		return false
 	}
 	if base != nil && base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
 		if d, ok := scope.classes[scope.thisClass]; ok {
-			return d.fkinds[field] == "str"
+			return atClass(d)
 		}
 	}
 	return false
+}
+
+// saLookupMethod 按基解方法节点（实例/`this`；含继承展平；静态/未知即失败）。
+func saLookupMethod(base *ast.Node, method string, scope *saScope) (*ast.Node, bool) {
+	if method == "" || strings.HasPrefix(method, "#") {
+		return nil, false
+	}
+	var def *saClassDef
+	if base != nil && base.Kind == ast.KindIdentifier {
+		nm := base.Text()
+		if _, ok := scope.classes[nm]; ok {
+			// 类名基即静态调用，静态方法拒，故无串返回。
+			return nil, false
+		}
+		if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
+			d, ok := scope.classes[k[5:]]
+			if !ok {
+				return nil, false
+			}
+			def = d
+		} else {
+			return nil, false
+		}
+	} else if base != nil && base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return nil, false
+		}
+		def = d
+	} else {
+		return nil, false
+	}
+	mn, ok := def.methods[method]
+	if !ok || mn == nil {
+		return nil, false
+	}
+	return mn, true
+}
+
+// saMethodReturnKind 返回方法/getter 的声明返回种（无注解/非法即失败；
+/// 供串位调用识别，`c.get(): string` 即串值）。
+func saMethodReturnKind(mn *ast.Node) (string, bool) {
+	if mn == nil {
+		return "", false
+	}
+	var typ *ast.TypeNode
+	switch mn.Kind {
+	case ast.KindMethodDeclaration:
+		typ = mn.AsMethodDeclaration().Type
+	case ast.KindGetAccessor:
+		typ = mn.AsGetAccessorDeclaration().Type
+	default:
+		return "", false
+	}
+	if typ == nil {
+		return "", false
+	}
+	return saAnnotKind(typ)
 }
 
 // saStaticFold 读静态字面量（类名/实例/`this` 基；私有名不碰；
@@ -1390,7 +1459,12 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
-	v, msg := saCallbackValue(w, mn, argVals, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	// 返回种按声明注解（str 走串槽；余下走 i32 槽）。
+	wantKind := "i32"
+	if k, ok := saMethodReturnKind(mn); ok && k == "str" {
+		wantKind = "str"
+	}
+	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg
@@ -1412,7 +1486,11 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
-	v, msg := saCallbackValue(w, gn, nil, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	wantKind := "i32"
+	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
+		wantKind = "str"
+	}
+	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg
@@ -1431,7 +1509,7 @@ func saInlineSetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
-	_, msg := saCallbackValue(w, sn, []string{val}, false, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
 }

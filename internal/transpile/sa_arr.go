@@ -1900,7 +1900,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 // 形状证据：封存 callbackValue:5194-5250 + bindCallbackParam:5255-5305。
 // 本薄口回调恒 i32 位（串回调值大声拒）；具名遮蔽存取恢复；return 拦截经
 // scope.inlineRet，嵌套回调栈式保存恢复）。
-func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
 	params := cb.Parameters()
 	if len(params) > len(argVals) {
 		return "", "callback declares too many parameters"
@@ -1977,6 +1977,13 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				return "0", ""
 			}
 			v = op
+		} else if wantKind == "str" {
+			sop, msg := saEvalStr(w, body, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				done()
+				return "", msg
+			}
+			v = sop
 		} else {
 			op, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -1994,8 +2001,12 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
 	endL := fmt.Sprintf("L_cb_end_%d", *nextLabel)
 	*nextLabel++
+	kind := "i32"
+	if wantKind == "str" {
+		kind = "str"
+	}
 	savedRet := scope.inlineRet
-	scope.inlineRet = &saInlineRet{slot: slot, end: endL}
+	scope.inlineRet = &saInlineRet{slot: slot, end: endL, kind: kind}
 	stmts, ok := saBlockStmts(body)
 	if !ok {
 		scope.inlineRet = savedRet
@@ -2011,6 +2022,10 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
+	if kind == "str" {
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+		return out, ""
+	}
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 	return out, ""
 }
@@ -2040,7 +2055,7 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{el, i}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
@@ -2096,7 +2111,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, scope, pos, refusals, needImport, nextLabel, nextTemp); msg != "" {
+		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp); msg != "" {
 			return "", "", msg
 		}
 		inext := fmt.Sprintf("t_%d", *nextTemp)
@@ -2128,7 +2143,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2174,7 +2189,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2230,7 +2245,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -2309,7 +2324,7 @@ func saHigherOrderReduce(w printer.EmitTextWriter, recv string, right bool, cb *
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 	if msg != "" {
 		return "", "", msg
 	}
@@ -2351,7 +2366,7 @@ func saLowerSortWithCmp(w printer.EmitTextWriter, recv string, cb *ast.Node, sco
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
 	}
 	cmpGt := func(x, y string) (string, string) {
-		v, msg := saCallbackValue(w, cb, []string{x, y}, true, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		v, msg := saCallbackValue(w, cb, []string{x, y}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			return "", msg
 		}

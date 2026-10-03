@@ -233,6 +233,7 @@ func saLowerLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scop
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	return out, ""
 }
+
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
 // （`x = <i32>`，x 须已绑定；复合/短路赋分流）。其余一律大声拒。
 func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {

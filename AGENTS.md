@@ -85,6 +85,7 @@
 - step55（async 同步解包一次过 + timer 拒因对齐，落 `sa_expr.go` 调用核，零新文件）：`await f()` 解包直调（`async` 修饰忽略，`call @fetch/@wrap`；封存 `TestAsyncSyncUnwrapHonest` 前两式已通）；6 裸定时器（setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/queueMicrotask）落 Phase-2 专用拒因（`node_timers.go:16-33` 原文），先于 unknown；遮蔽/方法形不触此门。
 - step56（string 字段布局一次过，落 `sa_class.go` + 读位种门，零新文件）：`fkinds` 种表 + `saFieldWidth/AlignOff`（i32 4/4，str 头指针 8/8；封存 `widthOf:268-279`）；接口/类 `string` 字段放行（`bool` 归一 i32，数组等仍拒），extends/heritage 按种展平，字面量 str 域具化存头指针，spread 同种复制/错种拒原文（`saemit.go:9086-9103`）；`in` 折叠与 delete 拒自动对齐（`Cfg{path,retries}` 布局 `alloc 12` + verdict 1/0）；读/存/解构/ctor-wiring 的 str 域诚实拒（另轮 str 贯通）。
 - step57（str 域读写贯通一次过，落 `sa_class.go` + 串/值位接线，零新文件）：读回头指针即串值（临时量/绑定记 str；`lowerMemberChain:8294-8297` 同形），`=` 按种求值存值/存头，串判定加属性分支（`c.path + "!"` 通），ctor 实参按 wiring 种预扫求值（含 super 转发递归解），形参解构 str 域绑定；门：方法串返回另项（`c.get()` 串位不认）。
+- step58（方法串返回贯通一次过，落 `sa_class.go` + 回调槽/调用识别，零新文件）：`saMethodReturnKind` 读方法/getter 声明返回种，`saCallIsStr`/`saIsStrFieldRead`/串求值属性分支识别串返回（`c.get()/c.q` length/绑定/concat 通）；内联槽按种存取（`saInlineRet.kind`，str 存头指针，`saCallbackValue` 传种，数组高阶恒 i32 零行为变）；门：无注解/非串返回沿既有门拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

@@ -1227,10 +1227,12 @@ type saScope struct {
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
-// 回调体内 return 存槽+jmp end，不写函数 ret；块作用域随内联消亡。
+// 回调体内 return 存槽+jmp end，不写函数 ret；块作用域随内联消亡；
+// kind 为槽种（i32/bool 存值，str 存头指针；封存回调槽同形）。
 type saInlineRet struct {
 	slot string
 	end  string
+	kind string
 }
 
 // saStrPool 是文件级字符串常量池（`@const str_const_N = utf8:"...\\0"` 行在
@@ -1471,6 +1473,17 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		// 回调体内 return：存槽+jmp end（裸 return 只跳过余下回调体）。
 		// 形状证据：封存 callbackValue:5222-5249。
 		if rs.Expression == nil {
+			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
+			return true, false
+		}
+		if scope.inlineRet.kind == "str" {
+			sop, msg := saEvalStr(w, rs.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", scope.inlineRet.slot, sop))
 			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
 			return true, false
 		}
