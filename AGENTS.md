@@ -86,6 +86,7 @@
 - step56（string 字段布局一次过，落 `sa_class.go` + 读位种门，零新文件）：`fkinds` 种表 + `saFieldWidth/AlignOff`（i32 4/4，str 头指针 8/8；封存 `widthOf:268-279`）；接口/类 `string` 字段放行（`bool` 归一 i32，数组等仍拒），extends/heritage 按种展平，字面量 str 域具化存头指针，spread 同种复制/错种拒原文（`saemit.go:9086-9103`）；`in` 折叠与 delete 拒自动对齐（`Cfg{path,retries}` 布局 `alloc 12` + verdict 1/0）；读/存/解构/ctor-wiring 的 str 域诚实拒（另轮 str 贯通）。
 - step57（str 域读写贯通一次过，落 `sa_class.go` + 串/值位接线，零新文件）：读回头指针即串值（临时量/绑定记 str；`lowerMemberChain:8294-8297` 同形），`=` 按种求值存值/存头，串判定加属性分支（`c.path + "!"` 通），ctor 实参按 wiring 种预扫求值（含 super 转发递归解），形参解构 str 域绑定；门：方法串返回另项（`c.get()` 串位不认）。
 - step58（方法串返回贯通一次过，落 `sa_class.go` + 回调槽/调用识别，零新文件）：`saMethodReturnKind` 读方法/getter 声明返回种，`saCallIsStr`/`saIsStrFieldRead`/串求值属性分支识别串返回（`c.get()/c.q` length/绑定/concat 通）；内联槽按种存取（`saInlineRet.kind`，str 存头指针，`saCallbackValue` 传种，数组高阶恒 i32 零行为变）；门：无注解/非串返回沿既有门拒。
+- step59（串枚举一次过，落 `transpile.go` 记录 + 两读位接线，零新文件）：非严格编号（串/计算成员仍占序数槽并记 `enumNonInt` 集，整数成员照折；`enumMemberTable:9284-9305` + `recordEnum:9308-9342`）；读位拒因逐字对齐（`7962/8000` 原文）；重声明覆盖与封存一致（无拒因）；门：坏形状成员仍拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

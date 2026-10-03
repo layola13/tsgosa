@@ -420,6 +420,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
 	funcs := map[string]saFuncSig{}
 	enums := map[string]map[string]int64{}
+	enumNonInt := map[string]map[string]bool{}
 	classes := map[string]*saClassDef{}
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
@@ -445,13 +446,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			if nm == nil || nm.Kind != ast.KindIdentifier {
 				continue
 			}
-			members, msg := saEnumMembers(st)
+			members, nonInt, msg := saEnumMembers(st)
 			if msg != "" {
 				ln, col := pos(st.Pos())
 				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 				continue
 			}
 			enums[nm.Text()] = members
+			if len(nonInt) > 0 {
+				enumNonInt[nm.Text()] = nonInt
+			}
 			continue
 		}
 	}
@@ -623,7 +627,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -644,12 +648,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string) (string, []SARefusal) {
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, addImport: needImport}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		wasTry := false
@@ -1095,30 +1099,37 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 
 // saReturnKind: "void", "number", "boolean", "string"; 其他一律拒绝。
 // i32 返回注解按封存 annotationType:181-186 视为 number。
-// saEnumMembers 整数枚举成员编号（显式 =N 优先，余下 next++；
-// 形状证据：封存 integerInit:9258-9277 + enumMemberTable:9284+。非整数
-// （串/浮点/计算式）初值大声拒）。
-func saEnumMembers(st *ast.Node) (map[string]int64, string) {
+// saEnumMembers 枚举成员编号（显式 =N 优先，余下 next++；串/计算初值
+// 成员仍占序数槽并记 nonInt 集（读位拒，整数成员照折）；形状证据：封存
+// integerInit:9258-9277 + enumMemberTable:9284-9305 + recordEnum:9308-9342）。
+func saEnumMembers(st *ast.Node) (map[string]int64, map[string]bool, string) {
 	m := map[string]int64{}
+	nonInt := map[string]bool{}
 	var next int64
 	for _, mem := range st.AsEnumDeclaration().Members.Nodes {
 		nm := mem.Name()
 		if nm == nil || (nm.Kind != ast.KindIdentifier && nm.Kind != ast.KindStringLiteral) {
-			return nil, "enum member shape is not lowerable"
+			return nil, nil, "enum member shape is not lowerable"
 		}
 		if init := mem.AsEnumMember().Initializer; init != nil {
-			v, ok := saEnumInit(init.AsNode())
-			if !ok {
-				return nil, "enum member needs an integer initializer"
+			if v, ok := saEnumInit(init.AsNode()); ok {
+				next = v
+			} else {
+				nonInt[nm.Text()] = true
 			}
-			m[nm.Text()] = v
-			next = v + 1
-			continue
 		}
 		m[nm.Text()] = next
 		next++
 	}
-	return m, ""
+	return m, nonInt, ""
+}
+
+// saEnumNonIntMsg 串/计算枚举成员读拒因（封存 7962/8000 原文），命中返回消息。
+func saEnumNonIntMsg(enumName, member string, scope *saScope) (string, bool) {
+	if set, ok := scope.enumNonInt[enumName]; ok && set[member] {
+		return fmt.Sprintf("string enum member %s.%s is not lowerable (only all-integer enums fold ordinals)", enumName, member), true
+	}
+	return "", false
 }
 
 // saEnumInit 折叠枚举初值（整数 Natal 字面量与一元 -/+；镜像 integerInit）。
@@ -1213,6 +1224,7 @@ type saScope struct {
 	mathAlias   map[string]string
 	funcs       map[string]saFuncSig
 	enums       map[string]map[string]int64
+	enumNonInt  map[string]map[string]bool
 	classes     map[string]*saClassDef
 	topConsts   map[string]string
 	topStr      map[string]bool
@@ -1273,7 +1285,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1335,7 +1347,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		w.Write("  ret\n")
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
 	saSeedTopMaths(scope, topMaths)
 	paramKinds, ok := saParamKinds(fn, scope.classes)
 	if !ok {

@@ -691,9 +691,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "static class members are not lowerable"
 			}
 		}
-		// 整数枚举成员折叠（`E.A` → 字面量；未知成员大声拒）。
+		// 整数枚举成员折叠（`E.A` → 字面量；串/计算成员拒，整数成员照折；
+		// 未知成员大声拒；形状证据：封存 recordEnum:9308-9342 + 7961-8000）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
 			if members, ok := scope.enums[pa.Expression.Text()]; ok {
+				if msg, bad := saEnumNonIntMsg(pa.Expression.Text(), pa.Name().Text(), scope); bad {
+					return "", msg
+				}
 				if v, ok := members[pa.Name().Text()]; ok {
 					return fmt.Sprintf("%d", v), ""
 				}

@@ -258,6 +258,14 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return "", pa.Name().Text() + " is not a string"
 			}
+			// 串/计算枚举成员读拒（整数成员串位沿既有串门拒）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if _, ok := scope.enums[pa.Expression.Text()]; ok {
+					if msg, bad := saEnumNonIntMsg(pa.Expression.Text(), pa.Name().Text(), scope); bad {
+						return "", msg
+					}
+				}
+			}
 			// 实例 str 域读（头指针即串值，临时量已记 str）。
 			if saCouldBeInst(pa.Expression, scope) {
 				h, def, msg := saInstBase(pa.Expression, scope)
