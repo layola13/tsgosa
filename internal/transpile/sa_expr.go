@@ -741,6 +741,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// `??` 空合槽须先于串门（i32 位，右惰性）。
 			return saLowerNullish(w, be, scope, pos, refusals, nextTemp)
 		}
+		if be.OperatorToken != nil && saIsLogicAssignOp(be.OperatorToken.Kind) {
+			// 短路赋值值位（i32/bool；串 out 为新鲜临时量，薄口无串种跟踪，
+			// 串目标只走语句位；封存 lowerLogicAssign 值形另见调用点类型环境）。
+			if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[be.Left.Text()]; ok && k == "str" {
+					return "", "string logic assignment is statement-only"
+				}
+			}
+			return saLowerLogicAssign(w, be, scope, pos, refusals, nextTemp)
+		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
 			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
 			// `+` 遇串位即拼接，串句柄只可由串位取用（saEvalStr）；i32 位拒收。

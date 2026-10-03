@@ -130,8 +130,111 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	return true
 }
 
+// saIsLogicAssignOp 报告短路赋值（`&&=`/`||=`/`??=` 走 join 槽，真短路；
+// 与 eager 的 `and`/`or` 值运算不同；形状证据：封存 isLogicAssign:3569-3573）。
+func saIsLogicAssignOp(op ast.Kind) bool {
+	return op == ast.KindAmpersandAmpersandEqualsToken ||
+		op == ast.KindBarBarEqualsToken ||
+		op == ast.KindQuestionQuestionEqualsToken
+}
+
+// saSnapImm 快照立即数为寄存器（join 槽存须见寄存器；裸名/临时量不定寄存器
+// 与立即数不可存；形状证据：封存 snapImm:3575+，调用见 3558）。
+func saSnapImm(w printer.EmitTextWriter, op string, nextTemp *int) string {
+	if op == "" {
+		return op
+	}
+	imm := true
+	for i := 0; i < len(op); i++ {
+		c := op[i]
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if i == 0 && c == '-' && len(op) > 1 {
+			continue
+		}
+		imm = false
+		break
+	}
+	if !imm {
+		return op
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", t, op))
+	return t
+}
+
+// saLowerLogicAssign lowering `a &&= b`/`a ||= b`/`a ??= b`（真短路：
+// 目标读一次，RHS 只在赋值臂求值，两臂经槽汇合；形状证据：封存
+// lowerLogicAssign:3439-3565，`??` 槽形见 lowerBinary:3182-3206）。
+// 目标镜像 `=`：裸标识符（i32/bool/str；串以 length 判空、指针判 ??）；
+// 成员/元素/未知目标一律大声拒（模块槽另域）。
+func saLowerLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	op := saBinaryOpKind(be)
+	if be.Left == nil || be.Left.Kind != ast.KindIdentifier {
+		return "", "logical assignment target is not lowerable"
+	}
+	name := be.Left.Text()
+	kind, ok := scope.types[name]
+	if !ok || (kind != "i32" && kind != "bool" && kind != "str") {
+		return "", "logical assignment target is not lowerable"
+	}
+	// 真值测试：`&&=` 为真赋值，`||=`/`??=` 为假/空赋值，恒进赋值臂优先。
+	// 串以 length 判空（空串 falsy，头指针恒真；封存 :3521-3528），
+	// `??=` 保指针判空（封存 :3544 注）。
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	test := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	testVal := name
+	if kind == "str" && op != ast.KindQuestionQuestionEqualsToken {
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, name))
+		testVal = ln
+	}
+	if op == ast.KindAmpersandAmpersandEqualsToken {
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", test, testVal))
+	} else {
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", test, testVal))
+	}
+	assignL := fmt.Sprintf("L_logas_assign_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	skipL := fmt.Sprintf("L_logas_skip_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_logas_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", test, assignL, skipL))
+	w.Write(fmt.Sprintf("%s:\n", assignL))
+	var rhs string
+	var msg string
+	if kind == "str" {
+		rhs, msg = saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+	} else if kind == "bool" {
+		rhs, msg = saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
+	} else {
+		rhs, msg = saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	}
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, rhs))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, saSnapImm(w, rhs, nextTemp)))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", skipL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, name))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
-// （`x = <i32>`，x 须已绑定；复合赋分流）。其余一律大声拒。
+// （`x = <i32>`，x 须已绑定；复合/短路赋分流）。其余一律大声拒。
 func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	e := s.AsExpressionStatement().Expression
 	if e == nil {
@@ -158,6 +261,15 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return true
 	}
 	be := e.AsBinaryExpression()
+	if saIsLogicAssignOp(saBinaryOpKind(be)) {
+		// 短路赋值语句位（RHS 惰性单求值；结果丢弃；封存 lowerLogicAssign）。
+		if _, msg := saLowerLogicAssign(w, be, scope, pos, refusals, nextTemp); msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		return true
+	}
 	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
 		return saLowerCompound(w, be, scope, pos, refusals, nextTemp, s)
 	}
