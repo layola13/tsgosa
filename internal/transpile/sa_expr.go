@@ -119,6 +119,12 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	if retKind == "string" {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
+	// f64 bindings pass through (i32-annotated functions returning float bits; cf loose returns).
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
+			return e.Text(), ""
+		}
+	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
 }
 
@@ -386,6 +392,68 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 // saLowerTernaryValue 求三元值（i32 臂 SELECT / 串臂槽汇合；
 // return 位与无注解声明位共用；形状证据：封存 lowerTernary:8498-8515）。
 // 返回 (op, isStr, msg)：串臂 isStr=true。
+// saTernaryF64Arm classifies one ternary arm for f64 join (no emission): float literal,
+// int literal (sitofp at join), or f64 binding; leading-dot literals normalize with a zero.
+func saTernaryF64Arm(e *ast.Node, scope *saScope) (string, string, bool) {
+	if e == nil {
+		return "", "", false
+	}
+	if e.Kind == ast.KindNumericLiteral {
+		if saIsFloatLit(e.Text()) {
+			txt := e.Text()
+			if len(txt) > 0 && txt[0] == '.' {
+				txt = "0" + txt
+			}
+			return "f64", txt, true
+		}
+		return "sitofp", e.Text(), true
+	}
+	if e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
+			return "f64", e.Text(), true
+		}
+	}
+	return "", "", false
+}
+
+// saLowerTernaryF64Join joins f64 ternary arms through an f64 slot.
+func saLowerTernaryF64Join(w printer.EmitTextWriter, condOp, aKind, aText, bKind, bText string, scope *saScope, nextLabel, nextTemp *int) string {
+	operand := func(kind, text string) string {
+		if kind == "sitofp" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sitofp %s\n", t, text))
+			return t
+		}
+		return text
+	}
+	av := operand(aKind, aText)
+	bv := operand(bKind, bText)
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+	*nextLabel++
+	fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, av))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, bv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[res] = "f64"
+	return res
+}
+
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
 	condOp, msg := saCondOperand(w, ce.Condition, scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -427,6 +495,12 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
 		return res, true, ""
+	}
+	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).
+	if ak, at, aok := saTernaryF64Arm(ce.WhenTrue, scope); aok {
+		if bk, bt, bok := saTernaryF64Arm(ce.WhenFalse, scope); bok {
+			return saLowerTernaryF64Join(w, condOp, ak, at, bk, bt, scope, nextLabel, nextTemp), false, ""
+		}
 	}
 	a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 	b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
@@ -857,6 +931,116 @@ func saArrIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saIsF64Operand reports whether an operand carries f64 (float literal or f64 binding).
+func saIsF64Operand(e *ast.Node, scope *saScope) bool {
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		e = e.AsParenthesizedExpression().Expression
+	}
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindNumericLiteral && saIsFloatLit(e.Text()) {
+		return true
+	}
+	if e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
+			return true
+		}
+	}
+	return false
+}
+
+// saEvalF64Strict evaluates a strict f64 operand (float literal, f64 binding, or
+// float-only arithmetic; int literals and mixed shapes refuse loudly).
+// saF64Side lowers one f64-binary side (float sides pass text through like the
+// upstream type-driven emission; other sides evaluate as i32).
+func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	orig := e
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		e = e.AsParenthesizedExpression().Expression
+	}
+	if e == nil {
+		return "", "missing expression"
+	}
+	if saIsF64Operand(e, scope) {
+		return e.Text(), ""
+	}
+	return saEvalI32(w, orig, scope, pos, refusals, nextTemp)
+}
+
+func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil {
+		return "", "missing expression"
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(e.Text()) {
+			return e.Text(), ""
+		}
+		return "", "integer " + e.Text() + " in float expression"
+	case ast.KindIdentifier:
+		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
+			return e.Text(), ""
+		}
+		return "", e.Text() + " is not a float"
+	case ast.KindParenthesizedExpression:
+		return saEvalF64Strict(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		var fop string
+		switch saBinaryOpKind(be) {
+		case ast.KindPlusToken:
+			fop = "fadd"
+		case ast.KindMinusToken:
+			fop = "fsub"
+		case ast.KindAsteriskToken:
+			fop = "fmul"
+		case ast.KindSlashToken:
+			fop = "fdiv"
+		case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+			fop = "fcmp_eq"
+		case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+			fop = "fcmp_ne"
+		case ast.KindLessThanToken:
+			fop = "fcmp_lt"
+		case ast.KindLessThanEqualsToken:
+			fop = "fcmp_le"
+		case ast.KindGreaterThanToken:
+			fop = "fcmp_gt"
+		case ast.KindGreaterThanEqualsToken:
+			fop = "fcmp_ge"
+		default:
+			return "", "float operator is not lowerable"
+		}
+		l, msgL := saF64Side(w, be.Left, scope, pos, refusals, nextTemp)
+		if msgL != "" {
+			return "", msgL
+		}
+		r, msgR := saF64Side(w, be.Right, scope, pos, refusals, nextTemp)
+		if msgR != "" {
+			return "", msgR
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, fop, l, r))
+		if fop == "fadd" || fop == "fsub" || fop == "fmul" || fop == "fdiv" {
+			scope.types[t] = "f64"
+		}
+		return t, ""
+	default:
+		return "", "unsupported float expression"
+	}
+}
+
+// saEvalF64 evaluates an f64 initializer (int/float literal text binds directly,
+// otherwise strict float rules apply).
+func saEvalF64(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindNumericLiteral {
+		return e.Text(), ""
+	}
+	return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+}
+
 func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
 		return "", "missing expression"
@@ -923,6 +1107,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		if isStr {
 			return "", "string ternary in i32 expression"
+		}
+		if k, ok := scope.types[t]; ok && k == "f64" {
+			return "", "float ternary in i32 expression"
 		}
 		return t, ""
 	case ast.KindNewExpression:
@@ -1470,6 +1657,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, rn))
 				return t, ""
 			}
+		}
+		// f64 arithmetic/comparison (either side float forces float; mixed shapes refuse).
+		if saIsF64Operand(be.Left, scope) || saIsF64Operand(be.Right, scope) {
+			t, msg := saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return t, ""
 		}
 		l, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
 		if msgL != "" {

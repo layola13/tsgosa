@@ -252,7 +252,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
 			vkind, ok = saGenericHandleKind(vd.Type, scope)
 		}
-		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && !strings.HasPrefix(vkind, "inst:")) {
+		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && vkind != "f64" && !strings.HasPrefix(vkind, "inst:")) {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
 			return false
@@ -267,6 +267,30 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			if !saLowerStrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
 				return false
 			}
+			continue
+		}
+		if vkind == "f64" {
+			// f64 binding (plain scalar words, never owned/released).
+			if vd.Initializer == nil {
+				if isConst {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = 0\n", name))
+				scope.types[name] = "f64"
+				saDeclarePlain(scope, name)
+				continue
+			}
+			op, msg := saEvalF64(w, vd.Initializer, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = "f64"
+			saDeclarePlain(scope, name)
 			continue
 		}
 		if strings.HasPrefix(vkind, "inst:") {
@@ -326,6 +350,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		// f64 temps never coerce into i32/bool locals (stay loud).
+		if k, ok := scope.types[op]; ok && k == "f64" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float value needs float annotation"})
 			return false
 		}
 		saEmitScalarInit(w, name, op, scope)
@@ -463,8 +493,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			scope.types[name] = "str"
 			saConsumeOwn(scope, t)
 			saDeclareOwned(scope, name)
+		} else if k, ok := scope.types[t]; ok && k == "f64" {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, t))
+			scope.types[name] = "f64"
+			saDeclarePlain(scope, name)
 		} else {
-			scope.types[name] = "i32"
 			saDeclareInitOwn(scope, name, t)
 		}
 		return true
@@ -477,8 +510,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	// 句柄读回种传递（字段读已记临时量种；字面量/绑定名沿既有 i32）。
 	// 句柄直传（上游此处拒，本仓沿既有直传口径；快照只对标量，`add` 不可作用 ptr）。
-	if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+	if k, ok := scope.types[op]; ok && k == "f64" {
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		scope.types[name] = "f64"
+		saDeclarePlain(scope, name)
+	} else if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
 		scope.types[name] = k
 		saConsumeOwn(scope, op)
 		saDeclareOwned(scope, name)
