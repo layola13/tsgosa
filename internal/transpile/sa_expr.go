@@ -620,6 +620,27 @@ func saLowerPostfixUnary(w printer.EmitTextWriter, un *ast.PostfixUnaryExpressio
 func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	target, ok := saBoundI32(scope, operand)
 	if !ok {
+		// 顶层可变槽自增（读-改-写回；旧值/新值语义同本地；
+		// 形状证据：封存 emitModIncDec:1191-1228）。
+		if operand != nil && operand.Kind == ast.KindIdentifier {
+			if ms, ok := scope.modVars[operand.Text()]; ok {
+				if _, shadowed := scope.types[operand.Text()]; !shadowed {
+					cur := saModLoadI32(w, ms, scope, nextTemp)
+					op := "add"
+					if !up {
+						op = "sub"
+					}
+					nw := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, 1\n", nw, op, cur))
+					saModStoreI32(w, ms, nw, scope, nextTemp)
+					if prefix {
+						return nw, ""
+					}
+					return cur, ""
+				}
+			}
+		}
 		return "", "incdec target must be bound i32 variable"
 	}
 	op := "add"

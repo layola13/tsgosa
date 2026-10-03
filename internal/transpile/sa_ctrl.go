@@ -112,6 +112,27 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 				return true
 			}
 		}
+		// 顶层可变槽复合赋值（读-改-写回；先读后右值，与上游同序；
+		// 形状证据：封存 lowerCompoundAssign:3373-3437 标识符分支）。
+		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+			if ms, ok := scope.modVars[be.Left.Text()]; ok {
+				if _, shadowed := scope.types[be.Left.Text()]; !shadowed {
+					cur := saModLoadI32(w, ms, scope, nextTemp)
+					r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(where.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+						return false
+					}
+					op, _ := saCompoundOp(saBinaryOpKind(be))
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+					saModStoreI32(w, ms, t, scope, nextTemp)
+					return true
+				}
+			}
+		}
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound assignment to unknown/non-i32 variable"})
 		return false
