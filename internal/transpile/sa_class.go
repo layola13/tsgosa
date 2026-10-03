@@ -754,7 +754,8 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		if pd.Type != nil {
 			// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
 			// string/arr 为句柄 8 字节槽；已记录接口名（TypeReference）为嵌套
-			// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；余下无槽，拒。
+			// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；未记录用户类型
+			// （含泛型形参）落 arr 句柄槽；余下无槽，拒。
 			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
 				if k == "str" {
 					fkind = "str"
@@ -770,9 +771,10 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 					}
 					def.fsub[fn.Text()] = sub.name
 				} else {
-					ln, col := pos(m.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string, array or recorded interface"})
-					return false
+					// 未记录用户类型（含泛型形参 `T`）落 ptr 句柄槽（8B；封存
+					// saNameOfType:197-199 用户类型皆 ptr 句柄 + recordLayout:9375
+					// `saname := saNameOfType(ftn)` 直映 + widthOf 默认 8,8；本仓句柄种为 arr）。
+					fkind = "arr"
 				}
 			} else {
 				ln, col := pos(m.Pos())
@@ -1264,10 +1266,14 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			continue
 		}
 		if fk := def.fkinds[o.fname]; fk == "arr" {
-			// arr 域存句柄（字面量递归/绑定直传经句柄总线）。
+			// arr 域存句柄（字面量递归/绑定直传经句柄总线；泛型形参域等标量初值
+			// 按 i32 求值存入 ptr 槽；封存 lowerObjectLiteral:9105-9109 按域种无区分落字）。
 			v, msg := saArrValueOf(w, o.init, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				return "", "", msg
+				v, msg = saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
 			}
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
 			continue

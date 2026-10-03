@@ -967,6 +967,17 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 			}
 			return op, ""
 		}
+		if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "alloc" {
+			// alloc 原语即新鲜句柄（`const b: Box<i32> = alloc(4)` 经声明 arr 位；
+			// 与求值核共用 helper；用户遮蔽沿旧门；形状证据：封存 lowerCall:3861-3868）。
+			if _, shadowed := scope.funcs["alloc"]; !shadowed {
+				op, _, msg := saLowerAllocCall(w, ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return op, ""
+			}
+		}
 		return "", "not an array expression"
 	case ast.KindParenthesizedExpression:
 		return saArrValueOf(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)

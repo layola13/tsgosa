@@ -192,6 +192,30 @@ func saSpreadCallArgs(w printer.EmitTextWriter, name string, nodes []*ast.Node, 
 	return args, "", true
 }
 
+// saLowerAllocCall 落裸 alloc(N) 原语（单参；参经 i32 求值；结果为新鲜归属句柄
+// temp（种记 arr，本仓 ptr 句柄种）；用户自定 alloc 遮蔽时调用方走原路；
+// 形状证据：封存 lowerCall:3861-3868 alloc 单参直通 + saNameOfType:197-199
+// 用户类型落 ptr 句柄 + widthOf 默认 8,8）。
+func saLowerAllocCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, "alloc takes one size argument"
+	}
+	sz, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %s\n", t, sz))
+	saOwnTemp(scope, t)
+	scope.types[t] = "arr"
+	return t, false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
@@ -329,6 +353,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return op, false, ""
 		}
 		return "", false, "only direct function calls lowerable"
+	}
+	// 裸 alloc(N) 原语单参直通（`t = alloc N` 绑 ptr 句柄；用户自定 alloc
+	// 遮蔽时走原命名调用路；形状证据：封存 lowerCall:3861-3868）。
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "alloc" {
+		if _, shadowed := scope.funcs["alloc"]; !shadowed {
+			return saLowerAllocCall(w, ce, scope, pos, refusals, nextTemp)
+		}
 	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		if ce.Expression != nil && ce.Expression.Kind == ast.KindSuperKeyword {

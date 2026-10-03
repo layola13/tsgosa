@@ -243,6 +243,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 形参与 saSynthParamNodes 类/接口分支同形）。
 			vkind, ok = saAnnotInstKind(vd.Type, scope.classes)
 		}
+		if !ok {
+			// 泛型具化/未知用户类型注解落 ptr 句柄（`Box<i32>` 无声明时；已记录
+			// 类/接口名、别名、标量名一律不认（沿既有门），具化实例另步；形状证据：
+			// 封存 saNameOfType:197-199 用户类型皆 ptr 句柄 + instantiateLayout:227-230
+			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
+			vkind, ok = saGenericHandleKind(vd.Type, scope)
+		}
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && !strings.HasPrefix(vkind, "inst:")) {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
@@ -657,6 +664,32 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		return "inst:" + ref.TypeName.Text(), true
 	}
 	return "", false
+}
+
+// saGenericHandleKind 认未记录泛型/用户类型注解为句柄种（`Box<i32>`、裸 `Box`
+// 无声明时；已记录类/接口名、别名、标量名一律不认（沿既有门）；调用方按初值
+// 通道求值绑定（alloc/字面量/句柄直传），具化实例（`Box<i32>` 有声明时）另步。
+func saGenericHandleKind(t *ast.TypeNode, scope *saScope) (string, bool) {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	base := ref.TypeName.Text()
+	switch base {
+	case "i32", "u32", "i64", "u64", "f64", "f32", "i8", "u8", "i16", "u16",
+		"number", "boolean", "string", "void", "ptr", "bool":
+		return "", false
+	}
+	if _, ok := scope.classes[base]; ok {
+		return "", false
+	}
+	if _, ok := scope.aliasOf[base]; ok {
+		return "", false
+	}
+	return "arr", true
 }
 
 // saAnnotInstKind 消解具名接口/类注解为 `inst:Name`（单标识符、无泛型实参、
