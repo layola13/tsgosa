@@ -494,14 +494,30 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 				if msg != "" {
 					return "", false, msg
 				}
+				// 原语回 BUFFER 句柄（u64，现货签名 `-> u64`），经 data/len
+				// unwrap 成 16 字节串句柄；缓冲作头读（u64 作片读会段错；
+				// 形状证据：封存 lowerCall:3811-3836；现货 sa_std/string.sai
+				// from_char_code/from_code_point + sa_std/fmt.sai buffer_data/len）。
 				sym := "sa_string_from_char_code"
 				if pa.Name().Text() == "fromCodePoint" {
 					sym = "sa_string_from_code_point"
 				}
 				scope.addImport("sa_std/string.sai")
+				scope.addImport("sa_std/fmt.sai")
+				hbuf := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", hbuf, sym, v))
+				hptr := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", hptr, hbuf))
+				hlen := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", hlen, hbuf))
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, sym, v))
+				w.Write(fmt.Sprintf("  %s = alloc 16\n", t))
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", t, hptr))
+				w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", t, hlen))
 				return t, false, ""
 			}
 			return "", false, "unsupported String method " + pa.Name().Text()

@@ -78,6 +78,7 @@
 - step48（静态字面量折叠一次过，落 `sa_class.go` + `sa_expr.go`/`sa_str.go` 读位接线，零新文件）：`static K = 字面量` 记折叠表不占实例槽（`saemit.go:recordClassNamed:9703-9711` + `staticLiteralText:9444-9468`，断言/括号剥离，数字/串/反引号/bool），类名/实例/`this` 基读位折叠（串具化，`lowerExpr:8013-8041`），继承下沉未覆写静态；非字面静态走 legacy 实例槽（s2 形；i32 恒 4 字节故 `v` 在 +4，与封存 +8 的宽度差见注）；门：静态方法/存取器/私静/静态写/串↔i32 错位一律拒（跨文件 link 另域）。
 - step49（顶层纯量折叠一次过，落 `sa_decl.go` + 三处读位/三处作用域接线，零新文件）：`var K = 42` 内联文本、`var S = "hi"` 串池化、`var f = Math.g` 别名（复 `saMathMethodName` 投影门；链式别名同函数内；`saemit.go:tryTopLevelConst:2894-2972`，两遍验全纯再记，部分纯洁不记）；读位局部遮蔽优先；i32/条件/串三位接线（串错位沿既有串门拒）；门：require 等非纯、float 顶层量、自增/赋值可变顶层一律拒（可变顶层槽另域 modstate）。
 - step50（null/undefined 一次过，落 `transpile.go` 注解核 + `sa_expr.go`/`sa_str.go` 读位，零新文件）：`null`/`undefined` 关键字与未绑定 `undefined` 标识符即 0（遮蔽优先；`saemit.go:lowerExpr:2731-2734`；标识符特例因值位 `undefined` 即标识符，封存透传裸名，薄口 unknown 门禁优先故折 0）；联合 null/undefined 吸收单一种直通（`i32|null`→i32 与封存测试一致；封存 annotationType 联合恒 i32 是 checker 缺席 fallback，薄口语法定种更精确）；门：多非空联合/类接口联合/`null` 入串位/串错位一律拒（`typeof undefined` 另轮）。
+- step51（fromCharCode 缓冲协议一次过，落 `sa_str.go` 既有分支替换，零新文件）：原直调回值改为 buffer unwrap（原语回 u64 buffer → `sa_fmt_buffer_data/len` → 16 字节串句柄；`saemit.go:lowerCall:3811-3836`；现货 `sa_std/string.sai` from_char_code/from_code_point 单参 `-> u64` + `sa_std/fmt.sai` buffer_data/len，双 import；std 先在 `sci/sa_std` 落实再映射，多码无现货故单参门保留）；门：0 参/多参一律拒。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
