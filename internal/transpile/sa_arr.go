@@ -435,6 +435,9 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object patterns in for-of need static element layouts"})
 		return false
 	}
+	// 元素绑定与循环体同域（封存 lowerForOf:2137 pushScope 覆盖绑定+体）。
+	saved := saScopeEnter(scope)
+	defer saScopeExit(scope, saved)
 	if pat == nil {
 		if _, dup := scope.types[binding]; dup {
 			ln, col := pos(s.Pos())
@@ -581,6 +584,9 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "patterns in for-in need static element layouts"})
 		return false
 	}
+	// 下标/键绑定与循环体同域（封存 lowerForIn 的 body pushScope 与 for-of 同形）。
+	saved := saScopeEnter(scope)
+	defer saScopeExit(scope, saved)
 	if _, dup := scope.types[binding]; dup {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})

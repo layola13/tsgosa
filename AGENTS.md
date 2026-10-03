@@ -138,7 +138,14 @@
 - step108（串槽端到端一次过，落`sa_decl.go`域内+串/控三处钩子，零新文件）：记录分支（字面/纯模板初值，注解同宽，`let s: string;`无初值交旧门）+三键域（封存 modStrKeyOf:112-117，键与上游逐位一致）+恒置位守卫/双槽取/字面直存（封存 registerModState:360-367/emitModEnsure+InitString:689-742/LoadString:941-962/StoreString:789-806/StringText:765-787/Dispatch:808-820）；读挂`saEvalStr`+`saIsStrExpr`（无局部遮蔽，封存 modStrRecv:653-666），`.length`/串方法经既有分发自动通，写按宽分发（计算串沿上游字面门逐字拒）；i32六处加宽门；串`+=`/`++`沿上游字面/`++/--`门逐字拒（同位）；`for(x=0)`头槽直存（禁隐式绑定遮蔽，静默分叉已堵，槽计数器读-改-写回）；8项等价（存/读/长/拼/方法/值后置/拒因×2）通拒一致，发射逐行同形；回归step106-107十一形+嵌套四形全绿；`go vet`绿；`main.go`/`transpile.go`未动；残缺收敛至：obj/宽槽、逻辑赋值、串条件位（皆大声拒）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
+## 3.1 step109+ 增量台账（续跑自 step108）
+
+- step109（块语句 + 块域一次过，落 `sa_ctrl.go` 域内 + `transpile.go` 语句集一处 + `sa_arr.go` 两处 for 域，零新文件）：`saScopeEnter/saScopeExit`（快照-回滚等价封存 `pushScope:11027-11035`/`popScope` + `lookupBinding:11037-11044` 作用域栈）+ `saLowerArm` 统一开关块域（覆盖 if 臂/while·do 体/switch 臂/try 块/label 体/for 体）+ `saLowerFor` 整句域（封存 `lowerFor:2046`）+ for-of/for-in 绑定域（封存 `lowerForOf:2137`）+ `saLowerStmt` 新增 `KindBlock` 臂（封存 `:847-852`）+ `saStmtTerminates` 增 Block 臂（免 switch 臂 `{…break;}` 多余落空 `jmp`）；**286 差分门禁 210→236 同通过，0 回退**（`port_passes_up_refuse=0`、`msg_diff=0`）；开关块 24 例 + `191_block_scope_reuse` 转正；有意分歧：块内 `let` 重名仍 `duplicate local` 大声拒（封存无此门、会静默复用同寄存器致外层读错值，见 §4 禁静默错码）。
+
 ## 4. 工具纪律
 
+- **工具链优先**（用户令 2026-10-03）：先装/验 Go（`/usr/local/go/bin`，`export PATH=$PATH:/usr/local/go/bin`，1.26.0）与 Zig（`/opt/zig`，sci `build.zig.zon` 要求 ≥ 0.14.1），再动代码；`sa` 后端真机验证依赖 Zig。
 - 读/查/改优先 `sa_vm_run`（read_file/read_lines/count_lines/grep_search/edit_file），禁终端 `cat/grep/ls/head/tail` 看代码；`git/diagnostics` 走宿主。
+- **差分门禁**（移植验收主门）：每步以 `satsgo/cmd/tsgo-sa`（上游真值）与本仓 `tsgo --sa` 对跑 `/content/sa_all/sa_plugin_ts/demos` 286 例，判据为**通/拒一致 + 拒因文案逐字一致**；两侧同通过时再比 `.sai` 逐行（缩进/`ret`/`!` 释放为已认可方言差）。禁以「上游同拒」为由放过新增回退。
+- **禁静默错码**：上游若存在静默错译（如块内 `let` 重名复用同一寄存器致外层读错值），本仓改**大声拒**，不得照抄错码——铁律 4 高于「与上游同形」。
 - 有问题问 JEV（`jev_diagnose/jev_choose`），每步完问 `jev_next` 找下个任务，全程由 JEV 控制；禁停下来总结、禁 `askquestions` 式反问。

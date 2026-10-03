@@ -809,6 +809,10 @@ func saCanonicalForShape(fs *ast.ForStatement) (ctr, lo, hi, step string, ok boo
 }
 
 func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	// 计数变量与整个 for 句同域（封存 lowerFor:2046 pushScope 覆盖 init+体，
+	// tryLowerForMacro:1968 同形）：两个 `for (let i…)` 各自成域，同名可复用。
+	saved := saScopeEnter(scope)
+	defer saScopeExit(scope, saved)
 	fs := s.AsForStatement()
 	if !saLowerForInit(w, fs.Initializer, scope, pos, refusals, nextTemp) {
 		return false
@@ -1756,6 +1760,14 @@ func saStmtTerminates(s *ast.Node) bool {
 			}
 		}
 		return hasDefault
+	case ast.KindBlock:
+		// 裸块终结态同其末句（switch 臂 `{ … break; }` 由此免去多余落空跳；
+		// 与 KindBlock 语句位 saLowerStmt 的回传同形）。
+		bd := s.AsBlock()
+		if bd == nil || bd.Statements == nil {
+			return false
+		}
+		return saArmTerminates(bd.Statements.Nodes)
 	default:
 		return false
 	}
@@ -1779,5 +1791,37 @@ func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {
 	return []*ast.Node{n}, true
 }
 
+// saScopeEnter 开块域并返回可回滚快照（形状证据：封存 pushScope:11027-11029
+// 的作用域栈 + lowerIf:1758 / lowerWhile:1817 / lowerDoWhile:1968 / lowerFor:
+// 2046（for 另在 2004 为体再开一层）/ lowerForOf:2137 / lowerSwitch 臂:2642
+// 与 tryLowerSwitchMacro 臂:2563 / KindBlock:847-848 各 pushScope 同形）。
+// 本仓 types 是扁平种表，故以「快照-回滚」等价实现逐层进出：块内新登记的
+// 名字出块即不可见，同名兄弟块可复用（顺序复用同寄存器，语义等价）。
+func saScopeEnter(scope *saScope) map[string]string {
+	saved := make(map[string]string, len(scope.types))
+	for k, v := range scope.types {
+		saved[k] = v
+	}
+	return saved
+}
+
+// saScopeExit 闭块域：丢弃块内新登记的名字，还原被遮蔽名的外层种（封存
+// popScope:11031-11035 + lookupBinding:11037-11044 逐层回查同形）。
+// 仍可见名的块内重名一律先被 `duplicate local` 大声拒（封存无此门且
+// 会静默复用同寄存器致外层读错值——铁律 4「禁静默错码」高于逐字同形，
+// 见 AGENTS.md §4 差分门禁）。
+func saScopeExit(scope *saScope, saved map[string]string) {
+	for k := range scope.types {
+		if _, ok := saved[k]; !ok {
+			delete(scope.types, k)
+		}
+	}
+	for k, v := range saved {
+		scope.types[k] = v
+	}
+}
+
 // saLowerArm 处理臂/循环体语句（经 saLowerStmt 与函数体共用全语句集）。
 // 臂内终结后仍有语句同样大声拒（与函数体同门）。
+// 块域自此入口统一开关（上游各 arm/loop 体各自 pushScope 同形，见
+// saScopeEnter 证据表）：臂内局部名不外泄，兄弟臂同名可复用。

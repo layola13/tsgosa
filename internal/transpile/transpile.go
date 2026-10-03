@@ -1528,6 +1528,18 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	case ast.KindEmptyStatement:
 		// 空语句 no-op（形状证据：封存 :886-887）。
 		return false, false
+	case ast.KindBlock:
+		// 裸块作语句（switch 臂 `{...}` / 独立 `{...}`）：块域 + 共享语句
+		// 全集；终结态经 saLowerArm 回传（封存 :847-852 pushScope + 逐语句
+		// lowerBlockStatement + popScope 同形）。
+		bd := s.AsBlock()
+		if bd == nil || bd.Statements == nil {
+			return false, false
+		}
+		if !saLowerArm(w, bd.Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, true
+		}
+		return saArmTerminates(bd.Statements.Nodes), false
 	default:
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
@@ -1596,6 +1608,8 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 }
 
 func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	saved := saScopeEnter(scope)
+	defer saScopeExit(scope, saved)
 	terminated := false
 	wasTry := false
 	for _, s := range stmts {
