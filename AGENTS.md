@@ -130,6 +130,7 @@
 - step100（链串方法基一次过，落`sa_class.go`判定门一处，零新文件）：`saIsStrFieldRead`增嵌套链基（纯查表，不落字；求值经step94链读已有）；2项等价（链串方法/扁平回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - step101（类嵌套字段一次过，落`sa_class.go`三处，零新文件）：记录门放行布局表内类/接口名（`inst`8B句柄+fsub）+new侧按形参种直定求值（字面量子布局构造/实例直传须同布局）+wire存ptr；读经`saChainBase`自动通；2项等价（类嵌套/数组回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
 - step102（参数属性嵌套一次过，落`sa_class.go`两处，零新文件）：参数属性门放行布局表名（`inst`+fsub；需传classes表）+隐式注入存ptr；new侧求值经step101直定自动通；2项等价（嵌套/标量回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
+- step103（静态嵌套链基一次过，落`sa_class.go`一处，零新文件）：`saChainBase`标识符基增类名基址分支（实例绑定优先，非inst/函数遮蔽沿旧门拒，类名直作基址`load C+off as ptr`；形状证据：封存 lowerMemberChain:8243-8308 + 基回裸名:2819 + 类布局入表:9837-9840）；外层链读经既有分发自动通；4项等价（静态嵌套/继承嵌套/实例链/遮蔽拒）全过；回归`go vet transpile/`+`testrunner`探针全绿；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

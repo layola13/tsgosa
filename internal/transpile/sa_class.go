@@ -2154,15 +2154,25 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 		}
 		h, def = scope.thisSelf, d
 	case pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier:
-		k, ok := scope.types[pa.Expression.Text()]
-		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		if k, ok := scope.types[pa.Expression.Text()]; ok {
+			if len(k) <= 5 || k[:5] != "inst:" {
+				return "", nil, "chained base is not a bound instance"
+			}
+			d, ok := scope.classes[k[5:]]
+			if !ok {
+				return "", nil, "unknown class " + k[5:]
+			}
+			h, def = pa.Expression.Text(), d
+		} else if _, ok := scope.funcs[pa.Expression.Text()]; ok {
+			return "", nil, "chained base is not a bound instance"
+		} else if d, ok := scope.classes[pa.Expression.Text()]; ok {
+			// 类名即基址（`C.p.a` 经类布局逐级解；形状证据：封存 lowerMemberChain:8243-8308
+			// segs 收集中缀 + layoutOfNode 解析基布局 + lowerExpr 基回裸名:2819
+			// `return n.Text()` + `load base + off as saname` + ftypes 下沉嵌套）。
+			h, def = pa.Expression.Text(), d
+		} else {
 			return "", nil, "chained base is not a bound instance"
 		}
-		d, ok := scope.classes[k[5:]]
-		if !ok {
-			return "", nil, "unknown class " + k[5:]
-		}
-		h, def = pa.Expression.Text(), d
 	case pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression:
 		ih, idef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {
