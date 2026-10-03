@@ -222,6 +222,11 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 		}
 		vkind, ok := saAnnotKind(vd.Type)
+		if !ok {
+			// 单标识符非泛型类型别名经顶层别名表消解（`type Count = i32`；
+			// 封存 lowerVarDeclList:1462 注解语义消解同形；失败沿旧门）。
+			vkind, ok = saResolveAliasKind(vd.Type, scope.aliasOf)
+		}
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str") {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
@@ -492,6 +497,66 @@ func saArrowReturnNode(arrow *ast.Node) *ast.TypeNode {
 	}
 }
 
+// saCollectTypeAliases 收集顶层 `type X = …`（名→目标类型节点；只记表，无码）。
+// 封存 link_erasure 纯类型擦除同形（类型别名无运行时形）。
+func saCollectTypeAliases(sf *ast.SourceFile) map[string]*ast.TypeNode {
+	out := map[string]*ast.TypeNode{}
+	for _, st := range sf.Statements.Nodes {
+		if st.Kind != ast.KindTypeAliasDeclaration {
+			continue
+		}
+		ta := st.AsTypeAliasDeclaration()
+		if ta == nil || ta.Type == nil {
+			continue
+		}
+		nm := st.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		out[nm.Text()] = ta.Type
+	}
+	return out
+}
+
+// saResolveAliasKind 消解单标识符非泛型类型别名到标量种（链式跟随、防环）。
+// 仅标量拼写经既有 `saAnnotKind` 复用（arr/str 走各自声明路径，无新语义）；
+// 泛型实例化/未知目标一律 false，调用方沿旧门大声拒。
+func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if t == nil || t.Kind != ast.KindTypeReference || len(aliasOf) == 0 {
+		return "", false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	if ref.TypeArguments != nil {
+		return "", false
+	}
+	seen := map[string]bool{}
+	cur := ref.TypeName.Text()
+	for i := 0; i < len(aliasOf)+1; i++ {
+		if seen[cur] {
+			return "", false
+		}
+		seen[cur] = true
+		tgt, ok := aliasOf[cur]
+		if !ok || tgt == nil {
+			return "", false
+		}
+		if k, ok := saAnnotKind(tgt); ok {
+			return k, true
+		}
+		// 目标仍为单标识符引用则继续跟随，否则（如接口/字面量）止步拒。
+		nr := tgt.AsTypeReferenceNode()
+		if tgt.Kind != ast.KindTypeReference || nr == nil || nr.TypeName == nil ||
+			nr.TypeName.Kind != ast.KindIdentifier || nr.TypeArguments != nil {
+			return "", false
+		}
+		cur = nr.TypeName.Text()
+	}
+	return "", false
+}
+
 // saIsTopLevelArrowConst 识别顶层 `const f = (...)=>...`/`= function...`
 // （单声明、标识符名、箭头/函数表达式初值；形状证据：封存 tryTopLevelArrow:1015-1032）。
 // 其余顶层变量声明不在此口径（调用方落既有拒绝）。
@@ -727,7 +792,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -778,7 +843,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf}
 	saSeedTopMaths(scope, topMaths)
 	if _, kinds, _, ok := saSynthArrowParams(arrow, scope.classes); ok {
 		for k, v := range kinds {
@@ -1056,7 +1121,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 		enumNonInt: scope.enumNonInt, classes: scope.classes, topConsts: scope.topConsts,
 		topStr: scope.topStr, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
 		nextLabel: scope.nextLabel, retKind: retKind, strPool: scope.strPool, src: scope.src,
-		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq}
+		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq, aliasOf: scope.aliasOf}
 	// 内层继承外层 math 别名（Math.* 方法体内可用；顶层 maths 已在外层种入）。
 	saSeedTopMaths(inner, scope.mathAlias)
 	for k, v := range paramKinds {
