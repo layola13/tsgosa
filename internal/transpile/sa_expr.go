@@ -238,6 +238,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// `f.call(thisArg, ...args)` 脱糖为直调（首参即 thisArg，与显式 self
+		// 惯例一致；实例自有 `call` 方法已在上分支分发；未知被调继续下探；
+		// 形状证据：封存 lowerCallDesugar:4281-4292+4512-4581）。
+		if pa.Name() != nil && pa.Name().Text() == "call" && pa.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			recv := pa.Expression.Text()
+			if _, ok := scope.funcs[recv]; ok {
+				if _, shadowed := scope.types[recv]; shadowed {
+					return "", false, recv + " is not a function"
+				}
+				return saEvalNamedCall(w, recv, ce, scope, pos, refusals, nextTemp)
+			}
+		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
 			if _, ok := scope.classes[pa.Expression.Text()]; ok {
 				return "", false, "static class members are not lowerable"
@@ -291,7 +304,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		}
 		return "", false, "only direct function calls lowerable"
 	}
-	name := ce.Expression.Text()
+	return saEvalNamedCall(w, ce.Expression.Text(), ce, scope, pos, refusals, nextTemp)
+}
+
+// saEvalNamedCall lowering具名直调（`f(...)` 与 `f.call(thisArg, ...)` 脱糖共用；
+// 形参种导向求值 + spread 展开 + 元数门 + void 形；
+// 形状证据：封存 lowerCallDesugar:4512-4581）。
+func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	callName := name
 	if name == "main" && scope.mainRenamed {
 		// 入口合成抢 `@main`（定义改名处同步；签名表仍以原名建）。

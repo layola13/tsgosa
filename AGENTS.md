@@ -71,6 +71,7 @@
 - step42（未初始化声明补齐，落 `sa_str.go`零新文件）：`let s: string;` 绑空句柄零值（`s = 0`，后赋重绑；`saemit.go:lowerVarDeclList:1405-1434`）；`let x: number;` 既有 `x = 0` 不变；`const` 缺 init 仍拒；数组缺 init 仍按 step12 大声拒。
 - step43（解构形参一次过，落 `transpile.go`零新文件）：`{x,y}:Point`/`[a,b]:i32[]` 合成隐藏句柄形参 `__darg`（兄弟名冲突追 `_`；`saemit.go:hiddenDestructuredParam:5347-5371`）+ 体顶按域展开（数组逐元越界归零 join，对象按布局 `load hid+off`；`destructureArray:5309-5333`/`destructureObject:5465-5509`/`drain:5376-5410`）；签名/预扫/调用元数按隐藏名一致（arr/inst 种导向句柄直传）；顶层 `const f=()=>`/`=function` 同形 out-of-line（块/表达式体；`tryTopLevelArrow:1015-1032`/`lowerArrowBinding:1058-1098`；生成器/async 拒）；门：rest/缺省/嵌套/未知域/无布局/局部箭头一律拒。
 - step44（逻辑赋值一次过，落 `sa_ctrl.go`+`sa_expr.go`零新文件）：`&&=`/`||=`/`??=` 真短路（目标读一次，RHS 只在赋值臂求值，两臂经 8 字节槽汇合；`saemit.go:lowerLogicAssign:3439-3565`，槽形同 `??`）；语句位全种、值位 i32/bool（串值位无临时量串跟踪，只走语句位）；`L_logas_assign/skip/end` 标签；串以 length 判空、`??=` 保指针判空；门：成员/元素/未知/非i32-bool-str目标、串值位一律拒（模块槽随 modstate 另域）。
+- step45（`f.call` 脱糖一次过，落 `sa_expr.go`零新文件）：`f.call(thisArg, ...args)` 直调（首参即 thisArg，与显式 self 惯例一致；直调共用 `saEvalNamedCall`：形参种导向/spread/元数/void 全复用；箭头同表同例；`saemit.go:lowerCallDesugar:4281-4292+4512-4581`）；门：实例自有 `call` 方法走方法分发、`?.call` 跳过、未知被调/遮蔽名/元数错一律拒（`apply`/`bind` 无证据不做）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
