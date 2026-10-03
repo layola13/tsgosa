@@ -674,6 +674,102 @@ func saIsHigherOrderMethod(m string) bool {
 	return false
 }
 
+// saIsChainArrValue 纯查表判定属性链是否为数组位（`c.a`/`q.r.a`；
+// 不落字；叶子须 arr，内节须 inst；实例/链基皆可）。
+func saIsChainArrValue(e *ast.Node, scope *saScope) bool {
+	pa := e.AsPropertyAccessExpression()
+	if pa.Name() == nil {
+		return false
+	}
+	var hdef *saClassDef
+	switch {
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword:
+		if scope.thisSelf == "" {
+			return false
+		}
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return false
+		}
+		hdef = d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier:
+		k, ok := scope.types[pa.Expression.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return false
+		}
+		d, ok := scope.classes[k[5:]]
+		if !ok {
+			return false
+		}
+		hdef = d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression:
+		inner := pa.Expression.AsPropertyAccessExpression()
+		if inner.Name() == nil {
+			return false
+		}
+		sub, ok := saChainSubDef(inner, scope)
+		if !ok {
+			return false
+		}
+		hdef = sub
+	default:
+		return false
+	}
+	off, ok := hdef.offsets[pa.Name().Text()]
+	if !ok || hdef.fkinds[pa.Name().Text()] != "arr" {
+		_ = off
+		return false
+	}
+	return true
+}
+
+// saChainSubDef 纯查表解属性链内节布局（`q.r`→R；不落字）。
+func saChainSubDef(pa *ast.PropertyAccessExpression, scope *saScope) (*saClassDef, bool) {
+	if pa.Name() == nil {
+		return nil, false
+	}
+	var hdef *saClassDef
+	switch {
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword:
+		if scope.thisSelf == "" {
+			return nil, false
+		}
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return nil, false
+		}
+		hdef = d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier:
+		k, ok := scope.types[pa.Expression.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return nil, false
+		}
+		d, ok := scope.classes[k[5:]]
+		if !ok {
+			return nil, false
+		}
+		hdef = d
+	case pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression:
+		inner := pa.Expression.AsPropertyAccessExpression()
+		sub, ok := saChainSubDef(inner, scope)
+		if !ok {
+			return nil, false
+		}
+		hdef = sub
+	default:
+		return nil, false
+	}
+	fname := pa.Name().Text()
+	if _, ok := hdef.offsets[fname]; !ok || hdef.fkinds[fname] != "inst" {
+		return nil, false
+	}
+	sub, ok := scope.classes[hdef.fsub[fname]]
+	if !ok {
+		return nil, false
+	}
+	return sub, true
+}
+
 // saIsArrValue 语法级判定表达式是否为数组位（不落字）。
 func saIsArrValue(e *ast.Node, scope *saScope) bool {
 	if e == nil {
@@ -698,6 +794,22 @@ func saIsArrValue(e *ast.Node, scope *saScope) bool {
 		return saIsArrValue(e.AsNonNullExpression().Expression, scope)
 	case ast.KindTypeAssertionExpression:
 		return saIsArrValue(e.AsTypeAssertion().Expression, scope)
+	case ast.KindElementAccessExpression:
+		// 嵌套字面量直供基（`[[1,2]][0]` 内层为句柄；变量基元素种未知，沿旧门）。
+		ea := e.AsElementAccessExpression()
+		if ea.Expression != nil && ea.Expression.Kind == ast.KindArrayLiteralExpression {
+			if al := ea.Expression.AsArrayLiteralExpression(); al.Elements != nil {
+				for _, el := range al.Elements.Nodes {
+					if el.Kind == ast.KindArrayLiteralExpression {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	case ast.KindPropertyAccessExpression:
+		// 实例/链 arr 字段（`c.a`/`q.r.a` 纯查表；私名/静态沿旧门）。
+		return saIsChainArrValue(e, scope)
 	default:
 		return false
 	}
