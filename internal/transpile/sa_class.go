@@ -42,21 +42,72 @@ type saClassDef struct {
 	isAbstract bool
 }
 
+// saTopLevelClassExpr 识别顶层 `const C = class...` / `const D = class E...`
+// （单声明、标识符名、类表达式初值；形状证据：封存 recordClassNamed:9586-9611
+// 声明与表达式同形 + bound/own 双名）。
+func saTopLevelClassExpr(st *ast.Node) (string, *ast.Node, bool) {
+	if st.Kind != ast.KindVariableStatement {
+		return "", nil, false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return "", nil, false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) != 1 {
+		return "", nil, false
+	}
+	vd := dl.Declarations.Nodes[0].AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return "", nil, false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	init := vd.Initializer
+	if init.Kind != ast.KindClassExpression {
+		return "", nil, false
+	}
+	return nm.Text(), init, true
+}
+
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
 func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
-	if st.Kind != ast.KindClassDeclaration {
+	return saRecordClassNamed(st, "", classes, pos, refusals)
+}
+
+// saRecordClassNamed 记录类定义（声明与表达式同形；forceName 供
+// `const C = class...` 绑定名，自身具名（`class E`）另记同体别名；
+// 字段初值表达式忽略（布局只记槽位；封存 recordClassNamed:9691-9743
+// 不读 Initializer，初值不求值）。
+func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	var members []*ast.Node
+	var heritage *ast.HeritageClauseList
+	switch st.Kind {
+	case ast.KindClassDeclaration:
+		cd := st.AsClassDeclaration()
+		members = cd.Members.Nodes
+		heritage = cd.HeritageClauses
+	case ast.KindClassExpression:
+		ce := st.AsClassExpression()
+		members = ce.Members.Nodes
+		heritage = ce.HeritageClauses
+	default:
 		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "only class declarations lowerable"})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "only class declarations and expressions lowerable"})
 		return false
 	}
-	cd := st.AsClassDeclaration()
-	nm := st.Name()
-	if nm == nil || nm.Kind != ast.KindIdentifier {
-		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous classes are not lowerable"})
-		return false
+	name := forceName
+	if name == "" {
+		nm := st.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous classes are not lowerable"})
+			return false
+		}
+		name = nm.Text()
 	}
-	name := nm.Text()
 	if _, dup := classes[name]; dup {
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + name})
@@ -68,7 +119,7 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
 	// implements 擦除；多 extends/动态基/未知基/环一律拒。
 	// 形状证据：封存 parseHeritage:42-83 + inheritClass:88-215。
-	if hc := cd.HeritageClauses; hc != nil {
+	if hc := heritage; hc != nil {
 		for _, h := range hc.Nodes {
 			if h.Kind != ast.KindHeritageClause {
 				continue
@@ -152,7 +203,7 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		def.isAbstract = true
 	}
 	off := len(def.fields) * 4
-	for _, m := range cd.Members.Nodes {
+	for _, m := range members {
 		if len(m.Decorators()) > 0 {
 			ln, col := pos(m.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "member decorators are not lowerable"})
@@ -172,11 +223,8 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static class members are not lowerable"})
 				return false
 			}
-			if pd.Initializer != nil {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field initializers are not lowerable (wire in constructor)"})
-				return false
-			}
+			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
+			// 9691-9743 不读 Initializer；初值语义随 alloc，见 AGENTS step47）。
 			// 字段恒 i32（number/i32 注解；其余宽度无槽）。
 			if pd.Type != nil {
 				if k, ok := saAnnotKind(pd.Type); !ok || k != "i32" {
@@ -290,6 +338,18 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	}
 	def.size = off
 	classes[name] = def
+	// 自身具名（`const D = class E`）记同体别名（值对；封存 inner 名泄漏 gap
+	// 即此语义；别名冲突诚实拒）。
+	if forceName != "" {
+		if own := st.Name(); own != nil && own.Kind == ast.KindIdentifier && own.Text() != name {
+			if _, dup := classes[own.Text()]; dup {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate class " + own.Text()})
+				return false
+			}
+			classes[own.Text()] = def
+		}
+	}
 	return true
 }
 

@@ -3,6 +3,8 @@ package transpile
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
 )
@@ -380,4 +382,215 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 	scope.types[name] = "i32"
 	return true
+}
+
+// sa_decl.go 后半 — 顶层 const 函数值（`const f = (...)=>...` / `= function...`）。
+// 归声明域（transpile.go 禁巨无霸：仅留 saLowerSourceFile 编排 + 函数签名核）。
+// 形状证据：封存 tryTopLevelArrow:1015-1032 + lowerArrowBinding:1058-1098。
+
+// saSynthArrowParams 合成箭头/函数表达式形参表（与 saSynthParams 同核；
+// 形状证据：封存 lowerArrowBinding:1074-1098，模式走同 hiddenDestructuredParam）。
+func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef) ([]string, map[string]string, []saDestructurePending, bool) {
+	var nodes []*ast.Node
+	if pl := arrow.ParameterList(); pl != nil {
+		nodes = pl.Nodes
+	}
+	return saSynthParamNodes(nodes, classes)
+}
+
+// saArrowParamNames 合成箭头形参名表（标识符直通；模式取隐藏名，与 saParamNames 同序）。
+func saArrowParamNames(arrow *ast.Node) ([]string, bool) {
+	var nodes []*ast.Node
+	if pl := arrow.ParameterList(); pl != nil {
+		nodes = pl.Nodes
+	}
+	var out []string
+	taken := map[string]bool{}
+	for _, p := range nodes {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.DotDotDotToken != nil || pd.Initializer != nil || pd.QuestionToken != nil {
+			return nil, false
+		}
+		nm := pd.Name()
+		if nm == nil {
+			return nil, false
+		}
+		if nm.Kind == ast.KindIdentifier {
+			out = append(out, nm.Text())
+			taken[nm.Text()] = true
+			continue
+		}
+		if nm.Kind != ast.KindObjectBindingPattern && nm.Kind != ast.KindArrayBindingPattern {
+			return nil, false
+		}
+		hid := "__darg"
+		for taken[hid] {
+			hid += "_"
+		}
+		taken[hid] = true
+		out = append(out, hid)
+	}
+	return out, true
+}
+
+// saArrowReturnNode 取箭头/函数表达式的返回注解（无注解 nil；形状证据：
+// 封存 lowerArrowBinding:1059-1068）。
+func saArrowReturnNode(arrow *ast.Node) *ast.TypeNode {
+	switch arrow.Kind {
+	case ast.KindArrowFunction:
+		return arrow.AsArrowFunction().Type
+	case ast.KindFunctionExpression:
+		return arrow.AsFunctionExpression().Type
+	default:
+		return nil
+	}
+}
+
+// saIsTopLevelArrowConst 识别顶层 `const f = (...)=>...`/`= function...`
+// （单声明、标识符名、箭头/函数表达式初值；形状证据：封存 tryTopLevelArrow:1015-1032）。
+// 其余顶层变量声明不在此口径（调用方落既有拒绝）。
+func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
+	if st.Kind != ast.KindVariableStatement {
+		return "", nil, false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return "", nil, false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) != 1 {
+		return "", nil, false
+	}
+	d := dl.Declarations.Nodes[0]
+	vd := d.AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return "", nil, false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	init := vd.Initializer
+	if init.Kind != ast.KindArrowFunction && init.Kind != ast.KindFunctionExpression {
+		return "", nil, false
+	}
+	return nm.Text(), init, true
+}
+
+// saLowerArrowConst lowering 顶层 `const f = (...)=>...`/`= function...`
+// （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
+// + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
+// 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, classes map[string]*saClassDef, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool) {
+	if arrow.Kind == ast.KindFunctionExpression {
+		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
+			ln, col := pos(arrow.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "generators are not lowerable"})
+			return
+		}
+	}
+	if ast.HasModifier(arrow, ast.ModifierFlagsAsync) {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "async functions are not lowerable"})
+		return
+	}
+	params, ok := saArrowParamNames(arrow)
+	if !ok {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameters"})
+		return
+	}
+	retKind, ok := saReturnKind(saArrowReturnNode(arrow))
+	if !ok {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported return annotation"})
+		return
+	}
+	isVoid := retKind == "void"
+	emitName := name
+	if emitName == "main" && mainRenamed {
+		emitName = "main__user"
+	}
+	sig := "@" + emitName + "(" + strings.Join(params, ", ") + ")"
+	if !isVoid {
+		if retKind == "string" {
+			sig += " -> ptr"
+		} else {
+			sig += " -> i32"
+		}
+	}
+	sig += ":\n"
+	w.Write(sig)
+	body := arrow.Body()
+	if body == nil {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
+		return
+	}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, classes: classes, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, addImport: needImport}
+	if _, kinds, _, ok := saSynthArrowParams(arrow, scope.classes); ok {
+		for k, v := range kinds {
+			scope.types[k] = v
+		}
+	} else {
+		ln, col := pos(arrow.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
+		return
+	}
+	if _, _, pendings, ok := saSynthArrowParams(arrow, scope.classes); ok && len(pendings) > 0 {
+		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
+			return
+		}
+	}
+	if body.Kind == ast.KindBlock {
+		stmts, ok := saBlockStmts(body)
+		if !ok {
+			ln, col := pos(arrow.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
+			return
+		}
+		if len(stmts) == 0 {
+			if !isVoid {
+				ln, col := pos(arrow.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
+				return
+			}
+			w.Write("  ret\n")
+			return
+		}
+		terminated := false
+		for _, s := range stmts {
+			if terminated {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
+				return
+			}
+			if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+				return
+			} else if done {
+				terminated = true
+			}
+		}
+		if !terminated {
+			if !isVoid {
+				ln, col := pos(arrow.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
+				return
+			}
+			w.Write("  ret\n")
+		}
+		return
+	}
+	if isVoid {
+		ln, col := pos(body.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported void arrow expression body"})
+		return
+	}
+	op, msg := saEvalReturnOperand(w, body, retKind, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(body.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return
+	}
+	w.Write(fmt.Sprintf("  ret %s\n", op))
 }

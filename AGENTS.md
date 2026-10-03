@@ -8,13 +8,14 @@
 >
 > 禁止以“整体搬迁封存树”（`internal/saemit/*`、`cmd/tsgo-sa/*` 新文件）替代重构——该方案经用户否决。
 
-## 1. 五条铁律（违反即回滚）
+## 1. 六条铁律（违反即回滚）
 
 1. **必须在已有架构做**：只改 `tsgosa` 已有文件（`internal/compiler/emitter.go` 管线、`internal/transformers/*` 中转、`internal/printer/*` 落字、`internal/transpile/transpile.go` 单文件口、`cmd/tsgo/main.go` 薄 CLI）。不另起平行 lowering 体系。
 2. **必须替换已有生成的 JS 逻辑**：SA 发射位即 JS 管线末端（`emitter.go:getScriptTransformers` 跑同一变换链 → 末端 printer 由 JS 文本换成 SA 文本 + `sci` 宏）。`saemit.go` 式 11k 行独立发射、绕过 `transformers/printer` 的做法已封存（见 `satsgo/_archive_saemit_20261002/README.md`），不得重犯。之前 0 复用已有文件、浪费底座，本次必须用底座代码，直接替换掉已有的 JS 逻辑。
 3. **禁止新建文件**：`internal/saemit/*`、`cmd/tsgo-sa/*`、任何新 `.go`/`.py` 一律不建（整体搬迁封存树亦属新建，同样禁止）。satsgo saemit 全部逻辑只允许以编辑已有文件方式并入；确需拆分超长文件（单文件超约 500 行或职责超两项）时，先问 JEV，获批后拆分，且拆分即独立 commit + 单测。
 4. **禁止原创逻辑**：语义以三处上游为准——`binder`（控制流/绑定）→ `checker`（类型/窄化）→ `printer`（JS 发射形状即语义基准），注释必须写明 `internal/` 文件行；`sci` 侧以 `sala/content/03_sa_asm` + `sci/sa_std` 契约 + `sa_plugin_ts` 279 demos 为准；`@import` 只指向 `sci/sa_std`（或 node/deno/bun 插件 `.sai` 白名单），`StdProjectionTable` 式逐字核对，无符号一律定位拒绝，永不静默错码、永不自造 helper/调用惯例。
 5. **禁止在 MAIN.GO 里堆逻辑**：`cmd/tsgo/main.go` 只留 `runMain` 薄分发（flag 解析 + 调已有 internal 入口）。分析（`compiler.Program`）、中转（`tstransforms TypeEraser/RuntimeSyntax + jsxtransforms`）、发射（`printer.EmitTextWriter` 后端 + `sci` 宏）一律进已有 `internal/*` 文件；`main.go` 新增超 20 行即违规。
+6. **禁止在 transpile.go 写巨无霸**（用户立项 2026-10-03）：`internal/transpile/transpile.go` 只留 `saLowerSourceFile` 编排（预扫/发射分发 wiring，单次增量约 30 行内）+ 函数签名核；领域 lowering 按归属落已有 `sa_*.go`（声明→`sa_decl.go`、类→`sa_class.go`、表达式→`sa_expr.go`、语句/控制流→`sa_ctrl.go`、串→`sa_str.go`、数组→`sa_arr.go`）。step43b 箭头 lowering 已迁 `sa_decl.go`（transpile.go 1721→1513 行）。
 
 ## 2. 管线（与 satsgo/SA_TS_TO_SA_DESIGN.md 一致，路径已换成本仓）
 
@@ -54,7 +55,7 @@
 - CI 节流：`.github/workflows/ci.yml` 与 `codeql.yml` 触发器改为仅 tag 推送（`push.tags: v*`），main 分支直推/PR/merge_group/定时不再消耗 Action 额度。
 - step26（数组方法一次过收官，落 `sa_arr.go`）：push（扩容拷贝）/pop/shift/unshift/fill/sort（数值插入；比较器走 cmp 内联，具名比较器拒）/indexOf-lastIndexOf-includes（扫描）/reverse/slice/at/join（interp 折叠）/copyWithin/toReversed/toSorted/with/toSpliced/concat（含 spread）/`Array.from`（`{length}` 零数组/切片克隆/mapper 内联 map）+ 高阶 forEach-map-filter-find 系-some-every-reduce 系（回调现场内联：形参快照绑定 + return 槽拦截；串回调值/具名回调/形参超量拒）；调用核经成员分发，返回种导向各求值位（i32/arr/str）；下标读基放宽到数组值调用；门：未知成员/元数错一律拒。
 - step27（core 顶层收官）：`export function`/`export default function` 修饰擦除直通；interface/type-alias/enum 声明擦除（无码）；`export {}`/`export =` 无码（`lowerModuleDecl:10329-10336`）；type-only import 擦除，值 import 拒（单文件）；整数枚举预扫成表 + `E.M` 折叠（`integerInit:9258-9277`；串/计算初值、未知成员拒）。
-- step28（class 最小子集，落 `sa_class.go`）：单类 i32 字段布局（4 字节槽）+ `new`（布局 alloc + 构造 `this.f = param` wiring）+ 方法调用内联（形参快照 + this 指向 + 槽汇合，复用回调机）+ 字段读写（含语句位 `o.f = v`）；门：继承/抽象/静态/访问器/装饰器/私有·计算名/参数属性/字段初值/非 param 右值/具名外回调一律拒。
+- step28（class 最小子集，落 `sa_class.go`）：单类 i32 字段布局（4 字节槽）+ `new`（布局 alloc + 构造 `this.f = param` wiring）+ 方法调用内联（形参快照 + this 指向 + 槽汇合，复用回调机）+ 字段读写（含语句位 `o.f = v`）+ 字段初值放行忽略（step47 起：布局只记槽位不求值，镜像封存）；门：继承/抽象/静态/访问器/装饰器/私有·计算名/参数属性/非 param 右值/具名外回调一律拒。
 - step29（date 最小子集 + 正则门，落 `sa_date.go`，JEV 落件 a 97%）：`new Date()`/now/parse/getTime/setter 皆以 date 种（i64 millis）不透明流转，永不截断；串方法（toISOString/toString 系）与模板/console 插值（经 `sa_fmt_i64_into`）直调 `time.sai` 现货；getters 窄化为 i32（分量恒 < 2^31，窄化点唯一）；setters 变异重绑；parse 非法 panic(2503)；getTimezoneOffset 恒 0；门：有参 new、i32 位 millis、toLocale 系、未知成员一律拒。正则：satsgo/sa_plugin_ts 均无 lowering 证据（regex.sai 系无人调用现货），铁律 4 禁原创，字面量/new RegExp/.test 一律大声拒。
 - step30（Map/Set 最小子集，落 `sa_map.go`，JEV 落件 a 84%）：`new Map()`/`new Set()` 零参柄直调 btree 后端；Map set/get/has/delete/clear/size,getSize + Set add/has/delete/clear/size 全直调现货（`lowerMapMethod:4726-4803`/`lowerSetMethod:4806-4859`）；键 i32（单元切片）/串直通，值 i32（读回窄化点唯一）；门：有参 new/keys-values-entries（vec 模型超槽）/未知成员/元数错/条件位/`.length` 属性形一律拒。
 - step31（typeof 收官，落 `sa_expr.go`/`sa_str.go`）：`typeof v === "undefined"`（任一序、==/===/!=/!==）标识符空检查（eq/ne v,0；`lowerTypeofGuard:156-178`）；其余对静态种折叠 `eq/ne 1, 1` 常量临时量（字面按语法表null方言映 undefined，标识符按作用域种i32/bool/str/arr/map/set/date/inst→number/boolean/string/object，别名/函数→function；`lowerTypeofConstFold:236-283`）；值位具化种类串（`lowerTypeof:9171-9239`）；门：非标识符守卫/未知全局（无 env-probe）/计算值一律拒。
@@ -73,6 +74,7 @@
 - step44（逻辑赋值一次过，落 `sa_ctrl.go`+`sa_expr.go`零新文件）：`&&=`/`||=`/`??=` 真短路（目标读一次，RHS 只在赋值臂求值，两臂经 8 字节槽汇合；`saemit.go:lowerLogicAssign:3439-3565`，槽形同 `??`）；语句位全种、值位 i32/bool（串值位无临时量串跟踪，只走语句位）；`L_logas_assign/skip/end` 标签；串以 length 判空、`??=` 保指针判空；门：成员/元素/未知/非i32-bool-str目标、串值位一律拒（模块槽随 modstate 另域）。
 - step45（`f.call` 脱糖一次过，落 `sa_expr.go`零新文件）：`f.call(thisArg, ...args)` 直调（首参即 thisArg，与显式 self 惯例一致；直调共用 `saEvalNamedCall`：形参种导向/spread/元数/void 全复用；箭头同表同例；`saemit.go:lowerCallDesugar:4281-4292+4512-4581`）；门：实例自有 `call` 方法走方法分发、`?.call` 跳过、未知被调/遮蔽名/元数错一律拒（`apply`/`bind` 无证据不做）。
 - step46（对象 spread 一次过，落 `sa_class.go`零新文件）：`{...o, y:20}` 按源序布局复制（后 prop 覆盖先生效；源：inst 绑定/`this`/字面量递归；`saemit.go:lowerObjectLiteral:9009+`，键集去重 9066-9076 + 源序重放 9086-9103；零初始化省略：目标每域必有来源；全 i32 无类型门）；门：动态键/无布局源/键集失配/方法一律拒（消息逐字对齐封存）。
+- step47（顶层类表达式一次过，落 `sa_class.go` + transpile.go 接线 9 行，零新文件）：`const C = class...`/`const D = class E...` 按绑定名记录布局（自身具名记同体别名；声明与表达式同形，`saemit.go:recordClassNamed:9586-9611`）+ 字段初值放行忽略（布局只记槽位；初值语义随 alloc，`v: i32 = 4` 读出为 alloc 语义值）；门：static/局部类表达式/具名冲突一律拒（static 折叠另轮）。附：transpile.go 禁巨无霸同步执行——step43b 箭头 lowering（`saLowerArrowConst` + 识别/形参/返回注解 4 helper，约 200 行）迁 `sa_decl.go`（声明域），transpile.go 1721→1513 行，行为零变（7 项等价用例全过）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
