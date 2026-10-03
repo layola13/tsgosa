@@ -510,7 +510,20 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		}
 	} else {
 		w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
-		scope.types[binding] = "i32"
+		// 嵌套字面量直巡的行绑定记 arr（行即内层句柄，`row[0]`/`row.length`
+		// 可用；扁平直巡仍记 i32；变量被巡元素种未知，沿旧 i32 门）。
+		bindKind := "i32"
+		if be := fo.Expression; be != nil && be.Kind == ast.KindArrayLiteralExpression {
+			if al := be.AsArrayLiteralExpression(); al.Elements != nil {
+				for _, el := range al.Elements.Nodes {
+					if el.Kind == ast.KindArrayLiteralExpression {
+						bindKind = "arr"
+						break
+					}
+				}
+			}
+		}
+		scope.types[binding] = bindKind
 	}
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
