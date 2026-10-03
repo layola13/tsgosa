@@ -93,6 +93,7 @@
 - step63（私有字段一次过，落 `sa_class.go` + 读写/存/`in`/静态接线，零新文件）：`#x` 按属主 mangle（`#C#x`，`privFieldKey:8208`），读/存/构造连线按词法属主解（域外/未声明/super 拒因逐字对齐 `8218-8282`），`#x in o` 品牌静态折叠，`static #K` 类名基+属主一致折叠；方法实例形参直传绑定（`add(o: C)` 跨实例同属主读，子类实例兼容基形参，回调变参种表数组侧零行为变）；7 式（3 通形 + 4 拒因）全过；门：私有方法/getter、私有静态方法、bool/str 方法形参仍拒。
 - step64（ambient 擦除一次过，落 `sa_decl.go` 判定 + 发射跳过，零新文件）：`declare module/global/namespace` 与串名模块皆擦除无码（`isAmbientModule:94-105` 同形；`export as namespace` 既有擦除）；运行时 namespace 仍拒（展平大项另立）；门：函数体内 ambient 仍拒（顶层口径）。
 - step65（labels 锁形一次过，落 `sa_ctrl.go` 消息对齐，零新文件）：标号循环/块/switch 与 6 拒因（未定义/break-continue、块 continue、重名、表达式标号、顺序复用放行）全过；标号拒因改 kind 名（`KindExpressionStatement`），与封存断言逐字对齐。
+- step66（for 宏一次过，落 `sa_ctrl.go`，零新文件）：规范计数循环（`let i=L0; i<L1; step`，非负整数字面界+正字面步进，`i++/++i/i+=K/i=i+K`）走 `EXPAND FOR_INIT/CHECK/NEXT` + `control.sal`（`canonicalForShape:1902-1955` + `tryLowerForMacro:1962-2037`；continue 落增量前，doIncr 沿既有规则）；`<=`/标识符界/递减/调用界保 legacy 原形无宏无import。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

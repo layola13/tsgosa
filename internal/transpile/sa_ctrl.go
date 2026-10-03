@@ -557,8 +557,130 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 
 // saLowerFor lowering for（形状证据：封存 lowerFor:2043-2122 legacy 形；
 // canonical 宏形 FOR_INIT/FOR_CHECK/FOR_NEXT 暂不采用，统一 legacy br 形）。
+// saNonNegIntLiteral 报告无符号整数字面（纯十进制数字；浮点/十六进制/
+// 负数走 legacy；形状证据：封存 nonNegIntLiteral:1833-1849）。
+func saNonNegIntLiteral(n *ast.Node) (string, bool) {
+	if n == nil || n.Kind != ast.KindNumericLiteral {
+		return "", false
+	}
+	t := n.Text()
+	if t == "" || saIsFloatLit(t) {
+		return "", false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return "", false
+		}
+	}
+	return t, true
+}
+
+// saCanonicalForStep 匹配 `i++`/`++i`/`i += K`/`i = i + K`（字面步进 K>=1，
+// 报步进文本；形状证据：封存 canonicalForStep:1851-1900）。
+func saCanonicalForStep(ctr string, incr *ast.Node) (string, bool) {
+	if incr == nil {
+		return "", false
+	}
+	isCtr := func(n *ast.Node) bool {
+		return n != nil && n.Kind == ast.KindIdentifier && n.Text() == ctr
+	}
+	switch incr.Kind {
+	case ast.KindPostfixUnaryExpression:
+		un := incr.AsPostfixUnaryExpression()
+		if un.Operator == ast.KindPlusPlusToken && isCtr(un.Operand) {
+			return "1", true
+		}
+	case ast.KindPrefixUnaryExpression:
+		un := incr.AsPrefixUnaryExpression()
+		if un.Operator == ast.KindPlusPlusToken && isCtr(un.Operand) {
+			return "1", true
+		}
+	case ast.KindBinaryExpression:
+		bin := incr.AsBinaryExpression()
+		if bin.OperatorToken == nil {
+			return "", false
+		}
+		switch bin.OperatorToken.Kind {
+		case ast.KindPlusEqualsToken:
+			if isCtr(bin.Left) {
+				if k, ok := saNonNegIntLiteral(bin.Right); ok && k != "0" {
+					return k, true
+				}
+			}
+		case ast.KindEqualsToken:
+			if !isCtr(bin.Left) || bin.Right == nil || bin.Right.Kind != ast.KindBinaryExpression {
+				return "", false
+			}
+			add := bin.Right.AsBinaryExpression()
+			if add.OperatorToken == nil || add.OperatorToken.Kind != ast.KindPlusToken {
+				return "", false
+			}
+			if isCtr(add.Left) {
+				if k, ok := saNonNegIntLiteral(add.Right); ok && k != "0" {
+					return k, true
+				}
+			} else if isCtr(add.Right) {
+				if k, ok := saNonNegIntLiteral(add.Left); ok && k != "0" {
+					return k, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// saCanonicalForShape 匹配 `for (let i = L0; i < L1; step)`（非负整数字面
+// 界 + 正字面步进；余下（<=、调用界、标识符界、浮点、零步进）走 legacy；
+// 形状证据：封存 canonicalForShape:1902-1955。FOR_CHECK 作 ult 比较，
+// legacy 作 slt；计数器恒非负字面起步+正步进时两形一致，标识符界留 legacy）。
+func saCanonicalForShape(fs *ast.ForStatement) (ctr, lo, hi, step string, ok bool) {
+	init := fs.Initializer
+	if init != nil && init.Kind == ast.KindVariableStatement {
+		init = init.AsVariableStatement().DeclarationList
+	}
+	if init == nil || init.Kind != ast.KindVariableDeclarationList {
+		return "", "", "", "", false
+	}
+	dl := init.AsVariableDeclarationList()
+	if len(dl.Declarations.Nodes) != 1 {
+		return "", "", "", "", false
+	}
+	d := dl.Declarations.Nodes[0]
+	vd := d.AsVariableDeclaration()
+	if vd == nil {
+		return "", "", "", "", false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", "", "", "", false
+	}
+	lo, good := saNonNegIntLiteral(vd.Initializer)
+	if !good {
+		return "", "", "", "", false
+	}
+	cond := fs.Condition
+	if cond == nil || cond.Kind != ast.KindBinaryExpression {
+		return "", "", "", "", false
+	}
+	bin := cond.AsBinaryExpression()
+	if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindLessThanToken {
+		return "", "", "", "", false
+	}
+	if bin.Left == nil || bin.Left.Kind != ast.KindIdentifier || bin.Left.Text() != nm.Text() {
+		return "", "", "", "", false
+	}
+	hi, good = saNonNegIntLiteral(bin.Right)
+	if !good {
+		return "", "", "", "", false
+	}
+	step, good = saCanonicalForStep(nm.Text(), fs.Incrementor)
+	if !good {
+		return "", "", "", "", false
+	}
+	return nm.Text(), lo, hi, step, true
+}
+
 func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
-	_ = needImport
 	fs := s.AsForStatement()
 	if !saLowerForInit(w, fs.Initializer, scope, pos, refusals, nextTemp) {
 		return false
@@ -582,6 +704,11 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for body"})
 			return false
 		}
+	}
+	// 规范计数循环走上游 control.sal 宏（余下保 legacy 原形；
+	// 形状证据：封存 tryLowerForMacro:1962-2037）。
+	if ctr, lo, hi, step, ok := saCanonicalForShape(fs); ok {
+		return saLowerForMacro(w, s, fs, bodyNode, bodyStmts, ctr, lo, hi, step, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	}
 	topL := fmt.Sprintf("L_for_top_%d", *nextLabel)
 	*nextLabel++
@@ -626,6 +753,48 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	}
 	if !saArmTerminates(bodyStmts) {
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return true
+}
+
+// saLowerForMacro lowering规范计数循环（`for (let i = L0; i < L1; step)` 经
+// EXPAND FOR_INIT/FOR_CHECK/FOR_NEXT；域/标号/break-continue/终结纪律镜 legacy；
+// continue 落增量前（执行序），无 continue 不留死标号；形状证据：封存
+// tryLowerForMacro:1962-2037。doIncr 沿既有规则（可达 continue 恒在臂内，
+// 故与封存 contJumps 规则在可接受程序上一致）。
+func saLowerForMacro(w printer.EmitTextWriter, s *ast.Node, fs *ast.ForStatement, bodyNode *ast.Node, bodyStmts []*ast.Node, ctr, lo, hi, step string, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	_ = s
+	needImport("sa_std/control.sal")
+	topL := fmt.Sprintf("L_for_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_for_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_for_end_%d", *nextLabel)
+	*nextLabel++
+	needCont := fs.Incrementor != nil && bodyNode != nil && saBodyHasContinue(bodyNode)
+	contL := topL
+	if needCont {
+		contL = fmt.Sprintf("L_for_cont_%d", *nextLabel)
+		*nextLabel++
+	}
+	w.Write(fmt.Sprintf("  EXPAND FOR_INIT %s, %s\n", ctr, lo))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	w.Write(fmt.Sprintf("  EXPAND FOR_CHECK %s, %s, %s, %s\n", ctr, hi, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL})
+	saBindPendingLabels(scope, false)
+	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.loops = scope.loops[:len(scope.loops)-1]
+	if !armOK {
+		return false
+	}
+	if needCont {
+		w.Write(fmt.Sprintf("%s:\n", contL))
+	}
+	// FOR_NEXT 自带回跳（legacy 增量需显式 jmp；体终结且无 continue 用则落空到 end）。
+	if fs.Incrementor != nil && (!saArmTerminates(bodyStmts) || needCont) {
+		w.Write(fmt.Sprintf("  EXPAND FOR_NEXT %s, %s, %s\n", ctr, step, topL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	return true
