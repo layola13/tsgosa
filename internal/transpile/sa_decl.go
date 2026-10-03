@@ -615,13 +615,8 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 		return false
 	}
 	ns := nm.Text()
-	type fold struct {
-		name string
-		text string
-		str  bool
-	}
-	var folds []fold
 	seen := map[string]bool{}
+	folded := 0
 	for _, m := range md.Body.AsModuleBlock().Statements.Nodes {
 		if m == nil || m.Kind != ast.KindVariableStatement {
 			return false
@@ -668,27 +663,36 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
 					return true
 				}
-				folds = append(folds, fold{name: vnm.Text(), text: init.Text()})
+				consts[ns+"."+vnm.Text()] = init.Text()
+				folded++
 			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
-				folds = append(folds, fold{name: vnm.Text(), text: init.Text(), str: true})
+				consts[ns+"."+vnm.Text()] = init.Text()
+				strs[ns+"."+vnm.Text()] = true
+				folded++
 			case ast.KindTrueKeyword:
-				folds = append(folds, fold{name: vnm.Text(), text: "1"})
+				consts[ns+"."+vnm.Text()] = "1"
+				folded++
 			case ast.KindFalseKeyword:
-				folds = append(folds, fold{name: vnm.Text(), text: "0"})
+				consts[ns+"."+vnm.Text()] = "0"
+				folded++
+			case ast.KindIdentifier:
+				// 同 NS 前向读（按名折叠；串性透传；未定义沿旧拒）。
+				if t, ok := consts[ns+"."+init.Text()]; ok {
+					consts[ns+"."+vnm.Text()] = t
+					if strs[ns+"."+init.Text()] {
+						strs[ns+"."+vnm.Text()] = true
+					}
+					folded++
+					continue
+				}
+				return false
 			default:
 				return false
 			}
 		}
 	}
-	if len(folds) == 0 {
+	if folded == 0 {
 		return false
-	}
-	for _, f := range folds {
-		key := ns + "." + f.name
-		consts[key] = f.text
-		if f.str {
-			strs[key] = true
-		}
 	}
 	return true
 }
