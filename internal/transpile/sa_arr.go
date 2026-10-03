@@ -11,42 +11,80 @@ import (
 // saLowerVarDeclList lowering 声明表（语句位与 for 初始化位共用）。
 // saLowerArrayLiteral lowering 数组字面量（i32/串元，形状证据：封存
 // lowerArrayLiteral:8684-8740：`alloc 16` 头 + `alloc len*4` 缓冲 + 逐槽
-// `store … as i32` + 头部 ptr/len + `!buf`；spread 大声拒）。
+// `store … as i32` + 头部 ptr/len + `!buf`；spread 经空数组 + push/整片合并
+// （封存 lowerArrayLiteral:8680-8708）。
 // 元求值与上游 lowerExpr 同形：串元走串位（具化切片 temp 归属，具名直存），
 // 嵌套字面量递归（内层头归属，外层存后返前释放）；i32 元沿既有纯临时量口径。
 // 头槽一律归属（封存尾 declareOwned(h)；具名绑定消费，余下返前释放）。
 // 嵌套数组字面量元递归构造内层 slice 句柄存句柄值（外层 esz 恒 4，与上游
 // lowerExpr 递归同形；串句柄混存截断风险由注解门守，见调用方）。
+// saArrayLiteralElem 求数组字面量单个普通元（嵌套字面量递归/串位/其余 i32；
+// spread 元不在此（调用方走合并通道）；形状证据：封存 lowerArrayLiteral:8709-8735
+// 普通元逐元 lowerExpr 同形）。
+func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if el.Kind == ast.KindArrayLiteralExpression {
+		h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return h, ""
+	}
+	if saIsStrExpr(el, scope) {
+		// 串元（封存 lowerExpr 串分支同形；字面量具化 temp 已归属，
+		// 具名直存不碰归属——名下值仍由名释放）。
+		h, msg := saEvalStr(w, el, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if saIsTempOp(h) {
+			saOwnTemp(scope, h)
+		}
+		return h, ""
+	}
+	v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	return v, ""
+}
+
 func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	al := n.AsArrayLiteralExpression()
-	var elems []string
+	// spread 字面量（`[...a, 3]`）经空数组 + 逐元 push/整片合并
+	// （封存 lowerArrayLiteral:8680-8708 newEmptyArray + appendSlice + lowerArrayPush 同形）。
+	hasSpread := false
 	if al.Elements != nil {
 		for _, el := range al.Elements.Nodes {
 			if el.Kind == ast.KindSpreadElement {
-				return "", "spread elements are not lowerable"
+				hasSpread = true
+				break
 			}
-			if el.Kind == ast.KindArrayLiteralExpression {
-				h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
+		}
+	}
+	if hasSpread {
+		h := saNewEmptyArray(w, nextTemp)
+		for _, el := range al.Elements.Nodes {
+			if el.Kind == ast.KindSpreadElement {
+				sv, msg := saArrValueOf(w, el.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", msg
 				}
-				elems = append(elems, h)
+				saAppendSlice(w, h, sv, scope, nextTemp)
 				continue
 			}
-			if saIsStrExpr(el, scope) {
-				// 串元（封存 lowerExpr 串分支同形；字面量具化 temp 已归属，
-				// 具名直存不碰归属——名下值仍由名释放）。
-				h, msg := saEvalStr(w, el, scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return "", msg
-				}
-				if saIsTempOp(h) {
-					saOwnTemp(scope, h)
-				}
-				elems = append(elems, h)
-				continue
+			v, msg := saArrayLiteralElem(w, el, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
 			}
-			v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
+			saLowerArrayPush(w, h, v, scope, nextTemp)
+		}
+		saOwnTemp(scope, h)
+		return h, ""
+	}
+	var elems []string
+	if al.Elements != nil {
+		for _, el := range al.Elements.Nodes {
+			v, msg := saArrayLiteralElem(w, el, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
