@@ -513,7 +513,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		}
 		isVoid := false
 		retKind := ""
-		if k, v, ok := saPrescanRet(fn.Type, st, tcx, classes, aliasOf); ok {
+		if saIsBareTypeParam(fn.Type, saTypeParamSet(fn.TypeParameters)) {
+			// erased own type parameter defaults to number.
+			retKind, isVoid = "number", false
+		} else if k, v, ok := saPrescanRet(fn.Type, st, tcx, classes, aliasOf); ok {
 			retKind = k
 			isVoid = v
 		}
@@ -787,10 +790,47 @@ func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, 
 	if fn.Parameters != nil {
 		nodes = fn.Parameters.Nodes
 	}
-	return saSynthParamNodes(nodes, classes, aliasOf, enums)
+	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(fn.TypeParameters))
 }
 
-func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
+// saTypeParamSet collects own unconstrained type parameter names (generic erasure
+// targets; constrained or defaulted params stay loud downstream).
+// saIsBareTypeParam reports a bare reference to an own erased type parameter.
+func saIsBareTypeParam(t *ast.TypeNode, tparams map[string]bool) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeArguments != nil {
+		return false
+	}
+	return tparams[ref.TypeName.Text()]
+}
+
+func saTypeParamSet(list *ast.TypeParameterList) map[string]bool {
+	out := map[string]bool{}
+	if list == nil {
+		return out
+	}
+	for _, tp := range list.Nodes {
+		if tp == nil || tp.Kind != ast.KindTypeParameter {
+			continue
+		}
+		pd := tp.AsTypeParameterDeclaration()
+		if pd == nil || pd.Constraint != nil || pd.DefaultType != nil {
+			continue
+		}
+		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			out[nm.Text()] = true
+		}
+	}
+	return out
+}
+
+func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64, tparams map[string]bool) ([]string, map[string]string, []saDestructurePending, bool) {
 	kinds := map[string]string{}
 	var pendings []saDestructurePending
 	taken := map[string]bool{}
@@ -844,6 +884,11 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						// enum annotations lower as ptr handles (integer-enum equality folds to eq).
 						if _, ok := enums[ref.TypeName.Text()]; ok {
 							kinds[name] = "arr"
+							continue
+						}
+						// erased own type parameters default to i32 (cf unannotated params).
+						if tparams[ref.TypeName.Text()] {
+							kinds[name] = "i32"
 							continue
 						}
 					}
@@ -1220,6 +1265,13 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 			}
 		}
 		return "arr", true
+	case ast.KindTypeOperator:
+		// `readonly T[]` unwraps (mutable copy semantics; other operators refuse).
+		to := t.AsTypeOperatorNode()
+		if to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saAnnotKind(to.Type)
+		}
+		return "", false
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 			switch ref.TypeName.Text() {
@@ -1562,7 +1614,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	}
 	// 返回签名与预扫同源（注解 > checker 推断 > void；非法注解沿既有拒）。
 	retKind, isVoid := "void", true
-	if fn.Type != nil {
+	// erased own type parameter defaults to number.
+	if saIsBareTypeParam(fn.Type, saTypeParamSet(fn.TypeParameters)) {
+		retKind, isVoid = "number", false
+	} else if fn.Type != nil {
 		k, ok := saReturnKindRef(fn.Type, classes, aliasOf)
 		if !ok {
 			ln, col := pos(st.Pos())

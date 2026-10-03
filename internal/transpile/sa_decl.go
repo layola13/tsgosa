@@ -203,7 +203,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saCopyInstFn(scope, h, name)
 			continue
 		}
-		if vd.Type == nil {
+		if vd.Type == nil || saIsBareAny(vd.Type) {
 			// 无注解推断（形状证据：封存 lowerVarDeclList:1415-1418/1463-1464
 			// 未知注解缺省 i32 + 按初值类型绑定）：数组字面量/数组句柄走 arr 通道，
 			// true/false 走 bool，其余 i32 求值；缺 init 绑 i32 零值（const 缺 init 拒）。
@@ -377,18 +377,20 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclarePlain(scope, name)
 		return true
 	}
-	if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
+	// transparent wrappers peel before kind dispatch (type-level only).
+	init := saUnwrapTransparent(vd.Initializer)
+	if init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression {
 		// 局部箭头落 out-of-line 被调 + 调用别名（封存 lowerArrowBinding
 		// 局部分支 :1058-1254）。
-		return saLowerLocalArrow(w, name, vd.Initializer, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+		return saLowerLocalArrow(w, name, init, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 	}
-	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
+	if init.Kind == ast.KindArrayLiteralExpression {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
-	if vd.Initializer.Kind == ast.KindStringLiteral || vd.Initializer.Kind == ast.KindNoSubstitutionTemplateLiteral ||
-		vd.Initializer.Kind == ast.KindTemplateExpression || vd.Initializer.Kind == ast.KindTaggedTemplateExpression {
+	if init.Kind == ast.KindStringLiteral || init.Kind == ast.KindNoSubstitutionTemplateLiteral ||
+		init.Kind == ast.KindTemplateExpression || init.Kind == ast.KindTaggedTemplateExpression {
 		// 无注解串推断（字面量/模板/tagged 皆串位；tag 门在求值内）。
-		h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -400,13 +402,13 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclareOwned(scope, name)
 		return true
 	}
-	if _, ok := saArrBase(scope, vd.Initializer); ok {
+	if _, ok := saArrBase(scope, init); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
-	if vd.Initializer.Kind == ast.KindCallExpression {
+	if init.Kind == ast.KindCallExpression {
 		// 数组/串/date 返回调用按返回种建种。
-		if saIsArrayCtor(vd.Initializer) {
-			h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if saIsArrayCtor(init) {
+			h, msg := saLowerArrayCtor(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -418,11 +420,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareOwned(scope, name)
 			return true
 		}
-		if k, ok := saArrCallRet(vd.Initializer.AsCallExpression(), scope); ok && k == "arr" {
+		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
-		if saCallIsStr(vd.Initializer.AsCallExpression(), scope) && !saStrCallIsI32(vd.Initializer.AsCallExpression(), scope) {
-			h, msg := saEvalStr(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if saCallIsStr(init.AsCallExpression(), scope) && !saStrCallIsI32(init.AsCallExpression(), scope) {
+			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -434,8 +436,8 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareOwned(scope, name)
 			return true
 		}
-		if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
-			op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if k, ok := saDateCallKind(init.AsCallExpression(), scope); ok && k == "date" {
+			op, voidCall, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
 			if msg != "" || voidCall {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -447,8 +449,8 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 	}
-	if vd.Initializer.Kind == ast.KindTrueKeyword || vd.Initializer.Kind == ast.KindFalseKeyword {
-		op, msg := saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	if init.Kind == ast.KindTrueKeyword || init.Kind == ast.KindFalseKeyword {
+		op, msg := saEvalBool(w, init, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -459,9 +461,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclareInitOwn(scope, name, op)
 		return true
 	}
-	if vd.Initializer.Kind == ast.KindIdentifier {
-		if k, ok := scope.types[vd.Initializer.Text()]; ok && k == "bool" {
-			op, msg := saEvalBool(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	if init.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[init.Text()]; ok && k == "bool" {
+			op, msg := saEvalBool(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -472,16 +474,16 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclarePlain(scope, name)
 			return true
 		}
-		if k, ok := scope.types[vd.Initializer.Text()]; ok && k == "date" {
-			saEmitScalarInit(w, name, vd.Initializer.Text(), scope)
+		if k, ok := scope.types[init.Text()]; ok && k == "date" {
+			saEmitScalarInit(w, name, init.Text(), scope)
 			scope.types[name] = "date"
 			saDeclarePlain(scope, name)
 			return true
 		}
 	}
-	if vd.Initializer.Kind == ast.KindConditionalExpression {
+	if init.Kind == ast.KindConditionalExpression {
 		// 无注解三元推断（i32/串臂与 return 位同核；分歧沿核拒）。
-		ce := vd.Initializer.AsConditionalExpression()
+		ce := init.AsConditionalExpression()
 		t, isStr, msg := saLowerTernaryValue(w, ce, d, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
@@ -502,7 +504,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		return true
 	}
-	op, msg := saEvalI32(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
@@ -535,12 +537,30 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 
 // saSynthArrowParams 合成箭头/函数表达式形参表（与 saSynthParams 同核；
 // 形状证据：封存 lowerArrowBinding:1074-1098，模式走同 hiddenDestructuredParam）。
+// saNodeTypeParams extracts own type parameters from function-like nodes (nil-safe).
+func saNodeTypeParams(n *ast.Node) *ast.TypeParameterList {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind {
+	case ast.KindArrowFunction:
+		if af := n.AsArrowFunction(); af != nil {
+			return af.TypeParameters
+		}
+	case ast.KindFunctionExpression:
+		if fe := n.AsFunctionExpression(); fe != nil {
+			return fe.TypeParameters
+		}
+	}
+	return nil
+}
+
 func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if pl := arrow.ParameterList(); pl != nil {
 		nodes = pl.Nodes
 	}
-	return saSynthParamNodes(nodes, classes, aliasOf, enums)
+	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(saNodeTypeParams(arrow)))
 }
 
 // saArrowParamNames 合成箭头形参名表（标识符直通；模式取隐藏名，与 saParamNames 同序）。
@@ -731,6 +751,15 @@ func saGenericHandleKind(t *ast.TypeNode, scope *saScope) (string, bool) {
 		return "", false
 	}
 	return "arr", true
+}
+
+// saIsBareAny reports a bare `any` annotation (erased: binds by initializer kind).
+// saIsBareAny reports an `any`/`unknown` annotation (erased: binds by initializer kind).
+func saIsBareAny(t *ast.TypeNode) bool {
+	if t == nil {
+		return false
+	}
+	return t.Kind == ast.KindAnyKeyword || t.Kind == ast.KindUnknownKeyword
 }
 
 // saAnnotInstKind 消解具名接口/类注解为 `inst:Name`（单标识符、无泛型实参、

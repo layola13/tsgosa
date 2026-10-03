@@ -368,6 +368,9 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					// 函数类型字段落 ptr 句柄槽（构造捕获箭头逐实例记表，去虚化回放；
 					// 封存 recordClassNamed:9713-9716 + wireCtorFieldStore:10022-10033）。
 					fkind = "arr"
+				} else if pd.Type.Kind == ast.KindUnionType {
+					// union-typed fields lower as ptr handle slots (cf saNameOfType union default).
+					fkind = "arr"
 				} else {
 					ln, col := pos(m.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
@@ -744,9 +747,9 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	}
 	for _, m := range decl.Members.Nodes {
 		if m.Kind != ast.KindPropertySignature {
-			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface member is not lowerable (i32/str props only)"})
-			return false
+			// non-field members declare no layout slot (methods/indexers/signatures are type-only;
+			// cf recordLayout method-signature skip).
+			continue
 		}
 		fn := m.Name()
 		if fn == nil || fn.Kind != ast.KindIdentifier {
@@ -781,6 +784,9 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 					// `saname := saNameOfType(ftn)` 直映 + widthOf 默认 8,8；本仓句柄种为 arr）。
 					fkind = "arr"
 				}
+			} else if pd.Type.Kind == ast.KindUnionType {
+				// union-typed fields lower as ptr handle slots (cf class record).
+				fkind = "arr"
 			} else {
 				ln, col := pos(m.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string, array or recorded interface"})

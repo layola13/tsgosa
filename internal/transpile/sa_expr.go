@@ -1184,6 +1184,27 @@ func saEvalF64(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
 }
 
+// saUnwrapTransparent peels pure type-level wrappers (no value semantics).
+func saUnwrapTransparent(e *ast.Node) *ast.Node {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindAsExpression:
+			e = e.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			e = e.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			e = e.AsNonNullExpression().Expression
+		case ast.KindTypeAssertionExpression:
+			e = e.AsTypeAssertion().Expression
+		case ast.KindParenthesizedExpression:
+			e = e.AsParenthesizedExpression().Expression
+		default:
+			return e
+		}
+	}
+	return e
+}
+
 func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
 		return "", "missing expression"
