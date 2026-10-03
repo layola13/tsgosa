@@ -1514,6 +1514,9 @@ type saScope struct {
 	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
 	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
 	arrNest     map[string]bool // array handle holds slice handles (deep clone recurses; flat by default)
+	// arrStr marks array handles whose elements are string handles
+	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
+	arrStr      map[string]bool
 	imports       map[string]string // builtin-module named imports (local -> module; single-file direct calls)
 	importRemote  map[string]string // import alias remote names (local -> remote; cf importedRemote)
 }

@@ -265,6 +265,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			if !saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp) {
 				return false
 			}
+			if saIsStringArrayAnnot(vd.Type) {
+				saMarkArrStr(scope, name)
+			}
 			continue
 		}
 		if vkind == "str" {

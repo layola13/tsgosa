@@ -31,6 +31,85 @@ func saPropArrNest(scope *saScope, from, to string) {
 	}
 }
 
+// saPropArrStr propagates string-element marking across handle bindings
+// (mirror of saPropArrNest; element kind only, never ownership).
+func saPropArrStr(scope *saScope, from, to string) {
+	if scope.arrStr == nil || to == "" || from == to {
+		return
+	}
+	if scope.arrStr[from] {
+		scope.arrStr[to] = true
+	}
+}
+
+// saMarkArrStr records a string-element array handle (map init inline).
+func saMarkArrStr(scope *saScope, name string) {
+	if name == "" {
+		return
+	}
+	if scope.arrStr == nil {
+		scope.arrStr = map[string]bool{}
+	}
+	scope.arrStr[name] = true
+}
+
+// saIsStringArrayAnnot reports `string[]` / `readonly string[]` /
+// `Array<string>` annotations (element-kind source for the arrStr mark;
+// mirrors upstream saNameOfType string->ptr element mapping at
+// trackBinding:1638-1641; aliases/other generics stay unmarked).
+func saIsStringArrayAnnot(tn *ast.TypeNode) bool {
+	if tn == nil {
+		return false
+	}
+	if tn.Kind == ast.KindTypeOperator {
+		if to := tn.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saIsStringArrayAnnot(to.Type)
+		}
+		return false
+	}
+	if tn.Kind == ast.KindArrayType {
+		if el := tn.AsArrayTypeNode().ElementType; el != nil && el.Kind == ast.KindStringKeyword {
+			return true
+		}
+		return false
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Text() != "Array" {
+			return false
+		}
+		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+			return false
+		}
+		return ref.TypeArguments.Nodes[0].Kind == ast.KindStringKeyword
+	}
+	return false
+}
+
+// saLiteralIsStrArray pre-scans array literals for all-string elements
+// (empty/spread/nested/omitted never mark; bindings propagate at declaration).
+func saLiteralIsStrArray(n *ast.Node, scope *saScope) bool {
+	if n == nil || n.Kind != ast.KindArrayLiteralExpression {
+		return false
+	}
+	al := n.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) == 0 {
+		return false
+	}
+	for _, el := range al.Elements.Nodes {
+		if el == nil {
+			return false
+		}
+		if el.Kind == ast.KindSpreadElement || el.Kind == ast.KindArrayLiteralExpression || el.Kind == ast.KindOmittedExpression {
+			return false
+		}
+		if !saIsStrExpr(el, scope) {
+			return false
+		}
+	}
+	return true
+}
+
 func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if el.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
@@ -132,6 +211,9 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 			scope.arrNest = map[string]bool{}
 		}
 		scope.arrNest[h] = true
+	}
+	if saLiteralIsStrArray(n, scope) {
+		saMarkArrStr(scope, h)
 	}
 	return h, ""
 }
@@ -441,6 +523,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		saPropArrNest(scope, h, name)
+		saPropArrStr(scope, h, name)
 		return true
 	}
 	// 数组构造式（`Array(n)`/`Array(a, b)`；`new Array(n)` 由声明位直办）。
@@ -468,6 +551,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		}
 		saDeclareOwned(scope, name)
 		saPropArrNest(scope, src, name)
+		saPropArrStr(scope, src, name)
 		return true
 	}
 	ln, col := pos(d.Pos())
@@ -671,6 +755,17 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 						break
 					}
 				}
+			}
+		}
+		// string-element receivers bind str (literal pre-scan or binding
+		// mark; chains/temps stay i32, mirroring nested-literal handling above).
+		if bindKind == "i32" {
+			if be := fo.Expression; be != nil && be.Kind == ast.KindArrayLiteralExpression {
+				if saLiteralIsStrArray(be, scope) {
+					bindKind = "str"
+				}
+			} else if rbase, ok := saArrBase(scope, fo.Expression); ok && scope.arrStr[rbase] {
+				bindKind = "str"
 			}
 		}
 		scope.types[binding] = bindKind
@@ -1847,6 +1942,7 @@ func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope 
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", cendL))
 	saPropArrNest(scope, recv, dh)
+	saPropArrStr(scope, recv, dh)
 	return dh
 }
 
@@ -2135,6 +2231,7 @@ func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, ne
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
 	return dest
 }
 
@@ -2187,6 +2284,7 @@ func saLowerArrayWith(w printer.EmitTextWriter, recv, idx, val string, scope *sa
 	w.Write(fmt.Sprintf("%s:\n", finL))
 	_ = pos
 	saPropArrNest(scope, recv, cp)
+	saPropArrStr(scope, recv, cp)
 	return cp, ""
 }
 
@@ -2315,6 +2413,7 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", dst2, s, ni))
 	saCopyRange(w, sdata, dloop, s2, ln, dst2, scope, nextTemp)
 	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
 	return dest, ""
 }
 
@@ -2323,6 +2422,9 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 	h := saNewEmptyArray(w, nextTemp)
 	saAppendSlice(w, h, recv, scope, nextTemp)
 	saPropArrNest(scope, recv, h)
+	// strOK tracks all-string concatenation (recv marked and every
+	// array arg str-marked; scalar args are i32 and break it).
+	strOK := scope.arrStr != nil && scope.arrStr[recv]
 	for _, a := range args {
 		if a != nil && a.Kind == ast.KindSpreadElement {
 			se := a.AsSpreadElement()
@@ -2332,6 +2434,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			}
 			saAppendSlice(w, h, src, scope, nextTemp)
 			saPropArrNest(scope, src, h)
+			strOK = strOK && scope.arrStr[src]
 			continue
 		}
 		if a != nil && saIsArrValue(a, scope) {
@@ -2341,6 +2444,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			}
 			saAppendSlice(w, h, src, scope, nextTemp)
 			saPropArrNest(scope, src, h)
+			strOK = strOK && scope.arrStr[src]
 			continue
 		}
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
@@ -2351,6 +2455,10 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			return "", msg
 		}
 		saLowerArrayPush(w, h, v, scope, nextTemp)
+		strOK = false
+	}
+	if strOK {
+		saMarkArrStr(scope, h)
 	}
 	return h, ""
 }
@@ -2425,6 +2533,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		h := saNewEmptyArray(w, nextTemp)
 		saAppendSlice(w, h, src, scope, nextTemp)
 		saPropArrNest(scope, src, h)
+		saPropArrStr(scope, src, h)
 		base = h
 	}
 	if mapper == nil {
@@ -2478,8 +2587,8 @@ func saCallbackScalarKind(kinds []string, i int) string {
 	return "i32"
 }
 
-// saNestedElemKinds reports callback element kinds for nested-slice receivers
-// (element binds the handle directly; other params snapshot as before).
+// saNestedElemKinds reports callback element kinds for nested-slice or
+// string-element receivers (element binds handle/str directly).
 // saSortElemKinds reports comparator kinds for nested-slice receivers (both compare
 // handles directly).
 func saSortElemKinds(scope *saScope, recv string) []string {
@@ -2490,14 +2599,23 @@ func saSortElemKinds(scope *saScope, recv string) []string {
 }
 
 func saNestedElemKinds(scope *saScope, recv string, idx, n int) []string {
-	if scope.arrNest == nil || !scope.arrNest[recv] {
-		return nil
+	if scope.arrNest != nil && scope.arrNest[recv] {
+		kinds := make([]string, n)
+		if idx >= 0 && idx < n {
+			kinds[idx] = "arr"
+		}
+		return kinds
 	}
-	kinds := make([]string, n)
-	if idx >= 0 && idx < n {
-		kinds[idx] = "arr"
+	// string-element receivers bind the element as str (mirror of nested
+	// handles; `.length`/methods route via str; snapshot stays a copy).
+	if scope.arrStr != nil && scope.arrStr[recv] {
+		kinds := make([]string, n)
+		if idx >= 0 && idx < n {
+			kinds[idx] = "str"
+		}
+		return kinds
 	}
-	return kinds
+	return nil
 }
 
 func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
@@ -2605,6 +2723,14 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		if i < len(kinds) && kinds[i] == "arr" {
 			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
 			bind(name, "arr")
+			continue
+		}
+		// string elements snapshot the handle word and bind str (upstream
+		// `s = add t, 0` + no release; `.length`/methods route via str).
+		if i < len(kinds) && kinds[i] == "str" {
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
+			bind(name, "str")
+			saDeclarePlain(scope, name)
 			continue
 		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
@@ -3534,6 +3660,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		if method == "filter" {
 			saPropArrNest(scope, recv, out)
+			saPropArrStr(scope, recv, out)
 		}
 		return out, kind, ""
 	case "reduce", "reduceRight":
