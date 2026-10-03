@@ -121,6 +121,7 @@
 - step91（接口嵌套字段一次过，落`sa_class.go`表+门+构造+`sa_expr.go`链读，零新文件）：`fsub`子布局名表+继承展平拷贝+记录门放行已记录接口（`inst`8B句柄）+字面量子布局构造存句柄+spread按ptr+`saChainBase`递归解句柄+链读（布局读/getter内联）；2项等价（嵌套正形/数组回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`gofmt`仅旧行；JEV blast local_only；`main.go`未动。
 - step92（句柄绑定传递一次过，落`sa_class.go`读记种+`sa_decl.go`推断传递，零新文件）：字段读`arr`记`arr`、`inst`记`inst:子布局`+无注解落底按操作数登记种透传（字面量/绑定名沿既有i32）；`const r = q.p; r.a`与`const t = r.a; t[1]`转正；3项等价（含绑定回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`main.go`未动。
 - step93（嵌套链写一次过，落`sa_expr.go`一处，零新文件）：`q.p.a = v`经`saChainBase`解内层句柄按叶子种存（i32/str/arr；inst叶拒需构造句柄；链setter沿旧门）；2项等价（链写/实例回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
+- step94（串链读一次过，落`sa_str.go`一处，零新文件）：`q.p.s`经`saChainBase`解内层句柄按布局读（叶子须str，非串沿旧门；与i32链读同形）；2项等价（串链/串回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律
