@@ -107,6 +107,7 @@
 - step77（单层namespace export const拍扁一次过，落`sa_decl.go`折叠+`transpile.go`预扫/发射+`sa_expr/sa_str.go`读分发，零新文件）：`saFoldNamespaceConsts`（单层名+`export`纯字面成员记`N.K`拍扁键，复用顶层值域；非export/非纯量/函数/类/嵌套整块不折沿旧拒；using/float/dup沿顶层同门拒）+预扫/发射接线+`N.K`i32/串读分发（串位具化，`N.K=v`沿既有未知拒）；6项等价（i32/串正形+函数/非export/dup拒+多declarator）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`main.go`未动；函数/跨文件链接另立大项。
 - step78（顶层纯量前向读止血一次过，落`sa_decl.go`一处，零新文件）：`saFoldTopLevelConst`两段收后写改逐declarator即收即写，`Identifier`初值增按名折叠（`maths`别名优先，`consts/strs`值+串性透传；未定义沿旧拒），同句/跨句前向读转正，前向未定义仍拒；5项等价（同句/跨句/串链/未定义拒/纯量回归）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；`transpile.go`/`main.go`未动。
 - step79（namespace前向读止血一次过，落`sa_decl.go`一处，零新文件）：`saFoldNamespaceConsts`改即收即写，`Identifier`初值增同NS按名折叠（`N.`键串性透传；未定义沿旧拒），与step78顶层同形；4项等价（同句/跨语句/纯量回归/未定义拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only/safe_to_apply；`transpile.go`/`main.go`未动。
+- step80（嵌套数组句柄+for-of数组模式一次过，落`sa_arr.go`一域，零新文件）：字面量元遇`ArrayLiteral`递归构造内层slice存句柄值（外层esz恒4，与上游lowerExpr递归同形）+for-of数组模式解构（元为内层句柄逐元越界归零join绑i32，空穴跳过rest/嵌套名/dup大声拒，对象模式沿旧拒）；4项等价（嵌套+for-of/扁平回归/rest拒）全过；回归`go build`+`testrunner/ast/checker`（-count=1）+`vet`全绿；JEV blast local_only；`transpile.go`/`main.go`未动。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

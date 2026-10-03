@@ -12,6 +12,8 @@ import (
 // saLowerArrayLiteral lowering i32 数组字面量（形状证据：封存
 // lowerArrayLiteral:8684-8740：`alloc 16` 头 + `alloc len*4` 缓冲 + 逐槽
 // `store … as i32` + 头部 ptr/len + `!buf`；spread/非 i32 元大声拒）。
+// 嵌套数组字面量元递归构造内层 slice 句柄存句柄值（外层 esz 恒 4，与上游
+// lowerExpr 递归同形；串句柄混存截断风险由注解门守，见调用方）。
 func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	al := n.AsArrayLiteralExpression()
 	var elems []string
@@ -19,6 +21,14 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		for _, el := range al.Elements.Nodes {
 			if el.Kind == ast.KindSpreadElement {
 				return "", "spread elements are not lowerable"
+			}
+			if el.Kind == ast.KindArrayLiteralExpression {
+				h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				elems = append(elems, h)
+				continue
 			}
 			v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -372,19 +382,17 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-of initializer (single identifier declaration only)"})
 		return false
 	}
-	if pat != nil {
+	if pat != nil && pat.Kind != ast.KindArrayBindingPattern {
 		ln, col := pos(s.Pos())
-		if pat.Kind == ast.KindArrayBindingPattern {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array patterns in for-of need nested array handles"})
-		} else {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object patterns in for-of need static element layouts"})
-		}
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object patterns in for-of need static element layouts"})
 		return false
 	}
-	if _, dup := scope.types[binding]; dup {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})
-		return false
+	if pat == nil {
+		if _, dup := scope.types[binding]; dup {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})
+			return false
+		}
 	}
 	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-of")
 	if !ok {
@@ -428,8 +436,49 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", offT, idx))
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", elemPtr, baseT, offT))
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elemT, elemPtr))
-	w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
-	scope.types[binding] = "i32"
+	if pat != nil {
+		// 数组模式解构（元为内层 slice 句柄，逐元越界归零 join 绑 i32；
+		// 空穴跳过，rest/嵌套名大声拒；形状证据：封存 destructureArray +
+		// lowerDestructuringDecl 数组位）。
+		idx := 0
+		for _, el := range pat.AsBindingPattern().Elements.Nodes {
+			if el.Kind != ast.KindBindingElement {
+				idx++
+				continue
+			}
+			be := el.AsBindingElement()
+			if be.DotDotDotToken != nil {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in for-of pattern are not lowerable"})
+				scope.loops = scope.loops[:len(scope.loops)-1]
+				return false
+			}
+			nm := be.Name()
+			if nm == nil {
+				idx++
+				continue
+			}
+			if nm.Kind != ast.KindIdentifier {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested patterns in for-of are not lowerable"})
+				scope.loops = scope.loops[:len(scope.loops)-1]
+				return false
+			}
+			if _, dup := scope.types[nm.Text()]; dup {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + nm.Text()})
+				scope.loops = scope.loops[:len(scope.loops)-1]
+				return false
+			}
+			v := saLowerCheckedIndex(w, elemT, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
+			w.Write(fmt.Sprintf("  %s = %s\n", nm.Text(), v))
+			scope.types[nm.Text()] = "i32"
+			idx++
+		}
+	} else {
+		w.Write(fmt.Sprintf("  %s = %s\n", binding, elemT))
+		scope.types[binding] = "i32"
+	}
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
