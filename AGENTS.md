@@ -84,6 +84,7 @@
 - step54（throwing-try 切片一次过 + using 顶层堵漏，落 `sa_ctrl.go` + 接线，零新文件）：`try { prefix; throw v; }` 直跑 prefix 后值绑 catch 形参（`e = v`）跑 handler 再跑 finally，无 catch 则 finally 后 `panic(2501)`，throw 后语句死跳过（`saemit.go:tryLowerThrowingTry:2301-2470`；泄漏门/串值门/解构形参门逐字对齐）；终结 try 后继死码静默跳过（三处循环，封存 `lowerBlockStatement:820-823` 同形，其余终结后继仍拒；静态 `saTryTerms` 供 epilogue）；using 顶层静默吞掉堵漏（fold 前查 Using 旗， exact 门消息）。13 项（8 通形+5 拒因）全过；回归零回退（switch 缺口 HEAD 已有，另项）。
 - step55（async 同步解包一次过 + timer 拒因对齐，落 `sa_expr.go` 调用核，零新文件）：`await f()` 解包直调（`async` 修饰忽略，`call @fetch/@wrap`；封存 `TestAsyncSyncUnwrapHonest` 前两式已通）；6 裸定时器（setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/queueMicrotask）落 Phase-2 专用拒因（`node_timers.go:16-33` 原文），先于 unknown；遮蔽/方法形不触此门。
 - step56（string 字段布局一次过，落 `sa_class.go` + 读位种门，零新文件）：`fkinds` 种表 + `saFieldWidth/AlignOff`（i32 4/4，str 头指针 8/8；封存 `widthOf:268-279`）；接口/类 `string` 字段放行（`bool` 归一 i32，数组等仍拒），extends/heritage 按种展平，字面量 str 域具化存头指针，spread 同种复制/错种拒原文（`saemit.go:9086-9103`）；`in` 折叠与 delete 拒自动对齐（`Cfg{path,retries}` 布局 `alloc 12` + verdict 1/0）；读/存/解构/ctor-wiring 的 str 域诚实拒（另轮 str 贯通）。
+- step57（str 域读写贯通一次过，落 `sa_class.go` + 串/值位接线，零新文件）：读回头指针即串值（临时量/绑定记 str；`lowerMemberChain:8294-8297` 同形），`=` 按种求值存值/存头，串判定加属性分支（`c.path + "!"` 通），ctor 实参按 wiring 种预扫求值（含 super 转发递归解），形参解构 str 域绑定；门：方法串返回另项（`c.get()` 串位不认）。
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 
 ## 4. 工具纪律

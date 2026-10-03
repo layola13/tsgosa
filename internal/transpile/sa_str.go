@@ -87,6 +87,9 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		return saIsStrExpr(e.AsParenthesizedExpression().Expression, scope)
 	case ast.KindAsExpression:
 		return saIsStrExpr(e.AsAsExpression().Expression, scope)
+	case ast.KindPropertyAccessExpression:
+		// str 域读即串值（saEvalStr 属性分支具化；静态串折叠同）。
+		return saIsStrFieldRead(e.AsPropertyAccessExpression(), scope)
 	case ast.KindSatisfiesExpression:
 		return saIsStrExpr(e.AsSatisfiesExpression().Expression, scope)
 	case ast.KindNonNullExpression:
@@ -246,6 +249,19 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					return op, ""
 				}
 				return "", pa.Name().Text() + " is not a string"
+			}
+			// 实例 str 域读（头指针即串值，临时量已记 str）。
+			if saCouldBeInst(pa.Expression, scope) {
+				h, def, msg := saInstBase(pa.Expression, scope)
+				if msg == "" {
+					if _, ok := def.offsets[pa.Name().Text()]; ok && def.fkinds[pa.Name().Text()] == "str" {
+						t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+						if msg == "" {
+							return t, ""
+						}
+						return "", msg
+					}
+				}
 			}
 		}
 		return "", "not a string expression"

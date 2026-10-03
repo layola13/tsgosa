@@ -695,6 +695,40 @@ func saStaticLiteral(n *ast.Node) (string, string, bool) {
 	return "", "", false
 }
 
+// saIsStrFieldRead 纯判定属性读是否为 str 位（静态串折叠/实例 str 域；
+// 不落字，供串位语法门；求值见 saEvalStr 属性分支）。
+func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
+	if pa == nil || pa.Name() == nil {
+		return false
+	}
+	field := pa.Name().Text()
+	if strings.HasPrefix(field, "#") {
+		return false
+	}
+	base := pa.Expression
+	if base != nil && base.Kind == ast.KindIdentifier {
+		nm := base.Text()
+		if d, ok := scope.classes[nm]; ok {
+			if sv, ok := d.statics[field]; ok {
+				return sv.kind == "str"
+			}
+			return false
+		}
+		if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
+			if d, ok := scope.classes[k[5:]]; ok {
+				return d.fkinds[field] == "str"
+			}
+		}
+		return false
+	}
+	if base != nil && base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+		if d, ok := scope.classes[scope.thisClass]; ok {
+			return d.fkinds[field] == "str"
+		}
+	}
+	return false
+}
+
 // saStaticFold 读静态字面量（类名/实例/`this` 基；私有名不碰；
 // 串具化回句柄；i32/bool 直接文本；形状证据：封存 lowerExpr:8013-8041）。
 func saStaticFold(w printer.EmitTextWriter, base *ast.Node, field string, scope *saScope, nextTemp *int) (string, string, bool) {
@@ -965,6 +999,12 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	if len(argNodes) != len(params) {
 		return "", fmt.Sprintf("new %s takes %d arguments (%d given)", name, len(params), len(argNodes))
 	}
+	owner := name
+	if def.ctorOwner != "" {
+		owner = def.ctorOwner
+	}
+	// wiring 目标种预扫（`this.f = param` 的 f 种决定实参求值器；str 域走串求值）。
+	wantStr := saCtorWiringKinds(def.ctor, owner, scope)
 	paramVal := map[string]string{}
 	for i, p := range params {
 		pd := p.AsParameterDeclaration()
@@ -982,6 +1022,14 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
 			return "", "constructor arguments must be values"
 		}
+		if wantStr[nm.Text()] {
+			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			paramVal[nm.Text()] = v
+			continue
+		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -992,14 +1040,96 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	if body == nil {
 		return h, ""
 	}
-	owner := name
-	if def.ctorOwner != "" {
-		owner = def.ctorOwner
-	}
 	if !saWireCtorBody(w, h, owner, def.ctor, paramVal, scope, pos, refusals, nextTemp) {
 		return "", "unwirable"
 	}
 	return h, ""
+}
+
+// saCtorWiringKinds 预扫构造体 `this.f = param` 的 str 目标（返回 param 名集；
+// 非 wiring 语句由 wire 主路拒，此处只收形状完整的；`super(...)` 转发按基构造
+// 同例递归解（环由记录期继承圈门保证无环，另加深度守卫）。
+func saCtorWiringKinds(ctor *ast.Node, owner string, scope *saScope) map[string]bool {
+	return saCtorWiringKindsDepth(ctor, owner, scope, 0)
+}
+
+func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth int) map[string]bool {
+	want := map[string]bool{}
+	if depth > 8 {
+		return want
+	}
+	body := ctor.Body()
+	if body == nil {
+		return want
+	}
+	def, ok := scope.classes[owner]
+	if !ok {
+		return want
+	}
+	for _, s := range body.Statements() {
+		if !saIsSuperCall(s) {
+			continue
+		}
+		// super 转发：基形参 str 位透传给外层同名实参。
+		bdef, ok := scope.classes[def.parent]
+		if !ok || def.parent == "" || bdef.ctor == nil {
+			continue
+		}
+		call := s.AsExpressionStatement().Expression.AsCallExpression()
+		var argNodes []*ast.Node
+		if call.Arguments != nil {
+			argNodes = call.Arguments.Nodes
+		}
+		bparams := bdef.ctor.Parameters()
+		if len(argNodes) != len(bparams) {
+			continue
+		}
+		bwant := saCtorWiringKindsDepth(bdef.ctor, def.parent, scope, depth+1)
+		for i, p := range bparams {
+			pd := p.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if !bwant[nm.Text()] {
+				continue
+			}
+			if argNodes[i] != nil && argNodes[i].Kind == ast.KindIdentifier {
+				want[argNodes[i].Text()] = true
+			}
+		}
+	}
+	for _, s := range body.Statements() {
+		if saIsSuperCall(s) {
+			continue
+		}
+		if s == nil || s.Kind != ast.KindExpressionStatement {
+			continue
+		}
+		ex := s.AsExpressionStatement().Expression
+		if ex == nil || ex.Kind != ast.KindBinaryExpression {
+			continue
+		}
+		bin := ex.AsBinaryExpression()
+		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
+			bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression {
+			continue
+		}
+		pa := bin.Left.AsPropertyAccessExpression()
+		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {
+			continue
+		}
+		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
+			continue
+		}
+		if def.fkinds[pa.Name().Text()] == "str" {
+			want[bin.Right.Text()] = true
+		}
+	}
+	return want
 }
 
 // saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param`；
@@ -1053,12 +1183,6 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + pa.Name().Text() + " is not in the " + owner + " layout"})
 			return false
 		}
-		// str 域构造 wiring 另轮贯通（右值恒 i32 求值，种错配诚实拒）。
-		if def.fkinds[pa.Name().Text()] == "str" {
-			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string field " + pa.Name().Text() + " constructor wiring is not lowerable yet"})
-			return false
-		}
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor wiring right side must be a parameter name"})
@@ -1069,6 +1193,11 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
+		}
+		// str 域存头指针（右值已按种求值）。
+		if def.fkinds[pa.Name().Text()] == "str" {
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+			continue
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	}
@@ -1134,6 +1263,12 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 					return false
 				}
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				if _, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp); msg != "" {
+					ln, col := pos(a.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
 			default:
 				ln, col := pos(a.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "super() arguments must be constructor parameters or literals"})
@@ -1188,6 +1323,15 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 			paramVal[nm.Text()] = v
 		case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
 			v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(a.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			paramVal[nm.Text()] = v
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+			// str 字面量超参（基 str 形参位；值位门在基 wire）。
+			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(a.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
@@ -1291,14 +1435,19 @@ func saInlineSetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
 }
-func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, nextTemp *int) (string, string) {
+func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, scope *saScope, nextTemp *int) (string, string) {
 	off, ok := def.offsets[field]
 	if !ok {
 		return "", "unknown field " + field
 	}
-	// str 域读走句柄间接，另轮贯通；此处诚实拒（禁静默错读）。
+	// str 域读回头指针即串值（16 字节头在堆上，值即其址；临时量记 str
+	// 供下游串位；封存 lowerMemberChain:8294-8297 `load as <type>` 同形）。
 	if def.fkinds[field] == "str" {
-		return "", "string field " + field + " reads need handle load (not lowerable yet)"
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		scope.types[t] = "str"
+		return t, ""
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -1306,14 +1455,15 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	return t, ""
 }
 
-// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 位；str 域另轮）。
+// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str 存头指针）。
 func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef, field, v string) string {
 	off, ok := def.offsets[field]
 	if !ok {
 		return "unknown field " + field
 	}
 	if def.fkinds[field] == "str" {
-		return "string field " + field + " stores need handle store (not lowerable yet)"
+		w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+		return ""
 	}
 	w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	return ""

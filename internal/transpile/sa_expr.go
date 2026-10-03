@@ -636,7 +636,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			if _, ok := bdef.offsets[pa.Name().Text()]; ok {
-				t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), nextTemp)
+				t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
 				}
@@ -659,7 +659,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			if _, ok := def.offsets[pa.Name().Text()]; ok {
-				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), nextTemp)
+				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
 				}
@@ -668,7 +668,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// 实例基静态字面量折叠（`c.N`；实例槽优先；封存 lowerExpr:8013-8041）。
 			if op, kind, ok := saStaticFold(w, pa.Expression, pa.Name().Text(), scope, nextTemp); ok {
 				if kind == "str" {
-					return "", "string "+pa.Name().Text()+" in i32 expression"
+					return "", "string " + pa.Name().Text() + " in i32 expression"
 				}
 				return op, ""
 			}
@@ -758,15 +758,30 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						if msg != "" {
 							return "", msg
 						}
-						op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-						if msg != "" {
-							return "", msg
-						}
 						if _, ok := bdef.offsets[lpa.Name().Text()]; ok {
+							// str 域右值走串求值存头指针；i32 域走值求值。
+							if bdef.fkinds[lpa.Name().Text()] == "str" {
+								sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								if msg := saLowerClassFieldStore(w, h, bdef, lpa.Name().Text(), sop); msg != "" {
+									return "", msg
+								}
+								return sop, ""
+							}
+							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
 							if msg := saLowerClassFieldStore(w, h, bdef, lpa.Name().Text(), op); msg != "" {
 								return "", msg
 							}
 							return op, ""
+						}
+						op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
 						}
 						if msg := saInlineSetter(w, h, bdef, lpa.Name().Text(), op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
 							return "", msg
@@ -774,7 +789,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						return op, ""
 					}
 				}
-				// 实例字段写（`o.f = v`；setter 走一参体内联；返回右值）。
+				// 实例字段写（`o.f = v`；setter 走一参体内联；返回右值；str 域右值走串求值）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Name() != nil && saCouldBeInst(lpa.Expression, scope) {
@@ -782,15 +797,29 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						if msg != "" {
 							return "", msg
 						}
-						op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-						if msg != "" {
-							return "", msg
-						}
 						if _, ok := def.offsets[lpa.Name().Text()]; ok {
+							if def.fkinds[lpa.Name().Text()] == "str" {
+								sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), sop); msg != "" {
+									return "", msg
+								}
+								return sop, ""
+							}
+							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
 							if msg := saLowerClassFieldStore(w, h, def, lpa.Name().Text(), op); msg != "" {
 								return "", msg
 							}
 							return op, ""
+						}
+						op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
 						}
 						if msg := saInlineSetter(w, h, def, lpa.Name().Text(), op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
 							return "", msg

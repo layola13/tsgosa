@@ -955,11 +955,17 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + field + " is not in the " + def.name + " layout"})
 					return false
 				}
-				// str 域解构另轮贯通（句柄间接；此处诚实拒）。
+				// str 域经头指针读回串值（读形见字段读位）。
 				if def.fkinds[field] == "str" {
-					ln, col := pos(el.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string field " + field + " destructuring is not lowerable yet"})
-					return false
+					name := nm.Text()
+					if _, dup := scope.types[name]; dup {
+						ln, col := pos(el.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", name, q.hid, off))
+					scope.types[name] = "str"
+					continue
 				}
 				name := nm.Text()
 				if _, dup := scope.types[name]; dup {
