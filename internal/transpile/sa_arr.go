@@ -421,22 +421,23 @@ func saArrBase(scope *saScope, n *ast.Node) (string, bool) {
 
 // saLowerDestructuringDecl lowering 解构声明（形状证据：封存
 // lowerDestructuringDecl:5414-5461 + destructureArray:5309-5333 +
-// bindPatternName:5513-5524：数组位逐元 lowerCheckedIndex（越界归零 join）绑定 i32；
-// 空穴跳过，rest 大声拒，嵌套位大声拒；对象位需结构体布局，本薄口大声拒）。
-// 源须为数组句柄（已绑定数组直传；字面量现场构造）；函数值不可解构。
+// bindPatternName:5513-5524 + destructureObject:5465-5509：数组位逐元
+// lowerCheckedIndex（越界归零 join）绑定 i32；空穴跳过，rest 大声拒，嵌套位
+// 大声拒；对象位按布局偏移直读（注解优先，次之源绑定 `inst:` 布局；串域记
+// str 其余 i32，与形参排空同门）。
+// 数组源须为数组句柄（已绑定数组直传；字面量现场构造）；函数值不可解构。
 func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if vd.Initializer != nil && (vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression) {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function values do not destructure"})
 		return false
 	}
+	if pat.Kind == ast.KindObjectBindingPattern {
+		return saLowerObjDestructuringDecl(w, d, vd, pat, scope, pos, refusals)
+	}
 	if pat.Kind != ast.KindArrayBindingPattern {
 		ln, col := pos(d.Pos())
-		if pat.Kind == ast.KindObjectBindingPattern {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
-		} else {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("binding pattern %d is not lowerable", int(pat.Kind))})
-		}
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("binding pattern %d is not lowerable", int(pat.Kind))})
 		return false
 	}
 	if vd.Initializer == nil {
@@ -493,6 +494,87 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		scope.types[name] = "i32"
 		saDeclareInitOwn(scope, name, v)
 		idx++
+	}
+	return true
+}
+
+// saLowerObjDestructuringDecl lowering 对象解构声明（`const {x, y: z} = src`；
+// 布局源：声明注解 TypeReference 优先，次之源标识符绑定的 `inst:` 布局；
+// 串域头指针读记 str，其余 i32；rest/缺省/嵌套/计算键/未知域/重名一律大声拒。
+// 形状证据：封存 destructureObject:5465-5509（源绑定布局 + 串名字面键 +
+// 按域种读回）+ 本仓形参排空对象位（串/i32 双臂 + 同文拒因）；字面量源另步）。
+func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	var def *saClassDef
+	if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+		if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			def, _ = scope.classes[ref.TypeName.Text()]
+		}
+	}
+	src := ""
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindIdentifier {
+		src = vd.Initializer.Text()
+		if def == nil {
+			if k, ok := scope.types[src]; ok && len(k) > 5 && k[:5] == "inst:" {
+				def, _ = scope.classes[k[5:]]
+			}
+		}
+	}
+	if def == nil || src == "" {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
+		return false
+	}
+	hid := src
+	for _, el := range pat.AsBindingPattern().Elements.Nodes {
+		if el.Kind != ast.KindBindingElement {
+			continue
+		}
+		be := el.AsBindingElement()
+		if be.DotDotDotToken != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
+			return false
+		}
+		if be.Initializer != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable"})
+			return false
+		}
+		nm := be.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
+			return false
+		}
+		field := nm.Text()
+		if be.PropertyName != nil {
+			pn := be.PropertyName.AsNode()
+			if pn.Kind != ast.KindIdentifier && pn.Kind != ast.KindStringLiteral {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed destructuring keys are not lowerable"})
+				return false
+			}
+			field = pn.Text()
+		}
+		off, ok := def.offsets[field]
+		if !ok {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + field + " is not in the " + def.name + " layout"})
+			return false
+		}
+		name := nm.Text()
+		if _, dup := scope.types[name]; dup {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+			return false
+		}
+		if def.fkinds[field] == "str" {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", name, hid, off))
+			scope.types[name] = "str"
+			continue
+		}
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", name, hid, off))
+		scope.types[name] = "i32"
 	}
 	return true
 }
