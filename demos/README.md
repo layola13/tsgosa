@@ -205,3 +205,30 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 140_tally | filter 偶数统计 | 26 |
 
 已知边界（续6）：串 `+=` 累加重绑记 H13（124 改只读形）；构造缺省短调 new 侧元数门（沿 step71）；`for(j..;j+=i)` 与 `j=j+i` 同经增量释放修复。
+
+## 第八批（141–160）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 141_sum_sq | 平方和 | 7 |
+| 142_dot | 点积 | 7 |
+| 143_mat_add | 矩阵加双循环 | 80 |
+| 144_transpose | 2x2 转置构造 | 80 |
+| 145_strcmp | 串字典序 | 25 |
+| 146_mode | 众数双循环 | 7 |
+| 147_median | toSorted 中位数 | 26 |
+| 148_bit_count | 位计数 while | 129 |
+| 149_super_args | super 传参构造 | 34 |
+| 150_multi_default | 多缺省短调 | 71 |
+| 151_obj_param | 接口形参 | 32 |
+| 152_enum_calc | 枚举比较 | 27 |
+| 153_ternary_chain | 三元链 | 84 |
+| 154_rest_first | 首参+rest | 121 |
+| 155_collatz | 考拉兹 while | 7 |
+| 156_destructure_call | 数组解构 | 16 |
+| 157_label_nested | 标号 continue 外层 | 14 |
+| 158_do_sum | do-while 求和 | 3-11 |
+| 159_gcd_sum | gcd 累加 | 7 |
+| 160_pow2 | `**` 幂表 | 21 |
+
+已知边界（续7）：函数体内嵌套函数声明拒（沿既有门）；bool switch 判别式拒（串 switch 有，bool 另立）；本批零 Go 改动。
