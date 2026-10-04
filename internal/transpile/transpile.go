@@ -451,11 +451,15 @@ type saFileLink struct {
 // Default exports harvest under key "default" with defLocal naming the
 // defining declaration (upstream fileExports.defLocal 同形；qualified 后缀
 // 用定义名，见 program.go:26/defQualified:98）。
+// forwardQualified carries a fully-resolved callee for passthrough members
+// (`export default ns` chains; consumer uses it verbatim instead of
+// prefix+defLocal).
 type saProgFunc struct {
-	sig      saFuncSig
-	exported bool
-	isArrow  bool
-	defLocal string // defining name for "default" entries ("" otherwise)
+	sig              saFuncSig
+	exported         bool
+	isArrow          bool
+	defLocal         string // defining name for "default" entries ("" otherwise)
+	forwardQualified string // fully-resolved callee for passthrough members ("" = prefix+defLocal)
 }
 
 // saProgClass is one harvested top-level class for cross-file linking
@@ -674,7 +678,10 @@ func bindProgNsFuncs(link *saFileLink, tgt, remote, local string) bool {
 	for _, name := range names {
 		hv := members[name]
 		member, ok := strings.CutPrefix(name, remote+".")
-		if !ok || member == "" || !hv.exported || hv.isArrow || hv.defLocal == "" {
+		if !ok || member == "" || !hv.exported || hv.isArrow {
+			continue
+		}
+		if hv.defLocal == "" && hv.forwardQualified == "" {
 			continue
 		}
 		if link.resolve == nil {
@@ -684,6 +691,9 @@ func bindProgNsFuncs(link *saFileLink, tgt, remote, local string) bool {
 			link.seed = map[string]saFuncSig{}
 		}
 		q := prefix + hv.defLocal
+		if hv.forwardQualified != "" {
+			q = hv.forwardQualified
+		}
 		link.resolve[local+"."+member] = q
 		link.seed[q] = hv.sig
 		bound = true
@@ -796,6 +806,56 @@ func saHarvestDefaultObject(st *ast.Node, funcs map[string]saFuncSig, link *saFi
 			ln, col := pos(p.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object supports only shorthand and identifier-valued properties"})
 			return
+		}
+	}
+}
+
+// saHarvestDefaultPassthrough 收割 `export default <别名>` 透传（别名须为
+// 已绑定命名空间导入；逐成员展平为 `default.<名>` 全 resolved 被调；
+// 上游 DefaultPassthrough（`export default lib` 透成员直调）同形；
+// 平函数 `export default f` 无点键可展， naturally 下探旧门（上游同拒）。
+func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink) {
+	if sf == nil || link == nil {
+		return
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindExportAssignment {
+			continue
+		}
+		ed := st.AsExportAssignment()
+		if ed == nil || ed.IsExportEquals || ed.Expression == nil {
+			continue
+		}
+		ex := ed.Expression.AsNode()
+		if ex == nil || ex.Kind != ast.KindIdentifier {
+			continue
+		}
+		alias := ex.Text()
+		prefix := alias + "."
+		var keys []string
+		for k := range link.resolve {
+			if strings.HasPrefix(k, prefix) {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			q := link.resolve[k]
+			sig, ok := link.seed[q]
+			if !ok {
+				continue
+			}
+			member := strings.TrimPrefix(k, prefix)
+			if member == "" {
+				continue
+			}
+			if link.harvest == nil {
+				link.harvest = map[string]saProgFunc{}
+			}
+			link.harvest["default."+member] = saProgFunc{sig: sig, exported: true, forwardQualified: q}
 		}
 	}
 }
@@ -1274,6 +1334,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		for q, sig := range link.seed {
 			funcs[q] = sig
 		}
+		// Program hook B2: `export default <ns-alias>` forwards the bound
+		// alias surface as `default.<member>` (fully-resolved callees;
+		// upstream DefaultPassthrough 同形；plain-function `export default f`
+		// 下探旧门，上游同拒 "not callable").
+		saHarvestDefaultPassthrough(sf, link)
 		// Program hook C-class: seed imported class layouts (local
 		// definitions win; defining-file pointer shared read-only).
 		for local, def := range link.classSeed {
