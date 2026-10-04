@@ -431,17 +431,20 @@ func saPos(offs []int, p int) (int, int) {
 // lowering, all behavior unchanged). Shape evidence: upstream LowerProgram
 // prefixOf + links[p].resolved + seeded funcSigs + PerFile harvest.
 type saFileLink struct {
-	defPrefix string                           // definition prefix ("" entry; "util__" libs)
-	isEntry   bool                             // entry synthesizes @main; libs refuse top-level execution
-	self      string                           // this file key (for own re-export edges)
-	specOf    map[string]string                // this file: import spec -> target file
-	prefixOf  map[string]string                // all files: target -> prefix
-	harvests  map[string]map[string]saProgFunc // all files: target -> name -> harvested (driver fills)
-	reexps    map[string]map[string]string     // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
-	stars     map[string][]string              // all files: target -> star-from targets in order (upstream starFrom 同形）
-	resolve   map[string]string                // out/in: imported local name -> qualified callee
-	seed      map[string]saFuncSig             // out/in: qualified callee -> defining file signature
-	harvest   map[string]saProgFunc            // out: own top-level functions for dependents
+	defPrefix     string                            // definition prefix ("" entry; "util__" libs)
+	isEntry       bool                              // entry synthesizes @main; libs refuse top-level execution
+	self          string                            // this file key (for own re-export edges)
+	specOf        map[string]string                 // this file: import spec -> target file
+	prefixOf      map[string]string                 // all files: target -> prefix
+	harvests      map[string]map[string]saProgFunc  // all files: target -> name -> harvested (driver fills)
+	reexps        map[string]map[string]string      // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
+	stars         map[string][]string               // all files: target -> star-from targets in order (upstream starFrom 同形）
+	resolve       map[string]string                 // out/in: imported local name -> qualified callee
+	seed          map[string]saFuncSig              // out/in: qualified callee -> defining file signature
+	harvest       map[string]saProgFunc             // out: own top-level functions for dependents
+	classHarvest  map[string]saProgClass            // out: own top-level classes for dependents
+	classHarvests map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
+	classSeed     map[string]*saClassDef            // out/in: imported local class name -> defining layout
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -453,6 +456,15 @@ type saProgFunc struct {
 	exported bool
 	isArrow  bool
 	defLocal string // defining name for "default" entries ("" otherwise)
+}
+
+// saProgClass is one harvested top-level class for cross-file linking
+// (upstream program.go sharedClassDefs + expOf exports 同形；布局指针跨文件
+// 共享只读消费，方法内联即定义体 AST；heritage 跨文件另步，默认/命名空间
+// 成员类沿旧门后阶段）。
+type saProgClass struct {
+	def      *saClassDef
+	exported bool
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
@@ -732,6 +744,21 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		}
 		hv, ok := link.harvests[tgt][remote]
 		if !ok {
+			// 类直链：具名导入类名命中定义文件收割即播种布局（本地名直挂
+			// 调用点 `new`/方法内联复用实例通道；未导出沿"未导出"门；
+			// 默认/命名空间成员类/reexp 透传沿旧门后阶段）。
+			if ch, ok := link.classHarvests[tgt][remote]; ok {
+				if !ch.exported || ch.def == nil {
+					ln, col := pos(n.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
+					continue
+				}
+				if link.classSeed == nil {
+					link.classSeed = map[string]*saClassDef{}
+				}
+				link.classSeed[local] = ch.def
+				continue
+			}
 			// 重导出透传（`export {a} from` 链；cycle/断链下探"未导出"门）。
 			if q, sig, ok := saProgChase(link, tgt, remote, map[string]bool{}); ok {
 				link.resolve[local] = q
@@ -965,6 +992,19 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					link.harvest[name] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), isArrow: true}
 				}
 			}
+			// 类收割：具名类声明记布局指针 + export 旗（上游 program.go
+			// sharedClassDefs + expOf 同形；类表达式/默认导出类/heritage 基
+			// 跨文件另步，沿旧门）。
+			if st.Kind == ast.KindClassDeclaration {
+				if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+					if def, ok := classes[nm.Text()]; ok && def != nil {
+						if link.classHarvest == nil {
+							link.classHarvest = map[string]saProgClass{}
+						}
+						link.classHarvest[nm.Text()] = saProgClass{def: def, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
+					}
+				}
+			}
 		}
 	}
 	// 预扫二c：顶层可变槽登记（`let x = 1` 被赋值即入槽，声明无码；`const` 永不入槽；
@@ -1010,6 +1050,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	if link != nil {
 		for q, sig := range link.seed {
 			funcs[q] = sig
+		}
+		// Program hook C-class: seed imported class layouts (local
+		// definitions win; defining-file pointer shared read-only).
+		for local, def := range link.classSeed {
+			if def == nil {
+				continue
+			}
+			if _, dup := classes[local]; !dup {
+				classes[local] = def
+			}
 		}
 		// Program hook C2: value export lists stay unlinked in S1
 		// (named functions link via export modifier; star/default/lists
@@ -3183,22 +3233,27 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		prefixOf[p] = saProgPrefix(p, entry)
 	}
 	harvests := map[string]map[string]saProgFunc{}
+	classHarvests := map[string]map[string]saProgClass{}
 	for _, p := range reachable {
 		lk := &saFileLink{
-			defPrefix: prefixOf[p],
-			isEntry:   p == entry,
-			self:      p,
-			specOf:    specOf[p],
-			harvests:  harvests,
-			prefixOf:  prefixOf,
-			reexps:    reexpOf,
-			stars:     starOf,
-			resolve:   map[string]string{},
-			seed:      map[string]saFuncSig{},
-			harvest:   map[string]saProgFunc{},
+			defPrefix:     prefixOf[p],
+			isEntry:       p == entry,
+			self:          p,
+			specOf:        specOf[p],
+			harvests:      harvests,
+			prefixOf:      prefixOf,
+			reexps:        reexpOf,
+			stars:         starOf,
+			resolve:       map[string]string{},
+			seed:          map[string]saFuncSig{},
+			harvest:       map[string]saProgFunc{},
+			classHarvest:  map[string]saProgClass{},
+			classHarvests: classHarvests,
+			classSeed:     map[string]*saClassDef{},
 		}
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
+		classHarvests[p] = lk.classHarvest
 		for _, r := range out.Refusals {
 			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
 		}
