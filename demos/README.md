@@ -1,7 +1,7 @@
 # tsgosa/demos — TS 特性可运行展示集（用户进度检查用）
 
 每个目录一个受支持特性：`main.ts`（tsgosa 方言）+ `main.sai`（生成的 SA，同进仓）+ `expected.stdout`（手写期望输出）。
-`./run.sh` 跑全流水线并打印进度表：
+`./run.sh` 跑全流水线并打印进度表（默认并行，`-j1` 回串行，结果一致）：
 
 ```
 main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expected.stdout
@@ -10,6 +10,7 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 - `out/`、`*.log` 为生成物（gitignore），`main.sai` 可直接打开看 SA。
 - 单测某例：`./run.sh 09_array_methods 11_string_array_iter`
 - `./run.sh --check`：只重生成 `.sai` 并与进仓版逐字节比对（**`.sai` 禁止手改，只能由编译器出**；提交前/CI 自证；不匹配即 FAIL）。
+- `./run.sh --corpus`：对 sa_plugin_ts/demos 语料跑上游/薄口通拒差分（零分歧即过；286 例约 2 秒）。
 - 依赖：Go（编 tsgo）、sci 的 `sa` 二进制（`SA_BIN` 环境变量可覆盖，sci 下 `zig build -Dllvm=false` 构建）。
 
 ## 铁律：`.sai` 是编译产物
@@ -292,3 +293,10 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 - `run.sh` 200/200 PASS，`run.sh --check` 200/200 SA-CLEAN（sai 禁止手改）。
 - 286 差分门禁：286 一致、零分歧。
 - `go build ./...` + `testrunner` + `go vet transpile/` 全绿；gofmt 仅旧 4 文件。
+
+## 补批（201–202，H 缺口回归）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 201_for_in | for-in 下标巡回求和 | step153（H11 快照修复） |
+| 202_nested_forof | 嵌套数组标识符巡回 | step153（H15 行绑 arr） |

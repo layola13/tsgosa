@@ -768,6 +768,10 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				}
 			} else if rbase, ok := saArrBase(scope, fo.Expression); ok && scope.arrStr[rbase] {
 				bindKind = "str"
+			} else if rbase, ok := saArrBase(scope, fo.Expression); ok && scope.arrNest != nil && scope.arrNest[rbase] {
+				// 嵌套数组标识符巡回：元为内层句柄，行绑 arr（字面量直巡同形；
+				// 形状证据：封存 for-of 体 `row = t_19` 后 `load row + 8`）。
+				bindKind = "arr"
 			}
 		}
 		scope.types[binding] = bindKind
@@ -873,9 +877,11 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, lenT))
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	w.Write(fmt.Sprintf("  %s = %s\n", binding, idx))
+	// 下标绑定快照（`binding = add idx, 0` + declarePlain；move 会消费循环携带的
+	// idx 致增量位 UseAfterMove；形状证据：封存 for-in 体 `i = add t_6, 0`）。
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", binding, idx))
 	scope.types[binding] = "i32"
-	saDeclareInitOwn(scope, binding, idx)
+	saDeclarePlain(scope, binding)
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
