@@ -639,6 +639,48 @@ func saProgLocalEdges(st *ast.Node) (map[string]string, bool) {
 	return edges, false
 }
 
+// saBindProgNsMembers 绑定具名命名空间导入（`import { N }`）：把收割到的
+// `N.<成员>` 逐个记入 link.resolve（调用点经既有点式 linkResolve 路由；
+// 未导出/箭头/无发射名成员永不绑定；零绑定返回 false 下探旧门）。
+// 形状证据：上游 link_namespace.go bindNSMembers 点键同形。
+func saBindProgNsMembers(link *saFileLink, tgt, remote, local string) bool {
+	if link == nil {
+		return false
+	}
+	members, ok := link.harvests[tgt]
+	if !ok || len(members) == 0 {
+		return false
+	}
+	prefix, ok := link.prefixOf[tgt]
+	if !ok {
+		return false
+	}
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	bound := false
+	for _, name := range names {
+		hv := members[name]
+		member, ok := strings.CutPrefix(name, remote+".")
+		if !ok || member == "" || !hv.exported || hv.isArrow || hv.defLocal == "" {
+			continue
+		}
+		if link.resolve == nil {
+			link.resolve = map[string]string{}
+		}
+		if link.seed == nil {
+			link.seed = map[string]saFuncSig{}
+		}
+		q := prefix + hv.defLocal
+		link.resolve[local+"."+member] = q
+		link.seed[q] = hv.sig
+		bound = true
+	}
+	return bound
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -768,6 +810,11 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					link.classSeed = map[string]*saClassDef{}
 				}
 				link.classSeed[local] = ch.def
+				continue
+			}
+			// 命名空间整件直链（`import { N }` + `N.f()` 经成员点键绑定；
+			// 零可链成员下探重导出透传/未导出门；上游 bindNSMembers 同形）。
+			if saBindProgNsMembers(link, tgt, remote, local) {
 				continue
 			}
 			// 重导出透传（`export {a} from` 链；cycle/断链下探"未导出"门）。
@@ -999,6 +1046,26 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 							link.classHarvest = map[string]saProgClass{}
 						}
 						link.classHarvest[nm.Text()] = saProgClass{def: def, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
+					}
+				}
+			}
+			// 命名空间成员函数收割（`N.f` 点键 + 发射名记 defLocal；定义侧
+			// step194 发射 `@N_f`；上游 bindNSMembers 点键同形）。
+			if ns, members, ok := saNsFuncMembers(st); ok {
+				for _, m := range members {
+					if m == nil || m.Kind != ast.KindFunctionDeclaration {
+						continue
+					}
+					fn := m.AsFunctionDeclaration()
+					if fn == nil || fn.Body == nil {
+						continue
+					}
+					mn := fn.Name()
+					if mn == nil || mn.Kind != ast.KindIdentifier {
+						continue
+					}
+					if sig, ok := funcs[ns+"_"+mn.Text()]; ok {
+						link.harvest[ns+"."+mn.Text()] = saProgFunc{sig: sig, exported: ast.HasModifier(m, ast.ModifierFlagsExport), defLocal: ns + "_" + mn.Text()}
 					}
 				}
 			}
