@@ -861,6 +861,111 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 	}
 }
 
+// saRefuseNsBareCapture 扫描 ns 类成员体内的裸兄弟纯量读（内联发生在外层
+// 域，窗口不可达；用限定 `N.K` 形则经永久键直通）。声明名位/属性名/heritage
+// 子句跳过（各有专属门）；余下一律按读处理（宁可误拒，不可静默错位）。
+// 形状证据：上游 defNS 常量子集（兄弟读经域内折叠，方法内联无域）。
+func saRefuseNsBareCapture(m *ast.Node, names map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	if m == nil || len(names) == 0 {
+		return false
+	}
+	var hit *ast.Node
+	var walk func(n *ast.Node)
+	kids := func(n *ast.Node) {
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk = func(n *ast.Node) {
+		if n == nil || hit != nil {
+			return
+		}
+		switch n.Kind {
+		case ast.KindIdentifier:
+			if names[n.Text()] {
+				hit = n
+			}
+			return
+		case ast.KindPropertyAccessExpression:
+			if pa := n.AsPropertyAccessExpression(); pa != nil {
+				walk(pa.Expression.AsNode())
+			}
+			return
+		case ast.KindHeritageClause:
+			// heritage 基走专属门（未知基/混入大声拒），此处跳过。
+			return
+		case ast.KindVariableDeclaration:
+			if vd := n.AsVariableDeclaration(); vd != nil {
+				if vd.Type != nil {
+					walk(vd.Type.AsNode())
+				}
+				if vd.Initializer != nil {
+					walk(vd.Initializer.AsNode())
+				}
+			}
+			return
+		case ast.KindFunctionDeclaration, ast.KindClassDeclaration,
+			ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor,
+			ast.KindPropertyDeclaration:
+			// 声明名跳过（各有专属门），余下子树照走。
+			skipName := n.Name()
+			n.ForEachChild(func(c *ast.Node) bool {
+				if c == skipName {
+					return false
+				}
+				walk(c)
+				return false
+			})
+			return
+		case ast.KindParameter:
+			if pd := n.AsParameterDeclaration(); pd != nil {
+				if pd.Type != nil {
+					walk(pd.Type.AsNode())
+				}
+				if pd.Initializer != nil {
+					walk(pd.Initializer.AsNode())
+				}
+			}
+			return
+		case ast.KindPropertyAssignment:
+			if pa := n.AsPropertyAssignment(); pa != nil && pa.Initializer != nil {
+				walk(pa.Initializer.AsNode())
+			}
+			return
+		case ast.KindShorthandPropertyAssignment:
+			// `{K}` 简写既读又绑，读侧按裸引用处理。
+			if nm := n.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				if names[nm.Text()] {
+					hit = nm
+				}
+			}
+			return
+		case ast.KindBindingElement:
+			if be := n.AsBindingElement(); be != nil {
+				if be.PropertyName != nil {
+					walk(be.PropertyName.AsNode())
+				}
+				if be.Initializer != nil {
+					walk(be.Initializer.AsNode())
+				}
+				if bnm := be.Name(); bnm != nil && (bnm.Kind == ast.KindArrayBindingPattern || bnm.Kind == ast.KindObjectBindingPattern) {
+					walk(bnm)
+				}
+			}
+			return
+		}
+		kids(n)
+	}
+	walk(m)
+	if hit == nil {
+		return false
+	}
+	ln, col := pos(hit.Pos())
+	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "bare reference to namespace const \"" + hit.Text() + "\" inside a class body is not lowerable (qualify it)"})
+	return true
+}
+
 // saCouldBeInst 判定表达式是否可能为实例基（绑定实例名或方法内 this）。
 func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 	if e != nil && e.Kind == ast.KindThisKeyword {

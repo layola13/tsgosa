@@ -1122,10 +1122,31 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			continue
 		}
 		// 命名空间成员类预扫成表（`N_M_C` 限定布局；heritage 基经成员父域
-		// 回退；形状证据：封存 recordClassNamed:9586-9611 具名记录全形）。
+		// 回退；类体裸兄弟读先扫描大声拒（内联域外不可达）；形状证据：
+		// 封存 recordClassNamed:9586-9611 具名记录全形）。
 		if members, ok := saFlattenNsMembers(st); ok {
 			for _, mb := range members {
 				if mb.isFunc || mb.isConst {
+					continue
+				}
+				// 同域及祖先域可见纯量名（类体裸读扫描用；兄弟域不可见）。
+				visible := map[string]bool{}
+				for _, cb := range members {
+					if !cb.isConst {
+						continue
+					}
+					if cb.scope != mb.scope && !strings.HasPrefix(mb.scope, cb.scope+"_") {
+						continue
+					}
+					vd := cb.decl.AsVariableDeclaration()
+					if vd == nil {
+						continue
+					}
+					if nm := vd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+						visible[nm.Text()] = true
+					}
+				}
+				if saRefuseNsBareCapture(mb.node, visible, pos, &refusals) {
 					continue
 				}
 				saRecordClassNamed(mb.node, mb.under, false, mb.scope, classes, pos, &refusals)
@@ -1582,7 +1603,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 						continue
 					}
 					emitted[mb.under] = true
+					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
+					restore := saEnterNsScopeConsts(topConsts, topStr, members, mb.scope)
 					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					restore()
 				}
 				continue
 			}

@@ -1354,6 +1354,86 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 	return folded
 }
 
+// saEnterNsScopeConsts 为单个 ns 成员打开裸兄弟读窗口（同域及祖先域已折
+// 纯量按名直挂，内层覆写；出域恢复原值/原 presence；与顶层折叠键独立）。
+// 调用方：ns 成员函数发射前后（语句同步落字，out-of-line 体呈文本 baked）。
+func saEnterNsScopeConsts(topConsts map[string]string, topStr map[string]bool, members []saNsMember, scope string) func() {
+	type saved struct {
+		v     string
+		s     bool
+		hasV  bool
+		hasS  bool
+	}
+	type seed struct {
+		name string
+		text string
+		str  bool
+	}
+	byScope := map[string][]seed{}
+	for _, mb := range members {
+		if !mb.isConst {
+			continue
+		}
+		if mb.scope != scope && !strings.HasPrefix(scope, mb.scope+"_") {
+			continue
+		}
+		text, ok := topConsts[mb.dotted]
+		if !ok {
+			continue
+		}
+		vd := mb.decl.AsVariableDeclaration()
+		if vd == nil {
+			continue
+		}
+		nm := vd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		byScope[mb.scope] = append(byScope[mb.scope], seed{name: nm.Text(), text: text, str: topStr[mb.dotted]})
+	}
+	// 外层先挂，内层覆写（路径长度升序）。
+	var scopes []string
+	for s := range byScope {
+		scopes = append(scopes, s)
+	}
+	sort.Strings(scopes)
+	restores := map[string]saved{}
+	seen := map[string]bool{}
+	var applied []string
+	for _, s := range scopes {
+		for _, sd := range byScope[s] {
+			if !seen[sd.name] {
+				v, hasV := topConsts[sd.name]
+				b, hasS := topStr[sd.name]
+				restores[sd.name] = saved{v: v, s: b, hasV: hasV, hasS: hasS}
+				seen[sd.name] = true
+				applied = append(applied, sd.name)
+			}
+			topConsts[sd.name] = sd.text
+			if sd.str {
+				topStr[sd.name] = true
+			} else {
+				delete(topStr, sd.name)
+			}
+		}
+	}
+	return func() {
+		for _, name := range applied {
+			r := restores[name]
+			if r.hasV {
+				topConsts[name] = r.v
+			} else {
+				delete(topConsts, name)
+			}
+			if r.hasS {
+				topStr[name] = r.s
+			} else {
+				delete(topStr, name)
+			}
+		}
+	}
+}
+
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
 // 为 `N.K` 拍扁纯量（数字/串/true/false；复用顶层折叠值域，不含 Math 别名与
 // 标识符链）。非 export/非纯量/函数/类/嵌套 namespace 成员一律整块不折，
