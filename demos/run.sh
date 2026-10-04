@@ -121,6 +121,7 @@ run_one_demo() {
   out="$d/out"
   rm -rf "$out"
   mkdir -p "$out"
+  SAI_ROOT=""
   # .sai 落 demo 根（随批进仓供检查；其余生成物进 out/（忽略）
   # --check 模式: 生成到临时位,只与进仓 main.sai 比对,不碰工作区
   if [ "$CHECK" -eq 1 ]; then
@@ -132,8 +133,9 @@ run_one_demo() {
   fi
   if [ -f "$d/package.json" ]; then
     # 真实 program 工程（package.json + 多文件 + npm deps）：tsgo build 出 sci
-    # workspace，合并 main.sa（成员入口，.sa 方为真编译单元）即编译产物
-    #（--check 比对进仓 $d/main.sa）。
+    # workspace，分裂布局（成员多 .sa，入口 main.sa 经 ./x.sa 跨文件引用；
+    # sla workspace 真形态）。进仓 $d/main.sa 即入口编译产物（--check 比对）。
+    # 跑分用 ws 内副本 + --project-root（相对 @import 解析）。
     # 预期拒收工程（$d/expect.refused，每行一指纹）：build 必须拒收且指纹全中
     #（真 zod 本体形；无进仓 main.sa，--check 同判）。
     if [ -f "$d/expect.refused" ]; then
@@ -166,7 +168,8 @@ run_one_demo() {
       return 0
     fi
     cp "$MERGED" "$d/main.sa"
-    SAI="$d/main.sa"
+    SAI="$MERGED"
+    SAI_ROOT="$out/ws"
   else
   if ! "$TSGO_BIN" --sa --out "$SA_OUT" "$d/main.ts" >"$out/tsgo.log" 2>&1; then
     if grep -q "error:" "$out/tsgo.log" 2>/dev/null; then detail="tsgo error"; else detail="transpile refused"; fi
@@ -184,7 +187,11 @@ run_one_demo() {
   SAI="$d/main.sai"
   fi
   # 插件 demo（$d/sa.mod 进仓固定装置）：--project-root 供 bare node.sai 解析。
-  if [ -f "$d/sa.mod" ]; then
+  # program demo：SAI_ROOT 置 ws 根，解相对 ./x.sa。
+  if [ -n "${SAI_ROOT:-}" ]; then
+    BUILD_OK=0
+    "$SA_BIN" build-exe --project-root "$SAI_ROOT" "$SAI" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
+  elif [ -f "$d/sa.mod" ]; then
     BUILD_OK=0
     "$SA_BIN" build-exe --project-root "$d" "$SAI" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
   else

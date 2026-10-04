@@ -30,7 +30,7 @@ func saStrIntern(pool *saStrPool, text string) string {
 	if n, ok := pool.seen[text]; ok {
 		return n
 	}
-	n := fmt.Sprintf("str_const_%d", pool.next)
+	n := fmt.Sprintf("%sstr_const_%d", pool.prefix, pool.next)
 	pool.next++
 	esc := strings.ReplaceAll(text, "\\", "\\\\")
 	esc = strings.ReplaceAll(esc, "\"", "\\\"")
@@ -149,6 +149,13 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		}
 		if sig, ok := scope.funcs[nm]; ok {
 			return !sig.isVoid && sig.retKind == "string"
+		}
+		// Program link: 源级名经链接表查种子签名（`greet(..)` → `util__greet`；
+		// saCallRetKind:647 同形，串判定此前漏链）。
+		if q, linked := saLinkCallee(scope, nm); linked {
+			if sig, ok := scope.funcs[q]; ok {
+				return !sig.isVoid && sig.retKind == "string"
+			}
 		}
 		// fs/net projected string surfaces (readFile returns a slice).
 		if mod, ok := scope.imports[nm]; ok {

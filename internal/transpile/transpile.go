@@ -1000,7 +1000,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 		}
 	}
-	strPool := &saStrPool{seen: map[string]string{}}
+	strPool := &saStrPool{seen: map[string]string{}, prefix: saLinkDefPrefix(link)}
 	emitted := map[string]bool{}
 	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；
 	// 用户 `main` 遇合成改名 `main__user`（定义 + 调用点；`main__user` 已有则拒）。
@@ -1949,11 +1949,13 @@ type saInlineRet struct {
 
 // saStrPool 是文件级字符串常量池（`@const str_const_N = utf8:"...\\0"` 行在
 // @import 之后、函数之前集中落字；同文本去重。形状证据：封存
-// lowerStringLiteral:2974-2990）。
+// lowerStringLiteral:2974-2990）。prefix 为 program-link 定义前缀（成员
+// 常量跨文件 `@import` 时防重名；单文件/入口空前缀零行为变）。
 type saStrPool struct {
-	buf  strings.Builder
-	seen map[string]string
-	next int
+	buf    strings.Builder
+	seen   map[string]string
+	next   int
+	prefix string
 }
 
 func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
@@ -2621,9 +2623,9 @@ func saDetectModName(dir string) string {
 
 // saProgResult is the linked program outcome (mirrors ProgramResult).
 type saProgResult struct {
-	sai        string
 	files      []string
 	perFile    map[string]string
+	deps       map[string][]string // direct link edges per file (for member @imports)
 	diags      []string
 	unresolved []string
 	refused    bool
@@ -2834,9 +2836,6 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		prefixOf[p] = saProgPrefix(p, entry)
 	}
 	harvests := map[string]map[string]saProgFunc{}
-	mergedImports := []string{}
-	seenImport := map[string]bool{}
-	bodies := []string{}
 	for _, p := range reachable {
 		lk := &saFileLink{
 			defPrefix: prefixOf[p],
@@ -2862,25 +2861,8 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			res.refused = true
 		}
 		res.perFile[p] = out.SAI
-		for _, line := range strings.Split(out.SAI, "\n") {
-			t := strings.TrimSpace(line)
-			if strings.HasPrefix(t, "@import ") || strings.HasPrefix(t, "@extern ") || strings.HasPrefix(t, "@const ") {
-				if !seenImport[t] {
-					seenImport[t] = true
-					mergedImports = append(mergedImports, line)
-				}
-				continue
-			}
-			bodies = append(bodies, line)
-		}
 	}
-	var out strings.Builder
-	for _, line := range mergedImports {
-		out.WriteString(line)
-		out.WriteString("\n")
-	}
-	out.WriteString(strings.Join(bodies, "\n"))
-	res.sai = out.String()
+	res.deps = graph
 	res.files = append([]string{}, reachable...)
 	for spec := range unresolved {
 		// Only specs reachable from the entry program surface.
@@ -2932,21 +2914,44 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 			return err
 		}
 	}
-	for p, sai := range res.perFile {
-		rel := strings.TrimPrefix(filepath.FromSlash(p), "src"+string(filepath.Separator))
-		dst := filepath.Join(srcDir, rel+".sai")
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
+	// 分裂布局（sla workspace 真形态：一成员多 `.sa`，`@import "./x.sa"`
+	// 跨文件引用；用户原则纠正：禁合并单文件）。入口落 `src/main.sa`（本
+	// 文件单元 + 直接依赖 `@import`），其余文件落 `src/<base>.sa`（同名基
+	// 冲突大声拒）；逐文件 `.sai`  inspection 件退役（单元即 `.sa`）。
+	saName := map[string]string{}
+	seenBase := map[string]bool{}
+	for _, p := range res.files {
+		base := p
+		if p == entry {
+			base = "main"
+		} else {
+			base = strings.TrimSuffix(path.Base(p), ".ts")
+			base = strings.TrimSuffix(base, ".js")
 		}
-		if err := os.WriteFile(dst, []byte(sai), 0o644); err != nil {
-			return err
+		if seenBase[base] {
+			return fmt.Errorf("duplicate member unit name %q (from %s)", base+".sa", p)
 		}
+		seenBase[base] = true
+		saName[p] = base
 	}
-	// Merged member entry is src/main.sa: the sci/sa workspace resolver
-	// discovers compilation units by .sa (sla/sci workspace demos agree;
-	// .sai artifacts stay per-file for inspection; .ts originals are inert).
-	if err := os.WriteFile(filepath.Join(srcDir, "main.sa"), []byte(res.sai), 0o644); err != nil {
-		return err
+	for p, sai := range res.perFile {
+		name, ok := saName[p]
+		if !ok {
+			continue
+		}
+		var b strings.Builder
+		for _, q := range res.deps[p] {
+			dn, ok := saName[q]
+			if !ok || dn == name {
+				continue
+			}
+			fmt.Fprintf(&b, "@import \"./%s.sa\"\n", dn)
+		}
+		b.WriteString(sai)
+		dst := filepath.Join(srcDir, name+".sa")
+		if err := os.WriteFile(dst, []byte(b.String()), 0o644); err != nil {
+			return err
+		}
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "subset-report.txt"), []byte(report), 0o644); err != nil {
 		return err
