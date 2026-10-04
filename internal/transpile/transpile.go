@@ -577,6 +577,45 @@ func saProgReexpEdges(st *ast.Node) (string, map[string]string, bool) {
 	return spec, edges, false
 }
 
+// saProgLocalEdges parses `export {a [, b as c]}` (no from) into
+// exported->local edges (star/empty/absent yield nil, true).
+func saProgLocalEdges(st *ast.Node) (map[string]string, bool) {
+	ed := st.AsExportDeclaration()
+	if ed == nil || ed.IsTypeOnly || ed.ModuleSpecifier != nil {
+		return nil, true
+	}
+	if ed.ExportClause == nil || ed.ExportClause.Kind != ast.KindNamedExports {
+		return nil, true
+	}
+	ne := ed.ExportClause.AsNamedExports()
+	if ne == nil || ne.Elements == nil {
+		return nil, true
+	}
+	edges := map[string]string{}
+	for _, n := range ne.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindExportSpecifier {
+			continue
+		}
+		sp := n.AsExportSpecifier()
+		if sp == nil || sp.IsTypeOnly {
+			continue
+		}
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		local := nm.Text()
+		if pn := sp.PropertyNameOrName(); pn != nil && pn.Kind == ast.KindIdentifier {
+			local = pn.Text()
+		}
+		edges[nm.Text()] = local
+	}
+	if len(edges) == 0 {
+		return nil, true
+	}
+	return edges, false
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -1019,6 +1058,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				continue
 			}
 			if ed.ExportClause != nil {
+				// 本地名单：全员可 chase（自有 harvest 或进口边）即无码认领，
+				// 否则沿旧门（命名空间值/断链无单值）。
+				if edges, star := saProgLocalEdges(st); !star {
+					okAll := true
+					for exported := range edges {
+						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
+							okAll = false
+							break
+						}
+					}
+					if okAll {
+						handledTop[st] = true
+						continue
+					}
+				}
 				ln, col := pos(st.Pos())
 				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "export lists link in a later stage"})
 			}
@@ -2955,6 +3009,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	specOf := map[string]map[string]string{}
 	reexpOf := map[string]map[string]string{}
 	starOf := map[string][]string{}
+	impOf := map[string]map[string]string{}
 	unresolved := map[string]bool{}
 	addEdge := func(p, spec string) string {
 		if !strings.HasPrefix(spec, ".") {
@@ -3022,6 +3077,63 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 					specOf[p] = map[string]string{}
 				}
 				specOf[p][spec] = tgt
+				// import provenance（本地名单转出口用；命名 + 默认，
+				// 命名空间无单值跳过）。
+				if cl := st.AsImportDeclaration().ImportClause.AsImportClause(); cl != nil {
+					if nm := cl.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+						if impOf[p] == nil {
+							impOf[p] = map[string]string{}
+						}
+						impOf[p][nm.Text()] = tgt + "\x00default"
+					}
+					if nb := cl.NamedBindings; nb != nil && nb.Kind == ast.KindNamedImports {
+						if ni := nb.AsNamedImports(); ni != nil && ni.Elements != nil {
+							for _, n := range ni.Elements.Nodes {
+								if n == nil || n.Kind != ast.KindImportSpecifier {
+									continue
+								}
+								sp := n.AsImportSpecifier()
+								inm := n.Name()
+								if inm == nil || inm.Kind != ast.KindIdentifier {
+									continue
+								}
+								local := inm.Text()
+								remote := local
+								if sp != nil && sp.PropertyName != nil {
+									remote = sp.PropertyName.Text()
+								}
+								if impOf[p] == nil {
+									impOf[p] = map[string]string{}
+								}
+								impOf[p][local] = tgt + "\x00" + remote
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// 本地名单转出口（`import {a}; export {a [as b]}`；自有函数经 harvest
+	// 直解，此处只记进口名边；命名空间值无单值沿旧门）。
+	for p, sf := range parsed {
+		if sf == nil {
+			continue
+		}
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindExportDeclaration {
+				continue
+			}
+			edges, star := saProgLocalEdges(st)
+			if star {
+				continue
+			}
+			for exported, local := range edges {
+				if edge, ok := impOf[p][local]; ok {
+					if reexpOf[p] == nil {
+						reexpOf[p] = map[string]string{}
+					}
+					reexpOf[p][exported] = edge
+				}
 			}
 		}
 	}
