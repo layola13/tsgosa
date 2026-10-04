@@ -441,10 +441,14 @@ type saFileLink struct {
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
+// Default exports harvest under key "default" with defLocal naming the
+// defining declaration (upstream fileExports.defLocal 同形；qualified 后缀
+// 用定义名，见 program.go:26/defQualified:98）。
 type saProgFunc struct {
 	sig      saFuncSig
 	exported bool
 	isArrow  bool
+	defLocal string // defining name for "default" entries ("" otherwise)
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
@@ -517,6 +521,20 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		return false
 	}
 	if nm := clause.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+		// 默认导入直链定义文件 `export default function Name`（上游 program
+		// build 同形过，本仓 S1 前拒；其余默认形/箭头/未导出沿旧门后阶段）。
+		if tgt, ok := link.specOf[spec]; ok && tgt != "" {
+			if hv, ok := link.harvests[tgt]["default"]; ok && hv.exported && !hv.isArrow && hv.defLocal != "" {
+				q := link.prefixOf[tgt] + hv.defLocal
+				link.resolve[nm.Text()] = q
+				link.seed[q] = hv.sig
+				return true
+			}
+		} else {
+			// Unresolvable relative target: no edge, no binding (use sites
+			// refuse); bare specs never reach here (warned above).
+			return true
+		}
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
 		return true
@@ -767,6 +785,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if nm := fn.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 					if sig, ok := funcs[nm.Text()]; ok {
 						link.harvest[nm.Text()] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
+						// 默认导出另记 "default" 键（定义名守 qualified 后缀；
+						// 匿名默认无名可守，沿旧门）。
+						if ast.HasModifier(st, ast.ModifierFlagsDefault) {
+							link.harvest["default"] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), defLocal: nm.Text()}
+						}
 					}
 				}
 				continue
