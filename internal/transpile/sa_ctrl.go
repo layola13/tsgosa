@@ -1977,7 +1977,7 @@ func saRebindRelease(w printer.EmitTextWriter, scope *saScope, dst string) {
 	if saIsTempOp(dst) {
 		return
 	}
-	if b := saOwnOf(scope, dst); b != nil && b.heap && !b.consumed && !b.released {
+	if b := saOwnOf(scope, dst); b != nil && !b.consumed && !b.released {
 		w.Write(fmt.Sprintf("  !%s\n", dst))
 		b.released = true
 	}

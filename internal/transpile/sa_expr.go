@@ -1729,14 +1729,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return "", "assignment to unknown/non-i32 variable"
 			}
-			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", msg
-			}
-			w.Write(fmt.Sprintf("  %s = %s\n", target, op))
-			return target, ""
+		op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
 		}
-		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindInKeyword {
+		saStoreLocal(w, target, op, scope, nextTemp)
+		return target, ""
+	}
+	if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindInKeyword {
 			// `in` 静态折叠须先于一切求值门（左为串字面量键）。
 			return saLowerInFold(w, be, scope, pos, refusals, nextTemp)
 		}

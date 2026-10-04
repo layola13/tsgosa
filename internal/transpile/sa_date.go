@@ -210,7 +210,7 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_time_set_field(%s, %s, %s)\n", t, ms, fid, v))
-		w.Write(fmt.Sprintf("  %s = %s\n", pa.Expression.Text(), t))
+		saStoreLocal(w, pa.Expression.Text(), t, scope, nextTemp)
 		return t, "date", ""
 	}
 	switch method {

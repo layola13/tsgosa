@@ -232,3 +232,30 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 160_pow2 | `**` 幂表 | 21 |
 
 已知边界（续7）：函数体内嵌套函数声明拒（沿既有门）；bool switch 判别式拒（串 switch 有，bool 另立）；本批零 Go 改动。
+
+## 第九批（161–180）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 161_concat3 | 三元 concat | 26 |
+| 162_at_neg | at 负下标 | 26 |
+| 163_slice_str_neg | 串负 slice | 25 |
+| 164_num_sep | 大数除法 | 7 |
+| 165_chain | 链式赋值 | step150  rebinding 修复 |
+| 166_splice_do | 单参 slice | 26 |
+| 167_map_clear | Map clear | 30 |
+| 168_set_year | Date setter 变异 | step150 setter 修复 |
+| 169_neg_idx | 尾下标读 | 12 |
+| 170_iife | 箭头直接调用 | 111 |
+| 171_greet_cls | 串字段方法返回 | 57 |
+| 172_sum_2d | 二维求和 | 77 |
+| 173_fib_loop | 滚动 fib | 78 |
+| 174_count_even | for-of 偶数计数 | 13 |
+| 175_min3 | 三元取小 | 7 |
+| 176_pow_sum | 幂求和 | 21 |
+| 177_str_walk | 码点累加 | 25 |
+| 178_obj_sum | sort+slice 分步 | 26 |
+| 179_div_mod | 整除取模 | 7 |
+| 180_leap | 闰年判定 | 7 |
+
+已知边界（续8）：fill 三元拒（单参门）；前后缀自增值位两家同 UseAfterMove（记 H17）；逗号表达式拒（门）；链式 slice `.length` 拒（分步）；`Date.getTime` i64 拒（门）。
