@@ -1,0 +1,7 @@
+{
+  "name": "star_reexport",
+  "version": "1.0.0",
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}

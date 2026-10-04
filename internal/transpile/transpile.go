@@ -438,6 +438,7 @@ type saFileLink struct {
 	prefixOf  map[string]string                // all files: target -> prefix
 	harvests  map[string]map[string]saProgFunc // all files: target -> name -> harvested (driver fills)
 	reexps    map[string]map[string]string     // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
+	stars     map[string][]string              // all files: target -> star-from targets in order (upstream starFrom 同形）
 	resolve   map[string]string                // out/in: imported local name -> qualified callee
 	seed      map[string]saFuncSig             // out/in: qualified callee -> defining file signature
 	harvest   map[string]saProgFunc            // out: own top-level functions for dependents
@@ -516,6 +517,13 @@ func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (st
 		parts := strings.SplitN(edge, "\x00", 2)
 		if len(parts) == 2 {
 			return saProgChase(link, parts[0], parts[1], seen)
+		}
+	}
+	// Star re-exports (first match wins, locals shadowed above; upstream
+	// resolveReExports star 分支同形）。
+	for _, st := range link.stars[tgt] {
+		if q, sig, ok := saProgChase(link, st, remote, seen); ok {
+			return q, sig, true
 		}
 	}
 	return "", saFuncSig{}, false
@@ -979,7 +987,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			if ed.ModuleSpecifier != nil {
 				_, edges, star := saProgReexpEdges(st)
-				if !star && len(edges) > 0 {
+				if star {
+					// star 目标已 lower（harvest 就绪）即认领无码；成员级
+					// miss 在用点拒。
+					ready := false
+					for _, tgt := range link.stars[link.self] {
+						if _, ok := link.harvests[tgt]; ok {
+							ready = true
+							break
+						}
+					}
+					if ready {
+						handledTop[st] = true
+						continue
+					}
+				} else if len(edges) > 0 {
 					okAll := true
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
@@ -2857,6 +2879,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	graph := map[string][]string{}
 	specOf := map[string]map[string]string{}
 	reexpOf := map[string]map[string]string{}
+	starOf := map[string][]string{}
 	unresolved := map[string]bool{}
 	addEdge := func(p, spec string) string {
 		if !strings.HasPrefix(spec, ".") {
@@ -2884,19 +2907,28 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				continue
 			}
 			// 重导出 from 形建边 + 记边（上游 collectReExport:1501 同形；
-			// star 形 S1 不记边，C2 沿旧门）。
+			// star 形记序（first-match），C2 目标可达即认领）。
 			if st.Kind == ast.KindExportDeclaration {
 				spec, edges, star := saProgReexpEdges(st)
-				if spec == "" || star || len(edges) == 0 {
+				if spec == "" {
 					continue
 				}
-				if tgt := addEdge(p, spec); tgt != "" {
-					if reexpOf[p] == nil {
-						reexpOf[p] = map[string]string{}
-					}
-					for exported, remote := range edges {
-						reexpOf[p][exported] = tgt + "\x00" + remote
-					}
+				tgt := addEdge(p, spec)
+				if tgt == "" {
+					continue
+				}
+				if star {
+					starOf[p] = append(starOf[p], tgt)
+					continue
+				}
+				if len(edges) == 0 {
+					continue
+				}
+				if reexpOf[p] == nil {
+					reexpOf[p] = map[string]string{}
+				}
+				for exported, remote := range edges {
+					reexpOf[p][exported] = tgt + "\x00" + remote
 				}
 				continue
 			}
@@ -2968,6 +3000,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			harvests:  harvests,
 			prefixOf:  prefixOf,
 			reexps:    reexpOf,
+			stars:     starOf,
 			resolve:   map[string]string{},
 			seed:      map[string]saFuncSig{},
 			harvest:   map[string]saProgFunc{},

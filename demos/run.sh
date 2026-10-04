@@ -134,10 +134,10 @@ run_one_demo() {
   if [ -f "$d/package.json" ]; then
     # 真实 program 工程（package.json + 多文件 + npm deps）：tsgo build 出 sci
     # workspace，分裂布局（成员多 .sa，入口 main.sa 经 ./x.sa 跨文件引用；
-    # sla workspace 真形态）。进仓 $d/main.sa 即入口编译产物（--check 比对）。
+    # sla workspace 真形态）。进仓 $d/*.sa 全单元（--check 逐个比对）。
     # 跑分用 ws 内副本 + --project-root（相对 @import 解析）。
     # 预期拒收工程（$d/expect.refused，每行一指纹）：build 必须拒收且指纹全中
-    #（真 zod 本体形；无进仓 main.sa，--check 同判）。
+    #（真 zod 本体形；无进仓 .sa，--check 同判）。
     if [ -f "$d/expect.refused" ]; then
       if "$TSGO_BIN" build --out "$out/ws" "$d" >"$out/tsgo.log" 2>&1; then
         echo "$n FAIL expected refusal but build passed"
@@ -159,15 +159,29 @@ run_one_demo() {
     fi
     MERGED=$(ls "$out"/ws/packages/*/src/main.sa 2>/dev/null | head -1)
     if [ -z "$MERGED" ]; then echo "$n FAIL no merged main.sa"; return 0; fi
+    # 分裂布局：成员全部 .sa 进仓（$d/<unit>.sa），逐字节比对，防合并回退。
+    WSSRC=$(dirname "$MERGED")
     if [ "$CHECK" -eq 1 ]; then
-      if ! diff -q "$d/main.sa" "$MERGED" >"$out/diff.txt" 2>&1; then
-        echo "$n FAIL main.sa drift (hand edit or compiler change)"
-        return 0
-      fi
+      for f in "$WSSRC"/*.sa; do
+        u=$(basename "$f")
+        if ! diff -q "$d/$u" "$f" >"$out/diff.txt" 2>&1; then
+          echo "$n FAIL $u drift (hand edit or compiler change)"
+          return 0
+        fi
+      done
+      # 进仓多余 .sa（已删单元）亦报。
+      for f in "$d"/*.sa; do
+        [ -e "$f" ] || continue
+        u=$(basename "$f")
+        if [ ! -f "$WSSRC/$u" ]; then
+          echo "$n FAIL stale $u (unit removed)"
+          return 0
+        fi
+      done
       echo "$n SA-CLEAN"
       return 0
     fi
-    cp "$MERGED" "$d/main.sa"
+    cp "$WSSRC"/*.sa "$d/"
     SAI="$MERGED"
     SAI_ROOT="$out/ws"
   else
