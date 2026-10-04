@@ -203,7 +203,7 @@
 ### P0 移植缺口（UP 过 / TN 拒）
 - [x] T1 `Promise<T>` 返回 → JEV 裁决(a)解包为 T，step137 已落地（async 修饰本已容忍；`Promise` 无参/多参/限定沿旧门）.
 - [ ] T2 `const x: i32 = 7.5` 有注解浮点字面量：UP 过（`x = 7.5` 照写）/本仓拒（step138 已把定位到初值 C17， acceptance 差不动，另立项）。
-- [ ] T3 `new Map(1)` 有参构造：UP 过（容忍）/本仓拒（`saLowerMapNew` 元数门；acceptance 差不动，另立项）。
+- [x] T3 `new Map(1)`：函数域双边同过（真机同值 0；顶层双边同拒），step171 轮复验闭环。
 ### P1 加固（正确性/诊断质量，不影响门禁数字）
 - [x] H1 拒因行列偏移 → step138 已落地首刀（初值 wrapper 13 位移到初值根；单节点初值位 14 处与上游逐位一致）.
 - [ ] H1b 深层罪魁节点定位（`1+nosuchfn()`/`String(nosuchfn())`/`Array(nosuchfn())`/`Date.parse(nosuchfn())`/三元臂内调用：上游指内层调用，本仓止于初值根；需求值链透传失败节点位置，大项另立）.
@@ -211,7 +211,7 @@
 - [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；unknown-fn 体；datenew " binds" 尾；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.
 - [x] H10 声明/赋值位三元值 → step143 已落地（f64 门仅真浮臂进 + i32 臂记种 + 去 f64 臂双写；`const t`/`r=` 转正且真机值对）.
 - [ ] H11 for-in 增量 UseAfterMove（`t_6` 于 `add t_6, 1`；for-of 同形已修，for-in 另立）.
-- [ ] H15 绑定嵌套数组 for-of 行绑定（`for (const row of m)` row 未记 arr；字面量直巡可；UP 过/PORT 拒）.
+- [x] H15 绑定嵌套数组 for-of 行绑定 → step153 已修（202_nested_forof 真机 4），本轮复验双边同过同值闭环。
 - [ ] H13 串重绑释放（`s += /s = s+` 重绑缺先释，verifier 报 RegisterRedefinition；上游同例段错误，真上游 bug；另立）.
 - [ ] H14 trim/repeat 指针算术段错误（trim 柄 `out` 已补 own 但运行错，上游 trim 连解析错；另立）.
 - [ ] H12 alloc 结果归属全覆盖审计（verifier 规则：alloc 出须 `!`；已修回调 slot/for-of 域/extern call/slice，余下具化点逐方法探针 build-exe 全覆盖）.
