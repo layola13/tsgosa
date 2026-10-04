@@ -276,6 +276,17 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if dotted, linked := saLinkCallee(scope, pa.Expression.Text()+"."+pa.Name().Text()); linked {
 				return saEvalNamedCall(w, dotted, ce, scope, pos, refusals, nextTemp)
 			}
+			// 单文件命名空间成员直调（`N.f(..)`；发射名 `N_f`，签名走 `N.f`
+			// 双键；基名被值绑定/类占用时让路既有分发；形状证据：封存
+			// lowerNamespaceCall + 预扫二b 双键）。
+			base, member := pa.Expression.Text(), pa.Name().Text()
+			if _, ok := scope.funcs[base+"."+member]; ok {
+				if _, bound := scope.types[base]; !bound {
+					if _, isClass := scope.classes[base]; !isClass {
+						return saEvalNamedCall(w, base+"_"+member, ce, scope, pos, refusals, nextTemp)
+					}
+				}
+			}
 		}
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)

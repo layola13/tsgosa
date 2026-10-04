@@ -1057,6 +1057,91 @@ func saIsTypeOnlyNamespace(st *ast.Node) bool {
 	return true
 }
 
+// saPrescanFuncSig 预扫单个函数声明签名记入 funcs 表（顶层与命名空间成员
+// 共用；键由调用方定：顶层为名，ns 成员为 `N_f`/`N.f` 双键）。
+// 形状证据：封存 program.go:435/512 按定义收集 rets/arity（与既有预扫二同源）。
+func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, funcs map[string]saFuncSig, tcx *saTypeCtx, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	if _, dup := funcs[key]; dup {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate function " + key})
+		return false
+	}
+	nparams := 0
+	if fn.Parameters != nil {
+		nparams = len(fn.Parameters.Nodes)
+	}
+	isVoid := false
+	retKind := ""
+	rtype := saUnwrapPromise(fn.Type)
+	if saIsBareTypeParam(rtype, saTypeParamSet(fn.TypeParameters)) {
+		// erased own type parameter defaults to number.
+		retKind, isVoid = "number", false
+	} else if k, v, ok := saPrescanRet(rtype, st, tcx, classes, aliasOf); ok {
+		retKind = k
+		isVoid = v
+	}
+	var pk []string
+	if kinds, ok := saParamKinds(fn, classes, aliasOf, enums); ok {
+		if names, ok := saParamNames(fn); ok {
+			for _, n := range names {
+				pk = append(pk, kinds[n])
+			}
+		}
+	}
+	var defs []bool
+	var dexprs []*ast.Node
+	if fn.Parameters != nil {
+		defs, dexprs = saFuncDefaultTables(fn.Parameters.Nodes)
+	}
+	hasRest := false
+	if fn.Parameters != nil && len(fn.Parameters.Nodes) > 0 {
+		if last := fn.Parameters.Nodes[len(fn.Parameters.Nodes)-1]; last != nil {
+			if pd := last.AsParameterDeclaration(); pd != nil && pd.DotDotDotToken != nil {
+				hasRest = true
+			}
+		}
+	}
+	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest}
+	return true
+}
+
+// saNsFuncMembers 判定运行时 namespace 是否只含函数/类型成员（可走成员函数
+// 直落；含值（const/let/类/嵌套等）一律 false，调用方沿旧 kind-268 拒）。
+// 类型成员（接口/别名/枚举）记录期跳过（无码擦除，与纯类型 ns 同例）。
+// 形状证据：封存 prescanNamespaces 类型分支 + lowerPendingNamespaces 函数面。
+func saNsFuncMembers(st *ast.Node) (string, []*ast.Node, bool) {
+	if st == nil || st.Kind != ast.KindModuleDeclaration {
+		return "", nil, false
+	}
+	if saIsAmbientModule(st) {
+		return "", nil, false
+	}
+	md := st.AsModuleDeclaration()
+	if md == nil {
+		return "", nil, false
+	}
+	nm := md.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	if md.Body == nil || md.Body.Kind != ast.KindModuleBlock {
+		return "", nil, false
+	}
+	members := md.Body.AsModuleBlock().Statements.Nodes
+	for _, m := range members {
+		if m == nil {
+			return "", nil, false
+		}
+		switch m.Kind {
+		case ast.KindFunctionDeclaration, ast.KindInterfaceDeclaration,
+			ast.KindTypeAliasDeclaration, ast.KindEnumDeclaration:
+		default:
+			return "", nil, false
+		}
+	}
+	return nm.Text(), members, true
+}
+
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
 // 为 `N.K` 拍扁纯量（数字/串/true/false；复用顶层折叠值域，不含 Math 别名与
 // 标识符链）。非 export/非纯量/函数/类/嵌套 namespace 成员一律整块不折，

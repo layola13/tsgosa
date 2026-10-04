@@ -889,48 +889,31 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		if fn.Body == nil {
 			continue
 		}
-		name := nm.Text()
-		if _, dup := funcs[name]; dup {
-			ln, col := pos(st.Pos())
-			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate function " + name})
+		saPrescanFuncSig(fn, st, nm.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
+	}
+	// 预扫二b：命名空间成员函数签名（`N_f` 发射键 + `N.f` 调用键双记；无体
+	// 跳过；非函数/类型成员整块不在此（发射侧同门拒）；形状证据见 saNsFuncMembers）。
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		ns, members, ok := saNsFuncMembers(st)
+		if !ok {
 			continue
 		}
-		nparams := 0
-		if fn.Parameters != nil {
-			nparams = len(fn.Parameters.Nodes)
-		}
-		isVoid := false
-		retKind := ""
-		rtype := saUnwrapPromise(fn.Type)
-		if saIsBareTypeParam(rtype, saTypeParamSet(fn.TypeParameters)) {
-			// erased own type parameter defaults to number.
-			retKind, isVoid = "number", false
-		} else if k, v, ok := saPrescanRet(rtype, st, tcx, classes, aliasOf); ok {
-			retKind = k
-			isVoid = v
-		}
-		var pk []string
-		if kinds, ok := saParamKinds(fn, classes, aliasOf, enums); ok {
-			if names, ok := saParamNames(fn); ok {
-				for _, n := range names {
-					pk = append(pk, kinds[n])
-				}
+		for _, m := range members {
+			if m == nil || m.Kind != ast.KindFunctionDeclaration {
+				continue
+			}
+			fn := m.AsFunctionDeclaration()
+			if fn == nil || fn.Body == nil {
+				continue
+			}
+			mn := fn.Name()
+			if mn == nil || mn.Kind != ast.KindIdentifier {
+				continue
+			}
+			if saPrescanFuncSig(fn, m, ns+"_"+mn.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals) {
+				saPrescanFuncSig(fn, m, ns+"."+mn.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
 			}
 		}
-		var defs []bool
-		var dexprs []*ast.Node
-		if fn.Parameters != nil {
-			defs, dexprs = saFuncDefaultTables(fn.Parameters.Nodes)
-		}
-		hasRest := false
-		if fn.Parameters != nil && len(fn.Parameters.Nodes) > 0 {
-			if last := fn.Parameters.Nodes[len(fn.Parameters.Nodes)-1]; last != nil {
-				if pd := last.AsParameterDeclaration(); pd != nil && pd.DotDotDotToken != nil {
-					hasRest = true
-				}
-			}
-		}
-		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest}
 	}
 	// 预扫二b：顶层箭头/函数表达式 `const f = (...)=>...` 记调用签名
 	// （与函数声明同表；形状证据：封存 tryTopLevelArrow:1015-1032 +
@@ -1217,6 +1200,28 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if saIsTypeOnlyNamespace(st) {
 				continue
 			}
+			// 成员函数直落（`@N_f`；program 前缀由 defPrefix 续接；类型成员
+			// 跳过；含值成员沿旧 kind-268 拒）。
+			if ns, members, ok := saNsFuncMembers(st); ok {
+				for _, m := range members {
+					if m == nil || m.Kind != ast.KindFunctionDeclaration {
+						continue
+					}
+					if fn := m.AsFunctionDeclaration(); fn == nil || fn.Body == nil {
+						continue
+					}
+					mn := m.Name()
+					if mn == nil || mn.Kind != ast.KindIdentifier {
+						continue
+					}
+					if emitted[ns+"_"+mn.Text()] {
+						continue
+					}
+					emitted[ns+"_"+mn.Text()] = true
+					saLowerFunction(w, m, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), ns+"_"+mn.Text())
+				}
+				continue
+			}
 		case ast.KindImportDeclaration:
 			// builtin projection imports recorded in prescan emit nothing.
 			if handledTop[st] {
@@ -1271,7 +1276,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link))
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
@@ -2205,7 +2210,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -2241,7 +2246,11 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		retKind, isVoid = k, v
 	}
 	emitName := name
-	if emitName == "main" && mainRenamed {
+	if forceName != "" {
+		// 命名空间成员以限定名发射（`@N_f`；program 前缀续接，见上游
+		// lowerPendingNamespaces 限定发射）。
+		emitName = forceName
+	} else if emitName == "main" && mainRenamed {
 		// 入口合成抢 `@main`，用户定义改名（形状证据：封存 planEntry:99-101）。
 		emitName = "main__user"
 	}
