@@ -306,10 +306,11 @@ run_one_demo() {
           return 0
         fi
       done
-      # 进仓多余 .sa（已删单元）亦报。
+      # 进仓多余 .sa（已删单元）亦报（手写 sla_main.sa 除外：输入非产物）。
       for f in "$d"/*.sa; do
         [ -e "$f" ] || continue
         u=$(basename "$f")
+        [ "$u" = "sla_main.sa" ] && continue
         if [ ! -f "$WSSRC/$u" ]; then
           echo "$n FAIL stale $u (unit removed)"
           return 0
@@ -319,7 +320,14 @@ run_one_demo() {
       return 0
     fi
     cp "$WSSRC"/*.sa "$d/"
-    SAI="$MERGED"
+    # sla 混用入口（$d/sla_main.sa，手写非编译产物）：拷入 ws 并以其为跑分入口；
+    # --check 跳过（stale 环亦跳过）。
+    if [ -f "$d/sla_main.sa" ]; then
+      cp "$d/sla_main.sa" "$WSSRC/"
+      SAI="$WSSRC/sla_main.sa"
+    else
+      SAI="$MERGED"
+    fi
     SAI_ROOT="$out/ws"
   else
   if ! "$TSGO_BIN" --sa --out "$SA_OUT" "$d/main.ts" >"$out/tsgo.log" 2>&1; then
