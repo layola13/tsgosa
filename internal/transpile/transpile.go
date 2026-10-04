@@ -724,10 +724,11 @@ func bindProgNsClasses(link *saFileLink, tgt, remote, local string) bool {
 
 // saHarvestDefaultObject 收割 `export default { 成员 }` 对象（成员逐字收割为
 // `default.<名>` 点键 + 本地发射名；hook B 默认分支经既有整件绑定路由
-// `T.m()`；方法/spread/非标识值整件大声拒，计算/串键逐字拒；箭头/非常量值
-// 跳过（用点大声拒，跨文件箭头路由另步）。
+// `T.m()`；方法/spread/非标识值整件大声拒，计算/串键逐字拒；非常量值跳过
+// （用点沿旧门拒）。顶层箭头与函数同形直落 `@f`（program 前缀续接），故与
+// 函数同例收割（跨文件 out-of-line `__arrow_N` 另步）。
 // 形状证据：上游 link_nsobject.go p1（defNS 点键 + 整件拒因逐字对齐）。
-func saHarvestDefaultObject(st *ast.Node, stmts []*ast.Node, funcs map[string]saFuncSig, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) {
+func saHarvestDefaultObject(st *ast.Node, funcs map[string]saFuncSig, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) {
 	if st == nil || link == nil {
 		return
 	}
@@ -739,17 +740,7 @@ func saHarvestDefaultObject(st *ast.Node, stmts []*ast.Node, funcs map[string]sa
 	if obj == nil || obj.Kind != ast.KindObjectLiteralExpression {
 		return
 	}
-	// 箭头常量名（跨文件箭头路由另步，收割跳过，用点沿旧门拒）。
-	arrowNames := map[string]bool{}
-	for _, s := range stmts {
-		if name, _, ok := saIsTopLevelArrowConst(s); ok {
-			arrowNames[name] = true
-		}
-	}
 	harvest := func(exp, local string) {
-		if arrowNames[local] {
-			return
-		}
 		sig, ok := funcs[local]
 		if !ok {
 			return
@@ -1198,7 +1189,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 默认对象收割（`export default {m}` 成员点键；单文件无码，
 			// program 经默认分支整件绑定；上游 link_nsobject.go p1 同形）。
 			if st.Kind == ast.KindExportAssignment {
-				saHarvestDefaultObject(st, sf.AsSourceFile().Statements.Nodes, funcs, link, pos, &refusals)
+				saHarvestDefaultObject(st, funcs, link, pos, &refusals)
 			}
 			// 命名空间成员函数收割（`N.f` 点键 + 发射名记 defLocal；定义侧
 			// step194 发射 `@N_f`；上游 bindNSMembers 点键同形）。

@@ -1308,7 +1308,9 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	if emitName == "main" && mainRenamed {
 		emitName = "main__user"
 	}
-	sig := "@" + emitName + "(" + saSigParamList(kinds, params) + ")"
+	// program 库文件前缀（与函数发射同形；同文件自调用经 saLinkCallee
+	// defPrefix 改写一致；形状证据：封存 lowerArrowBinding 发射限定）。
+	sig := "@" + saLinkDefPrefix(link) + emitName + "(" + saSigParamList(kinds, params) + ")"
 	if !isVoid {
 		sig += saSigRetSuffix(retKind)
 	}
