@@ -143,6 +143,10 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		if nm == "String" {
 			return true
 		}
+		// btoa/atob bare globals return strings (deno.sai, no import).
+		if nm == "btoa" || nm == "atob" {
+			return true
+		}
 		if sig, ok := scope.funcs[nm]; ok {
 			return !sig.isVoid && sig.retKind == "string"
 		}
@@ -176,6 +180,19 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 			}
 		}
 		if recv == "Buffer" && pa.Name().Text() == "concat" {
+			return true
+		}
+		// Deno 插件串返回（直接成员；env 链走两级分发，种判定同表）。
+		if recv == "Deno" && saNodeIsStr("Deno."+pa.Name().Text()) {
+			return true
+		}
+	}
+	// Deno.env.get 两级串返回（`Deno.env` 为 PropertyAccess 基）。
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
+		inner := pa.Expression.AsPropertyAccessExpression()
+		if inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier &&
+			inner.Expression.Text() == "Deno" && inner.Name() != nil && inner.Name().Text() == "env" &&
+			saNodeIsStr("Deno.env."+pa.Name().Text()) {
 			return true
 		}
 	}

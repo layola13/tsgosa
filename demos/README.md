@@ -310,3 +310,13 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 205_node_buf | Buffer.concat + randomBytes 定长 | step156（node.sai 复用） |
 
 插件 demo 须带 `sa.mod`（`require_plugin node @0.1.0 abi 1`），run.sh 有该文件时自动加 `--project-root` 供 bare node.sai 解析。已知边界（续10）：Buffer.byteLength 需 u64（子集无此种，大声拒）；console.timeEnd 值位需 f64 调用（通用 f64 值缺口）；Deno 未动。
+
+## 补批（206–208，deno 插件投影）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 206_deno_b64 | btoa/atob 往返 | step160（deno.sai 复用） |
+| 207_deno_file | write/read/remove 回环 | step160（fire &slots 修复） |
+| 208_deno_mkdir | mkdir/remove 生命周期 | step160（fire &slots 修复） |
+
+插件 demo 须带 `sa.mod`（`require_plugin deno @0.1.0 abi 1`）。已知边界（续11）：Deno.writeTextFile/mkdir/remove 上游传值与 deno.sai &slots 契约不符、双边原生 CapabilityMismatch（本仓按契约传址，已原生跑通；JEV 分歧，证据保留）；nullable join 双边同报 PhiStateConflict（保持）；env.get null 臂未进 demo。

@@ -399,11 +399,12 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
-		// node 插件裸全局与命名空间方法（复用 sa_plugin_node 轮子；无 import
+		// node/deno 插件裸全局与命名空间方法（复用插件轮子；无 import
 		// 亦可（Node 全局暴露）；形状证据：封存 lowerPropertyCall:4294-4310、
-		// node_console.go 全文件、node_buffer.go 全文件）。
-		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
-			if op, voidCall, msg, handled := saLowerNodeMethodCall(w, pa.Expression.Text(), pa.Name().Text(), ce, scope, pos, refusals, nextTemp); handled {
+		// node_console.go 全文件、node_buffer.go 全文件、node_deno.go 全文件）。
+		// Deno.env 两级链的基为 PropertyAccess，整 pa 下探。
+		if pa.Name() != nil {
+			if op, voidCall, msg, handled := saLowerNodeMethodCall(w, pa, ce, scope, pos, refusals, nextTemp); handled {
 				return op, voidCall, msg
 			}
 		}
@@ -858,6 +859,32 @@ func saNodeProjTable(key string) (symbol, nodeOut string, ok bool) {
 		return "sa_node_plugin_console_time_end", "fireF64", true
 	case "Buffer.concat":
 		return "sa_node_plugin_buffer_concat", "argv", true
+	case "Deno.hostname":
+		return "sa_deno_plugin_hostname", "string", true
+	case "Deno.osRelease":
+		return "sa_deno_plugin_os_release", "string", true
+	case "Deno.cwd":
+		return "sa_deno_plugin_cwd", "string", true
+	case "Deno.readTextFile":
+		return "sa_deno_plugin_read_text_file", "string1", true
+	case "Deno.writeTextFile":
+		return "sa_deno_plugin_write_text_file", "fire", true
+	case "Deno.env.get":
+		return "sa_deno_plugin_env_get", "nullable", true
+	case "Deno.env.set":
+		return "sa_deno_plugin_env_set", "fire", true
+	case "Deno.env.delete":
+		return "sa_deno_plugin_env_delete", "fire", true
+	case "Deno.chdir":
+		return "sa_deno_plugin_chdir", "fire", true
+	case "Deno.mkdir":
+		return "sa_deno_plugin_mkdir", "fire", true
+	case "Deno.remove":
+		return "sa_deno_plugin_remove", "fire", true
+	case "btoa":
+		return "sa_deno_plugin_btoa", "string1", true
+	case "atob":
+		return "sa_deno_plugin_atob", "string1", true
 	}
 	return "", "", false
 }
@@ -872,14 +899,15 @@ func saNodeFireSymbol(key string) string {
 	return "sa_node_plugin_console_clear"
 }
 
-// saNodeIsStr reports node projections returning string slices.
+// saNodeIsStr reports node projections returning string slices (nullable
+// yields a str handle on hit, null "0" on miss).
 func saNodeIsStr(key string) bool {
 	_, nodeOut, ok := saNodeProjTable(key)
 	if !ok {
 		return false
 	}
 	switch nodeOut {
-	case "string", "string1", "string2", "string3", "argv", "sized":
+	case "string", "string1", "string2", "string3", "argv", "sized", "nullable":
 		return true
 	}
 	return false
@@ -929,11 +957,25 @@ func saNodeStrArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fun
 	return "&" + bp, bl, ""
 }
 
+// saNodeStrArgRaw lowers one string argument to (ptr, len) value parts
+// (fire convention: loaded values, no &slots; cf emitProjCall fire branch).
+func saNodeStrArgRaw(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	bp, bl := saExpandStr(w, h, nextTemp)
+	return bp, bl, ""
+}
+
 // saLowerNodeProjCall lowers one node.sai-backed call (mod already stripped,
 // e.g. mod=os remote=platform). Returns (operand, voidCall, msg); string
 // results are str-handle temps (saCallIsStr gates downstream).
 func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	key := mod + "." + remote
+	if mod == "" {
+		key = remote
+	}
 	symbol, nodeOut, ok := saNodeProjTable(key)
 	if !ok {
 		return "", false, key + " is not a projected std surface (see StdProjectionTable)"
@@ -942,7 +984,11 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 	if ce.Arguments != nil {
 		argNodes = ce.Arguments.Nodes
 	}
-	scope.addImport("node.sai")
+	backendModule := "node.sai"
+	if len(key) >= 5 && key[:5] == "Deno." || key == "btoa" || key == "atob" {
+		backendModule = "deno.sai"
+	}
+	scope.addImport(backendModule)
 	callStatus := func(parts ...string) string {
 		st := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -1017,7 +1063,7 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 	case "argv":
 		parts := []string{}
 		for _, a := range argNodes {
-			bp, bl, msg := saNodeStrArg(w, a, scope, pos, refusals, nextTemp)
+			bp, bl, msg := saNodeStrArgRaw(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", false, msg
 			}
@@ -1033,7 +1079,7 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 		w.Write(fmt.Sprintf("  %s = alloc %d\n", argv, slots*16))
 		saOwnTemp(scope, argv)
 		for i := 0; i < n; i++ {
-			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", argv, i*16, strings.TrimPrefix(parts[i*2], "&")))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", argv, i*16, parts[i*2]))
 			w.Write(fmt.Sprintf("  store %s + %d, %s as u64\n", argv, i*16+8, parts[i*2+1]))
 		}
 		ps := fmt.Sprintf("t_%d", *nextTemp)
@@ -1076,13 +1122,40 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 		if nodeOut == "fireF64" && len(argNodes) != 1 {
 			return "", false, fmt.Sprintf("%s takes exactly 1 argument", key)
 		}
+		wantFire := -1
+		switch key {
+		case "Deno.writeTextFile", "Deno.env.set":
+			wantFire = 2
+		case "Deno.mkdir", "Deno.remove", "Deno.chdir", "Deno.env.delete":
+			wantFire = 1
+		case "console.clear":
+			wantFire = 0
+		}
+		if wantFire >= 0 && len(argNodes) != wantFire {
+			if key == "Deno.mkdir" || key == "Deno.remove" {
+				return "", false, fmt.Sprintf("%s takes exactly one path (options objects out of subset)", key)
+			}
+			return "", false, fmt.Sprintf("%s takes %d argument(s)", key, wantFire)
+		}
 		ins := []string{}
 		for _, a := range argNodes {
-			bp, bl, msg := saNodeStrArg(w, a, scope, pos, refusals, nextTemp)
+			// Capability contract follows each plugin's .sai: node.sai
+			// fire takes (ptr, len) values, deno.sai takes &slots.
+			// Upstream emits raw values for both; deno fire natively
+			// rejects that (CapabilityMismatch), so deno keeps &slots
+			// (verified: mkdir/remove run; JEV divergence, evidence kept).
+			bp, bl, msg := saNodeStrArgRaw(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", false, msg
 			}
+			if len(key) >= 5 && key[:5] == "Deno." {
+				bp = "&" + bp
+			}
 			ins = append(ins, bp, bl)
+		}
+		// Fixed trailing immediates (recursive=0 for Deno mkdir/remove).
+		if key == "Deno.mkdir" || key == "Deno.remove" {
+			ins = append(ins, "0")
 		}
 		var fslot string
 		if nodeOut == "fireF64" {
@@ -1102,6 +1175,72 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 			return fout, false, ""
 		}
 		return "", true, ""
+	case "nullable":
+		// One slice in, string out; status 1 maps to null "0", other
+		// nonzero panics; both arms join on one result temp.
+		if len(argNodes) != 1 {
+			return "", false, fmt.Sprintf("%s takes exactly 1 argument", key)
+		}
+		bp, bl, msg := saNodeStrArg(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		nps := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", nps))
+		saOwnTemp(scope, nps)
+		nls := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", nls))
+		saOwnTemp(scope, nls)
+		nst := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @%s(&%s, %s, &%s, &%s)\n", nst, symbol, bp, bl, nps, nls))
+		saOwnTemp(scope, nst)
+		nres := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		zeroL := fmt.Sprintf("L_node_null_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		chkL := fmt.Sprintf("L_node_chk_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		wrapL := fmt.Sprintf("L_node_wrap_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_node_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		badL := fmt.Sprintf("L_node_bad_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		isnull := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 1\n", isnull, nst))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, zeroL, chkL))
+		w.Write(fmt.Sprintf("%s:\n", zeroL))
+		saReleaseOwnedTemp(w, scope, nps)
+		saReleaseOwnedTemp(w, scope, nls)
+		w.Write(fmt.Sprintf("  %s = 0\n", nres))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", chkL))
+		isbad := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", isbad, nst))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isbad, badL, wrapL))
+		w.Write(fmt.Sprintf("%s:\n", badL))
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2503))
+		w.Write(fmt.Sprintf("%s:\n", wrapL))
+		nptr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", nptr, nps))
+		nln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nln, nls))
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", nres))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", nres, nptr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", nres, nln))
+		saOwnTemp(scope, nres)
+		saReleaseOwnedTemp(w, scope, nps)
+		saReleaseOwnedTemp(w, scope, nls)
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		return nres, false, ""
 	}
 	return "", false, key + " is not a projected std surface (see StdProjectionTable)"
 }
@@ -1110,10 +1249,17 @@ func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.C
 // zero-arg globals without import; console.error/time/timeEnd/clear;
 // Buffer.byteLength/concat). Returns (operand, voidCall, msg, handled);
 // unhandled receivers fall through to the generic refusal.
-func saLowerNodeMethodCall(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+func saLowerNodeMethodCall(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
 		argNodes = ce.Arguments.Nodes
+	}
+	recv, method := "", ""
+	if pa.Name() != nil {
+		method = pa.Name().Text()
+	}
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		recv = pa.Expression.Text()
 	}
 	if recv == "process" || recv == "crypto" {
 		if len(argNodes) != 0 {
@@ -1145,7 +1291,55 @@ func saLowerNodeMethodCall(w printer.EmitTextWriter, recv, method string, ce *as
 		}
 		return "", false, "", false
 	}
+	if recv == "Deno" || (pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression) {
+		// Two-level env chain (Deno.env.get/set/delete) vs direct members.
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+			inner := pa.Expression.AsPropertyAccessExpression()
+			if inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier &&
+				inner.Expression.Text() == "Deno" && inner.Name() != nil && inner.Name().Text() == "env" {
+				return saLowerDenoEnv(w, method, ce, scope, pos, refusals, nextTemp)
+			}
+			return "", false, "", false
+		}
+		if _, _, ok := saNodeProjTable("Deno." + method); !ok {
+			return "", false, "", false
+		}
+		op, voidCall, msg := saLowerNodeProjCall(w, "Deno", method, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		return op, voidCall, "", true
+	}
 	return "", false, "", false
+}
+
+// saLowerDenoEnv lowers Deno.env.get/set/delete (two-level receiver).
+func saLowerDenoEnv(w printer.EmitTextWriter, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	var key string
+	var want int
+	switch method {
+	case "get":
+		key, want = "Deno.env.get", 1
+	case "set":
+		key, want = "Deno.env.set", 2
+	case "delete":
+		key, want = "Deno.env.delete", 1
+	default:
+		return "", false, "Deno.env." + method + " is not projected (get/set/delete only)", true
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != want {
+		return "", false, fmt.Sprintf("Deno.env.%s takes exactly %d argument(s)", method, want), true
+	}
+	op, voidCall, msg := saLowerNodeProjCall(w, "Deno", "env."+method, ce, scope, pos, refusals, nextTemp)
+	_ = key
+	if msg != "" {
+		return "", false, msg, true
+	}
+	return op, voidCall, "", true
 }
 
 // saLowerConsoleNode lowers console.error/time/timeEnd/clear through node.sai.
@@ -1344,6 +1538,16 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		// structuredClone builtin fallback (locals, math aliases and user functions win above).
 		if name == "structuredClone" {
 			return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)
+		}
+		// btoa/atob bare globals lower through deno.sai without import
+		// (Web globals; strings only; shape evidence: upstream stdlib
+		// "bare global" entries + dn7 test).
+		if name == "btoa" || name == "atob" {
+			op, voidCall, msg := saLowerNodeProjCall(w, "", name, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, voidCall, ""
 		}
 		// fs/net builtin-module projection (locals, aliases and user functions win above).
 		if mod, ok := scope.imports[name]; ok {
