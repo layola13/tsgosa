@@ -117,7 +117,7 @@ run_one_demo() {
   n="$1"
   d="$HERE/$n"
   [ -f "$d/main.ts" ] || return 0
-  if [ ! -f "$d/expected.stdout" ]; then echo "$n SKIP no expected.stdout"; return 0; fi
+  if [ ! -f "$d/expected.stdout" ] && [ ! -f "$d/expect.refused" ]; then echo "$n SKIP no expected.stdout"; return 0; fi
   out="$d/out"
   rm -rf "$out"
   mkdir -p "$out"
@@ -133,6 +133,23 @@ run_one_demo() {
   if [ -f "$d/package.json" ]; then
     # 真实 program 工程（package.json + 多文件 + npm deps）：tsgo build 出 sci
     # workspace，合并 main.sai 即编译产物（--check 比对进仓 $d/main.sai）。
+    # 预期拒收工程（$d/expect.refused，每行一指纹）：build 必须拒收且指纹全中
+    #（真 zod 本体形；无进仓 main.sai，--check 同判）。
+    if [ -f "$d/expect.refused" ]; then
+      if "$TSGO_BIN" build --out "$out/ws" "$d" >"$out/tsgo.log" 2>&1; then
+        echo "$n FAIL expected refusal but build passed"
+        return 0
+      fi
+      while IFS= read -r fp || [ -n "$fp" ]; do
+        case "$fp" in ""|\#*) continue ;; esac
+        if ! grep -qF "$fp" "$out/tsgo.log"; then
+          echo "$n FAIL refusal fingerprint missing: $fp"
+          return 0
+        fi
+      done < "$d/expect.refused"
+      echo "$n PASS refused-as-expected"
+      return 0
+    fi
     if ! "$TSGO_BIN" build --out "$out/ws" "$d" >"$out/tsgo.log" 2>&1; then
       echo "$n FAIL tsgo build refused: $(grep -m1 diag "$out/tsgo.log" | head -c 160)"
       return 0

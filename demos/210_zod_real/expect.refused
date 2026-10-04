@@ -1,0 +1,5 @@
+# 真 zod README 原形预期拒收指纹（tsgo build 必拒且行全中；改编译器拒因须同步改此档）
+step2 refuses kind 244
+unsupported call statement: only .length member access lowerable
+is not resolvable (bare third-party imports are Phase 3
+refused: resolve subset-report.txt before running sh build.sh
