@@ -761,9 +761,10 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		}
 		fn := m.Name()
 		if fn == nil || fn.Kind != ast.KindIdentifier {
-			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed interface field names are not lowerable"})
-			return false
+			// 非标识字段名（引号串名/计算名）跳过该域（整接口不拒；形状证据：
+			// 封存 recordLayout:9374-9377 `bindingNameText` 不成即 `continue`；
+			// 失配字面量键集在构造匹配处仍大声拒，无静默错码）。
+			continue
 		}
 		pd := m.AsPropertySignatureDeclaration()
 		fkind := "i32"
@@ -799,9 +800,10 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				// `any` fields lower as ptr handle slots (cf class record).
 				fkind = "arr"
 			} else {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "interface fields must be i32, string, array or recorded interface"})
-				return false
+				// 余下类型（字面量/对象字面量/函数/元组等）皆落 ptr 句柄槽（8B；
+				// 形状证据：封存 saNameOfType:235-264 default 分支恒 "ptr" +
+				// widthOf:268-278 default 8,8；本仓句柄种为 arr，与未知引用同例）。
+				fkind = "arr"
 			}
 		}
 		if _, dup := def.offsets[fn.Text()]; dup {
