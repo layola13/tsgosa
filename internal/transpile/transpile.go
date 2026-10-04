@@ -2757,11 +2757,7 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 	if !strings.HasSuffix(name, ".ts") && !strings.HasSuffix(name, ".js") {
 		return ""
 	}
-	rel, err := filepath.Rel(dir, name)
-	if err != nil {
-		return ""
-	}
-	if c := path.Clean(filepath.ToSlash(rel)); c != "" {
+	if c, ok := saProgKeyFor(dir, name); ok {
 		if _, ok := files[c]; ok {
 			return c
 		}
@@ -2776,15 +2772,32 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 // export-from 同跟随（barrel 链）；相对目标落盘存在即纳入。
 // Caveat：symlinked node_modules 底座解析不穿透（osvfs Realpath 未接入
 // scope 发现），真实 `npm install` 目录正常。
-// saProgAdoptFile reads an absolute-disk `.ts`/`.js` file into the set
-// (keyed by dir-relative slash path; parsed with its kind).
-func saProgAdoptFile(files map[string]string, parsed map[string]*ast.SourceFile, dir, name string, kind core.ScriptKind) bool {
+// saProgKeyFor maps an absolute-disk target to a file-set key: inside the
+// project by dir-relative path, otherwise (symlinked/external installs,
+// pnpm forests) by its `node_modules/` suffix so link and real installs
+// share keys; outside both it refuses.
+func saProgKeyFor(dir, name string) (string, bool) {
+	if i := strings.LastIndex(filepath.ToSlash(name), "node_modules/"); i >= 0 {
+		if c := path.Clean("node_modules/" + filepath.ToSlash(name)[i+len("node_modules/"):]); c != "" && c != "node_modules" {
+			return c, true
+		}
+		return "", false
+	}
 	rel, err := filepath.Rel(dir, name)
 	if err != nil {
-		return false
+		return "", false
 	}
-	c := path.Clean(filepath.ToSlash(rel))
-	if c == "" || strings.HasPrefix(c, "..") {
+	if c := path.Clean(filepath.ToSlash(rel)); c != "" && !strings.HasPrefix(c, "..") {
+		return c, true
+	}
+	return "", false
+}
+
+// saProgAdoptFile reads an absolute-disk `.ts`/`.js` file into the set
+// (keyed by saProgKeyFor; parsed with its kind).
+func saProgAdoptFile(files map[string]string, parsed map[string]*ast.SourceFile, dir, name string, kind core.ScriptKind) bool {
+	c, ok := saProgKeyFor(dir, name)
+	if !ok {
 		return false
 	}
 	if _, ok := files[c]; ok {

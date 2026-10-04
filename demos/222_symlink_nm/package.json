@@ -1,0 +1,7 @@
+{
+  "name": "symlink_nm",
+  "version": "1.0.0",
+  "dependencies": {
+    "mini-math": "1.0.0"
+  }
+}

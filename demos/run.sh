@@ -197,7 +197,8 @@ if [ "$PARITY" -eq 1 ]; then
     for f in "$d"/*; do
       b=$(basename "$f")
       case "$b" in out|*.sa) continue ;; esac
-      cp -r "$f" "$t/" 2>/dev/null
+      # -L 解引用（symlinked node_modules 自包含；悬空即真 FAIL）。
+      cp -rL "$f" "$t/" 2>/dev/null
     done
     uo=$(mktemp -d); to=$(mktemp -d)
     # shellcheck disable=SC2064
