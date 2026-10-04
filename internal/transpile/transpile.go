@@ -653,21 +653,20 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	if nm := clause.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 		// 默认导入直链定义文件 `export default function Name`（上游 program
 		// build 同形过，本仓 S1 前拒；其余默认形/箭头/未导出沿旧门后阶段；
-		// 重导出链经 saProgChase 透传）。
+		// 重导出链经 saProgChase 透传）。混合 clause（`import d, {x}`）
+		// 默认部处理完落through命名分支（上游同语句双绑）。
 		if tgt, ok := link.specOf[spec]; ok && tgt != "" {
 			if q, sig, ok := saProgChase(link, tgt, "default", map[string]bool{}); ok {
 				link.resolve[nm.Text()] = q
 				link.seed[q] = sig
-				return true
+			} else {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
 			}
-		} else {
-			// Unresolvable relative target: no edge, no binding (use sites
-			// refuse); bare specs never reach here (warned above).
+		}
+		if nb := clause.NamedBindings; nb == nil || nb.Kind != ast.KindNamedImports {
 			return true
 		}
-		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
-		return true
 	}
 	nb := clause.NamedBindings
 	if nb == nil {
