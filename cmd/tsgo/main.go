@@ -27,6 +27,8 @@ func runMain() int {
 			return runAPI(args[1:])
 		case "--sa":
 			return transpile.RunSA(args[1:])
+		case "build":
+			return transpile.RunBuild(args[1:])
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -637,6 +637,12 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	if sig, ok := scope.funcs[name]; ok && sig.retKind != "" {
 		return sig.retKind, true
 	}
+	// Program link: qualified callees carry the defining file's return kind.
+	if q, linked := saLinkCallee(scope, name); linked {
+		if sig, ok := scope.funcs[q]; ok && sig.retKind != "" {
+			return sig.retKind, true
+		}
+	}
 	return "", false
 }
 
@@ -1534,6 +1540,15 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
 	}
 	sig, ok := scope.funcs[name]
+	// Program link first: imported names and own-prefixed callees resolve
+	// qualified (recursion included); unlinked names fall through untouched.
+	// Shape evidence: upstream LowerProgram links[p]/funcSigs seeding + linkRoute.
+	if q, linked := saLinkCallee(scope, name); linked {
+		if lsig, ok := scope.funcs[q]; ok {
+			return saEvalFuncCall(w, name, q, lsig, ce, scope, pos, refusals, nextTemp)
+		}
+		return "", false, "unknown function " + name
+	}
 	if !ok {
 		// structuredClone builtin fallback (locals, math aliases and user functions win above).
 		if name == "structuredClone" {
@@ -1566,6 +1581,25 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		return "", false, "unknown function " + name
 	}
 	return saEvalFuncCall(w, name, callName, sig, ce, scope, pos, refusals, nextTemp)
+}
+
+// saLinkCallee resolves a call name through the program link environment:
+// imported names rewrite to their qualified callee; own top-level functions
+// under a defPrefix rewrite to the prefixed callee (recursion included).
+// Single-file lowering leaves both empty and resolves unchanged.
+func saLinkCallee(scope *saScope, name string) (string, bool) {
+	if scope == nil {
+		return name, false
+	}
+	if q, ok := scope.linkResolve[name]; ok {
+		return q, true
+	}
+	if scope.defPrefix != "" {
+		if _, ok := scope.funcs[name]; ok {
+			return scope.defPrefix + name, true
+		}
+	}
+	return name, false
 }
 
 // saEvalFuncCall 按签名求实参并发射 `call @callee(...)`：普通函数与局部箭头
@@ -2414,42 +2448,42 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 							}
 						}
 						if !isBareClass {
-						if ch, cdef, msg := saChainBase(w, lpa.Expression, scope, pos, refusals, nextTemp); msg == "" {
-							fname := lpa.Name().Text()
-							if _, ok := cdef.offsets[fname]; ok {
-								switch cdef.fkinds[fname] {
-								case "str":
-									sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
-									if msg != "" {
-										return "", msg
+							if ch, cdef, msg := saChainBase(w, lpa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+								fname := lpa.Name().Text()
+								if _, ok := cdef.offsets[fname]; ok {
+									switch cdef.fkinds[fname] {
+									case "str":
+										sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", msg
+										}
+										if msg := saLowerClassFieldStore(w, ch, cdef, fname, sop); msg != "" {
+											return "", msg
+										}
+										return sop, ""
+									case "arr":
+										v, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", msg
+										}
+										if msg := saLowerClassFieldStore(w, ch, cdef, fname, v); msg != "" {
+											return "", msg
+										}
+										return v, ""
+									case "inst":
+										return "", "nested object reassignment needs a constructed handle"
+									default:
+										op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", msg
+										}
+										if msg := saLowerClassFieldStore(w, ch, cdef, fname, op); msg != "" {
+											return "", msg
+										}
+										return op, ""
 									}
-									if msg := saLowerClassFieldStore(w, ch, cdef, fname, sop); msg != "" {
-										return "", msg
-									}
-									return sop, ""
-								case "arr":
-									v, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp)
-									if msg != "" {
-										return "", msg
-									}
-									if msg := saLowerClassFieldStore(w, ch, cdef, fname, v); msg != "" {
-										return "", msg
-									}
-									return v, ""
-								case "inst":
-									return "", "nested object reassignment needs a constructed handle"
-								default:
-									op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-									if msg != "" {
-										return "", msg
-									}
-									if msg := saLowerClassFieldStore(w, ch, cdef, fname, op); msg != "" {
-										return "", msg
-									}
-									return op, ""
 								}
 							}
-						}
 						}
 					}
 				}
@@ -2481,14 +2515,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return "", "assignment to unknown/non-i32 variable"
 			}
-		op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return "", msg
+			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			saStoreLocal(w, target, op, scope, nextTemp)
+			return target, ""
 		}
-		saStoreLocal(w, target, op, scope, nextTemp)
-		return target, ""
-	}
-	if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindInKeyword {
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindInKeyword {
 			// `in` 静态折叠须先于一切求值门（左为串字面量键）。
 			return saLowerInFold(w, be, scope, pos, refusals, nextTemp)
 		}

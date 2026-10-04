@@ -3,16 +3,20 @@ package transpile
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/compiler"
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/debug"
+	"github.com/microsoft/typescript-go/internal/parser"
 	"github.com/microsoft/typescript-go/internal/printer"
 	"github.com/microsoft/typescript-go/internal/transformers"
 	"github.com/microsoft/typescript-go/internal/transformers/jsxtransforms"
@@ -295,6 +299,13 @@ type SAOutput struct {
 // step2：if/else → EXPAND IF_ELSE/IF_TRUE + @import "sa_std/control.sal"；
 // return c?a:b（i32 字面臂）→ EXPAND SELECT；false 恒假消死臂；嵌套 if 带 jmp。
 func TranspileSA(ctx context.Context, input string, options Options) *SAOutput {
+	return transpileSAInner(ctx, input, options, nil)
+}
+
+// transpileSAInner is TranspileSA with an optional program-link environment
+// (nil = single-file). Program builds lower reachable files through this
+// in dependency order with per-file link env.
+func transpileSAInner(ctx context.Context, input string, options Options, link *saFileLink) *SAOutput {
 	var opts *core.CompilerOptions
 	if options.CompilerOptions != nil {
 		opts = options.CompilerOptions.Clone()
@@ -388,7 +399,7 @@ func TranspileSA(ctx context.Context, input string, options Options) *SAOutput {
 	if tcx != nil {
 		defer tcx.close()
 	}
-	sai, refusals, warnings := saLowerSourceFile(sf, input, tcx)
+	sai, refusals, warnings := saLowerSourceFile(sf, input, tcx, link)
 	return &SAOutput{SAI: sai, Refusals: refusals, Warnings: warnings}
 }
 
@@ -413,8 +424,154 @@ func saPos(offs []int, p int) (int, int) {
 	return line, p - start + 1
 }
 
+// saFileLink carries per-file program-link environment (nil = single-file
+// lowering, all behavior unchanged). Shape evidence: upstream LowerProgram
+// prefixOf + links[p].resolved + seeded funcSigs + PerFile harvest.
+type saFileLink struct {
+	defPrefix string                           // definition prefix ("" entry; "util__" libs)
+	isEntry   bool                             // entry synthesizes @main; libs refuse top-level execution
+	specOf    map[string]string                // this file: import spec -> target file
+	prefixOf  map[string]string                // all files: target -> prefix
+	harvests  map[string]map[string]saProgFunc // all files: target -> name -> harvested (driver fills)
+	resolve   map[string]string                // out/in: imported local name -> qualified callee
+	seed      map[string]saFuncSig             // out/in: qualified callee -> defining file signature
+	harvest   map[string]saProgFunc            // out: own top-level functions for dependents
+}
+
+// saProgFunc is one harvested top-level function for cross-file linking.
+type saProgFunc struct {
+	sig      saFuncSig
+	exported bool
+	isArrow  bool
+}
+
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
-func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, []SARefusal, []SARefusal) {
+// saLinkDefPrefix returns the definition prefix for link mode ("" when nil).
+func saLinkDefPrefix(link *saFileLink) string {
+	if link == nil {
+		return ""
+	}
+	return link.defPrefix
+}
+
+// saScopeLinkFill copies program-link environment into a fresh scope;
+// saScopeLinkCopy inherits it from a parent scope. Single-file lowering
+// leaves both empty (nil link / nil parent fields).
+func saScopeLinkFill(scope *saScope, link *saFileLink) {
+	if scope == nil || link == nil {
+		return
+	}
+	scope.defPrefix = link.defPrefix
+	scope.linkResolve = link.resolve
+}
+
+func saScopeLinkCopy(dst, src *saScope) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.defPrefix = src.defPrefix
+	dst.linkResolve = src.linkResolve
+}
+
+// saLinkResolveMap returns the link resolve map for link mode (nil when nil).
+func saLinkResolveMap(link *saFileLink) map[string]string {
+	if link == nil {
+		return nil
+	}
+	return link.resolve
+}
+
+// saBindProgImports binds one relative named import to qualified callees
+// (signatures seeded from the defining file, lowered earlier in dependency
+// order). Returns true when claimed (emission skips via handledTop).
+// Namespace/default forms refuse loudly (later stage); unresolvable targets
+// continue silently (use sites refuse); bare specifiers skip silently here
+// (driver aggregates Unresolved). Shape evidence: upstream LowerProgram
+// links[p].resolved + recordNamedImports + linkRoute advisories.
+func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	imp := st.AsImportDeclaration()
+	if imp == nil || imp.ImportClause == nil {
+		return false
+	}
+	if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
+		return false
+	}
+	ms := imp.ModuleSpecifier
+	if ms == nil || ms.Kind != ast.KindStringLiteral {
+		return false
+	}
+	spec := ms.Text()
+	if len(spec) > 0 && spec[0] != '.' {
+		// Builtin modules handled by saRecordProjImports; bare third-party
+		// specs refuse loudly here AND aggregate driver-side (Unresolved).
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
+		return true
+	}
+	clause := imp.ImportClause.AsImportClause()
+	if clause == nil {
+		return false
+	}
+	if nm := clause.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
+		return true
+	}
+	nb := clause.NamedBindings
+	if nb == nil {
+		return false
+	}
+	if nb.Kind == ast.KindNamespaceImport {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace imports link in a later stage"})
+		return true
+	}
+	if nb.Kind != ast.KindNamedImports {
+		return false
+	}
+	ni := nb.AsNamedImports()
+	if ni == nil || ni.Elements == nil {
+		return false
+	}
+	tgt, ok := link.specOf[spec]
+	if !ok || tgt == "" {
+		// Unresolvable target: no edge, no binding (use sites refuse).
+		return true
+	}
+	prefix := link.prefixOf[tgt]
+	for _, n := range ni.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindImportSpecifier {
+			continue
+		}
+		sp := n.AsImportSpecifier()
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		local := nm.Text()
+		remote := local
+		if sp.PropertyName != nil {
+			remote = sp.PropertyName.Text()
+		}
+		hv, ok := link.harvests[tgt][remote]
+		if !ok || !hv.exported {
+			ln, col := pos(n.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
+			continue
+		}
+		if hv.isArrow {
+			ln, col := pos(n.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not a linkable function (arrow consts link in a later stage)"})
+			continue
+		}
+		q := prefix + remote
+		link.resolve[local] = q
+		link.seed[q] = hv.sig
+	}
+	return true
+}
+
+func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saFileLink) (string, []SARefusal, []SARefusal) {
 	w := printer.NewTextWriter("\n", 2)
 	var refusals []SARefusal
 	var warnings []SARefusal
@@ -581,6 +738,42 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		defs, dexprs := saFuncDefaultTables(nodes)
 		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
 	}
+	// Program hook A: harvest own top-level functions (+export flags) for
+	// dependents; seed qualified signatures from defining files. Leaves
+	// lower first (dependency order) so harvests exist when needed.
+	if link != nil {
+		if link.harvest == nil {
+			link.harvest = map[string]saProgFunc{}
+		}
+		if link.resolve == nil {
+			link.resolve = map[string]string{}
+		}
+		if link.seed == nil {
+			link.seed = map[string]saFuncSig{}
+		}
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil {
+				continue
+			}
+			if st.Kind == ast.KindFunctionDeclaration {
+				fn := st.AsFunctionDeclaration()
+				if fn == nil || fn.Body == nil {
+					continue
+				}
+				if nm := fn.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+					if sig, ok := funcs[nm.Text()]; ok {
+						link.harvest[nm.Text()] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
+					}
+				}
+				continue
+			}
+			if name, _, ok := saIsTopLevelArrowConst(st); ok {
+				if sig, ok := funcs[name]; ok {
+					link.harvest[name] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), isArrow: true}
+				}
+			}
+		}
+	}
 	// 预扫二c：顶层可变槽登记（`let x = 1` 被赋值即入槽，声明无码；`const` 永不入槽；
 	// 形状证据：封存 preRegisterModStates:593-616）+ 纯量折叠（未被认领者；被赋值名永不折叠，
 	// 封存 modstate.go:26-28）。
@@ -605,6 +798,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			handledTop[st] = true
 		}
 	}
+
 	// prescan zero: builtin projection imports (fs/net direct calls need no linking).
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st == nil || st.Kind != ast.KindImportDeclaration {
@@ -612,6 +806,38 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 		}
 		if saRecordProjImports(st, imports, importRemote) {
 			handledTop[st] = true
+			continue
+		}
+		// Program hook B: relative named imports bind qualified callees.
+		if link != nil && saBindProgImports(st, link, pos, &refusals) {
+			handledTop[st] = true
+		}
+	}
+	// Program hook C: seed qualified signatures into this file's table.
+	if link != nil {
+		for q, sig := range link.seed {
+			funcs[q] = sig
+		}
+		// Program hook C2: value export lists stay unlinked in S1
+		// (named functions link via export modifier; star/default/lists
+		// refuse loudly for a later stage).
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindExportDeclaration {
+				continue
+			}
+			ed := st.AsExportDeclaration()
+			if ed == nil || ed.IsTypeOnly {
+				continue
+			}
+			if ed.ModuleSpecifier != nil {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "re-exports link in a later stage"})
+				continue
+			}
+			if ed.ExportClause != nil {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "export lists link in a later stage"})
+			}
 		}
 	}
 	strPool := &saStrPool{seen: map[string]string{}}
@@ -652,6 +878,15 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			continue
 		}
 		if saIsEntryStmt(st) {
+			// Program libs refuse top-level execution (entry synthesis is
+			// entry-only; shape evidence: upstream progprobe "top-level
+			// executable statements are not lowerable in non-entry
+			// program files (move them into functions)").
+			if link != nil && !link.isEntry {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "top-level executable statements are not lowerable in non-entry program files (move them into functions)"})
+				continue
+			}
 			entryStmts = append(entryStmts, st)
 		}
 	}
@@ -710,7 +945,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, link)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -731,12 +966,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote)
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link))
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
 		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+		saScopeLinkFill(escope, link)
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		for _, s := range entryStmts {
@@ -1522,19 +1758,24 @@ type saScope struct {
 	src         string
 	addImport   func(string)
 	inlineRet   *saInlineRet
-	tcx         *saTypeCtx   // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
-	aliasOf       map[string]*ast.TypeNode // 顶层 `type X` 表（注解别名消解；无码）
-	ownOrder    []string              // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
-	ownState    map[string]*saOwn     // 名→归属记录（堆/已消费/已释放）
-	pendingFns  *[]string    // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
-	arrowSeq    *int         // 文件级局部箭头序号（封存 e.arrowSeq）
+	tcx         *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
+	aliasOf     map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
+	ownOrder    []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
+	ownState    map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
+	pendingFns  *[]string                       // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
+	arrowSeq    *int                            // 文件级局部箭头序号（封存 e.arrowSeq）
 	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
-	arrNest     map[string]bool // array handle holds slice handles (deep clone recurses; flat by default)
+	arrNest     map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
-	arrStr      map[string]bool
-	imports       map[string]string // builtin-module named imports (local -> module; single-file direct calls)
-	importRemote  map[string]string // import alias remote names (local -> remote; cf importedRemote)
+	arrStr       map[string]bool
+	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)
+	importRemote map[string]string // import alias remote names (local -> remote; cf importedRemote)
+	// Program-link environment (nil-equivalent when empty; single-file lowering
+	// leaves all three zero; shape evidence: upstream LowerProgram prefixOf +
+	// links[p].resolved + seeded funcSigs).
+	defPrefix   string            // definition prefix for this file ("", entry; "util__", libs)
+	linkResolve map[string]string // imported local name -> qualified callee
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -1653,7 +1894,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -1705,7 +1946,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported parameter annotation (i32/bool/arr/str/inst only)"})
 		return
 	}
-	sig := "@" + emitName + "(" + saSigParamList(paramKinds, params) + ")"
+	sig := "@" + defPrefix + emitName + "(" + saSigParamList(paramKinds, params) + ")"
 	if !isVoid {
 		// 串/实例返回为句柄（证据：封存 return_infer `@greet(n: i32) -> ptr:` 与
 		// `@make(x: i32, y: i32) -> ptr:`）。
@@ -1729,6 +1970,8 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		return
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope.defPrefix = defPrefix
+	scope.linkResolve = linkResolve
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = paramKinds[p]
@@ -2015,4 +2258,501 @@ func RunSA(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// ── program build（tsgo build <dir>）：本地多文件链接 + sci workspace 脚手架 ──
+// S1 范围：命名函数导入链接（相对路径，扩展名省略/.ts）；命名空间/默认/
+// 重导出/star/环/非函数值拒因大声（后阶段）；bare 第三方聚合 Unresolved；
+// npm 依赖记 sa.mod 注释 + 报告（sa pkg 手动解决）。
+// 形状证据：封存 LowerProgram:202-1255 + ScaffoldProgram + programReport +
+// build.sh/sa.mod 文本；输出布局按 sci workspace（根 sa.mod + packages/<mod>）。
+
+// saNpmDep is one package.json runtime dependency (versions verbatim).
+type saNpmDep struct {
+	Name    string
+	Version string
+}
+
+// saReadNpmDeps returns sorted runtime dependencies of dir/package.json
+// (nil when absent or unparsable; never refuses).
+func saReadNpmDeps(dir string) []saNpmDep {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return nil
+	}
+	var pkg map[string]any
+	if json.Unmarshal(data, &pkg) != nil {
+		return nil
+	}
+	deps, _ := pkg["dependencies"].(map[string]any)
+	if len(deps) == 0 {
+		return nil
+	}
+	out := make([]saNpmDep, 0, len(deps))
+	for name, v := range deps {
+		ver, _ := v.(string)
+		out = append(out, saNpmDep{Name: name, Version: ver})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// RunBuild implements `tsgo build [--out O] [--entry E] [--mod M] <dir>`.
+// Exit codes mirror the build gate: 2 usage/IO, 1 refused, 0 linked.
+func RunBuild(args []string) int {
+	// Hoist flags wherever they appear so positional <dir> never cuts
+	// flag parsing short (mirrors upstream prescanBuildFlags).
+	var rest []string
+	outFlag, entryFlag, modFlag := "", "", ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		take := func() string {
+			if i+1 < len(args) {
+				i++
+				return args[i]
+			}
+			return ""
+		}
+		switch {
+		case a == "--out" && i+1 < len(args):
+			outFlag = take()
+		case strings.HasPrefix(a, "--out="):
+			outFlag = strings.TrimPrefix(a, "--out=")
+		case a == "--entry" && i+1 < len(args):
+			entryFlag = take()
+		case strings.HasPrefix(a, "--entry="):
+			entryFlag = strings.TrimPrefix(a, "--entry=")
+		case a == "--mod" && i+1 < len(args):
+			modFlag = take()
+		case strings.HasPrefix(a, "--mod="):
+			modFlag = strings.TrimPrefix(a, "--mod=")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: tsgo build [--out <dir>] [--entry <file>] [--mod <name>] <dir>")
+		return 2
+	}
+	dir := rest[0]
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		fmt.Fprintf(os.Stderr, "error: build takes a directory (for single files, drop `build`): %s\n", dir)
+		return 2
+	}
+	out := outFlag
+	if out == "" {
+		out = dir
+	}
+	files := map[string]string{}
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := filepath.Base(p)
+			if base == "node_modules" || base == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".d.ts") {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return nil
+		}
+		if strings.HasSuffix(rel, ".sai") {
+			return nil
+		}
+		text, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		files[filepath.ToSlash(rel)] = string(text)
+		return nil
+	})
+	if len(files) == 0 {
+		fmt.Fprintf(os.Stderr, "error: no .ts sources under %s\n", dir)
+		return 2
+	}
+	entry := entryFlag
+	if entry == "" {
+		entry = saDetectEntry(dir, files)
+	}
+	if _, ok := files[entry]; !ok {
+		fmt.Fprintf(os.Stderr, "error: entry %s not found under %s\n", entry, dir)
+		return 2
+	}
+	modName := modFlag
+	if modName == "" {
+		modName = saDetectModName(dir)
+	}
+	npmDeps := saReadNpmDeps(dir)
+	res := saLowerProgram(entry, files)
+	report := saProgramReport(entry, modName, res, npmDeps)
+	if err := saWriteWorkspace(out, modName, entry, files, res, npmDeps, report); err != nil {
+		fmt.Fprintf(os.Stderr, "error: scaffold: %v\n", err)
+		return 2
+	}
+	for _, d := range res.diags {
+		fmt.Fprintln(os.Stderr, "diag:", d)
+	}
+	fmt.Printf("wrote linked SA workspace to %s (entry %s, %d files)\n", out, entry, len(res.files))
+	if res.refused {
+		fmt.Fprintln(os.Stderr, "refused: resolve subset-report.txt before running sh build.sh")
+		return 1
+	}
+	return 0
+}
+
+// saDetectEntry resolves the program entry: package.json "saEntry",
+// tsconfig "files"[0], then src/main.ts, main.ts, src/index.ts, index.ts,
+// fallback lexicographically first file (deterministic).
+func saDetectEntry(dir string, files map[string]string) string {
+	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+		var pkg map[string]any
+		if json.Unmarshal(data, &pkg) == nil {
+			if se, ok := pkg["saEntry"].(string); ok {
+				if _, ok := files[se]; ok {
+					return se
+				}
+			}
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "tsconfig.json")); err == nil {
+		var ts map[string]any
+		if json.Unmarshal(data, &ts) == nil {
+			if fl, ok := ts["files"].([]any); ok && len(fl) > 0 {
+				if f0, ok := fl[0].(string); ok {
+					if _, ok := files[f0]; ok {
+						return f0
+					}
+				}
+			}
+		}
+	}
+	for _, c := range []string{"src/main.ts", "main.ts", "src/index.ts", "index.ts"} {
+		if _, ok := files[c]; ok {
+			return c
+		}
+	}
+	names := []string{}
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names[0]
+}
+
+// saDetectModName resolves the package name: --mod, package.json name,
+// else dir base (dashes to underscores).
+func saDetectModName(dir string) string {
+	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+		var pkg map[string]any
+		if json.Unmarshal(data, &pkg) == nil {
+			if name, ok := pkg["name"].(string); ok && name != "" {
+				return strings.ReplaceAll(name, "-", "_")
+			}
+		}
+	}
+	return strings.ReplaceAll(filepath.Base(dir), "-", "_")
+}
+
+// saProgResult is the linked program outcome (mirrors ProgramResult).
+type saProgResult struct {
+	sai        string
+	files      []string
+	perFile    map[string]string
+	diags      []string
+	unresolved []string
+	refused    bool
+}
+
+// saProgBuiltinMod reports builtin/asset modules skipped by linking.
+func saProgBuiltinMod(spec string) bool {
+	switch spec {
+	case "fs", "net", "path", "os",
+		"node:fs", "node:net", "node:path", "node:os",
+		"node:process", "node:buffer":
+		return true
+	}
+	return strings.HasSuffix(spec, ".wasm") || strings.HasSuffix(spec, ".wit")
+}
+
+// saProgResolveRelative resolves a relative spec against the file set
+// (extensionless/.ts/.js/index candidates, in order).
+func saProgResolveRelative(importer, spec string, files map[string]string) string {
+	dir := path.Dir(importer)
+	if dir == "." {
+		dir = ""
+	}
+	join := func(base string) string {
+		if dir == "" {
+			return path.Clean(base)
+		}
+		return path.Clean(dir + "/" + base)
+	}
+	for _, c := range []string{join(spec) + ".ts", join(spec) + ".js", join(spec), join(spec) + "/index.ts", join(spec) + "/index.js"} {
+		if _, ok := files[c]; ok {
+			return c
+		}
+	}
+	return ""
+}
+
+// saProgPrefix sanitizes a path to a definition prefix (entry keeps "").
+func saProgPrefix(p, entry string) string {
+	if p == entry {
+		return ""
+	}
+	base := p
+	base = strings.TrimSuffix(base, ".ts")
+	base = strings.TrimSuffix(base, ".js")
+	base = strings.TrimSuffix(base, ".d.ts")
+	var b strings.Builder
+	for _, r := range base {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String() + "__"
+}
+
+// saProgModuleSpec extracts the literal module string of an import.
+func saProgModuleSpec(st *ast.Node) string {
+	if st == nil || st.Kind != ast.KindImportDeclaration {
+		return ""
+	}
+	imp := st.AsImportDeclaration()
+	if imp == nil || imp.ModuleSpecifier == nil || imp.ModuleSpecifier.Kind != ast.KindStringLiteral {
+		return ""
+	}
+	return imp.ModuleSpecifier.Text()
+}
+
+// saLowerProgram lowers entry plus reachable relative .ts modules.
+func saLowerProgram(entry string, files map[string]string) *saProgResult {
+	res := &saProgResult{perFile: map[string]string{}}
+	entry = path.Clean(entry)
+	if _, ok := files[entry]; !ok {
+		res.refused = true
+		res.diags = append(res.diags, fmt.Sprintf("entry %s not in file set", entry))
+		return res
+	}
+	parsed := map[string]*ast.SourceFile{}
+	for p, text := range files {
+		abs := "/" + strings.TrimPrefix(p, "/")
+		sf := parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, text, core.ScriptKindTS)
+		parsed[path.Clean(p)] = sf
+	}
+	graph := map[string][]string{}
+	specOf := map[string]map[string]string{}
+	unresolved := map[string]bool{}
+	for p, sf := range parsed {
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindImportDeclaration {
+				continue
+			}
+			if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+				continue
+			}
+			spec := saProgModuleSpec(st)
+			if spec == "" {
+				continue
+			}
+			if !strings.HasPrefix(spec, ".") {
+				if !saProgBuiltinMod(spec) {
+					unresolved[spec] = true
+				}
+				continue
+			}
+			if tgt := saProgResolveRelative(p, spec, files); tgt != "" {
+				graph[p] = append(graph[p], tgt)
+				if specOf[p] == nil {
+					specOf[p] = map[string]string{}
+				}
+				specOf[p][spec] = tgt
+			}
+		}
+	}
+	reachable := []string{}
+	visited := map[string]bool{}
+	onStack := map[string]bool{}
+	var stack []string
+	var cycle []string
+	var dfs func(p string)
+	dfs = func(p string) {
+		visited[p] = true
+		onStack[p] = true
+		stack = append(stack, p)
+		for _, q := range graph[p] {
+			if cycle != nil {
+				break
+			}
+			if onStack[q] {
+				i := 0
+				for i < len(stack) && stack[i] != q {
+					i++
+				}
+				cycle = append(append([]string{}, stack[i:]...), q)
+				break
+			}
+			if !visited[q] {
+				dfs(q)
+			}
+		}
+		stack = stack[:len(stack)-1]
+		onStack[p] = false
+		reachable = append(reachable, p)
+	}
+	dfs(entry)
+	if cycle != nil {
+		res.refused = true
+		res.diags = append(res.diags, fmt.Sprintf("import cycle: %s", strings.Join(cycle, " -> ")))
+		return res
+	}
+	prefixOf := map[string]string{}
+	for _, p := range reachable {
+		prefixOf[p] = saProgPrefix(p, entry)
+	}
+	harvests := map[string]map[string]saProgFunc{}
+	mergedImports := []string{}
+	seenImport := map[string]bool{}
+	bodies := []string{}
+	for _, p := range reachable {
+		lk := &saFileLink{
+			defPrefix: prefixOf[p],
+			isEntry:   p == entry,
+			specOf:    specOf[p],
+			harvests:  harvests,
+			prefixOf:  prefixOf,
+			resolve:   map[string]string{},
+			seed:      map[string]saFuncSig{},
+			harvest:   map[string]saProgFunc{},
+		}
+		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
+		harvests[p] = lk.harvest
+		for _, r := range out.Refusals {
+			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
+		}
+		for _, wr := range out.Warnings {
+			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: warning: %s", p, wr.Line, wr.Col, wr.Msg))
+		}
+		if len(out.Refusals) > 0 {
+			res.refused = true
+		}
+		res.perFile[p] = out.SAI
+		for _, line := range strings.Split(out.SAI, "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "@import ") || strings.HasPrefix(t, "@extern ") || strings.HasPrefix(t, "@const ") {
+				if !seenImport[t] {
+					seenImport[t] = true
+					mergedImports = append(mergedImports, line)
+				}
+				continue
+			}
+			bodies = append(bodies, line)
+		}
+	}
+	var out strings.Builder
+	for _, line := range mergedImports {
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	out.WriteString(strings.Join(bodies, "\n"))
+	res.sai = out.String()
+	res.files = append([]string{}, reachable...)
+	for spec := range unresolved {
+		// Only specs reachable from the entry program surface.
+		res.unresolved = append(res.unresolved, spec)
+	}
+	sort.Strings(res.unresolved)
+	sort.Strings(res.files)
+	return res
+}
+
+// saProgramReport renders the build report (mirrors programReport).
+func saProgramReport(entry, mod string, res *saProgResult, npmDeps []saNpmDep) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "== program %s: refused=%v ==\n", entry, res.refused)
+	fmt.Fprintf(&b, "files: %s\n", strings.Join(res.files, ", "))
+	for _, d := range res.diags {
+		fmt.Fprintf(&b, "%s\n", d)
+	}
+	if len(res.unresolved) > 0 {
+		fmt.Fprintf(&b, "== unresolved third-party deps (%d) ==\n", len(res.unresolved))
+		for _, u := range res.unresolved {
+			fmt.Fprintf(&b, "package %s: no SA backend yet (see todo/03_npm.md)\n", u)
+		}
+	}
+	if len(npmDeps) > 0 {
+		fmt.Fprintf(&b, "== package.json dependencies (%d) ==\n", len(npmDeps))
+		for _, d := range npmDeps {
+			fmt.Fprintf(&b, "npm %s@%s: record in sa.mod require after sa pkg resolution\n", d.Name, d.Version)
+		}
+	}
+	_ = mod
+	return b.String()
+}
+
+// saWriteWorkspace scaffolds the sci workspace output.
+func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *saProgResult, npmDeps []saNpmDep, report string) error {
+	pkgDir := filepath.Join(outDir, "packages", mod)
+	srcDir := filepath.Join(pkgDir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		return err
+	}
+	for p, text := range files {
+		rel := strings.TrimPrefix(filepath.FromSlash(p), "src"+string(filepath.Separator))
+		dst := filepath.Join(srcDir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, []byte(text), 0o644); err != nil {
+			return err
+		}
+	}
+	for p, sai := range res.perFile {
+		rel := strings.TrimPrefix(filepath.FromSlash(p), "src"+string(filepath.Separator))
+		dst := filepath.Join(srcDir, rel+".sai")
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, []byte(sai), 0o644); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "main.sai"), []byte(res.sai), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "subset-report.txt"), []byte(report), 0o644); err != nil {
+		return err
+	}
+	var nm strings.Builder
+	nm.WriteString(fmt.Sprintf("package \"%s\"\n", mod))
+	if len(npmDeps) > 0 {
+		nm.WriteString("# npm dependencies (no sa hash yet; resolve via sa pkg before uncommenting):\n")
+		for _, d := range npmDeps {
+			nm.WriteString("# require npm:" + d.Name + "@" + d.Version + " <sha256 pending>\n")
+		}
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "sa.mod"), []byte(nm.String()), 0o644); err != nil {
+		return err
+	}
+	ws := fmt.Sprintf("workspace {\n  members [\"packages/%s\"]\n  default_member \"%s\"\n}\n", mod, mod)
+	if err := os.WriteFile(filepath.Join(outDir, "sa.mod"), []byte(ws), 0o644); err != nil {
+		return err
+	}
+	readme := "# " + mod + " (tsgo -> SA workspace)\n\nGenerated by tsgo build: TypeScript linked to SA-ASM for the sci/sa toolchain.\n\nEntry: packages/" + mod + "/src/main.sai (member \"" + mod + "\").\n"
+	if err := os.WriteFile(filepath.Join(outDir, "README.md"), []byte(readme), 0o644); err != nil {
+		return err
+	}
+	buildsh := "#!/usr/bin/env sh\n# Build the workspace member with the sci toolchain.\nset -eu\nSA_BIN=\"${SA_BIN:-sa}\"\n\"$SA_BIN\" build-workspace -p " + mod + " -o main\n"
+	if err := os.WriteFile(filepath.Join(outDir, "build.sh"), []byte(buildsh), 0o755); err != nil {
+		return err
+	}
+	return nil
 }
