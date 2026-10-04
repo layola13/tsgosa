@@ -528,9 +528,11 @@ func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (st
 	}
 	seen[key] = true
 	if hv, ok := link.harvests[tgt][remote]; ok {
-		if !hv.exported || hv.isArrow {
+		if !hv.exported {
 			return "", saFuncSig{}, false
 		}
+		// 箭头与函数同例透传（顶层箭头恒直落 `@prefix+f`，step200/205；
+		// isArrow 标记保留，ns 整件绑定沿旧门）。
 		name := remote
 		if remote == "default" {
 			if hv.defLocal == "" {
