@@ -2380,6 +2380,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			// 命名空间拍扁纯量读（`N.K` 键；串在 i32 位沿静态折叠同门拒）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				// 可变槽优先（活值；折叠与槽互斥，槽即被赋值名；封存 emitModEnsure 系列）。
+				if ms, ok := scope.modVars[pa.Expression.Text()+"."+pa.Name().Text()]; ok && ms.w == "i32" {
+					return saModLoadI32(w, ms, scope, nextTemp), ""
+				}
 				if text, ok := scope.topConsts[pa.Expression.Text()+"."+pa.Name().Text()]; ok {
 					if scope.topStr[pa.Expression.Text()+"."+pa.Name().Text()] {
 						return "", "string " + pa.Name().Text() + " in i32 expression"
@@ -2644,6 +2648,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 									}
 								}
 							}
+						}
+					}
+				}
+				// 命名空间可变槽写（`N.K = v`；读位同键；封存 emitModStore 系列）。
+				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+					lpa := be.Left.AsPropertyAccessExpression()
+					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil && lpa.Name().Kind == ast.KindIdentifier {
+						if ms, ok := scope.modVars[lpa.Expression.Text()+"."+lpa.Name().Text()]; ok && ms.w == "i32" {
+							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
+							return saModStoreI32(w, ms, op, scope, nextTemp), ""
 						}
 					}
 				}

@@ -1306,9 +1306,9 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 			return false
 		}
 		seen[key] = true
-		// `let` 被赋值即跳过（槽另步；用点沿旧门大声拒）。
+		// `let` 被赋值（裸名或限定点键）即跳过（槽另步；用点沿旧门大声拒）。
 		if !isNsConstDecl(mb.node) {
-			if nm := vd.Name(); nm != nil && nm.Kind == ast.KindIdentifier && assigned[nm.Text()] {
+			if nm := vd.Name(); nm != nil && nm.Kind == ast.KindIdentifier && (assigned[nm.Text()] || assigned[key]) {
 				continue
 			}
 		}
@@ -2166,12 +2166,26 @@ func saIsModAssignOp(op ast.Kind) bool {
 
 // saAssignedNames 全文件收集赋值目标裸名（`=`/复合/`++`/`--`；跨作用域过近似仅多建槽，
 // 局部遮蔽仍优先，sound；封存 assignedNames:150-157）。
+// 限定写（`N.K =`/`N.K++`）记点键（顶层裸名查找零影响；ns 槽注册消费）。
 func saAssignedNames(stmts []*ast.Node) map[string]bool {
 	out := map[string]bool{}
 	mark := func(n *ast.Node) {
 		if n != nil && n.Kind == ast.KindIdentifier {
 			out[n.Text()] = true
 		}
+	}
+	markQualified := func(n *ast.Node) {
+		if n == nil || n.Kind != ast.KindPropertyAccessExpression {
+			return
+		}
+		pa := n.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+			return
+		}
+		if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+			return
+		}
+		out[pa.Expression.Text()+"."+pa.Name().Text()] = true
 	}
 	var walk func(n *ast.Node)
 	walk = func(n *ast.Node) {
@@ -2182,14 +2196,17 @@ func saAssignedNames(stmts []*ast.Node) map[string]bool {
 		case ast.KindBinaryExpression:
 			if be := n.AsBinaryExpression(); be != nil && be.OperatorToken != nil && saIsModAssignOp(be.OperatorToken.Kind) {
 				mark(be.Left)
+				markQualified(be.Left)
 			}
 		case ast.KindPrefixUnaryExpression:
 			if un := n.AsPrefixUnaryExpression(); un != nil && (un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
 				mark(un.Operand)
+				markQualified(un.Operand)
 			}
 		case ast.KindPostfixUnaryExpression:
 			if un := n.AsPostfixUnaryExpression(); un != nil && (un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
 				mark(un.Operand)
+				markQualified(un.Operand)
 			}
 		}
 		n.ForEachChild(func(c *ast.Node) bool {
@@ -2350,6 +2367,57 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				ms.init = lit
 			}
 			out[name] = ms
+		}
+	}
+	// 命名空间可变槽（`export let K` 被赋值名；`N.K` 键；i32 初值子集；
+	// 未赋值走折叠，串/异形沿旧门用点拒；上游 nsMutableState 槽同形）。
+	for _, st := range stmts {
+		members, ok := saFlattenNsMembers(st)
+		if !ok {
+			continue
+		}
+		for _, mb := range members {
+			if !mb.isConst || isNsConstDecl(mb.node) {
+				continue
+			}
+			vd := mb.decl.AsVariableDeclaration()
+			if vd == nil {
+				continue
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			key := mb.dotted
+			if !assigned[nm.Text()] && !assigned[key] {
+				continue
+			}
+			if _, dup := out[key]; dup {
+				ln, col := pos(mb.decl.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + key + " is already declared (redefinition is not lowerable)"})
+				continue
+			}
+			if _, dup := funcs[key]; dup {
+				ln, col := pos(mb.decl.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + key + " collides with an existing definition"})
+				continue
+			}
+			if _, dup := classes[key]; dup {
+				ln, col := pos(mb.decl.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + key + " collides with an existing definition"})
+				continue
+			}
+			w, lit, zero, ok := saModSlotInit(vd)
+			if !ok || w != "i32" {
+				continue
+			}
+			k, flag := saModKeyOf(key)
+			ms := &saModState{qual: key, w: "i32", key: k}
+			if !zero {
+				ms.flag = flag
+				ms.init = lit
+			}
+			out[key] = ms
 		}
 	}
 	return out
