@@ -432,9 +432,11 @@ func saPos(offs []int, p int) (int, int) {
 type saFileLink struct {
 	defPrefix string                           // definition prefix ("" entry; "util__" libs)
 	isEntry   bool                             // entry synthesizes @main; libs refuse top-level execution
+	self      string                           // this file key (for own re-export edges)
 	specOf    map[string]string                // this file: import spec -> target file
 	prefixOf  map[string]string                // all files: target -> prefix
 	harvests  map[string]map[string]saProgFunc // all files: target -> name -> harvested (driver fills)
+	reexps    map[string]map[string]string     // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
 	resolve   map[string]string                // out/in: imported local name -> qualified callee
 	seed      map[string]saFuncSig             // out/in: qualified callee -> defining file signature
 	harvest   map[string]saProgFunc            // out: own top-level functions for dependents
@@ -487,6 +489,85 @@ func saLinkResolveMap(link *saFileLink) map[string]string {
 	return link.resolve
 }
 
+// saProgChase resolves (tgt, remote) to a qualified callee through re-export
+// edges (upstream resolveReExports:1317 同形；cycle 经 seen 守卫，未导出/
+// 箭头/断链一律 !ok 由调用方按形拒因）。remote=="default" 用 defLocal 后缀。
+func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (string, saFuncSig, bool) {
+	key := tgt + "\x00" + remote
+	if seen[key] {
+		return "", saFuncSig{}, false
+	}
+	seen[key] = true
+	if hv, ok := link.harvests[tgt][remote]; ok {
+		if !hv.exported || hv.isArrow {
+			return "", saFuncSig{}, false
+		}
+		name := remote
+		if remote == "default" {
+			if hv.defLocal == "" {
+				return "", saFuncSig{}, false
+			}
+			name = hv.defLocal
+		}
+		return link.prefixOf[tgt] + name, hv.sig, true
+	}
+	if edge, ok := link.reexps[tgt][remote]; ok {
+		parts := strings.SplitN(edge, "\x00", 2)
+		if len(parts) == 2 {
+			return saProgChase(link, parts[0], parts[1], seen)
+		}
+	}
+	return "", saFuncSig{}, false
+}
+
+// saProgReexpEdges parses `export {a [, b as c]} from "spec"` into the
+// spec plus exported->remote edges (star forms report star=true, S1 后阶段；
+// 形状证据：externalmoduleinfo.go:186-200 Name/PropertyNameOrName 读法）。
+func saProgReexpEdges(st *ast.Node) (string, map[string]string, bool) {
+	ed := st.AsExportDeclaration()
+	if ed == nil || ed.IsTypeOnly {
+		return "", nil, false
+	}
+	ms := ed.ModuleSpecifier
+	if ms == nil || ms.Kind != ast.KindStringLiteral {
+		return "", nil, false
+	}
+	spec := ms.Text()
+	if ed.ExportClause == nil {
+		return spec, nil, true
+	}
+	if ed.ExportClause.Kind == ast.KindNamespaceExport {
+		return spec, nil, true
+	}
+	if ed.ExportClause.Kind != ast.KindNamedExports {
+		return spec, nil, true
+	}
+	ne := ed.ExportClause.AsNamedExports()
+	if ne == nil || ne.Elements == nil {
+		return spec, nil, false
+	}
+	edges := map[string]string{}
+	for _, n := range ne.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindExportSpecifier {
+			continue
+		}
+		sp := n.AsExportSpecifier()
+		if sp == nil || sp.IsTypeOnly {
+			continue
+		}
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		remote := nm.Text()
+		if pn := sp.PropertyNameOrName(); pn != nil && pn.Kind == ast.KindIdentifier {
+			remote = pn.Text()
+		}
+		edges[nm.Text()] = remote
+	}
+	return spec, edges, false
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -522,12 +603,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	}
 	if nm := clause.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 		// 默认导入直链定义文件 `export default function Name`（上游 program
-		// build 同形过，本仓 S1 前拒；其余默认形/箭头/未导出沿旧门后阶段）。
+		// build 同形过，本仓 S1 前拒；其余默认形/箭头/未导出沿旧门后阶段；
+		// 重导出链经 saProgChase 透传）。
 		if tgt, ok := link.specOf[spec]; ok && tgt != "" {
-			if hv, ok := link.harvests[tgt]["default"]; ok && hv.exported && !hv.isArrow && hv.defLocal != "" {
-				q := link.prefixOf[tgt] + hv.defLocal
+			if q, sig, ok := saProgChase(link, tgt, "default", map[string]bool{}); ok {
 				link.resolve[nm.Text()] = q
-				link.seed[q] = hv.sig
+				link.seed[q] = sig
 				return true
 			}
 		} else {
@@ -602,7 +683,18 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			remote = sp.PropertyName.Text()
 		}
 		hv, ok := link.harvests[tgt][remote]
-		if !ok || !hv.exported {
+		if !ok {
+			// 重导出透传（`export {a} from` 链；cycle/断链下探"未导出"门）。
+			if q, sig, ok := saProgChase(link, tgt, remote, map[string]bool{}); ok {
+				link.resolve[local] = q
+				link.seed[q] = sig
+				continue
+			}
+			ln, col := pos(n.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
+			continue
+		}
+		if !hv.exported {
 			ln, col := pos(n.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 			continue
@@ -873,7 +965,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		// Program hook C2: value export lists stay unlinked in S1
 		// (named functions link via export modifier; star/default/lists
-		// refuse loudly for a later stage).
+		// refuse loudly for a later stage). Resolvable from-form re-exports
+		// emit nothing (edges chase at use sites).
 		for _, st := range sf.AsSourceFile().Statements.Nodes {
 			if st == nil || st.Kind != ast.KindExportDeclaration {
 				continue
@@ -883,6 +976,20 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				continue
 			}
 			if ed.ModuleSpecifier != nil {
+				_, edges, star := saProgReexpEdges(st)
+				if !star && len(edges) > 0 {
+					okAll := true
+					for exported := range edges {
+						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
+							okAll = false
+							break
+						}
+					}
+					if okAll {
+						handledTop[st] = true
+						continue
+					}
+				}
 				ln, col := pos(st.Pos())
 				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "re-exports link in a later stage"})
 				continue
@@ -2630,10 +2737,45 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	graph := map[string][]string{}
 	specOf := map[string]map[string]string{}
+	reexpOf := map[string]map[string]string{}
 	unresolved := map[string]bool{}
+	addEdge := func(p, spec string) string {
+		if !strings.HasPrefix(spec, ".") {
+			if !saProgBuiltinMod(spec) {
+				unresolved[spec] = true
+			}
+			return ""
+		}
+		tgt := saProgResolveRelative(p, spec, files, dir, resolver)
+		if tgt == "" {
+			return ""
+		}
+		graph[p] = append(graph[p], tgt)
+		return tgt
+	}
 	for p, sf := range parsed {
 		for _, st := range sf.AsSourceFile().Statements.Nodes {
-			if st == nil || st.Kind != ast.KindImportDeclaration {
+			if st == nil {
+				continue
+			}
+			// 重导出 from 形建边 + 记边（上游 collectReExport:1501 同形；
+			// star 形 S1 不记边，C2 沿旧门）。
+			if st.Kind == ast.KindExportDeclaration {
+				spec, edges, star := saProgReexpEdges(st)
+				if spec == "" || star || len(edges) == 0 {
+					continue
+				}
+				if tgt := addEdge(p, spec); tgt != "" {
+					if reexpOf[p] == nil {
+						reexpOf[p] = map[string]string{}
+					}
+					for exported, remote := range edges {
+						reexpOf[p][exported] = tgt + "\x00" + remote
+					}
+				}
+				continue
+			}
+			if st.Kind != ast.KindImportDeclaration {
 				continue
 			}
 			if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
@@ -2643,14 +2785,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			if spec == "" {
 				continue
 			}
-			if !strings.HasPrefix(spec, ".") {
-				if !saProgBuiltinMod(spec) {
-					unresolved[spec] = true
-				}
-				continue
-			}
-			if tgt := saProgResolveRelative(p, spec, files, dir, resolver); tgt != "" {
-				graph[p] = append(graph[p], tgt)
+			if tgt := addEdge(p, spec); tgt != "" {
 				if specOf[p] == nil {
 					specOf[p] = map[string]string{}
 				}
@@ -2706,9 +2841,11 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		lk := &saFileLink{
 			defPrefix: prefixOf[p],
 			isEntry:   p == entry,
+			self:      p,
 			specOf:    specOf[p],
 			harvests:  harvests,
 			prefixOf:  prefixOf,
+			reexps:    reexpOf,
 			resolve:   map[string]string{},
 			seed:      map[string]saFuncSig{},
 			harvest:   map[string]saProgFunc{},
