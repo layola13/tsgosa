@@ -1947,6 +1947,27 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 				}
 			}
 		}
+		// 命名空间可变槽自增（`N.K++`；读-改-写回同序；i32 独占）。
+		if operand != nil && operand.Kind == ast.KindPropertyAccessExpression {
+			lpa := operand.AsPropertyAccessExpression()
+			if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil && lpa.Name().Kind == ast.KindIdentifier {
+				if ms, ok := scope.modVars[lpa.Expression.Text()+"."+lpa.Name().Text()]; ok && ms.w == "i32" {
+					cur := saModLoadI32(w, ms, scope, nextTemp)
+					op := "add"
+					if !up {
+						op = "sub"
+					}
+					nw := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, 1\n", nw, op, cur))
+					saModStoreI32(w, ms, nw, scope, nextTemp)
+					if prefix {
+						return nw, ""
+					}
+					return cur, ""
+				}
+			}
+		}
 		return "", "incdec target must be bound i32 variable"
 	}
 	op := "add"

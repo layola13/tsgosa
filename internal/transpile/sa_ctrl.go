@@ -169,6 +169,27 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 				}
 			}
 		}
+		// 命名空间可变槽复合赋值（`N.K op= v`；读-改-写回同序；i32 独占）。
+		if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+			lpa := be.Left.AsPropertyAccessExpression()
+			if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil && lpa.Name().Kind == ast.KindIdentifier {
+				if ms, ok := scope.modVars[lpa.Expression.Text()+"."+lpa.Name().Text()]; ok && ms.w == "i32" {
+					cur := saModLoadI32(w, ms, scope, nextTemp)
+					r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(where.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+						return false
+					}
+					op, _ := saCompoundOp(saBinaryOpKind(be))
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+					saModStoreI32(w, ms, t, scope, nextTemp)
+					return true
+				}
+			}
+		}
 		// 串槽复合即计算串存储，沿字面存储门大声拒（封存 emitModStoreStringDispatch:808-820）。
 		if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
 			if ms, ok := scope.modVars[be.Left.Text()]; ok && ms.w == "str" {
