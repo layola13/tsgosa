@@ -817,6 +817,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	enums := map[string]map[string]int64{}
 	enumNonInt := map[string]map[string]bool{}
 	classes := map[string]*saClassDef{}
+	// 跨文件 heritage 预播种（导入类布局须在本地记录期前可见；单文件 link
+	// 空零行为变；形状证据见 saPreseedImportedClasses）。
+	saPreseedImportedClasses(sf, classes, link)
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindClassDeclaration {

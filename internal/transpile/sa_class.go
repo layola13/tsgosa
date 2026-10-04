@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -667,6 +668,123 @@ func saCtorCallsSuper(ctor *ast.Node) bool {
 		}
 	}
 	return found
+}
+
+// saProgFindClass 在全部已收割文件里按名找类布局（文件名排序，确定性
+// first-hit；多文件同名异布局属病态输入，用点门照常大声）。
+func saProgFindClass(link *saFileLink, name string) *saClassDef {
+	if link == nil || link.classHarvests == nil {
+		return nil
+	}
+	files := make([]string, 0, len(link.classHarvests))
+	for f := range link.classHarvests {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		if ch, ok := link.classHarvests[f][name]; ok && ch.exported && ch.def != nil {
+			return ch.def
+		}
+	}
+	return nil
+}
+
+// saPreseedImportedClasses 在类型预扫前把具名导入的类布局播进本文件表
+// （跨文件 heritage 记录期须见基布局，祖先链传递播种；本地同名定义优先，
+// 调用方沿既有 duplicate 门；默认/命名空间成员类沿旧门后阶段）。
+// 形状证据：封存 program.go:460-500 leaves-first 共享 classDefs 预扫 +
+// TransitiveHeritage 三文件链（基布局先行，派生复用）。
+func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef, link *saFileLink) {
+	if sf == nil || link == nil || link.specOf == nil || link.classHarvests == nil {
+		return
+	}
+	local := map[string]bool{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st != nil && st.Kind == ast.KindClassDeclaration {
+			if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				local[nm.Text()] = true
+			}
+		}
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindImportDeclaration {
+			continue
+		}
+		imp := st.AsImportDeclaration()
+		if imp == nil || imp.ImportClause == nil || imp.ImportClause.IsTypeOnly() {
+			continue
+		}
+		ms := imp.ModuleSpecifier
+		if ms == nil || ms.Kind != ast.KindStringLiteral {
+			continue
+		}
+		tgt, ok := link.specOf[ms.Text()]
+		if !ok || tgt == "" {
+			continue
+		}
+		clause := imp.ImportClause.AsImportClause()
+		if clause == nil {
+			continue
+		}
+		nb := clause.NamedBindings
+		if nb == nil || nb.Kind != ast.KindNamedImports {
+			continue
+		}
+		ni := nb.AsNamedImports()
+		if ni == nil || ni.Elements == nil {
+			continue
+		}
+		for _, n := range ni.Elements.Nodes {
+			if n == nil || n.Kind != ast.KindImportSpecifier {
+				continue
+			}
+			sp := n.AsImportSpecifier()
+			nm := n.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			name := nm.Text()
+			remote := name
+			if sp.PropertyName != nil {
+				remote = sp.PropertyName.Text()
+			}
+			if local[name] {
+				continue
+			}
+			if _, dup := classes[name]; dup {
+				continue
+			}
+			if ch, ok := link.classHarvests[tgt][remote]; ok && ch.exported && ch.def != nil {
+				classes[name] = ch.def
+			}
+		}
+	}
+	// 祖先链传递播种（派生内联 super-wiring 须见全部祖先；visited 防环；
+	// 真未知基留空，记录期沿既有 unknown-base 门大声拒）。
+	visited := map[string]bool{}
+	queue := make([]string, 0, len(classes))
+	for name := range classes {
+		queue = append(queue, name)
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if visited[name] {
+			continue
+		}
+		visited[name] = true
+		def := classes[name]
+		if def == nil || def.parent == "" {
+			continue
+		}
+		if _, ok := classes[def.parent]; ok {
+			continue
+		}
+		if base := saProgFindClass(link, def.parent); base != nil {
+			classes[def.parent] = base
+			queue = append(queue, def.parent)
+		}
+	}
 }
 
 // saCouldBeInst 判定表达式是否可能为实例基（绑定实例名或方法内 this）。

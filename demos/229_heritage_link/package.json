@@ -1,0 +1,7 @@
+{
+  "name": "heritage_link",
+  "version": "1.0.0",
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}
