@@ -124,3 +124,30 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 已知边界（续3）：绑定嵌套数组 for-of 行未记 arr（字面量直巡可，H15）；`run.sh` 对 tsgo 二进制加新鲜度检查（旧二进制曾致误报）。
 
 已知边界（demo 写法已规避，对应台账项）：串三元值仅 return 位可放（声明/赋值位拒，H10）；`?.length` 拒（用 `.length`）；`Color.Green` 成员值未用（用 i32 传枚举）；split 结果不可绑定/测长/迭代（用 join…注：join 可转译但 sci verifier 对两家同拒 PhiStateConflict，本集暂不用 join，待后端侧）；for-in 另有 UseAfterMove 缺口（H11，不在本集）。
+
+## 第五批（81–100）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 81_reverse | reverse 原地反转 | 26 |
+| 82_last_index | lastIndexOf/indexOf | 26 |
+| 83_copy_within | copyWithin 块拷贝 | 26 |
+| 84_to_sorted | toSorted 非破坏排序 | 26 |
+| 85_with_method | with 下标替换拷贝 | 26 |
+| 86_to_spliced | toSpliced 切片删除拷贝 | 26 |
+| 87_substring | substring/slice 取子串 | 25 |
+| 88_str_eq | 形参串 `==` 内容相等 | 25 |
+| 89_math_round | ceil/round/trunc+PI/E | 20-24 |
+| 90_num_check | isInteger+MAX/MIN_SAFE | 33 |
+| 91_includes | 数组/串 includes | 26/25 |
+| 92_push_ret | push 返回新长 | 26 |
+| 93_map_ops | Map getSize/delete | 30 |
+| 94_set_ops | Set 函数内 add/has | 30 |
+| 95_getter_setter | 存取器读写 | 40/73 |
+| 96_private_field | 私有字段读写 | 63 |
+| 97_catch_value | throwing-try 函数内取值 | 54 |
+| 98_static_inherit | 静态字段/方法继承 | 48/69 |
+| 99_async_await | async/await 同步解包 | 55/137 |
+| 100_date_get | Date 取值函数内 | 29 |
+
+已知边界（续4）：toLowerCase/toUpperCase/replace/padStart-padEnd 两家同段错误（上游同形，串大小写/替换系记 H14 同族）；`s.concat` 方法两家同段错误（上游段错误，记 H14 同族；`+` 拼接可用）；`const s` 串 `==` 入口 leak（形参形可用）；Map `.size` 属性形拒（用 `getSize()`）；Set/`Date`/throwing-try 句柄在 `@main` 入口 leak（函数内可用，H12 入口释放 asymmetry）；`m.set` 语句位须后无 `.size` 误读（沿既有门）。
