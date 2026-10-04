@@ -1025,11 +1025,9 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 			continue
 		}
-		if hv.isArrow {
-			ln, col := pos(n.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not a linkable function (arrow consts link in a later stage)"})
-			continue
-		}
+		// 顶层箭头与函数同形直落（`@prefix+f`；out-of-line `__arrow_N` 仅局部，
+		// 永不收割；形状证据：封存 lowerArrowBinding 发射限定 + 上游直落实发）。
+		// isArrow 标记保留（重导出透传沿旧门，另步统一）。
 		q := prefix + remote
 		link.resolve[local] = q
 		link.seed[q] = hv.sig
