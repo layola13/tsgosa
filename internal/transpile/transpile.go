@@ -544,6 +544,32 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		return false
 	}
 	if nb.Kind == ast.KindNamespaceImport {
+		// 命名空间逐成员直链（namespace 本身无值；每个可链成员绑
+		// `本地.成员` qualified；上游 link_namespace.go bindNSMembers 同形；
+		// 不可解目标/零可链成员沿旧门后阶段）。
+		if tgt, ok := link.specOf[spec]; ok && tgt != "" {
+			bound := false
+			for member, hv := range link.harvests[tgt] {
+				if member == "default" || !hv.exported || hv.isArrow {
+					continue
+				}
+				local := nb.AsNamespaceImport().Name().Text()
+				if local == "" {
+					continue
+				}
+				q := link.prefixOf[tgt] + member
+				link.resolve[local+"."+member] = q
+				link.seed[q] = hv.sig
+				bound = true
+			}
+			if bound {
+				return true
+			}
+		} else {
+			// Unresolvable relative target: no edge, no binding (use sites
+			// refuse); bare specs never reach here (warned above).
+			return true
+		}
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace imports link in a later stage"})
 		return true

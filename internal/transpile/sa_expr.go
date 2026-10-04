@@ -269,6 +269,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}
+		// 命名空间成员直调（`U.add(..)` 经 hook B 逐成员绑定走既有命名调用；
+		// 上游 link_namespace.go importEnv 点键同形；非链接点键下探旧门）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			if dotted, linked := saLinkCallee(scope, pa.Expression.Text()+"."+pa.Name().Text()); linked {
+				return saEvalNamedCall(w, dotted, ce, scope, pos, refusals, nextTemp)
+			}
+		}
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}

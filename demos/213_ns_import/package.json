@@ -1,0 +1,7 @@
+{
+  "name": "ns_import",
+  "version": "1.0.0",
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}
