@@ -411,6 +411,11 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed/private method names are not lowerable"})
 				return false
 			}
+			// 重载签名擦除：无体声明不注册（实现体唯一定义；顶层同例见 step41；
+			// 形状证据：封存 recordClassNamed:9746-9771 无重复检查直接覆盖（签名被实现覆盖）+ saemit.go:983 无体拒止于调用点）。
+			if m.BodyData() == nil || m.BodyData().Body == nil {
+				continue
+			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 静态方法另表记录，`C.m()` 类名分发内联（实例项永不持有同名，
 				// 防遮蔽/元数错位；静态调用走 saInlineStaticMethod；形状证据：
