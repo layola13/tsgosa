@@ -1,0 +1,32 @@
+// Hand-written sla-side entry (sla 风格手写入口，非编译产物；--check 跳过）。
+// 调用 TS 侧编译出的 @compute（main.sa，zod 子集校验 bitmask），打印后返回。
+@import "./main.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@const sla_nl = utf8:"\n\0"
+@main() -> i32:
+  t_1 = call @compute()
+  t_2 = sext t_1 as i64
+  t_3 = alloc 64
+  t_4 = alloc 8
+  t_5 = call @sa_fmt_i64_into(t_2, 10, t_3, 64, &t_4)
+  t_6 = load t_4 + 0 as u64
+  t_7 = alloc 16
+  store t_7 + 0, t_3 as ptr
+  store t_7 + 8, t_6 as u64
+  !t_5
+  t_8 = load t_7 + 0 as ptr
+  t_9 = load t_7 + 8 as u64
+  call @sa_print_bytes(&t_8, t_9)
+  t_10 = alloc 16
+  store t_10 + 0, &sla_nl as ptr
+  store t_10 + 8, 1 as u64
+  t_11 = load t_10 + 0 as ptr
+  t_12 = load t_11 + 8 as u64
+  call @sa_print_bytes(&t_11, t_12)
+  !t_10
+  !t_7
+  !t_4
+  !t_3
+  !t_1
+  ret 0
