@@ -3,6 +3,8 @@ package transpile
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
 )
@@ -498,6 +500,118 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 	return true
 }
 
+// saIsNsAliasSrc 判定标识符是否为命名空间别名源（单文件 `N.f` 预扫双键或
+// program `u.add` 链接点键在场，且源名未被值绑定/类占用；与 step194 调用
+// 守卫同形）。
+func saIsNsAliasSrc(scope *saScope, src string) bool {
+	if scope == nil || src == "" {
+		return false
+	}
+	if _, bound := scope.types[src]; bound {
+		return false
+	}
+	if _, isClass := scope.classes[src]; isClass {
+		return false
+	}
+	prefix := src + "."
+	for k := range scope.funcs {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	for k := range scope.linkResolve {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// saLowerNsDestructuringDecl lowering 命名空间别名解构（`const {f} = N` /
+// `const {add} = u` / `const {d: delta} = T`）：逐元直绑限定被调（无码；
+// 调用点经既有具名/链接分发）。program 点键优先（前缀已定），单文件走
+// `N_f` 发射（defPrefix 续接，自文件签名透传）。
+// 拒因逐字对齐封存 link_nsobject.go:152-198（模式/元素/缺省/名/键/嵌套/
+// 未导出）；重名沿既有 `duplicate local` 门。
+func saLowerNsDestructuringDecl(d *ast.Node, pat *ast.Node, src string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	for _, el := range pat.AsBindingPattern().Elements.Nodes {
+		if el.Kind != ast.KindBindingElement {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring needs plain elements"})
+			return false
+		}
+		be := el.AsBindingElement()
+		if be.DotDotDotToken != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring needs plain elements"})
+			return false
+		}
+		if be.Initializer != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring defaults are not in the subset"})
+			return false
+		}
+		nm := be.Name()
+		if nm != nil && (nm.Kind == ast.KindArrayBindingPattern || nm.Kind == ast.KindObjectBindingPattern) {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring needs plain local names (no nesting)"})
+			return false
+		}
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring needs plain names"})
+			return false
+		}
+		field := nm.Text()
+		if be.PropertyName != nil {
+			pn := be.PropertyName.AsNode()
+			if pn.Kind != ast.KindIdentifier && pn.Kind != ast.KindStringLiteral {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace destructuring keys must be identifiers or strings"})
+				return false
+			}
+			field = pn.Text()
+		}
+		local := nm.Text()
+		if _, dup := scope.types[local]; dup {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + local})
+			return false
+		}
+		// 函数名保留（共享 funcs 表无作用域恢复钩子，遮蔽必静默错位；
+		// 与 `let` 遮蔽函数名既有严格性同形；禁静默错码高于同形）。
+		if _, dup := scope.funcs[local]; dup {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + local})
+			return false
+		}
+		if q, ok := scope.linkResolve[src+"."+field]; ok {
+			if scope.linkResolve == nil {
+				scope.linkResolve = map[string]string{}
+			}
+			scope.linkResolve[local] = q
+			continue
+		}
+		if _, ok := scope.funcs[src+"."+field]; ok {
+			emit := scope.defPrefix + src + "_" + field
+			if _, ok := scope.funcs[emit]; !ok {
+				if sig, ok := scope.funcs[src+"_"+field]; ok {
+					scope.funcs[emit] = sig
+				}
+			}
+			if scope.linkResolve == nil {
+				scope.linkResolve = map[string]string{}
+			}
+			scope.linkResolve[local] = emit
+			continue
+		}
+		ln, col := pos(el.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: field + " is not exported by " + src})
+		return false
+	}
+	return true
+}
+
 // saLowerObjDestructuringDecl lowering 对象解构声明（`const {x, y: z} = src`；
 // 布局源：声明注解 TypeReference 优先，次之源标识符绑定的 `inst:` 布局；
 // 串域头指针读记 str，其余 i32；rest/缺省/嵌套/计算键/未知域/重名一律大声拒。
@@ -519,7 +633,18 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			}
 		}
 	}
-	if def == nil || src == "" {
+	if def == nil {
+		// 命名空间别名源（`const {f} = N` / `const {add} = u`）：成员直绑
+		// 限定被调；布局源另走上门。形状证据：封存 link_nsobject.go
+		// lowerNsDestructure（p3 单层静态；spread/动态沿旧门）。
+		if src != "" && saIsNsAliasSrc(scope, src) {
+			return saLowerNsDestructuringDecl(d, pat, src, scope, pos, refusals)
+		}
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
+		return false
+	}
+	if src == "" {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
 		return false
