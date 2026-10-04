@@ -30,8 +30,10 @@ L_for_top_4:
 L_for_body_5:
   t_8 = call @gcd(i, 12)
   t_9 = add t, t_8
+  !t
   t = t_9
   t_10 = add i, 1
+  !i
   i = t_10
   jmp L_for_top_4
 L_for_end_6:

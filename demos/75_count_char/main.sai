@@ -39,9 +39,11 @@ L_for_body_2:
   EXPAND IF_TRUE t_17, L_then_4, L_endif_6
 L_then_4:
   t_18 = add n, 1
+  !n
   n = t_18
 L_endif_6:
   t_19 = add i, 1
+  !i
   i = t_19
   jmp L_for_top_1
 L_for_end_3:

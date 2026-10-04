@@ -14,9 +14,11 @@ L_for_top_1:
 L_for_body_2:
   t_1 = add a, b
   c = t_1
+  !a
   t_2 = add b, 0
   t_3 = add t_2, 0
   a = t_3
+  !b
   t_4 = add c, 0
   t_5 = add t_4, 0
   b = t_5

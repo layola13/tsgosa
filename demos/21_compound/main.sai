@@ -6,6 +6,7 @@
 @main() -> i32:
   x = 10
   t_1 = add x, 5
+  !x
   x = t_1
   t_2 = sub x, 3
   !x

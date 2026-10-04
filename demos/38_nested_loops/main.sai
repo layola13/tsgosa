@@ -24,6 +24,7 @@ L_endif_11:
   t_2 = mul i, 10
   t_3 = add t, t_2
   t_4 = add t_3, j
+  !t
   t = t_4
 L_for_cont_8:
   EXPAND FOR_NEXT j, 1, L_for_top_5

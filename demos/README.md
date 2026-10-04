@@ -259,3 +259,36 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 180_leap | 闰年判定 | 7 |
 
 已知边界（续8）：fill 三元拒（单参门）；前后缀自增值位两家同 UseAfterMove（记 H17）；逗号表达式拒（门）；链式 slice `.length` 拒（分步）；`Date.getTime` i64 拒（门）。
+
+## 第十批（181–200）·收尾
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 181_gcd_all | 多组 gcd | 7 |
+| 182_lcm_all | lcm 组合 | 7 |
+| 183_prime_upto | 30 内素数计数 | 69 |
+| 184_matrix_mul | 2x2 矩阵乘对角 | 80 |
+| 185_str_join2 | 串数组 for-of 判定 | 139 |
+| 186_max3 | min/max 嵌套 | 23 |
+| 187_binary | 二进制累积 | 129 |
+| 188_select | 变量下标读 | 12 |
+| 189_nest_if3 | 三层符号判定 | 7 |
+| 190_sort_desc | reverse 降序 | 26 |
+| 191_fizz20 | 20 内整除计数 | 7 |
+| 192_sum_even | filter+for-of 求和 | 26 |
+| 193_map_dbl | map 翻倍 | 26 |
+| 194_class_pair | 双字段类 | 28 |
+| 195_swap | 交换 | 7 |
+| 196_str_len_sum | 串形参长和 | 57 |
+| 197_and_or | 逻辑值打印 | 17 |
+| 198_while_sum2 | 倒序求和 | 7 |
+| 199_for_step2 | 步进 2 求和 | 66 |
+| 200_finale | 递归 fib+排序综合 | 7/26 |
+
+已知边界（续9）：串数组元素直打两家同出句柄数（185 改 for-of 判定形）；本批零 Go 改动。本轮另将 step150 的 44 个旧 sai 释放行一并进仓（纯 +71 行 `!`，值流零变）。
+
+## 收尾（200/200）
+
+- `run.sh` 200/200 PASS，`run.sh --check` 200/200 SA-CLEAN（sai 禁止手改）。
+- 286 差分门禁：286 一致、零分歧。
+- `go build ./...` + `testrunner` + `go vet transpile/` 全绿；gofmt 仅旧 4 文件。

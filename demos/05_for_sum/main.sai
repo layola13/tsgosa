@@ -16,6 +16,7 @@ L_for_body_2:
   EXPAND IF_TRUE t_2, L_then_4, L_endif_6
 L_then_4:
   t_3 = add t, i
+  !t
   t = t_3
 L_endif_6:
   EXPAND FOR_NEXT i, 1, L_for_top_1

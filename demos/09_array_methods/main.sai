@@ -281,6 +281,7 @@ L_fe_body_34:
   t_141 = alloc 8
   store t_141 + 0, 0 as ptr
   t_142 = add t, x
+  !t
   t = t_142
 L_cb_end_36:
   t_143 = load t_141 + 0 as i32

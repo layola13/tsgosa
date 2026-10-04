@@ -5,6 +5,7 @@
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
   t = 0
+  !t
   t = 1
   t_1 = add t, 10
   t = t_1

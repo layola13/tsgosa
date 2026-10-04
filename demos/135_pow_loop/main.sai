@@ -12,6 +12,7 @@ L_for_top_1:
   EXPAND FOR_CHECK i, 10, L_for_body_2, L_for_end_3
 L_for_body_2:
   t_1 = mul p, 2
+  !p
   p = t_1
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:

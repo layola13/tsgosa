@@ -17,6 +17,7 @@ L_forof_body_2:
   t_7 = load t_6 + 0 as i32
   x = t_7
   t_8 = add t, x
+  !t
   t = t_8
   !x
   t_9 = add t_1, 1

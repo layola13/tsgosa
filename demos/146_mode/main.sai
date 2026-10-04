@@ -94,15 +94,18 @@ L_idx_end_13:
   EXPAND IF_TRUE t_37, L_then_16, L_endif_18
 L_then_16:
   t_38 = add n, 1
+  !n
   n = t_38
 L_endif_18:
   t_39 = add j, 1
+  !j
   j = t_39
   jmp L_for_top_7
 L_for_end_9:
   t_40 = sgt n, bestN
   EXPAND IF_TRUE t_40, L_then_19, L_endif_21
 L_then_19:
+  !bestN
   t_41 = add n, 0
   t_42 = add t_41, 0
   bestN = t_42
@@ -127,6 +130,7 @@ L_idx_end_22:
   best = t_50
 L_endif_21:
   t_51 = add i, 1
+  !i
   i = t_51
   jmp L_for_top_4
 L_for_end_6:

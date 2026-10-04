@@ -12,9 +12,11 @@ L_while_top_1:
 L_while_body_2:
   t_2 = srem a, b
   t = t_2
+  !a
   t_3 = add b, 0
   t_4 = add t_3, 0
   a = t_4
+  !b
   t_5 = add t, 0
   t_6 = add t_5, 0
   b = t_6

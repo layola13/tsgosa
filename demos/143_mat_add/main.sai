@@ -142,6 +142,7 @@ L_idx_end_16:
   t_57 = load t_50 + 0 as i32
   !t_50
   t_58 = add t_41, t_57
+  !t
   t = t_58
   EXPAND FOR_NEXT j, 1, L_for_top_4
 L_for_end_6:

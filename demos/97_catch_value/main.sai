@@ -5,6 +5,7 @@
 @const str_const_0 = utf8:"\n\0"
 @probe() -> i32:
   e = 0
+  !e
   e = 41
   err = add e, 0
   ret err

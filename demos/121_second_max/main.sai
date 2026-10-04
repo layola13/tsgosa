@@ -148,10 +148,12 @@ L_idx_oob_26:
 L_idx_end_25:
   t_62 = load t_55 + 0 as i32
   !t_55
+  !m2
   m2 = t_62
 L_endif_24:
 L_endif_18:
   t_63 = add i, 1
+  !i
   i = t_63
   jmp L_for_top_7
 L_for_end_9:

@@ -71,8 +71,10 @@ L_idx_end_7:
   !t_21
   t_29 = mul t_20, t_28
   t_30 = add t, t_29
+  !t
   t = t_30
   t_31 = add i, 1
+  !i
   i = t_31
   jmp L_for_top_1
 L_for_end_3:

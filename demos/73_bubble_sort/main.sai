@@ -117,6 +117,7 @@ L_idx_end_19:
   store t_51 + 0, t as i32
 L_endif_15:
   t_52 = add j, 1
+  !j
   j = t_52
   jmp L_for_top_4
 L_for_end_6:

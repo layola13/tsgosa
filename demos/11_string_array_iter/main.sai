@@ -44,6 +44,7 @@ L_fe_body_2:
   store t_16 + 0, 0 as ptr
   t_17 = load s + 8 as u64
   t_18 = add total, t_17
+  !total
   total = t_18
 L_cb_end_4:
   t_19 = load t_16 + 0 as i32

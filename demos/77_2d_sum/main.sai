@@ -79,6 +79,7 @@ L_idx_end_7:
   t_36 = load t_29 + 0 as i32
   !t_29
   t_37 = add t_28, t_36
+  !t
   t = t_37
   !row
   t_38 = add t_13, 1

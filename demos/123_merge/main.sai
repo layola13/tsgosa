@@ -133,6 +133,7 @@ L_push_end_20:
   store c + 8, t_45 as u64
   !t_47
   t_58 = add i, 1
+  !i
   i = t_58
   jmp L_endif_21
 L_else_11:
@@ -186,6 +187,7 @@ L_push_end_30:
   store c + 8, t_69 as u64
   !t_71
   t_82 = add j, 1
+  !j
   j = t_82
 L_endif_21:
   jmp L_while_top_1

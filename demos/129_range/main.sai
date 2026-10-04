@@ -45,6 +45,7 @@ L_idx_end_4:
   t_15 = load t_8 + 0 as i32
   !t_8
   t_16 = add t, t_15
+  !t
   t = t_16
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:

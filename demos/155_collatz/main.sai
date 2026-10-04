@@ -16,6 +16,7 @@ L_while_body_2:
   EXPAND IF_ELSE t_3, L_then_4, L_else_5
 L_then_4:
   t_4 = div x, 2
+  !x
   x = t_4
   jmp L_endif_6
 L_else_5:
@@ -25,6 +26,7 @@ L_else_5:
   x = t_6
 L_endif_6:
   t_7 = add n, 1
+  !n
   n = t_7
   jmp L_while_top_1
 L_while_end_3:

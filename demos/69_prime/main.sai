@@ -24,6 +24,7 @@ L_then_7:
   ret 0
 L_endif_9:
   t_6 = add i, 1
+  !i
   i = t_6
   jmp L_for_top_4
 L_for_end_6:

@@ -8,8 +8,10 @@
   t = 0
 L_do_1:
   t_1 = add t, i
+  !t
   t = t_1
   t_2 = add i, 1
+  !i
   i = t_2
   jmp L_do_cond_2
 L_do_cond_2:

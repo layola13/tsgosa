@@ -22,6 +22,7 @@ L_then_9:
   jmp L_for_cont_4
 L_endif_11:
   t_2 = add t, 1
+  !t
   t = t_2
 L_for_cont_8:
   EXPAND FOR_NEXT j, 1, L_for_top_5

@@ -8,6 +8,7 @@
   r = 0
   EXPAND SWITCH_2 c, 0, L_case_b_2, 1, L_case_b_3, L_case_default_4
 L_case_b_2:
+  !r
   r = 10
   jmp L_endswitch_1
 L_case_b_3:
