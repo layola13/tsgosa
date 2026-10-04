@@ -485,10 +485,11 @@ func saLinkResolveMap(link *saFileLink) map[string]string {
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
 // Namespace/default forms refuse loudly (later stage); unresolvable targets
-// continue silently (use sites refuse); bare specifiers skip silently here
-// (driver aggregates Unresolved). Shape evidence: upstream LowerProgram
+// continue silently (use sites refuse); bare third-party specs warn here
+// (single-file step157 同形：未使用即警告过，使用处自然拒；driver 侧聚合
+// Unresolved). Shape evidence: upstream LowerProgram
 // links[p].resolved + recordNamedImports + linkRoute advisories.
-func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal, warnings *[]SARefusal) bool {
 	imp := st.AsImportDeclaration()
 	if imp == nil || imp.ImportClause == nil {
 		return false
@@ -503,9 +504,10 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	spec := ms.Text()
 	if len(spec) > 0 && spec[0] != '.' {
 		// Builtin modules handled by saRecordProjImports; bare third-party
-		// specs refuse loudly here AND aggregate driver-side (Unresolved).
+		// specs warn here (use sites refuse naturally when referenced;
+		// driver aggregates Unresolved). Single-file step157 同形。
 		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
+		*warnings = append(*warnings, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
 		return true
 	}
 	clause := imp.ImportClause.AsImportClause()
@@ -809,7 +811,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			continue
 		}
 		// Program hook B: relative named imports bind qualified callees.
-		if link != nil && saBindProgImports(st, link, pos, &refusals) {
+		if link != nil && saBindProgImports(st, link, pos, &refusals, &warnings) {
 			handledTop[st] = true
 		}
 	}

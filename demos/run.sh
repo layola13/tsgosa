@@ -130,6 +130,26 @@ run_one_demo() {
   else
     SA_OUT="$d"
   fi
+  if [ -f "$d/package.json" ]; then
+    # 真实 program 工程（package.json + 多文件 + npm deps）：tsgo build 出 sci
+    # workspace，合并 main.sai 即编译产物（--check 比对进仓 $d/main.sai）。
+    if ! "$TSGO_BIN" build --out "$out/ws" "$d" >"$out/tsgo.log" 2>&1; then
+      echo "$n FAIL tsgo build refused: $(grep -m1 diag "$out/tsgo.log" | head -c 160)"
+      return 0
+    fi
+    MERGED=$(ls "$out"/ws/packages/*/src/main.sai 2>/dev/null | head -1)
+    if [ -z "$MERGED" ]; then echo "$n FAIL no merged main.sai"; return 0; fi
+    if [ "$CHECK" -eq 1 ]; then
+      if ! diff -q "$d/main.sai" "$MERGED" >"$out/diff.txt" 2>&1; then
+        echo "$n FAIL main.sai drift (hand edit or compiler change)"
+        return 0
+      fi
+      echo "$n SA-CLEAN"
+      return 0
+    fi
+    cp "$MERGED" "$d/main.sai"
+    SAI="$d/main.sai"
+  else
   if ! "$TSGO_BIN" --sa --out "$SA_OUT" "$d/main.ts" >"$out/tsgo.log" 2>&1; then
     if grep -q "error:" "$out/tsgo.log" 2>/dev/null; then detail="tsgo error"; else detail="transpile refused"; fi
     echo "$n FAIL $detail: $(cat "$SA_OUT"/subset-report.txt 2>/dev/null | head -1)"
@@ -143,13 +163,15 @@ run_one_demo() {
     echo "$n SA-CLEAN"
     return 0
   fi
+  SAI="$d/main.sai"
+  fi
   # 插件 demo（$d/sa.mod 进仓固定装置）：--project-root 供 bare node.sai 解析。
   if [ -f "$d/sa.mod" ]; then
     BUILD_OK=0
-    "$SA_BIN" build-exe --project-root "$d" "$d/main.sai" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
+    "$SA_BIN" build-exe --project-root "$d" "$SAI" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
   else
     BUILD_OK=0
-    "$SA_BIN" build-exe "$d/main.sai" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
+    "$SA_BIN" build-exe "$SAI" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
   fi
   if [ "$BUILD_OK" -ne 0 ]; then
     echo "$n FAIL sa build-exe failed: $(head -c 200 "$out/build.log")"
