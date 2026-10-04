@@ -120,6 +120,27 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	return saRecordClassNamed(st, "", false, "", classes, pos, refusals)
 }
 
+// saDottedBaseName 把 `N.C` / `A.B.C` 限定基展平为下划线路径（与 `N_C`
+// 布局键同形；非标识段一律 false）。
+// 形状证据：封存 dottedBaseName:76-92（段收集 + Join 下划线）。
+func saDottedBaseName(n *ast.Node) (string, bool) {
+	var segs []string
+	cur := n
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		pa := cur.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+			return "", false
+		}
+		segs = append([]string{pa.Name().Text()}, segs...)
+		cur = pa.Expression
+	}
+	if cur == nil || cur.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	segs = append([]string{cur.Text()}, segs...)
+	return strings.Join(segs, "_"), true
+}
+
 // saRecordClassNamed 记录类定义（声明与表达式同形；forceName 供
 // `const C = class...` 绑定名；aliasOwn 为真时自身具名（`class E`）另记同体
 // 别名，为假时仅记 forceName（命名空间成员限定名，不得泄漏成员名到外层域；
@@ -188,11 +209,19 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			base := ""
 			el := types.Nodes[0]
 			if el.Kind == ast.KindExpressionWithTypeArguments {
-				if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
-					base = ex.Text()
+				if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil {
+					if ex.Kind == ast.KindIdentifier {
+						base = ex.Text()
+					} else if q, ok := saDottedBaseName(ex); ok {
+						// 限定基 `extends N.C` 展平为命名空间路径（与 `N_C`
+						// 布局键同形；形状证据：封存 dottedBaseName:76-92）。
+						base = q
+					}
 				}
 			} else if el.Kind == ast.KindIdentifier {
 				base = el.Text()
+			} else if q, ok := saDottedBaseName(el); ok {
+				base = q
 			}
 			if base == "" {
 				ln, col := pos(st.Pos())
@@ -778,6 +807,29 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 			}
 			if ch, ok := link.classHarvests[tgt][remote]; ok && ch.exported && ch.def != nil {
 				classes[name] = ch.def
+			}
+			// 命名空间成员布局预播种（`import { N }` + `extends N.C` 记录期
+			// 须见 `N_C`；与 hook B 整件绑定同键同序；已记名跳过）。
+			if members, ok := link.classHarvests[tgt]; ok {
+				var keys []string
+				for key := range members {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					member, ok := strings.CutPrefix(key, remote+".")
+					if !ok || member == "" {
+						continue
+					}
+					ch := members[key]
+					if !ch.exported || ch.def == nil {
+						continue
+					}
+					if _, dup := classes[name+"_"+member]; dup {
+						continue
+					}
+					classes[name+"_"+member] = ch.def
+				}
 			}
 		}
 	}
