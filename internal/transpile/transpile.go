@@ -722,6 +722,93 @@ func bindProgNsClasses(link *saFileLink, tgt, remote, local string) bool {
 	return bound
 }
 
+// saHarvestDefaultObject 收割 `export default { 成员 }` 对象（成员逐字收割为
+// `default.<名>` 点键 + 本地发射名；hook B 默认分支经既有整件绑定路由
+// `T.m()`；方法/spread/非标识值整件大声拒，计算/串键逐字拒；箭头/非常量值
+// 跳过（用点大声拒，跨文件箭头路由另步）。
+// 形状证据：上游 link_nsobject.go p1（defNS 点键 + 整件拒因逐字对齐）。
+func saHarvestDefaultObject(st *ast.Node, stmts []*ast.Node, funcs map[string]saFuncSig, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) {
+	if st == nil || link == nil {
+		return
+	}
+	ed := st.AsExportAssignment()
+	if ed == nil || ed.IsExportEquals || ed.Expression == nil {
+		return
+	}
+	obj := ed.Expression.AsNode()
+	if obj == nil || obj.Kind != ast.KindObjectLiteralExpression {
+		return
+	}
+	// 箭头常量名（跨文件箭头路由另步，收割跳过，用点沿旧门拒）。
+	arrowNames := map[string]bool{}
+	for _, s := range stmts {
+		if name, _, ok := saIsTopLevelArrowConst(s); ok {
+			arrowNames[name] = true
+		}
+	}
+	harvest := func(exp, local string) {
+		if arrowNames[local] {
+			return
+		}
+		sig, ok := funcs[local]
+		if !ok {
+			return
+		}
+		if link.harvest == nil {
+			link.harvest = map[string]saProgFunc{}
+		}
+		link.harvest["default."+exp] = saProgFunc{sig: sig, exported: true, defLocal: local}
+	}
+	props := obj.AsObjectLiteralExpression().Properties
+	if props == nil {
+		return
+	}
+	for _, p := range props.Nodes {
+		if p == nil {
+			continue
+		}
+		switch p.Kind {
+		case ast.KindSpreadAssignment, ast.KindMethodDeclaration,
+			ast.KindGetAccessor, ast.KindSetAccessor:
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object supports only shorthand and identifier-valued properties"})
+			return
+		case ast.KindShorthandPropertyAssignment:
+			nm := p.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object keys must be identifiers"})
+				return
+			}
+			harvest(nm.Text(), nm.Text())
+		case ast.KindPropertyAssignment:
+			key := p.Name()
+			if key == nil || key.Kind != ast.KindIdentifier {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object keys must be identifiers"})
+				return
+			}
+			init := p.AsPropertyAssignment().Initializer
+			if init == nil {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object supports only shorthand and identifier-valued properties"})
+				return
+			}
+			iv := init.AsNode()
+			if iv == nil || iv.Kind != ast.KindIdentifier {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object supports only shorthand and identifier-valued properties"})
+				return
+			}
+			harvest(key.Text(), iv.Text())
+		default:
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default-export object supports only shorthand and identifier-valued properties"})
+			return
+		}
+	}
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -765,6 +852,9 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			if q, sig, ok := saProgChase(link, tgt, "default", map[string]bool{}); ok {
 				link.resolve[nm.Text()] = q
 				link.seed[q] = sig
+			} else if saBindProgNsMembers(link, tgt, "default", nm.Text()) {
+				// 默认对象整件直链（`export default {m}` + `T.m()`；
+				// 零成员下探旧门）。
 			} else {
 				ln, col := pos(st.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
@@ -1104,6 +1194,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 						link.classHarvest[nm.Text()] = saProgClass{def: def, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
 					}
 				}
+			}
+			// 默认对象收割（`export default {m}` 成员点键；单文件无码，
+			// program 经默认分支整件绑定；上游 link_nsobject.go p1 同形）。
+			if st.Kind == ast.KindExportAssignment {
+				saHarvestDefaultObject(st, sf.AsSourceFile().Statements.Nodes, funcs, link, pos, &refusals)
 			}
 			// 命名空间成员函数收割（`N.f` 点键 + 发射名记 defLocal；定义侧
 			// step194 发射 `@N_f`；上游 bindNSMembers 点键同形）。
