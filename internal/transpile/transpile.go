@@ -448,6 +448,9 @@ type saFileLink struct {
 	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
 	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
 	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
+	slotHarvest   map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
+	slotHarvests  map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
+	slotSeed      map[string]*saModState            // out/in: imported local slot name -> defining slot
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -669,6 +672,40 @@ func saBindProgNsMembers(link *saFileLink, tgt, remote, local string) bool {
 		bound = true
 	}
 	if bindProgNsConsts(link, tgt, remote, local) {
+		bound = true
+	}
+	if bindProgNsSlots(link, tgt, remote, local) {
+		bound = true
+	}
+	return bound
+}
+
+// bindProgNsSlots 播种命名空间槽布局（`N.K` 槽指针直挂；读写经既有槽通道
+// 零改；本地已有跳过由 hook C 保障）。
+func bindProgNsSlots(link *saFileLink, tgt, remote, local string) bool {
+	if link == nil {
+		return false
+	}
+	members, ok := link.slotHarvests[tgt]
+	if !ok || len(members) == 0 {
+		return false
+	}
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	bound := false
+	for _, name := range names {
+		ms := members[name]
+		member, ok := strings.CutPrefix(name, remote+".")
+		if !ok || member == "" || ms == nil || ms.w != "i32" {
+			continue
+		}
+		if link.slotSeed == nil {
+			link.slotSeed = map[string]*saModState{}
+		}
+		link.slotSeed[local+"."+member] = ms
 		bound = true
 	}
 	return bound
@@ -1401,6 +1438,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				link.constHarvest[mb.dotted] = saProgConst{text: text, isStr: topStr[mb.dotted]}
 			}
 		}
+		// Program hook A-slot: harvest ns slot descriptors (pointer shared
+		// read-only; reads/wires reuse defining layout; top-level dotted keys
+		// only — plain names are file-local slots).
+		for name, ms := range modVars {
+			if ms == nil || ms.w != "i32" {
+				continue
+			}
+			if !strings.Contains(name, ".") {
+				continue
+			}
+			if link.slotHarvest == nil {
+				link.slotHarvest = map[string]*saModState{}
+			}
+			link.slotHarvest[name] = ms
+		}
 	}
 
 	// prescan zero: builtin projection imports (fs/net direct calls need no linking).
@@ -1447,6 +1499,17 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if c.isStr {
 				topStr[local] = true
 			}
+		}
+		// Program hook C-slot: seed imported slot layouts (local slots win;
+		// defining-file pointer shared read-only).
+		for local, ms := range link.slotSeed {
+			if ms == nil {
+				continue
+			}
+			if _, dup := modVars[local]; dup {
+				continue
+			}
+			modVars[local] = ms
 		}
 		// Program hook C2: value export lists stay unlinked in S1
 		// (named functions link via export modifier; star/default/lists
@@ -1605,7 +1668,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					}
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
-					restore := saEnterNsScopeConsts(topConsts, topStr, members, mb.scope)
+					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
 					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 					restore()
 				}
@@ -3658,6 +3721,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	harvests := map[string]map[string]saProgFunc{}
 	classHarvests := map[string]map[string]saProgClass{}
+	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
 	for _, p := range reachable {
 		lk := &saFileLink{
@@ -3678,10 +3742,14 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			constHarvest:  map[string]saProgConst{},
 			constHarvests: constHarvests,
 			constSeed:     map[string]saProgConst{},
+			slotHarvest:   map[string]*saModState{},
+			slotHarvests:  slotHarvests,
+			slotSeed:      map[string]*saModState{},
 		}
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
 		classHarvests[p] = lk.classHarvest
+		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
 		for _, r := range out.Refusals {
 			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
