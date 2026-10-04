@@ -1078,14 +1078,14 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if mn == nil || mn.Kind != ast.KindIdentifier {
 					continue
 				}
-				saRecordClassNamed(m, ns+"_"+mn.Text(), classes, pos, &refusals)
+				saRecordClassNamed(m, ns+"_"+mn.Text(), false, ns, classes, pos, &refusals)
 			}
 			continue
 		}
 		// 顶层类表达式预扫成表（`const C = class...` 绑定名记录，
 		// 自身具名记别名；无码；形状证据：封存 recordClassNamed:9586-9611）。
 		if bound, ce, ok := saTopLevelClassExpr(st); ok {
-			saRecordClassNamed(ce, bound, classes, pos, &refusals)
+			saRecordClassNamed(ce, bound, true, "", classes, pos, &refusals)
 			continue
 		}
 		if st.Kind == ast.KindInterfaceDeclaration {

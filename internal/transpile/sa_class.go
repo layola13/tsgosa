@@ -117,14 +117,17 @@ func saTopLevelClassExpr(st *ast.Node) (string, *ast.Node, bool) {
 
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
 func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
-	return saRecordClassNamed(st, "", classes, pos, refusals)
+	return saRecordClassNamed(st, "", false, "", classes, pos, refusals)
 }
 
 // saRecordClassNamed 记录类定义（声明与表达式同形；forceName 供
-// `const C = class...` 绑定名，自身具名（`class E`）另记同体别名；
+// `const C = class...` 绑定名；aliasOwn 为真时自身具名（`class E`）另记同体
+// 别名，为假时仅记 forceName（命名空间成员限定名，不得泄漏成员名到外层域；
+// 封存 inner 名泄漏 gap 仅适用于同域别名）；nsScope 非空时 heritage 基先查
+// 本名、次查 `nsScope_基`（同 ns 内继承；parent 存限定名，下游表查贯通）。
 // 字段初值表达式忽略（布局只记槽位；封存 recordClassNamed:9691-9743
 // 不读 Initializer，初值不求值）。
-func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope string, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	// 类装饰器无一等值语义，大声拒（成员装饰器另门；封存 TestLoudDecoratorUsing 同形）。
 	if len(st.Decorators()) > 0 {
 		ln, col := pos(st.Pos())
@@ -201,24 +204,30 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs exactly one base class"})
 				return false
 			}
-			bdef, ok := classes[base]
-			if !ok || bdef.isIface {
+		bdef, ok := classes[base]
+		qbase := base
+		if (!ok || bdef.isIface) && nsScope != "" {
+			if qb, ok2 := classes[nsScope+"_"+base]; ok2 && !qb.isIface {
+				bdef, ok, qbase = qb, true, nsScope+"_"+base
+			}
+		}
+		if !ok || bdef.isIface {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
+			return false
+		}
+		for p := qbase; p != ""; {
+			if p == name {
 				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " has an inheritance cycle through " + base})
 				return false
 			}
-			for p := base; p != ""; {
-				if p == name {
-					ln, col := pos(st.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " has an inheritance cycle through " + base})
-					return false
-				}
-				pb, ok := classes[p]
-				if !ok {
-					break
-				}
-				p = pb.parent
+			pb, ok := classes[p]
+			if !ok {
+				break
 			}
+			p = pb.parent
+		}
 			for _, f := range bdef.fields {
 				def.fields = append(def.fields, f)
 				def.offsets[f.name] = f.offset
@@ -291,7 +300,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					def.statics[k] = v
 				}
 			}
-			def.parent = base
+			def.parent = qbase
 		}
 	}
 	if ast.HasModifier(st, ast.ModifierFlagsAbstract) {
@@ -538,8 +547,8 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 	def.size = off
 	classes[name] = def
 	// 自身具名（`const D = class E`）记同体别名（值对；封存 inner 名泄漏 gap
-	// 即此语义；别名冲突诚实拒）。
-	if forceName != "" {
+	// 即此语义；别名冲突诚实拒）。命名空间成员（aliasOwn 假）不记外层别名。
+	if aliasOwn && forceName != "" {
 		if own := st.Name(); own != nil && own.Kind == ast.KindIdentifier && own.Text() != name {
 			if _, dup := classes[own.Text()]; dup {
 				ln, col := pos(st.Pos())
