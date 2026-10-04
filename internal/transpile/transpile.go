@@ -17,6 +17,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/debug"
 	"github.com/microsoft/typescript-go/internal/module"
+	"github.com/microsoft/typescript-go/internal/packagejson"
 	"github.com/microsoft/typescript-go/internal/parser"
 	"github.com/microsoft/typescript-go/internal/printer"
 	"github.com/microsoft/typescript-go/internal/transformers"
@@ -590,12 +591,13 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	}
 	spec := ms.Text()
 	if len(spec) > 0 && spec[0] != '.' {
-		// Builtin modules handled by saRecordProjImports; bare third-party
-		// specs warn here (use sites refuse naturally when referenced;
-		// driver aggregates Unresolved). Single-file step157 同形。
-		ln, col := pos(st.Pos())
-		*warnings = append(*warnings, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
-		return true
+		// 已链接 bare（node_modules 按需纳入的真实目标）：下探正常绑定；
+		// 其余 bare 警告（driver 聚合 Unresolved；用点自然拒）。
+		if _, ok := link.specOf[spec]; !ok {
+			ln, col := pos(st.Pos())
+			*warnings = append(*warnings, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
+			return true
+		}
 	}
 	clause := imp.ImportClause.AsImportClause()
 	if clause == nil {
@@ -2436,23 +2438,23 @@ type saNpmDep struct {
 }
 
 // saReadNpmDeps returns sorted runtime dependencies of dir/package.json
-// (nil when absent or unparsable; never refuses).
+// (nil when absent or unparsable; never refuses). Shape evidence: base
+// packagejson.Parse + DependencyFields (Expected 值语义，畸形值安全）。
 func saReadNpmDeps(dir string) []saNpmDep {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
 		return nil
 	}
-	var pkg map[string]any
-	if json.Unmarshal(data, &pkg) != nil {
+	fields, err := packagejson.Parse(data)
+	if err != nil {
 		return nil
 	}
-	deps, _ := pkg["dependencies"].(map[string]any)
-	if len(deps) == 0 {
+	deps, ok := fields.Dependencies.GetValue()
+	if !ok || len(deps) == 0 {
 		return nil
 	}
 	out := make([]saNpmDep, 0, len(deps))
-	for name, v := range deps {
-		ver, _ := v.(string)
+	for name, ver := range deps {
 		out = append(out, saNpmDep{Name: name, Version: ver})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -2608,12 +2610,12 @@ func saDetectEntry(dir string, files map[string]string) string {
 }
 
 // saDetectModName resolves the package name: --mod, package.json name,
-// else dir base (dashes to underscores).
+// else dir base (dashes to underscores). Shape evidence: base
+// packagejson.Parse + HeaderFields.Name.
 func saDetectModName(dir string) string {
 	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
-		var pkg map[string]any
-		if json.Unmarshal(data, &pkg) == nil {
-			if name, ok := pkg["name"].(string); ok && name != "" {
+		if fields, err := packagejson.Parse(data); err == nil {
+			if name, ok := fields.Name.GetValue(); ok && name != "" {
 				return strings.ReplaceAll(name, "-", "_")
 			}
 		}
@@ -2684,6 +2686,21 @@ func saProgPrefix(p, entry string) string {
 		return ""
 	}
 	base := p
+	// node_modules 特判：`node_modules/<pkg>/<rest>` 按包名展平（sla 成员
+	// 风格短前缀；scope `@` 吃掉），避免整条路径前缀又臭又长。
+	if i := strings.Index(base, "node_modules/"); i >= 0 {
+		rest := base[i+len("node_modules/"):]
+		segs := strings.Split(rest, "/")
+		npkg := 1
+		if strings.HasPrefix(rest, "@") && len(segs) >= 2 {
+			npkg = 2
+		}
+		if len(segs) > npkg {
+			base = strings.Join(segs[:npkg], "_") + "_" + strings.Join(segs[npkg:], "_")
+		} else {
+			base = strings.Join(segs, "_")
+		}
+	}
 	base = strings.TrimSuffix(base, ".ts")
 	base = strings.TrimSuffix(base, ".js")
 	base = strings.TrimSuffix(base, ".d.ts")
@@ -2696,6 +2713,98 @@ func saProgPrefix(p, entry string) string {
 		}
 	}
 	return b.String() + "__"
+}
+
+// saProgResolveBare resolves a bare spec through the base resolver, gated
+// to files-set `.ts` members (node_modules 按需纳入后的真实目标；`.js`/包
+// 外一律 ""，沿旧 Unresolved 聚合——zod 本体仍拒）。
+func saProgResolveBare(importer, spec string, files map[string]string, dir string, resolver *module.Resolver) string {
+	if resolver == nil || dir == "" {
+		return ""
+	}
+	containing := filepath.Join(dir, filepath.FromSlash(importer))
+	resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil)
+	if !resolved.IsResolved() {
+		return ""
+	}
+	name := resolved.ResolvedFileName
+	if !strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".d.ts") {
+		return ""
+	}
+	rel, err := filepath.Rel(dir, name)
+	if err != nil {
+		return ""
+	}
+	if c := path.Clean(filepath.ToSlash(rel)); c != "" {
+		if _, ok := files[c]; ok {
+			return c
+		}
+	}
+	return ""
+}
+
+// saProgIncludeBare pulls reachable node_modules `.ts` files into the file
+// set (Walk 整目录跳过系设计，防整库爆炸；此处只纳入 bare 引用可达者，
+// 递归跟随其相对依赖，bare 再解；总量 cap，超量沿旧 Unresolved）。
+func saProgIncludeBare(files map[string]string, dir string, resolver *module.Resolver, parsed map[string]*ast.SourceFile) {
+	const maxFiles = 64
+	tried := map[string]bool{}
+	for len(files) < maxFiles {
+		progress := false
+		for p, sf := range parsed {
+			if sf == nil {
+				continue
+			}
+			for _, st := range sf.AsSourceFile().Statements.Nodes {
+				if st == nil || st.Kind != ast.KindImportDeclaration {
+					continue
+				}
+				if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+					continue
+				}
+				spec := saProgModuleSpec(st)
+				if spec == "" || strings.HasPrefix(spec, ".") || saProgBuiltinMod(spec) {
+					continue
+				}
+				key := p + "\x00" + spec
+				if tried[key] {
+					continue
+				}
+				tried[key] = true
+				containing := filepath.Join(dir, filepath.FromSlash(p))
+				resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil)
+				if !resolved.IsResolved() {
+					continue
+				}
+				name := resolved.ResolvedFileName
+				if !strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".d.ts") {
+					continue
+				}
+				rel, err := filepath.Rel(dir, name)
+				if err != nil {
+					continue
+				}
+				c := path.Clean(filepath.ToSlash(rel))
+				if c == "" || strings.HasPrefix(c, "..") {
+					continue
+				}
+				if _, ok := files[c]; ok {
+					continue
+				}
+				text, err := os.ReadFile(name)
+				if err != nil {
+					continue
+				}
+				files[c] = string(text)
+				abs := "/" + strings.TrimPrefix(c, "/")
+				parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), core.ScriptKindTS)
+				progress = true
+			}
+		}
+		if !progress {
+			return
+		}
+	}
 }
 
 // saProgModuleSpec extracts the literal module string of an import.
@@ -2737,13 +2846,27 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		sf := parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, text, core.ScriptKindTS)
 		parsed[path.Clean(p)] = sf
 	}
+	// bare 第三方按需纳入（resolver 解 node_modules `.ts` 才进集；`.js`/
+	// 包外沿旧 Unresolved；上游 todo/01 node_modules 跟随设计）。
+	if resolver != nil {
+		func() {
+			defer func() { _ = recover() }()
+			saProgIncludeBare(files, dir, resolver, parsed)
+		}()
+	}
 	graph := map[string][]string{}
 	specOf := map[string]map[string]string{}
 	reexpOf := map[string]map[string]string{}
 	unresolved := map[string]bool{}
 	addEdge := func(p, spec string) string {
 		if !strings.HasPrefix(spec, ".") {
+			// linked bare：已纳入集的真实目标建边（后续 hook B 经 specOf
+			// 绑定）；其余沿旧 Unresolved 聚合。
 			if !saProgBuiltinMod(spec) {
+				if tgt := saProgResolveBare(p, spec, files, dir, resolver); tgt != "" {
+					graph[p] = append(graph[p], tgt)
+					return tgt
+				}
 				unresolved[spec] = true
 			}
 			return ""
@@ -2915,18 +3038,15 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 		}
 	}
 	// 分裂布局（sla workspace 真形态：一成员多 `.sa`，`@import "./x.sa"`
-	// 跨文件引用；用户原则纠正：禁合并单文件）。入口落 `src/main.sa`（本
-	// 文件单元 + 直接依赖 `@import`），其余文件落 `src/<base>.sa`（同名基
-	// 冲突大声拒）；逐文件 `.sai`  inspection 件退役（单元即 `.sa`）。
+	// 跨文件引用；用户原则纠正：禁合并单文件）。单元名由 prefix 派生（入口
+	// 恒 `main`，node_modules 按包展平；`saProgPrefix` 唯一，冲突大声拒）；
+	// 逐文件 `.sai` inspection 件退役（单元即 `.sa`）。
 	saName := map[string]string{}
 	seenBase := map[string]bool{}
 	for _, p := range res.files {
-		base := p
-		if p == entry {
+		base := strings.TrimSuffix(saProgPrefix(p, entry), "__")
+		if base == "" {
 			base = "main"
-		} else {
-			base = strings.TrimSuffix(path.Base(p), ".ts")
-			base = strings.TrimSuffix(base, ".js")
 		}
 		if seenBase[base] {
 			return fmt.Errorf("duplicate member unit name %q (from %s)", base+".sa", p)
