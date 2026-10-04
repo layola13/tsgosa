@@ -497,7 +497,7 @@ func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	*nextLabel++
 	// 条件求值落在顶标号之后（每轮重算），先落顶再求条件。
 	w.Write(fmt.Sprintf("%s:\n", topL))
-	condOp, msg := saCondOperand(w, ws.Expression, scope, pos, refusals, nextTemp)
+	condOp, msg := saCondOperandMat(w, ws.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported while condition: " + msg})
@@ -928,7 +928,7 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	}
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	if fs.Condition != nil {
-		condOp, msg := saCondOperand(w, fs.Condition, scope, pos, refusals, nextTemp)
+		condOp, msg := saCondOperandMat(w, fs.Condition, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for condition: " + msg})
@@ -1037,7 +1037,7 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 		w.Write(fmt.Sprintf("  jmp %s\n", condL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", condL))
-	condOp, msg := saCondOperand(w, ds.Expression, scope, pos, refusals, nextTemp)
+	condOp, msg := saCondOperandMat(w, ds.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported do condition: " + msg})
@@ -1737,7 +1737,7 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 			return false
 		}
 	}
-	condOp, msg := saCondOperand(w, iv.Expression, scope, pos, refusals, nextTemp)
+	condOp, msg := saCondOperandMat(w, iv.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported condition kind: " + msg})

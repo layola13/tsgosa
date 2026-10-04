@@ -86,6 +86,34 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 	}
 }
 
+// saCondOperandMat 条件物化：纯整数字面操作数经 ne 0 入临时量再 br
+// （形状证据：封存 materializeCond:1686-1704；裸 `br 1` 真机 UnknownRegister，110_while_break 实证；调用点覆盖 while/for/do/if/三元，与封存 5 处同位）。
+func saCondOperandMat(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	op, msg := saCondOperand(w, cond, scope, pos, refusals, nextTemp)
+	if msg != "" || op == "" {
+		return op, msg
+	}
+	isInt := true
+	for i := 0; i < len(op); i++ {
+		c := op[i]
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if i == 0 && c == '-' && len(op) > 1 {
+			continue
+		}
+		isInt = false
+		break
+	}
+	if !isInt {
+		return op, ""
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, op))
+	return t, ""
+}
+
 // saBinaryOpKind 空安全取二元操作符（parser 常保非空，防御备用）。
 func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 	if be == nil || be.OperatorToken == nil {
@@ -455,7 +483,7 @@ func saLowerTernaryF64Join(w printer.EmitTextWriter, condOp, aKind, aText, bKind
 }
 
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
-	condOp, msg := saCondOperand(w, ce.Condition, scope, pos, refusals, nextTemp)
+	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})

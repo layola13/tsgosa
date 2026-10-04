@@ -151,3 +151,30 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 100_date_get | Date 取值函数内 | 29 |
 
 已知边界（续4）：toLowerCase/toUpperCase/replace/padStart-padEnd 两家同段错误（上游同形，串大小写/替换系记 H14 同族）；`s.concat` 方法两家同段错误（上游段错误，记 H14 同族；`+` 拼接可用）；`const s` 串 `==` 入口 leak（形参形可用）；Map `.size` 属性形拒（用 `getSize()`）；Set/`Date`/throwing-try 句柄在 `@main` 入口 leak（函数内可用，H12 入口释放 asymmetry）；`m.set` 语句位须后无 `.size` 误读（沿既有门）。
+
+## 第六批（101–120）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 101_bsearch | for 线性查找 | 7 |
+| 102_insert_sort | 插入排序 | 7 |
+| 103_palindrome | for 回文判定 | 25 |
+| 104_override | 方法覆写 | 34 |
+| 105_nested_tpl | 模板多插值算式 | 25 |
+| 106_flags | 位或/与/异或标志 | 129 |
+| 107_reduce_right | reduceRight 逆归约 | 26 |
+| 108_find_index | findIndex 谓词 | 26 |
+| 109_closure | 捕获形参箭头 | 111 |
+| 110_while_break | `while(1)`+break/continue | step147 物化修复 |
+| 111_switch_fn | 函数内 switch 返回 | 67 |
+| 112_pick_max | 取大分支 | 2 |
+| 113_chainwrite | 嵌套链写 | 93 |
+| 114_compose | 高阶链函数内 | 26 |
+| 115_stridx | indexOf/lastIndexOf/charAt | 25 |
+| 116_minloop | 循环求 min | 7 |
+| 117_dedup | 去重 indexOf+push | 26 |
+| 118_prefix | 前缀和就地写 | 12 |
+| 119_gcd3 | 辗转相除 while | 7 |
+| 120_lcm | 递归 gcd 求 lcm | 7 |
+
+已知边界（续5）：helper 内 while 多重绑两家同 RegisterRedefinition（101/103 原形，记 H16；for 形可用）；rest+缺省混合短调拒（沿 step71 门）；`while(1)` 薄口曾落裸 `br 1`（step147 已修）；map/filter 链须函数内（H12 同族）。
