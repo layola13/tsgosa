@@ -1029,6 +1029,34 @@ func saIsAmbientModule(st *ast.Node) bool {
 	return false
 }
 
+// saIsTypeOnlyNamespace 判定是否为纯类型 namespace（成员皆为接口/类型别名/
+// 枚举声明，无运行时码，可整块擦除；含值成员一律 false，调用方沿旧拒）。
+// 形状证据：封存 lowerNamespace:139-183 + prescanNamespaces 类型成员经 lowerTypeDecl
+// 只记录无发射 + nsRegisterOne nsKindInterface/nsKindEnum/nsKindType 分支；空体恒真。
+func saIsTypeOnlyNamespace(st *ast.Node) bool {
+	if st == nil || st.Kind != ast.KindModuleDeclaration {
+		return false
+	}
+	if saIsAmbientModule(st) {
+		return false
+	}
+	md := st.AsModuleDeclaration()
+	if md == nil || md.Body == nil || md.Body.Kind != ast.KindModuleBlock {
+		return false
+	}
+	for _, m := range md.Body.AsModuleBlock().Statements.Nodes {
+		if m == nil {
+			return false
+		}
+		switch m.Kind {
+		case ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration, ast.KindEnumDeclaration:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
 // 为 `N.K` 拍扁纯量（数字/串/true/false；复用顶层折叠值域，不含 Math 别名与
 // 标识符链）。非 export/非纯量/函数/类/嵌套 namespace 成员一律整块不折，

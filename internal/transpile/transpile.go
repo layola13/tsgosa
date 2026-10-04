@@ -1149,6 +1149,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if handledTop[st] {
 				continue
 			}
+			// 纯类型 namespace 整块擦除（成员皆接口/别名/枚举，无码；含值沿旧拒）。
+			if saIsTypeOnlyNamespace(st) {
+				continue
+			}
 		case ast.KindImportDeclaration:
 			// builtin projection imports recorded in prescan emit nothing.
 			if handledTop[st] {
