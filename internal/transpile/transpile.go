@@ -1078,18 +1078,14 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			saRecordClass(st, classes, pos, &refusals)
 			continue
 		}
-		// 命名空间成员类预扫成表（`N_C` 限定布局；同 ns 内 heritage 基另步；
-		// 形状证据：封存 recordClassNamed:9586-9611 具名记录全形）。
-		if ns, members, ok := saNsLowerableMembers(st); ok {
-			for _, m := range members {
-				if m == nil || m.Kind != ast.KindClassDeclaration {
+		// 命名空间成员类预扫成表（`N_M_C` 限定布局；heritage 基经成员父域
+		// 回退；形状证据：封存 recordClassNamed:9586-9611 具名记录全形）。
+		if members, ok := saFlattenNsMembers(st); ok {
+			for _, mb := range members {
+				if mb.isFunc {
 					continue
 				}
-				mn := m.Name()
-				if mn == nil || mn.Kind != ast.KindIdentifier {
-					continue
-				}
-				saRecordClassNamed(m, ns+"_"+mn.Text(), false, ns, classes, pos, &refusals)
+				saRecordClassNamed(mb.node, mb.under, false, mb.scope, classes, pos, &refusals)
 			}
 			continue
 		}
@@ -1146,27 +1142,23 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		saPrescanFuncSig(fn, st, nm.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
 	}
-	// 预扫二b：命名空间成员函数签名（`N_f` 发射键 + `N.f` 调用键双记；无体
-	// 跳过；非函数/类/类型成员整块不在此（发射侧同门拒）；形状证据见 saNsLowerableMembers）。
+	// 预扫二b：命名空间成员函数签名（`N_M_f` 发射键 + `N.M.f` 调用键双记；
+	// 无体跳过；非函数/类/类型成员整块不在此（发射侧同门拒））。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
-		ns, members, ok := saNsLowerableMembers(st)
+		members, ok := saFlattenNsMembers(st)
 		if !ok {
 			continue
 		}
-		for _, m := range members {
-			if m == nil || m.Kind != ast.KindFunctionDeclaration {
+		for _, mb := range members {
+			if !mb.isFunc {
 				continue
 			}
-			fn := m.AsFunctionDeclaration()
+			fn := mb.node.AsFunctionDeclaration()
 			if fn == nil || fn.Body == nil {
 				continue
 			}
-			mn := fn.Name()
-			if mn == nil || mn.Kind != ast.KindIdentifier {
-				continue
-			}
-			if saPrescanFuncSig(fn, m, ns+"_"+mn.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals) {
-				saPrescanFuncSig(fn, m, ns+"."+mn.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
+			if saPrescanFuncSig(fn, mb.node, mb.under, funcs, tcx, classes, aliasOf, enums, pos, &refusals) {
+				saPrescanFuncSig(fn, mb.node, mb.dotted, funcs, tcx, classes, aliasOf, enums, pos, &refusals)
 			}
 		}
 	}
@@ -1262,40 +1254,27 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if st.Kind == ast.KindExportAssignment {
 				saHarvestDefaultObject(st, funcs, link, pos, &refusals)
 			}
-			// 命名空间成员函数收割（`N.f` 点键 + 发射名记 defLocal；定义侧
-			// step194 发射 `@N_f`；上游 bindNSMembers 点键同形）。
-			if ns, members, ok := saNsLowerableMembers(st); ok {
-				for _, m := range members {
-					if m == nil {
-						continue
-					}
-					if m.Kind == ast.KindFunctionDeclaration {
-						fn := m.AsFunctionDeclaration()
+			// 命名空间成员收割（`N.M.f` 点键 + 发射名记 defLocal，类记 `N.M.C`
+			// 点键布局；定义侧发射 `@N_M_f`；上游 bindNSMembers 点键同形）。
+			if members, ok := saFlattenNsMembers(st); ok {
+				for _, mb := range members {
+					if mb.isFunc {
+						fn := mb.node.AsFunctionDeclaration()
 						if fn == nil || fn.Body == nil {
 							continue
 						}
-						mn := fn.Name()
-						if mn == nil || mn.Kind != ast.KindIdentifier {
-							continue
-						}
-						if sig, ok := funcs[ns+"_"+mn.Text()]; ok {
-							link.harvest[ns+"."+mn.Text()] = saProgFunc{sig: sig, exported: ast.HasModifier(m, ast.ModifierFlagsExport), defLocal: ns + "_" + mn.Text()}
+						if sig, ok := funcs[mb.under]; ok {
+							link.harvest[mb.dotted] = saProgFunc{sig: sig, exported: ast.HasModifier(mb.node, ast.ModifierFlagsExport), defLocal: mb.under}
 						}
 						continue
 					}
 					// 命名空间成员类收割（`N.C` 点键记布局指针；定义侧 step196
 					// 记 `N_C` 布局；上游 NamespaceClassImport 在列）。
-					if m.Kind == ast.KindClassDeclaration {
-						mn := m.Name()
-						if mn == nil || mn.Kind != ast.KindIdentifier {
-							continue
+					if def, ok := classes[mb.under]; ok && def != nil {
+						if link.classHarvest == nil {
+							link.classHarvest = map[string]saProgClass{}
 						}
-						if def, ok := classes[ns+"_"+mn.Text()]; ok && def != nil {
-							if link.classHarvest == nil {
-								link.classHarvest = map[string]saProgClass{}
-							}
-							link.classHarvest[ns+"."+mn.Text()] = saProgClass{def: def, exported: ast.HasModifier(m, ast.ModifierFlagsExport)}
-						}
+						link.classHarvest[mb.dotted] = saProgClass{def: def, exported: ast.HasModifier(mb.node, ast.ModifierFlagsExport)}
 					}
 				}
 			}
@@ -1502,25 +1481,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if saIsTypeOnlyNamespace(st) {
 				continue
 			}
-			// 成员函数直落（`@N_f`；program 前缀由 defPrefix 续接；类型成员
-			// 跳过；含值成员沿旧 kind-268 拒）。
-			if ns, members, ok := saNsLowerableMembers(st); ok {
-				for _, m := range members {
-					if m == nil || m.Kind != ast.KindFunctionDeclaration {
+			// 成员函数直落（`@N_M_f`；program 前缀由 defPrefix 续接；类型/类
+			// 成员跳过（类纯记录）；含值成员沿旧 kind-268 拒）。
+			if members, ok := saFlattenNsMembers(st); ok {
+				for _, mb := range members {
+					if !mb.isFunc {
 						continue
 					}
-					if fn := m.AsFunctionDeclaration(); fn == nil || fn.Body == nil {
+					if fn := mb.node.AsFunctionDeclaration(); fn == nil || fn.Body == nil {
 						continue
 					}
-					mn := m.Name()
-					if mn == nil || mn.Kind != ast.KindIdentifier {
+					if emitted[mb.under] {
 						continue
 					}
-					if emitted[ns+"_"+mn.Text()] {
-						continue
-					}
-					emitted[ns+"_"+mn.Text()] = true
-					saLowerFunction(w, m, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), ns+"_"+mn.Text())
+					emitted[mb.under] = true
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 				}
 				continue
 			}

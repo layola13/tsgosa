@@ -251,6 +251,67 @@ func saLowerAllocCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 	return t, false, ""
 }
 
+// saNsUnknownMemberMsg 对已知命名空间的未知成员报上游逐字拒因
+// （`N.bogus is not exported by its module`；封存 NamespaceMemberImport /
+// NestedNamespaceImport 坏例同文；前缀无成员沿旧门）。
+func saNsUnknownMemberMsg(scope *saScope, pa *ast.PropertyAccessExpression) string {
+	if scope == nil || pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return ""
+	}
+	var segs []string
+	cur := pa.Expression
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		ca := cur.AsPropertyAccessExpression()
+		if ca == nil || ca.Name() == nil || ca.Name().Kind != ast.KindIdentifier {
+			return ""
+		}
+		segs = append([]string{ca.Name().Text()}, segs...)
+		cur = ca.Expression
+	}
+	if cur == nil || cur.Kind != ast.KindIdentifier {
+		return ""
+	}
+	root := cur.Text()
+	segs = append(append([]string{root}, segs...), pa.Name().Text())
+	if len(segs) < 2 {
+		return ""
+	}
+	parent := strings.Join(segs[:len(segs)-1], ".")
+	if _, bound := scope.types[root]; bound {
+		return ""
+	}
+	if _, isClass := scope.classes[root]; isClass {
+		return ""
+	}
+	if !saIsNsAliasSrc(scope, parent) {
+		return ""
+	}
+	return strings.Join(segs, ".") + " is not exported by its module"
+}
+
+// saNsCallChain 把 `N.M.g` 多级点调用展平为点键/发射键（两级以下 false，
+// 单级走既有一点分支；段全标识才展，动态链沿旧门）。
+func saNsCallChain(e *ast.Node) (dotted, emit, root string, ok bool) {
+	if e == nil || e.Kind != ast.KindPropertyAccessExpression {
+		return "", "", "", false
+	}
+	var segs []string
+	cur := e
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		pa := cur.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+			return "", "", "", false
+		}
+		segs = append([]string{pa.Name().Text()}, segs...)
+		cur = pa.Expression
+	}
+	if cur == nil || cur.Kind != ast.KindIdentifier || len(segs) < 2 {
+		return "", "", "", false
+	}
+	segs = append([]string{cur.Text()}, segs...)
+	return strings.Join(segs, "."), strings.Join(segs, "_"), cur.Text(), true
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
@@ -284,6 +345,20 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				if _, bound := scope.types[base]; !bound {
 					if _, isClass := scope.classes[base]; !isClass {
 						return saEvalNamedCall(w, base+"_"+member, ce, scope, pos, refusals, nextTemp)
+					}
+				}
+			}
+		}
+		// 多级命名空间直调（`N.M.g(..)`；链展平查 `N.M.g`，发射 `N_M_g`；
+		// 根基名守卫同单级；形状证据：封存 nestedNamespace 点键同形）。
+		if dotted, emit, root, ok := saNsCallChain(ce.Expression); ok {
+			if q, linked := saLinkCallee(scope, dotted); linked {
+				return saEvalNamedCall(w, q, ce, scope, pos, refusals, nextTemp)
+			}
+			if _, ok := scope.funcs[dotted]; ok {
+				if _, bound := scope.types[root]; !bound {
+					if _, isClass := scope.classes[root]; !isClass {
+						return saEvalNamedCall(w, emit, ce, scope, pos, refusals, nextTemp)
 					}
 				}
 			}
@@ -436,6 +511,10 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if op, voidCall, msg, handled := saLowerNodeMethodCall(w, pa, ce, scope, pos, refusals, nextTemp); handled {
 				return op, voidCall, msg
 			}
+		}
+		// 已知命名空间的未知成员逐字拒因（`N.M.bogus is not exported...`）。
+		if msg := saNsUnknownMemberMsg(scope, pa); msg != "" {
+			return "", false, msg
 		}
 		return "", false, "only direct function calls lowerable"
 	}

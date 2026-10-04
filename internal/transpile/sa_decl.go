@@ -1151,43 +1151,89 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 	return true
 }
 
-// saNsLowerableMembers 判定运行时 namespace 是否只含函数/类/类型成员
-// （可走成员直落；含值（const/let/嵌套等）一律 false，调用方沿旧 kind-268 拒）。
-// 类型成员（接口/别名/枚举）记录期跳过（无码擦除，与纯类型 ns 同例）；
-// 类成员记 `N_C` 布局（同 ns 函数 `N_f` 惯例）；同 ns 内 heritage 基另步。
-// 形状证据：封存 prescanNamespaces 类型/类分支 + recordClassNamed 全形。
-func saNsLowerableMembers(st *ast.Node) (string, []*ast.Node, bool) {
+// saNsMember 是展平后的命名空间成员（路径联结键 + 原节点）。
+type saNsMember struct {
+	under  string    // 发射键：N_M_f
+	dotted string    // 调用键：N.M.f
+	scope  string    // 父路径：N_M（heritage 回退域；顶层 ns 即首段）
+	node   *ast.Node // 成员声明节点
+	isFunc bool      // 函数成真，类成员成假（类型成员展平期跳过）
+}
+
+// saFlattenNsMembers 递归展平运行时 namespace（函数/类成员全收，类型成员
+// 跳过；含值（const/let 等）或非法名任一即整块 false，调用方沿旧 kind-268
+// 拒）。键按路径联结（`N_M_f`/`N.M.f`；上游 nsDefName 限定同形）。
+// 形状证据：封存 prescanNamespaces 类型/类分支 + lowerPendingNamespaces。
+func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 	if st == nil || st.Kind != ast.KindModuleDeclaration {
-		return "", nil, false
+		return nil, false
 	}
 	if saIsAmbientModule(st) {
-		return "", nil, false
+		return nil, false
 	}
 	md := st.AsModuleDeclaration()
 	if md == nil {
-		return "", nil, false
+		return nil, false
 	}
 	nm := md.Name()
 	if nm == nil || nm.Kind != ast.KindIdentifier {
-		return "", nil, false
+		return nil, false
 	}
 	if md.Body == nil || md.Body.Kind != ast.KindModuleBlock {
-		return "", nil, false
+		return nil, false
 	}
-	members := md.Body.AsModuleBlock().Statements.Nodes
-	for _, m := range members {
-		if m == nil {
-			return "", nil, false
+	var out []saNsMember
+	var walk func(path []string, members []*ast.Node) bool
+	walk = func(path []string, members []*ast.Node) bool {
+		for _, m := range members {
+			if m == nil {
+				return false
+			}
+			switch m.Kind {
+			case ast.KindFunctionDeclaration, ast.KindClassDeclaration:
+				mn := m.Name()
+				if mn == nil || mn.Kind != ast.KindIdentifier {
+					return false
+				}
+				segs := append(append([]string{}, path...), mn.Text())
+				out = append(out, saNsMember{
+					under:  strings.Join(segs, "_"),
+					dotted: strings.Join(segs, "."),
+					scope:  strings.Join(path, "_"),
+					node:   m,
+					isFunc: m.Kind == ast.KindFunctionDeclaration,
+				})
+			case ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration,
+				ast.KindEnumDeclaration:
+				// 类型成员无码擦除（与纯类型 ns 同例）。
+			case ast.KindModuleDeclaration:
+				sub := m.AsModuleDeclaration()
+				if sub == nil {
+					return false
+				}
+				snm := sub.Name()
+				if snm == nil || snm.Kind != ast.KindIdentifier {
+					return false
+				}
+				if sub.Body == nil || sub.Body.Kind != ast.KindModuleBlock {
+					return false
+				}
+				if saIsAmbientModule(m) {
+					return false
+				}
+				if !walk(append(append([]string{}, path...), snm.Text()), sub.Body.AsModuleBlock().Statements.Nodes) {
+					return false
+				}
+			default:
+				return false
+			}
 		}
-		switch m.Kind {
-		case ast.KindFunctionDeclaration, ast.KindClassDeclaration,
-			ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration,
-			ast.KindEnumDeclaration:
-		default:
-			return "", nil, false
-		}
+		return true
 	}
-	return nm.Text(), members, true
+	if !walk([]string{nm.Text()}, md.Body.AsModuleBlock().Statements.Nodes) {
+		return nil, false
+	}
+	return out, true
 }
 
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
