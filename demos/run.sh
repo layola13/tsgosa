@@ -6,6 +6,8 @@
 #   --parity: 对 program demo（package.json 工程）跑上游 build/薄口 build 通拒对照表
 #     （只报告 UP_EXIT/TN_EXIT，不判 PASS/FAIL；有意分歧见 AGENTS step172 矩阵；
 #     上游不可用即 SKIP，不卡门）
+#   --corpus-sai: 同通过例归一化比 .sai 逐行（去头注释/缩进/return-ret 方言；
+#     只报告，不卡门；分歧例人工审是否为方言外差异）
 # --check: 只重生成 .sai 并与进仓版逐字节比对(.sai 禁止手改,只能由编译器出;供 CI/提交前自证)
 set -u
 set -o pipefail
@@ -14,11 +16,13 @@ export PATH=$PATH:/opt/zig:/usr/local/go/bin
 JOBS=0
 CHECK=0
 CORPUS=0
+CORPUSSAI=0
 PARITY=0
 while [ "$#" -gt 0 ]; do
   case "${1:-}" in
     --check) CHECK=1; shift ;;
     --corpus) CORPUS=1; shift ;;
+    --corpus-sai) CORPUSSAI=1; shift ;;
     --parity) PARITY=1; shift ;;
     -j|--jobs) JOBS="${2:-0}"; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     -j*|--jobs=*) JOBS="${1#-j}"; JOBS="${JOBS#--jobs=}"; shift ;;
@@ -103,6 +107,73 @@ if [ "$CORPUS" -eq 1 ]; then
   [ -n "$bad" ] && echo "mismatched:$bad"
   [ "$mismatch" -eq 0 ]
   exit $?
+fi
+
+# ---- corpus-sai 模式: 同通过例归一化比 .sai（只报告，不卡门）----
+if [ "$CORPUSSAI" -eq 1 ]; then
+  SATSGO_DIR=${SATSGO_DIR:-/content/sa_all/satsgo}
+  CORPUS_DIR=${CORPUS_DIR:-/content/sa_all/sa_plugin_ts/demos}
+  UP_BIN=${UP_BIN:-/tmp/tsgo-sa-upstream}
+  if [ -n "$(find "$SATSGO_DIR/cmd/tsgo-sa" "$SATSGO_DIR/internal/saemit" -name '*.go' -newer "$UP_BIN" 2>/dev/null | head -1)" ] || [ ! -x "$UP_BIN" ]; then
+    echo "building upstream tsgo-sa ..."
+    (cd "$SATSGO_DIR" && go build -o "$UP_BIN" ./cmd/tsgo-sa) || exit 2
+  fi
+  [ -d "$CORPUS_DIR" ] || { echo "error: corpus not found at $CORPUS_DIR" >&2; exit 2; }
+  # 归一化：删头注释行/空行/前导空白，return→ret（已认可方言差）。
+  norm_sai() {
+    grep -v "^//" "$1" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/^return /ret /' | grep -v "^$" || true
+  }
+  run_one_sai() {
+    d="$1"
+    f="$CORPUS_DIR/$d"
+    src=""
+    [ -f "$f/main.ts" ] && src="$f/main.ts"
+    [ -z "$src" ] && return 0
+    base=$(basename "$src" .ts)
+    o1=$(mktemp -d); o2=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$o1' '$o2'" RETURN
+    "$UP_BIN" --out "$o1" "$src" >/dev/null 2>&1
+    up_ok=1; grep -q "refused=true" "$o1/subset-report.txt" 2>/dev/null && up_ok=0
+    "$TSGO_BIN" --sa --out "$o2" "$src" >/dev/null 2>&1
+    port_ok=1
+    if [ -f "$o2/$base.sai" ] && ! grep -qv "warning:" "$o2/subset-report.txt" 2>/dev/null; then port_ok=1; else port_ok=0; fi
+    [ "$up_ok" -eq 1 ] && [ "$port_ok" -eq 1 ] || { echo "$d SKIP-REFUSED"; return 0; }
+    up_sai=$(ls "$o1"/src/*.sai "$o1"/*.sai 2>/dev/null | head -1)
+    [ -n "$up_sai" ] || { echo "$d NO-UP-SAI"; return 0; }
+    if diff <(norm_sai "$up_sai") <(norm_sai "$o2/$base.sai") >/dev/null 2>&1; then
+      echo "$d SAI-SAME"
+    else
+      n=$(diff <(norm_sai "$up_sai") <(norm_sai "$o2/$base.sai") 2>/dev/null | grep -c "^[<>]")
+      echo "$d SAI-DIFF lines=$n"
+    fi
+  }
+  export TSGO_BIN UP_BIN CORPUS_DIR
+  export -f run_one_sai norm_sai 2>/dev/null || true
+  tmp_sai=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp_sai'" EXIT
+  names=$(ls "$CORPUS_DIR")
+  # shellcheck disable=SC2086
+  echo "$names" | xargs -P "$JOBS" -I{} bash -c 'run_one_sai "$@" >"'"$tmp_sai"'/$1.out" 2>&1' _ {} || true
+  same=0; diffn=0; skip=0; bad=""; big=""
+  for d in $names; do
+    line=$(cat "$tmp_sai/$d.out" 2>/dev/null || echo "$d MISSING")
+    case "$line" in
+      *" SAI-SAME"*) same=$((same+1)) ;;
+      *" SAI-DIFF lines="*)
+        diffn=$((diffn+1)); bad="$bad $d"
+        n=${line##*lines=}; n=${n%% *}
+        case "$n" in ''|*[!0-9]*) n=0 ;; esac
+        [ "$n" -gt 20 ] && big="$big $d($n)"
+        ;;
+      *) skip=$((skip+1)) ;;
+    esac
+  done
+  echo "== sai-same=$same sai-diff=$diffn skipped=$skip =="
+  [ -n "$big" ] && echo "big-diff(>20):$big"
+  [ -n "$bad" ] && echo "diff-cases:$bad"
+  exit 0
 fi
 
 # ---- parity 模式: program demo 上游 build vs 薄口 build 通拒对照（只报告）----
