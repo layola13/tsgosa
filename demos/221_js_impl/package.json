@@ -1,0 +1,7 @@
+{
+  "name": "js_impl",
+  "version": "1.0.0",
+  "dependencies": {
+    "jslib": "1.0.0"
+  }
+}

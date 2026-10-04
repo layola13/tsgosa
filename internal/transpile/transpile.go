@@ -2738,8 +2738,9 @@ func saProgPrefix(p, entry string) string {
 }
 
 // saProgResolveBare resolves a bare spec through the base resolver, gated
-// to files-set `.ts` members (node_modules 按需纳入后的真实目标；`.js`/包
-// 外一律 ""，沿旧 Unresolved 聚合——zod 本体仍拒）。
+// to files-set `.ts`/`.js` members (node_modules 按需纳入后的真实目标；
+// 包外一律 ""，沿旧 Unresolved 聚合）。`.js` 直转 `.sa`（用户令：落 js
+// 即转 sa；JS 无注解按既有缺省 i32/void，超子集处大声拒）。
 func saProgResolveBare(importer, spec string, files map[string]string, dir string, resolver *module.Resolver) string {
 	if resolver == nil || dir == "" {
 		return ""
@@ -2750,7 +2751,10 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 		return ""
 	}
 	name := resolved.ResolvedFileName
-	if !strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".d.ts") {
+	if strings.HasSuffix(name, ".d.ts") {
+		return ""
+	}
+	if !strings.HasSuffix(name, ".ts") && !strings.HasSuffix(name, ".js") {
 		return ""
 	}
 	rel, err := filepath.Rel(dir, name)
@@ -2765,12 +2769,58 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 	return ""
 }
 
-// saProgIncludeBare pulls reachable node_modules `.ts` files into the file
-// set (Walk 整目录跳过系设计，防整库爆炸；此处只纳入 bare 引用可达者，
+// saProgIncludeBare pulls reachable node_modules `.ts`/`.js` files into
+// the file set (Walk 整目录跳过系设计，防整库爆炸；此处只纳入引用可达者，
 // 递归跟随其相对依赖，bare 再解；总量 cap，超量沿旧 Unresolved）。
+// `.js` 按 JS 种解析直转（用户令；zod dist 即此形态）。import 与
+// export-from 同跟随（barrel 链）；相对目标落盘存在即纳入。
+// Caveat：symlinked node_modules 底座解析不穿透（osvfs Realpath 未接入
+// scope 发现），真实 `npm install` 目录正常。
+// saProgAdoptFile reads an absolute-disk `.ts`/`.js` file into the set
+// (keyed by dir-relative slash path; parsed with its kind).
+func saProgAdoptFile(files map[string]string, parsed map[string]*ast.SourceFile, dir, name string, kind core.ScriptKind) bool {
+	rel, err := filepath.Rel(dir, name)
+	if err != nil {
+		return false
+	}
+	c := path.Clean(filepath.ToSlash(rel))
+	if c == "" || strings.HasPrefix(c, "..") {
+		return false
+	}
+	if _, ok := files[c]; ok {
+		return false
+	}
+	text, err := os.ReadFile(name)
+	if err != nil {
+		return false
+	}
+	files[c] = string(text)
+	abs := "/" + strings.TrimPrefix(c, "/")
+	parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
+	return true
+}
+
 func saProgIncludeBare(files map[string]string, dir string, resolver *module.Resolver, parsed map[string]*ast.SourceFile) {
 	const maxFiles = 64
 	tried := map[string]bool{}
+	adoptRel := func(p, spec string) bool {
+		base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
+		cands := []string{base, base + ".ts", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.js")}
+		// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
+		if strings.HasSuffix(base, ".js") {
+			cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
+		}
+		for _, cand := range cands {
+			kind := core.ScriptKindTS
+			if strings.HasSuffix(cand, ".js") {
+				kind = core.ScriptKindJS
+			}
+			if saProgAdoptFile(files, parsed, dir, cand, kind) {
+				return true
+			}
+		}
+		return false
+	}
 	for len(files) < maxFiles {
 		progress := false
 		for p, sf := range parsed {
@@ -2778,14 +2828,24 @@ func saProgIncludeBare(files map[string]string, dir string, resolver *module.Res
 				continue
 			}
 			for _, st := range sf.AsSourceFile().Statements.Nodes {
-				if st == nil || st.Kind != ast.KindImportDeclaration {
+				if st == nil {
 					continue
 				}
-				if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+				// export-from 与 import 同跟随（barrel 链）。
+				var spec string
+				switch st.Kind {
+				case ast.KindImportDeclaration:
+					if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+						continue
+					}
+					spec = saProgModuleSpec(st)
+				case ast.KindExportDeclaration:
+					s, _, _ := saProgReexpEdges(st)
+					spec = s
+				default:
 					continue
 				}
-				spec := saProgModuleSpec(st)
-				if spec == "" || strings.HasPrefix(spec, ".") || saProgBuiltinMod(spec) {
+				if spec == "" || saProgBuiltinMod(spec) {
 					continue
 				}
 				key := p + "\x00" + spec
@@ -2793,34 +2853,33 @@ func saProgIncludeBare(files map[string]string, dir string, resolver *module.Res
 					continue
 				}
 				tried[key] = true
+				// 相对目标：files 集外但落盘存在即纳入。
+				if strings.HasPrefix(spec, ".") {
+					if _, ok := files[saProgResolveRelative(p, spec, files, dir, resolver)]; !ok {
+						if adoptRel(p, spec) {
+							progress = true
+						}
+					}
+					continue
+				}
 				containing := filepath.Join(dir, filepath.FromSlash(p))
 				resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil)
 				if !resolved.IsResolved() {
 					continue
 				}
 				name := resolved.ResolvedFileName
-				if !strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".d.ts") {
+				if strings.HasSuffix(name, ".d.ts") {
 					continue
 				}
-				rel, err := filepath.Rel(dir, name)
-				if err != nil {
+				kind := core.ScriptKindTS
+				if strings.HasSuffix(name, ".js") {
+					kind = core.ScriptKindJS
+				} else if !strings.HasSuffix(name, ".ts") {
 					continue
 				}
-				c := path.Clean(filepath.ToSlash(rel))
-				if c == "" || strings.HasPrefix(c, "..") {
-					continue
+				if saProgAdoptFile(files, parsed, dir, name, kind) {
+					progress = true
 				}
-				if _, ok := files[c]; ok {
-					continue
-				}
-				text, err := os.ReadFile(name)
-				if err != nil {
-					continue
-				}
-				files[c] = string(text)
-				abs := "/" + strings.TrimPrefix(c, "/")
-				parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), core.ScriptKindTS)
-				progress = true
 			}
 		}
 		if !progress {
@@ -2852,13 +2911,16 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		return res
 	}
 	// 底座模块解析器（internal/module，磁盘 host + Bundler 口径；单例复用，
-	// 内带缓存；失败 nil 即全走旧候选，行为不变）。
+	// 内带缓存；失败 nil 即全走旧候选，行为不变）。CustomConditions 含
+	// `@zod/source`：包方为 TS 源码加载发布的官方条件（zod package.json
+	// exports "." 首键；底座 GetConditions:1943 原生支持，tsx/strip-types
+	// 同形 honoring；无此条件的包零影响）。
 	var resolver *module.Resolver
 	if absDir, err := filepath.Abs(dir); err == nil {
 		func() {
 			defer func() { _ = recover() }()
 			host := compiler.NewCompilerHost(absDir, osvfs.FS(), libDirectory, nil, nil, nil)
-			resolver = module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler}, "", "", nil)
+			resolver = module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler, CustomConditions: []string{"@zod/source"}}, "", "", nil)
 			dir = absDir
 		}()
 	}
