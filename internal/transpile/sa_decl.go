@@ -1153,11 +1153,13 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 
 // saNsMember 是展平后的命名空间成员（路径联结键 + 原节点）。
 type saNsMember struct {
-	under  string    // 发射键：N_M_f
+	under  string    // 发射键：N_M_f（const 为父路径，折叠键另计）
 	dotted string    // 调用键：N.M.f
 	scope  string    // 父路径：N_M（heritage 回退域；顶层 ns 即首段）
-	node   *ast.Node // 成员声明节点
-	isFunc bool      // 函数成真，类成员成假（类型成员展平期跳过）
+	node   *ast.Node // 成员声明节点（const 为整条 VariableStatement）
+	decl   *ast.Node // const declarator 节点（非 const 为空）
+	isFunc bool      // 函数成真
+	isConst bool     // 纯量声明成真（类成员两假；类型成员展平期跳过）
 }
 
 // saFlattenNsMembers 递归展平运行时 namespace（函数/类成员全收，类型成员
@@ -1203,6 +1205,48 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 					node:   m,
 					isFunc: m.Kind == ast.KindFunctionDeclaration,
 				})
+			case ast.KindVariableStatement:
+				// 导出 const 声明逐 declarator 记纯量条（折叠消费；`let`/
+				// 非导出/using 沿旧门整块拒，可变 ns 槽另步）。
+				vs := m.AsVariableStatement()
+				if vs == nil || vs.DeclarationList == nil {
+					return false
+				}
+				if !ast.HasModifier(m, ast.ModifierFlagsExport) {
+					return false
+				}
+				dl := vs.DeclarationList.AsVariableDeclarationList()
+				if dl == nil || len(dl.Declarations.Nodes) == 0 {
+					return false
+				}
+				if dl.AsNode().Flags&ast.NodeFlagsConst == 0 {
+					return false
+				}
+				if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+					return false
+				}
+				for _, dd := range dl.Declarations.Nodes {
+					if dd == nil {
+						return false
+					}
+					vd := dd.AsVariableDeclaration()
+					if vd == nil {
+						return false
+					}
+					vnm := vd.Name()
+					if vnm == nil || vnm.Kind != ast.KindIdentifier {
+						return false
+					}
+					out = append(out, saNsMember{
+						under:   strings.Join(path, "_"),
+						dotted:  strings.Join(append(append([]string{}, path...), vnm.Text()), "."),
+						scope:   strings.Join(path, "_"),
+						node:    m,
+						decl:    dd,
+						isFunc:  false,
+						isConst: true,
+					})
+				}
 			case ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration,
 				ast.KindEnumDeclaration:
 				// 类型成员无码擦除（与纯类型 ns 同例）。
@@ -1234,6 +1278,80 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// saFoldMixedNsConsts 折叠混合 ns 的导出纯量（`N.M.K` 键入顶层折叠值域，
+// 与 `N.K` 读位同键；纯度与 saFoldNamespaceConsts 逐 declarator 同形；
+// 非纯/重名即整块大声拒，副作用永不静默吞）。
+// 调用方：整块折叠不成且展平门过时（预扫折叠环；发射侧照常直落函数）。
+func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	members, ok := saFlattenNsMembers(st)
+	if !ok {
+		return false
+	}
+	// 本遍去重（整块折叠失败可留部分写，幂等覆写；真重名（无论值同否）大声拒）。
+	seen := map[string]bool{}
+	folded := false
+	for _, mb := range members {
+		if !mb.isConst {
+			continue
+		}
+		vd := mb.decl.AsVariableDeclaration()
+		if vd == nil {
+			return false
+		}
+		key := mb.dotted
+		if seen[key] {
+			ln, col := pos(mb.decl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate const " + key})
+			return false
+		}
+		seen[key] = true
+		init := vd.Initializer
+		if init == nil {
+			ln, col := pos(mb.decl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace const member must be a pure literal (effectful initializers are not foldable)"})
+			return false
+		}
+		switch init.Kind {
+		case ast.KindNumericLiteral:
+			if saIsFloatLit(init.Text()) {
+				ln, col := pos(mb.decl.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
+				return false
+			}
+			consts[key] = init.Text()
+			folded = true
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+			consts[key] = init.Text()
+			strs[key] = true
+			folded = true
+		case ast.KindTrueKeyword:
+			consts[key] = "1"
+			folded = true
+		case ast.KindFalseKeyword:
+			consts[key] = "0"
+			folded = true
+		case ast.KindIdentifier:
+			// 同域前向读（父路径按名折叠；串性透传；未定义沿旧门）。
+			if t, ok := consts[mb.scope+"."+init.Text()]; ok {
+				consts[key] = t
+				if strs[mb.scope+"."+init.Text()] {
+					strs[key] = true
+				}
+				folded = true
+				continue
+			}
+			ln, col := pos(mb.decl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace const member must be a pure literal (effectful initializers are not foldable)"})
+			return false
+		default:
+			ln, col := pos(mb.decl.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "namespace const member must be a pure literal (effectful initializers are not foldable)"})
+			return false
+		}
+	}
+	return folded
 }
 
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`

@@ -445,6 +445,9 @@ type saFileLink struct {
 	classHarvest  map[string]saProgClass            // out: own top-level classes for dependents
 	classHarvests map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
 	classSeed     map[string]*saClassDef            // out/in: imported local class name -> defining layout
+	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
+	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
+	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -469,6 +472,13 @@ type saProgFunc struct {
 type saProgClass struct {
 	def      *saClassDef
 	exported bool
+}
+
+// saProgConst is one harvested const value for cross-file folding
+// (`N.K` 读位直折字面量；串性随播；上游 defNS const surface 同形）。
+type saProgConst struct {
+	text  string
+	isStr bool
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
@@ -656,6 +666,39 @@ func saBindProgNsMembers(link *saFileLink, tgt, remote, local string) bool {
 	}
 	bound := bindProgNsFuncs(link, tgt, remote, local)
 	if bindProgNsClasses(link, tgt, remote, local) {
+		bound = true
+	}
+	if bindProgNsConsts(link, tgt, remote, local) {
+		bound = true
+	}
+	return bound
+}
+
+// bindProgNsConsts 播种命名空间纯量成员折叠值（`N.K` 读位直折；串性随播）。
+func bindProgNsConsts(link *saFileLink, tgt, remote, local string) bool {
+	if link == nil {
+		return false
+	}
+	members, ok := link.constHarvests[tgt]
+	if !ok || len(members) == 0 {
+		return false
+	}
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	bound := false
+	for _, name := range names {
+		ch := members[name]
+		member, ok := strings.CutPrefix(name, remote+".")
+		if !ok || member == "" {
+			continue
+		}
+		if link.constSeed == nil {
+			link.constSeed = map[string]saProgConst{}
+		}
+		link.constSeed[local+"."+member] = ch
 		bound = true
 	}
 	return bound
@@ -1082,7 +1125,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		// 回退；形状证据：封存 recordClassNamed:9586-9611 具名记录全形）。
 		if members, ok := saFlattenNsMembers(st); ok {
 			for _, mb := range members {
-				if mb.isFunc {
+				if mb.isFunc || mb.isConst {
 					continue
 				}
 				saRecordClassNamed(mb.node, mb.under, false, mb.scope, classes, pos, &refusals)
@@ -1258,6 +1301,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 点键布局；定义侧发射 `@N_M_f`；上游 bindNSMembers 点键同形）。
 			if members, ok := saFlattenNsMembers(st); ok {
 				for _, mb := range members {
+					if mb.isConst {
+						// 纯量走折叠值域（saFoldMixedNsConsts），无 harvest。
+						continue
+					}
 					if mb.isFunc {
 						fn := mb.node.AsFunctionDeclaration()
 						if fn == nil || fn.Body == nil {
@@ -1302,6 +1349,35 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		// 单层运行时 namespace 纯量拍扁（`N.K` 键；函数/嵌套沿旧拒）。
 		if saFoldNamespaceConsts(st, topConsts, topStr, pos, &refusals) {
 			handledTop[st] = true
+			continue
+		}
+		// 混合 namespace 纯量拍扁（函数/类共存时导出纯量照常折叠；非纯整块
+		// 大声拒；类型/嵌套由展平门控；`let`/非导出沿旧门）。
+		if _, ok := saFlattenNsMembers(st); ok {
+			saFoldMixedNsConsts(st, topConsts, topStr, pos, &refusals)
+		}
+	}
+	// Program hook A-const: harvest folded ns const values for dependents
+	// (`N.K` 读位直折；串性随播；上游 defNS const surface 同形）。
+	if link != nil {
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			members, ok := saFlattenNsMembers(st)
+			if !ok {
+				continue
+			}
+			for _, mb := range members {
+				if !mb.isConst {
+					continue
+				}
+				text, ok := topConsts[mb.dotted]
+				if !ok {
+					continue
+				}
+				if link.constHarvest == nil {
+					link.constHarvest = map[string]saProgConst{}
+				}
+				link.constHarvest[mb.dotted] = saProgConst{text: text, isStr: topStr[mb.dotted]}
+			}
 		}
 	}
 
@@ -1337,6 +1413,17 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			if _, dup := classes[local]; !dup {
 				classes[local] = def
+			}
+		}
+		// Program hook C-const: seed imported const folds (local folds win;
+		// defining-file text shared read-only).
+		for local, c := range link.constSeed {
+			if _, dup := topConsts[local]; dup {
+				continue
+			}
+			topConsts[local] = c.text
+			if c.isStr {
+				topStr[local] = true
 			}
 		}
 		// Program hook C2: value export lists stay unlinked in S1
@@ -3546,6 +3633,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	harvests := map[string]map[string]saProgFunc{}
 	classHarvests := map[string]map[string]saProgClass{}
+	constHarvests := map[string]map[string]saProgConst{}
 	for _, p := range reachable {
 		lk := &saFileLink{
 			defPrefix:     prefixOf[p],
@@ -3562,10 +3650,14 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			classHarvest:  map[string]saProgClass{},
 			classHarvests: classHarvests,
 			classSeed:     map[string]*saClassDef{},
+			constHarvest:  map[string]saProgConst{},
+			constHarvests: constHarvests,
+			constSeed:     map[string]saProgConst{},
 		}
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
 		classHarvests[p] = lk.classHarvest
+		constHarvests[p] = lk.constHarvest
 		for _, r := range out.Refusals {
 			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
 		}
