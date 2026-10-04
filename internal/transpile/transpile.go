@@ -485,6 +485,7 @@ func saScopeLinkFill(scope *saScope, link *saFileLink) {
 	}
 	scope.defPrefix = link.defPrefix
 	scope.linkResolve = link.resolve
+	scope.linkHarvests = link.harvests
 }
 
 func saScopeLinkCopy(dst, src *saScope) {
@@ -493,6 +494,7 @@ func saScopeLinkCopy(dst, src *saScope) {
 	}
 	dst.defPrefix = src.defPrefix
 	dst.linkResolve = src.linkResolve
+	dst.linkHarvests = src.linkHarvests
 }
 
 // saLinkResolveMap returns the link resolve map for link mode (nil when nil).
@@ -501,6 +503,15 @@ func saLinkResolveMap(link *saFileLink) map[string]string {
 		return nil
 	}
 	return link.resolve
+}
+
+// saLinkHarvestsMap returns all harvested program functions for link mode
+// (nil when nil; driver fills progressively in dependency order).
+func saLinkHarvestsMap(link *saFileLink) map[string]map[string]saProgFunc {
+	if link == nil {
+		return nil
+	}
+	return link.harvests
 }
 
 // saProgChase resolves (tgt, remote) to a qualified callee through re-export
@@ -1260,7 +1271,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link))
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link))
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
@@ -2070,6 +2081,10 @@ type saScope struct {
 	// links[p].resolved + seeded funcSigs).
 	defPrefix   string            // definition prefix for this file ("", entry; "util__", libs)
 	linkResolve map[string]string // imported local name -> qualified callee
+	// linkHarvests carries all harvested program functions for import-first
+	// advisories (read-only; driver fills progressively in dependency order,
+	// so reverse-order uses keep the old message — both still refuse).
+	linkHarvests map[string]map[string]saProgFunc
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -2190,7 +2205,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -2268,6 +2283,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve
+	scope.linkHarvests = linkHarvests
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = paramKinds[p]

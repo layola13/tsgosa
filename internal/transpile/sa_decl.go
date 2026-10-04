@@ -1231,6 +1231,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve
+	scope.linkHarvests = saLinkHarvestsMap(link)
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = kinds[p]

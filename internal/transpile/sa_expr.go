@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
+	"sort"
 	"strings"
 )
 
@@ -1595,9 +1596,35 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		if saIsTimerName(name) {
 			return "", false, name + " needs an event loop with callback dispatch (async timers are Phase 2)"
 		}
+		// Program 定位拒因：未导入但他处已导出即指认定义文件（上游 linkRoute
+		// "import it first" 同形；无命中沿旧 unknown 门）。
+		if msg := saImportFirstAdvisory(scope, name); msg != "" {
+			return "", false, msg
+		}
 		return "", false, "unknown function " + name
 	}
 	return saEvalFuncCall(w, name, callName, sig, ce, scope, pos, refusals, nextTemp)
+}
+
+// saImportFirstAdvisory 在 program 模式下为未链接调用指认定义文件
+// （`X is defined in f.ts; import it first`；上游 linkRoute 定位拒因同形，
+// 形状证据：封存 TestLowerProgramImportFirst/TestLinkRouteMisses；箭头与
+// 默认导出永不命中名调用，维持旧拒因；单文件 linkHarvests 空零行为变）。
+func saImportFirstAdvisory(scope *saScope, name string) string {
+	if scope == nil || len(scope.linkHarvests) == 0 || name == "" {
+		return ""
+	}
+	files := make([]string, 0, len(scope.linkHarvests))
+	for f := range scope.linkHarvests {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		if hv, ok := scope.linkHarvests[f][name]; ok && hv.exported && !hv.isArrow {
+			return name + " is defined in " + f + "; import it first"
+		}
+	}
+	return ""
 }
 
 // saLinkCallee resolves a call name through the program link environment:
