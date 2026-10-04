@@ -1554,11 +1554,15 @@ func saBlockStmts(body *ast.Node) ([]*ast.Node, bool) {
 
 // saIsEntryStmt 报告顶层模块加载执行语句（声明/导入导出无码；其余执行。
 // 形状证据：封存 isEntryStmt:32-50）。
-// saIsProjModule reports builtin projection modules (fs/net and their node: forms;
-// single-file direct calls need no linking; other modules refuse loudly as before).
+// saIsProjModule reports builtin projection modules (fs/net/os/path/crypto/
+// process/querystring/url/util/punycode and their node: forms; single-file
+// direct calls need no linking; other modules refuse loudly as before).
+// Module set mirrors upstream import prescan (saemit.go recordImports gate).
 func saIsProjModule(mod string) bool {
 	switch mod {
-	case "fs", "net", "node:fs", "node:net":
+	case "fs", "net", "path", "os", "crypto", "process", "querystring", "url", "util", "punycode",
+		"node:fs", "node:net", "node:path", "node:os", "node:crypto", "node:process",
+		"node:querystring", "node:url", "node:util", "node:punycode":
 		return true
 	}
 	return false

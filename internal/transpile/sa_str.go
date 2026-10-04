@@ -155,6 +155,11 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 			if mod == "fs" && remote == "readFile" {
 				return true
 			}
+			// node.sai-backed string projections (os/path/…; kinds mirror
+			// upstream Ret tString; boolout/fire stay i32/void).
+			if saNodeIsStr(mod + "." + remote) {
+				return true
+			}
 		}
 		return false
 	}
@@ -162,6 +167,18 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+		recv := pa.Expression.Text()
+		// node 插件串返回（process/crypto 裸全局零参；console/Buffer 走各自的分发）。
+		if recv == "process" || recv == "crypto" {
+			if saNodeIsStr(recv + "." + pa.Name().Text()) {
+				return true
+			}
+		}
+		if recv == "Buffer" && pa.Name().Text() == "concat" {
+			return true
+		}
+	}
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "String" &&
 		pa.Name() != nil {
 		switch pa.Name().Text() {

@@ -300,3 +300,13 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 |---|---|---|
 | 201_for_in | for-in 下标巡回求和 | step153（H11 快照修复） |
 | 202_nested_forof | 嵌套数组标识符巡回 | step153（H15 行绑 arr） |
+
+## 补批（203–205，node 插件投影）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 203_node_path | path 归一/取目录/扩展名/绝对判定/拼接 | step156（node.sai 复用） |
+| 204_node_str | querystring 编解码 + punycode 往返 | step156（node.sai 复用） |
+| 205_node_buf | Buffer.concat + randomBytes 定长 | step156（node.sai 复用） |
+
+插件 demo 须带 `sa.mod`（`require_plugin node @0.1.0 abi 1`），run.sh 有该文件时自动加 `--project-root` 供 bare node.sai 解析。已知边界（续10）：Buffer.byteLength 需 u64（子集无此种，大声拒）；console.timeEnd 值位需 f64 调用（通用 f64 值缺口）；Deno 未动。

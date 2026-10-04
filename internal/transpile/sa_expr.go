@@ -399,6 +399,14 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// node 插件裸全局与命名空间方法（复用 sa_plugin_node 轮子；无 import
+		// 亦可（Node 全局暴露）；形状证据：封存 lowerPropertyCall:4294-4310、
+		// node_console.go 全文件、node_buffer.go 全文件）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			if op, voidCall, msg, handled := saLowerNodeMethodCall(w, pa.Expression.Text(), pa.Name().Text(), ce, scope, pos, refusals, nextTemp); handled {
+				return op, voidCall, msg
+			}
+		}
 		return "", false, "only direct function calls lowerable"
 	}
 	// 裸 alloc(N) 原语单参直通（`t = alloc N` 绑 ptr 句柄；用户自定 alloc
@@ -672,6 +680,11 @@ func saProjTable(remote string) (symbol, module, extra string, strArgs []int, un
 }
 
 func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	// node.sai-backed surfaces reuse the sa_plugin_node wheel (no new builtins).
+	switch mod {
+	case "os", "process", "path", "crypto", "querystring", "url", "util", "punycode":
+		return saLowerNodeProjCall(w, mod, remote, ce, scope, pos, refusals, nextTemp)
+	}
 	if mod != "fs" && mod != "net" {
 		return "", false, mod + "." + remote + " is not a projected surface"
 	}
@@ -760,6 +773,541 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 	saReleaseOwnedTemp(w, scope, dl)
 	saReleaseOwnedTemp(w, scope, t)
 	return out, false, ""
+}
+
+// saNodeProjTable maps "mod.remote" to (symbol, nodeOut), reusing the
+// sa_plugin_node wheel (no new builtins invented).
+// nodeOut mirrors upstream StdProjectionTable NodeOut: "string" (zero-arg),
+// "string1/2/3" (one/two/three string slices), "boolout" (bool 0/1 out),
+// "argv" (variadic slices packed {ptr,len}), "sized" (u64 size in, out len
+// echoes size), "fire" (slices by value, no outs), "fireF64" (fire + f64 out).
+// u64out (Buffer.byteLength) has no u64 kind in-subset and stays refused;
+// crypto.hash/hmac have no direct TS surface (accumulator-only) and stay refused.
+// Shape evidence: upstream stdlib.go node entries + emitProjCall:10618-10906.
+func saNodeProjTable(key string) (symbol, nodeOut string, ok bool) {
+	switch key {
+	case "os.platform":
+		return "sa_node_plugin_os_platform", "string", true
+	case "os.arch":
+		return "sa_node_plugin_os_arch", "string", true
+	case "os.homedir":
+		return "sa_node_plugin_os_homedir", "string", true
+	case "os.tmpdir":
+		return "sa_node_plugin_os_tmpdir", "string", true
+	case "os.hostname":
+		return "sa_node_plugin_os_hostname", "string", true
+	case "os.release":
+		return "sa_node_plugin_os_release", "string", true
+	case "os.type":
+		return "sa_node_plugin_os_type", "string", true
+	case "os.endianness":
+		return "sa_node_plugin_os_endianness", "string", true
+	case "os.machine":
+		return "sa_node_plugin_os_machine", "string", true
+	case "os.cpus":
+		return "sa_node_plugin_os_cpus", "string", true
+	case "os.version":
+		return "sa_node_plugin_os_version", "string", true
+	case "os.userInfo":
+		return "sa_node_plugin_os_user_info", "string", true
+	case "os.networkInterfaces":
+		return "sa_node_plugin_os_network_interfaces", "string", true
+	case "process.cwd":
+		return "sa_node_plugin_process_cwd", "string", true
+	case "crypto.randomUUID":
+		return "sa_node_plugin_crypto_random_uuid", "string", true
+	case "path.normalize":
+		return "sa_node_plugin_path_normalize", "string1", true
+	case "path.dirname":
+		return "sa_node_plugin_path_dirname", "string1", true
+	case "path.extname":
+		return "sa_node_plugin_path_extname", "string1", true
+	case "path.basename":
+		return "sa_node_plugin_path_basename", "string2", true
+	case "path.isAbsolute":
+		return "sa_node_plugin_path_is_absolute", "boolout", true
+	case "path.join":
+		return "sa_node_plugin_path_join", "argv", true
+	case "path.resolve":
+		return "sa_node_plugin_path_resolve", "argv", true
+	case "crypto.randomBytes":
+		return "sa_node_plugin_crypto_random_bytes", "sized", true
+	case "punycode.encode":
+		return "sa_node_plugin_punycode_encode", "string1", true
+	case "punycode.decode":
+		return "sa_node_plugin_punycode_decode", "string1", true
+	case "querystring.escape":
+		return "sa_node_plugin_querystring_escape", "string1", true
+	case "querystring.unescape":
+		return "sa_node_plugin_querystring_unescape", "string1", true
+	case "querystring.parse":
+		return "sa_node_plugin_querystring_parse", "string1", true
+	case "querystring.stringify":
+		return "sa_node_plugin_querystring_stringify", "string1", true
+	case "url.parse":
+		return "sa_node_plugin_url_parse", "string1", true
+	case "url.format":
+		return "sa_node_plugin_url_format", "string1", true
+	case "url.resolve":
+		return "sa_node_plugin_url_resolve", "string2", true
+	case "util.stripVTControlCharacters":
+		return "sa_node_plugin_util_strip_vt_control_characters", "string1", true
+	case "console.error", "console.time", "console.clear":
+		return saNodeFireSymbol(key), "fire", true
+	case "console.timeEnd":
+		return "sa_node_plugin_console_time_end", "fireF64", true
+	case "Buffer.concat":
+		return "sa_node_plugin_buffer_concat", "argv", true
+	}
+	return "", "", false
+}
+
+func saNodeFireSymbol(key string) string {
+	switch key {
+	case "console.error":
+		return "sa_node_plugin_console_error"
+	case "console.time":
+		return "sa_node_plugin_console_time"
+	}
+	return "sa_node_plugin_console_clear"
+}
+
+// saNodeIsStr reports node projections returning string slices.
+func saNodeIsStr(key string) bool {
+	_, nodeOut, ok := saNodeProjTable(key)
+	if !ok {
+		return false
+	}
+	switch nodeOut {
+	case "string", "string1", "string2", "string3", "argv", "sized":
+		return true
+	}
+	return false
+}
+
+// saNodeStatusCheck emits the u32-status check (nonzero panics 2503, loud).
+func saNodeStatusCheck(w printer.EmitTextWriter, st string, scope *saScope, nextTemp *int) {
+	badL := fmt.Sprintf("L_node_bad_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_node_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bad := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", bad, st))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bad, badL, okL))
+	w.Write(fmt.Sprintf("%s:\n", badL))
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2503))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+}
+
+// saNodeWrapStr wraps out ptr/len slots into an owned 16-byte slice handle.
+func saNodeWrapStr(w printer.EmitTextWriter, ps, ls string, scope *saScope, nextTemp *int) string {
+	ptr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", ptr, ps))
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ln, ls))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, ptr))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, ln))
+	saOwnTemp(scope, out)
+	saReleaseOwnedTemp(w, scope, ps)
+	saReleaseOwnedTemp(w, scope, ls)
+	return out
+}
+
+// saNodeStrArg lowers one string argument to (&ptr, len) parts.
+func saNodeStrArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	bp, bl := saExpandStr(w, h, nextTemp)
+	return "&" + bp, bl, ""
+}
+
+// saLowerNodeProjCall lowers one node.sai-backed call (mod already stripped,
+// e.g. mod=os remote=platform). Returns (operand, voidCall, msg); string
+// results are str-handle temps (saCallIsStr gates downstream).
+func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	key := mod + "." + remote
+	symbol, nodeOut, ok := saNodeProjTable(key)
+	if !ok {
+		return "", false, key + " is not a projected std surface (see StdProjectionTable)"
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	scope.addImport("node.sai")
+	callStatus := func(parts ...string) string {
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", st, symbol, strings.Join(parts, ", ")))
+		saOwnTemp(scope, st)
+		saNodeStatusCheck(w, st, scope, nextTemp)
+		return st
+	}
+	switch nodeOut {
+	case "string":
+		if len(argNodes) != 0 {
+			return "", false, fmt.Sprintf("%s takes 0 arguments", key)
+		}
+		ps := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+		saOwnTemp(scope, ps)
+		ls := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+		saOwnTemp(scope, ls)
+		callStatus("&"+ps, "&"+ls)
+		return saNodeWrapStr(w, ps, ls, scope, nextTemp), false, ""
+	case "string1", "string2", "string3":
+		want := 1
+		if nodeOut == "string2" {
+			want = 2
+		}
+		if nodeOut == "string3" {
+			want = 3
+		}
+		if len(argNodes) != want {
+			return "", false, fmt.Sprintf("%s takes %d argument(s)", key, want)
+		}
+		parts := []string{}
+		for _, a := range argNodes {
+			bp, bl, msg := saNodeStrArg(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			parts = append(parts, bp, bl)
+		}
+		ps := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+		saOwnTemp(scope, ps)
+		ls := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+		saOwnTemp(scope, ls)
+		parts = append(parts, "&"+ps, "&"+ls)
+		callStatus(parts...)
+		return saNodeWrapStr(w, ps, ls, scope, nextTemp), false, ""
+	case "boolout":
+		if len(argNodes) != 1 {
+			return "", false, fmt.Sprintf("%s takes exactly 1 argument", key)
+		}
+		bp, bl, msg := saNodeStrArg(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		bslot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", bslot))
+		saOwnTemp(scope, bslot)
+		callStatus(bp, bl, "&"+bslot)
+		bout := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", bout, bslot))
+		saReleaseOwnedTemp(w, scope, bslot)
+		return bout, false, ""
+	case "argv":
+		parts := []string{}
+		for _, a := range argNodes {
+			bp, bl, msg := saNodeStrArg(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			parts = append(parts, bp, bl)
+		}
+		n := len(argNodes)
+		slots := n
+		if slots == 0 {
+			slots = 1
+		}
+		argv := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", argv, slots*16))
+		saOwnTemp(scope, argv)
+		for i := 0; i < n; i++ {
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", argv, i*16, strings.TrimPrefix(parts[i*2], "&")))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as u64\n", argv, i*16+8, parts[i*2+1]))
+		}
+		ps := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+		saOwnTemp(scope, ps)
+		ls := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+		saOwnTemp(scope, ls)
+		callStatus(argv, fmt.Sprintf("%d", n), "&"+ps, "&"+ls)
+		out := saNodeWrapStr(w, ps, ls, scope, nextTemp)
+		saReleaseOwnedTemp(w, scope, argv)
+		return out, false, ""
+	case "sized":
+		if len(argNodes) != 1 {
+			return "", false, fmt.Sprintf("%s takes 1 argument", key)
+		}
+		sz, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		ps := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+		saOwnTemp(scope, ps)
+		callStatus(sz, "&"+ps)
+		ptr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", ptr, ps))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, ptr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, sz))
+		saOwnTemp(scope, out)
+		saReleaseOwnedTemp(w, scope, ps)
+		return out, false, ""
+	case "fire", "fireF64":
+		if nodeOut == "fireF64" && len(argNodes) != 1 {
+			return "", false, fmt.Sprintf("%s takes exactly 1 argument", key)
+		}
+		ins := []string{}
+		for _, a := range argNodes {
+			bp, bl, msg := saNodeStrArg(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			ins = append(ins, bp, bl)
+		}
+		var fslot string
+		if nodeOut == "fireF64" {
+			fslot = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", fslot))
+			saOwnTemp(scope, fslot)
+			ins = append(ins, "&"+fslot)
+		}
+		callStatus(ins...)
+		if nodeOut == "fireF64" {
+			fout := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", fout, fslot))
+			saReleaseOwnedTemp(w, scope, fslot)
+			scope.types[fout] = "f64"
+			return fout, false, ""
+		}
+		return "", true, ""
+	}
+	return "", false, key + " is not a projected std surface (see StdProjectionTable)"
+}
+
+// saLowerNodeMethodCall lowers node-plugin namespace calls (process/crypto
+// zero-arg globals without import; console.error/time/timeEnd/clear;
+// Buffer.byteLength/concat). Returns (operand, voidCall, msg, handled);
+// unhandled receivers fall through to the generic refusal.
+func saLowerNodeMethodCall(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if recv == "process" || recv == "crypto" {
+		if len(argNodes) != 0 {
+			return "", false, "", false
+		}
+		if _, _, ok := saNodeProjTable(recv + "." + method); !ok {
+			return "", false, "", false
+		}
+		op, voidCall, msg := saLowerNodeProjCall(w, recv, method, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		return op, voidCall, "", true
+	}
+	if recv == "console" {
+		switch method {
+		case "error", "time", "timeEnd", "clear":
+		default:
+			return "", false, "", false
+		}
+		return saLowerConsoleNode(w, method, ce, scope, pos, refusals, nextTemp)
+	}
+	if recv == "Buffer" {
+		switch method {
+		case "byteLength":
+			return "", false, "Buffer.byteLength needs u64 (beyond i32 subset)", true
+		case "concat":
+			return saLowerBufferConcat(w, ce, scope, pos, refusals, nextTemp)
+		}
+		return "", false, "", false
+	}
+	return "", false, "", false
+}
+
+// saLowerConsoleNode lowers console.error/time/timeEnd/clear through node.sai.
+// error folds multi-arg (spaces + trailing newline) into one slice, like log.
+func saLowerConsoleNode(w printer.EmitTextWriter, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	switch method {
+	case "error":
+		acc := ""
+		for i, a := range argNodes {
+			if i > 0 {
+				seg := saLowerStringLiteral(w, " ", scope, nextTemp)
+				acc = saConcatSlicesOpt(w, acc, seg, scope, nextTemp)
+			}
+			seg, msg := saToSlice(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg, true
+			}
+			acc = saConcatSlicesOpt(w, acc, seg, scope, nextTemp)
+		}
+		if acc == "" {
+			acc = saLowerStringLiteral(w, "", scope, nextTemp)
+		}
+		acc = saConcatSlicesOpt(w, acc, saLowerStringLiteral(w, "\n", scope, nextTemp), scope, nextTemp)
+		op, voidCall, msg := saLowerNodeFireSlice(w, "console.error", acc, scope, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		return op, voidCall, "", true
+	case "time", "timeEnd":
+		if len(argNodes) > 1 {
+			return "", false, "console." + method + " takes at most 1 argument", true
+		}
+		label := saLowerStringLiteral(w, "default", scope, nextTemp)
+		if len(argNodes) == 1 {
+			h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg, true
+			}
+			label = h
+		}
+		op, voidCall, msg := saLowerNodeFireSlice(w, "console."+method, label, scope, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		return op, voidCall, "", true
+	case "clear":
+		if len(argNodes) != 0 {
+			return "", false, "console.clear takes no arguments", true
+		}
+		op, voidCall, msg := saLowerNodeProjCall(w, "console", method, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		return op, voidCall, "", true
+	}
+	return "", false, "", false
+}
+
+// saConcatSlicesOpt concatenates two slice handles (empty left passes through).
+func saConcatSlicesOpt(w printer.EmitTextWriter, left, right string, scope *saScope, nextTemp *int) string {
+	if left == "" {
+		return right
+	}
+	return saConcatSlices(w, left, right, scope, nextTemp)
+}
+
+// saLowerNodeFireSlice fires one pre-folded slice through a fire/fireF64 entry.
+func saLowerNodeFireSlice(w printer.EmitTextWriter, key, slice string, scope *saScope, nextTemp *int) (string, bool, string) {
+	symbol, nodeOut, ok := saNodeProjTable(key)
+	if !ok {
+		return "", false, key + " is not a projected std surface (see StdProjectionTable)"
+	}
+	scope.addImport("node.sai")
+	bp, bl := saExpandStr(w, slice, nextTemp)
+	ins := []string{bp, bl}
+	var fslot string
+	if nodeOut == "fireF64" {
+		fslot = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", fslot))
+		saOwnTemp(scope, fslot)
+		ins = append(ins, "&"+fslot)
+	}
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", st, symbol, strings.Join(ins, ", ")))
+	saOwnTemp(scope, st)
+	saNodeStatusCheck(w, st, scope, nextTemp)
+	if nodeOut == "fireF64" {
+		fout := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", fout, fslot))
+		saReleaseOwnedTemp(w, scope, fslot)
+		scope.types[fout] = "f64"
+		return fout, false, ""
+	}
+	return "", true, ""
+}
+
+// saLowerBufferConcat lowers Buffer.concat([a, b, ...]) with a literal element
+// list (identifiers and string literals only; dynamic arrays refuse loudly).
+func saLowerBufferConcat(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 || argNodes[0] == nil || argNodes[0].Kind != ast.KindArrayLiteralExpression {
+		return "", false, "Buffer.concat takes exactly 1 argument (an array literal)", true
+	}
+	symbol, nodeOut, ok := saNodeProjTable("Buffer.concat")
+	if !ok || nodeOut != "argv" {
+		return "", false, "Buffer.concat is not a projected std surface (see StdProjectionTable)", true
+	}
+	_ = symbol
+	scope.addImport("node.sai")
+	parts := []string{}
+	for _, el := range argNodes[0].AsArrayLiteralExpression().Elements.Nodes {
+		if el == nil || (el.Kind != ast.KindIdentifier && el.Kind != ast.KindStringLiteral && el.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return "", false, "Buffer.concat elements must be identifiers or string literals", true
+		}
+		h, msg := saEvalStr(w, el, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		bp, bl := saExpandStr(w, h, nextTemp)
+		parts = append(parts, bp, bl)
+	}
+	n := len(parts) / 2
+	slots := n
+	if slots == 0 {
+		slots = 1
+	}
+	argv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", argv, slots*16))
+	saOwnTemp(scope, argv)
+	for i := 0; i < n; i++ {
+		w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", argv, i*16, parts[i*2]))
+		w.Write(fmt.Sprintf("  store %s + %d, %s as u64\n", argv, i*16+8, parts[i*2+1]))
+	}
+	// Reuse the argv tail through the table entry.
+	ps := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+	saOwnTemp(scope, ps)
+	ls := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+	saOwnTemp(scope, ls)
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	sym, _, _ := saNodeProjTable("Buffer.concat")
+	w.Write(fmt.Sprintf("  %s = call @%s(%s, %d, &%s, &%s)\n", st, sym, argv, n, ps, ls))
+	saOwnTemp(scope, st)
+	saNodeStatusCheck(w, st, scope, nextTemp)
+	out := saNodeWrapStr(w, ps, ls, scope, nextTemp)
+	saReleaseOwnedTemp(w, scope, argv)
+	return out, false, "", true
 }
 
 func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {

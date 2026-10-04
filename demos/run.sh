@@ -142,7 +142,15 @@ run_one_demo() {
     echo "$n SA-CLEAN"
     return 0
   fi
-  if ! "$SA_BIN" build-exe "$d/main.sai" -o "$out/demo" >"$out/build.log" 2>&1; then
+  # 插件 demo（$d/sa.mod 进仓固定装置）：--project-root 供 bare node.sai 解析。
+  if [ -f "$d/sa.mod" ]; then
+    BUILD_OK=0
+    "$SA_BIN" build-exe --project-root "$d" "$d/main.sai" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
+  else
+    BUILD_OK=0
+    "$SA_BIN" build-exe "$d/main.sai" -o "$out/demo" >"$out/build.log" 2>&1 || BUILD_OK=$?
+  fi
+  if [ "$BUILD_OK" -ne 0 ]; then
     echo "$n FAIL sa build-exe failed: $(head -c 200 "$out/build.log")"
     return 0
   fi
