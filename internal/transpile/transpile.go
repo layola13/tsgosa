@@ -3077,34 +3077,36 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				}
 				specOf[p][spec] = tgt
 				// import provenance（本地名单转出口用；命名 + 默认，
-				// 命名空间无单值跳过）。
-				if cl := st.AsImportDeclaration().ImportClause.AsImportClause(); cl != nil {
-					if nm := cl.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
-						if impOf[p] == nil {
-							impOf[p] = map[string]string{}
+				// 命名空间无单值跳过；副作用导入无 ImportClause 即无 provenance）。
+				if ic := st.AsImportDeclaration().ImportClause; ic != nil {
+					if cl := ic.AsImportClause(); cl != nil {
+						if nm := cl.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+							if impOf[p] == nil {
+								impOf[p] = map[string]string{}
+							}
+							impOf[p][nm.Text()] = tgt + "\x00default"
 						}
-						impOf[p][nm.Text()] = tgt + "\x00default"
-					}
-					if nb := cl.NamedBindings; nb != nil && nb.Kind == ast.KindNamedImports {
-						if ni := nb.AsNamedImports(); ni != nil && ni.Elements != nil {
-							for _, n := range ni.Elements.Nodes {
-								if n == nil || n.Kind != ast.KindImportSpecifier {
-									continue
+						if nb := cl.NamedBindings; nb != nil && nb.Kind == ast.KindNamedImports {
+							if ni := nb.AsNamedImports(); ni != nil && ni.Elements != nil {
+								for _, n := range ni.Elements.Nodes {
+									if n == nil || n.Kind != ast.KindImportSpecifier {
+										continue
+									}
+									sp := n.AsImportSpecifier()
+									inm := n.Name()
+									if inm == nil || inm.Kind != ast.KindIdentifier {
+										continue
+									}
+									local := inm.Text()
+									remote := local
+									if sp != nil && sp.PropertyName != nil {
+										remote = sp.PropertyName.Text()
+									}
+									if impOf[p] == nil {
+										impOf[p] = map[string]string{}
+									}
+									impOf[p][local] = tgt + "\x00" + remote
 								}
-								sp := n.AsImportSpecifier()
-								inm := n.Name()
-								if inm == nil || inm.Kind != ast.KindIdentifier {
-									continue
-								}
-								local := inm.Text()
-								remote := local
-								if sp != nil && sp.PropertyName != nil {
-									remote = sp.PropertyName.Text()
-								}
-								if impOf[p] == nil {
-									impOf[p] = map[string]string{}
-								}
-								impOf[p][local] = tgt + "\x00" + remote
 							}
 						}
 					}
