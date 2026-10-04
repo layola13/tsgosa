@@ -285,6 +285,7 @@ type SARefusal struct {
 type SAOutput struct {
 	SAI         string
 	Refusals    []SARefusal
+	Warnings    []SARefusal
 	Diagnostics []*ast.Diagnostic
 }
 
@@ -387,8 +388,8 @@ func TranspileSA(ctx context.Context, input string, options Options) *SAOutput {
 	if tcx != nil {
 		defer tcx.close()
 	}
-	sai, refusals := saLowerSourceFile(sf, input, tcx)
-	return &SAOutput{SAI: sai, Refusals: refusals}
+	sai, refusals, warnings := saLowerSourceFile(sf, input, tcx)
+	return &SAOutput{SAI: sai, Refusals: refusals, Warnings: warnings}
 }
 
 func saLineOffsets(src string) []int {
@@ -413,9 +414,10 @@ func saPos(offs []int, p int) (int, int) {
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
-func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, []SARefusal) {
+func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, []SARefusal, []SARefusal) {
 	w := printer.NewTextWriter("\n", 2)
 	var refusals []SARefusal
+	var warnings []SARefusal
 	var importOrder []string
 	importSeen := map[string]bool{}
 	needImport := func(path string) {
@@ -684,8 +686,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 			if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
 				continue
 			}
+			// Non-builtin imports warn and continue (usage-erased imports
+			// never reach resolution; use sites refuse naturally when the
+			// names are actually referenced; shape evidence: upstream
+			// recordImports "local module import %s recorded" warning).
+			spec := ""
+			if ms := imp.ModuleSpecifier; ms != nil && ms.Kind == ast.KindStringLiteral {
+				spec = ms.Text()
+			}
 			ln, col := pos(st.Pos())
-			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "value imports are not lowerable (single file)"})
+			warnings = append(warnings, SARefusal{Line: ln, Col: col, Msg: "local module import " + spec + " recorded; single-file lowering continues (multi-file link is Phase 2)"})
 			continue
 		}
 		if st.Kind != ast.KindFunctionDeclaration {
@@ -760,7 +770,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx) (string, 
 	for _, fn := range pendingFns {
 		out += fn
 	}
-	return out, refusals
+	return out, refusals, warnings
 }
 
 func saFuncName(fn *ast.FunctionDeclaration) (string, bool) {
@@ -1988,6 +1998,9 @@ func RunSA(args []string) int {
 		}
 		for _, r := range res.Refusals {
 			fmt.Fprintf(&report, "%s:%d:%d: %s\n", f, r.Line, r.Col, r.Msg)
+		}
+		for _, wr := range res.Warnings {
+			fmt.Fprintf(&report, "%s:%d:%d: warning: %s\n", f, wr.Line, wr.Col, wr.Msg)
 		}
 		if len(res.Refusals) > 0 {
 			refused = true
