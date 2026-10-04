@@ -814,7 +814,9 @@ func saHarvestDefaultObject(st *ast.Node, funcs map[string]saFuncSig, link *saFi
 // 已绑定命名空间导入；逐成员展平为 `default.<名>` 全 resolved 被调；
 // 上游 DefaultPassthrough（`export default lib` 透成员直调）同形；
 // 平函数 `export default f` 无点键可展， naturally 下探旧门（上游同拒）。
-func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink) {
+// 非对象/非标识默认导出（调用/字面量/箭头值）整件大声拒（上游同拒
+// "non-identifier ..."；单文件擦除口径不动，本函数仅 program 域）。
+func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink, pos func(int) (int, int), refusals *[]SARefusal) {
 	if sf == nil || link == nil {
 		return
 	}
@@ -827,7 +829,16 @@ func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink) {
 			continue
 		}
 		ex := ed.Expression.AsNode()
-		if ex == nil || ex.Kind != ast.KindIdentifier {
+		if ex == nil {
+			continue
+		}
+		if ex.Kind == ast.KindObjectLiteralExpression {
+			// 对象形由 saHarvestDefaultObject 收割（hook A），此处无码。
+			continue
+		}
+		if ex.Kind != ast.KindIdentifier {
+			ln, col := pos(ex.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "non-identifier default export is not lowerable"})
 			continue
 		}
 		alias := ex.Text()
@@ -1338,7 +1349,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		// alias surface as `default.<member>` (fully-resolved callees;
 		// upstream DefaultPassthrough 同形；plain-function `export default f`
 		// 下探旧门，上游同拒 "not callable").
-		saHarvestDefaultPassthrough(sf, link)
+		saHarvestDefaultPassthrough(sf, link, pos, &refusals)
 		// Program hook C-class: seed imported class layouts (local
 		// definitions win; defining-file pointer shared read-only).
 		for local, def := range link.classSeed {
