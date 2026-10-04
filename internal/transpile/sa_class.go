@@ -204,30 +204,30 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs exactly one base class"})
 				return false
 			}
-		bdef, ok := classes[base]
-		qbase := base
-		if (!ok || bdef.isIface) && nsScope != "" {
-			if qb, ok2 := classes[nsScope+"_"+base]; ok2 && !qb.isIface {
-				bdef, ok, qbase = qb, true, nsScope+"_"+base
+			bdef, ok := classes[base]
+			qbase := base
+			if (!ok || bdef.isIface) && nsScope != "" {
+				if qb, ok2 := classes[nsScope+"_"+base]; ok2 && !qb.isIface {
+					bdef, ok, qbase = qb, true, nsScope+"_"+base
+				}
 			}
-		}
-		if !ok || bdef.isIface {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
-			return false
-		}
-		for p := qbase; p != ""; {
-			if p == name {
+			if !ok || bdef.isIface {
 				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " has an inheritance cycle through " + base})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
 				return false
 			}
-			pb, ok := classes[p]
-			if !ok {
-				break
+			for p := qbase; p != ""; {
+				if p == name {
+					ln, col := pos(st.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " has an inheritance cycle through " + base})
+					return false
+				}
+				pb, ok := classes[p]
+				if !ok {
+					break
+				}
+				p = pb.parent
 			}
-			p = pb.parent
-		}
 			for _, f := range bdef.fields {
 				def.fields = append(def.fields, f)
 				def.offsets[f.name] = f.offset
@@ -378,6 +378,19 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					// 函数类型字段落 ptr 句柄槽（构造捕获箭头逐实例记表，去虚化回放；
 					// 封存 recordClassNamed:9713-9716 + wireCtorFieldStore:10022-10033）。
 					fkind = "arr"
+				} else if qn, ok := saQualifiedTypeName(pd.Type); ok {
+					// 限定引用字段 `f: N.C`（与 `N_C` 布局键同形；未记录沿旧门）。
+					if sub, ok := classes[qn]; ok {
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = sub.name
+					} else {
+						ln, col := pos(m.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
+						return false
+					}
 				} else if pd.Type.Kind == ast.KindUnionType {
 					// union-typed fields lower as ptr handle slots (cf saNameOfType union default).
 					fkind = "arr"

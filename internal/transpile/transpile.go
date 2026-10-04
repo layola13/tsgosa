@@ -1760,6 +1760,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 							continue
 						}
 					}
+					// 限定形参 `c: N.C`（与 `N_C` 布局键同形；具化/未知沿旧门）。
+					if qn, ok := saQualifiedTypeName(pd.Type); ok {
+						if _, ok := classes[qn]; ok {
+							kinds[name] = "inst:" + qn
+							continue
+						}
+					}
 				}
 				if pd.Type.Kind == ast.KindUnionType {
 					// 非折叠联合形参缺省 i32（cf tUnknown signature default；可折叠已由 saAnnotKind 办）。

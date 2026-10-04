@@ -20,6 +20,33 @@ func saLowerVarDecl(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos f
 	return saLowerVarDeclList(w, s, vs.DeclarationList.AsVariableDeclarationList(), scope, pos, refusals, nextTemp)
 }
 
+// saQualifiedTypeName 解析类型引用名文本（标识符直返；单层 `N.C` 限定名
+// 展平为 `N_C` 布局键；其他形一律 false）。调用方禁止对 TypeName 直接
+// .Text()（QualifiedName 会 panic，0 崩溃铁律；封存 step152 同族）。
+func saQualifiedTypeName(tn *ast.TypeNode) (string, bool) {
+	if tn == nil || tn.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := tn.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil {
+		return "", false
+	}
+	if ref.TypeName.Kind == ast.KindIdentifier {
+		return ref.TypeName.Text(), true
+	}
+	if ref.TypeName.Kind != ast.KindQualifiedName {
+		return "", false
+	}
+	qn := ref.TypeName.AsQualifiedName()
+	if qn == nil || qn.Left == nil || qn.Right == nil {
+		return "", false
+	}
+	if qn.Left.Kind != ast.KindIdentifier || qn.Right.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	return qn.Left.Text() + "_" + qn.Right.Text(), true
+}
+
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 		// `using`/`await using` 同旗（后者 NodeFlagsAwaitUsing 含 Using 位）；
@@ -271,9 +298,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
 					return false
 				}
-				ref := tn.AsTypeReferenceNode()
-				if ref == nil || ref.TypeName == nil ||
-					ref.TypeName.Text() != cname {
+				// 限定注解 `N.C` 与 `new N.C()` 的 `N_C` 布局键同形（须一致；
+				// 非标识/非单层限定沿旧门；直接 .Text() 会 panic，禁碰）。
+				tname, ok := saQualifiedTypeName(tn)
+				if !ok || tname != cname {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
 					return false
@@ -816,7 +844,19 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		return "", false
 	}
 	ref := t.AsTypeReferenceNode()
-	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+	if ref == nil || ref.TypeName == nil {
+		return "", false
+	}
+	if ref.TypeName.Kind != ast.KindIdentifier {
+		// 限定返回 `N.C`（与 `N_C` 布局键同形；具化泛型沿旧门）。
+		if ref.TypeArguments != nil {
+			return "", false
+		}
+		if qn, ok := saQualifiedTypeName(t); ok {
+			if _, ok := classes[qn]; ok {
+				return "inst:" + qn, true
+			}
+		}
 		return "", false
 	}
 	if ref.TypeArguments != nil {
