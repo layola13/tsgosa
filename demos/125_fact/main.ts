@@ -1,0 +1,10 @@
+function fact(n: i32): i32 {
+  if (n <= 1) {
+    return 1;
+  }
+  return n * fact(n - 1);
+}
+function main(): i32 {
+  console.log(fact(5));
+  return 0;
+}

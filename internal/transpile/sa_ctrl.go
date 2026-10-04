@@ -708,7 +708,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
 				return false
 			}
-			w.Write(fmt.Sprintf("  %s = %s\n", target, r))
+			saStoreLocal(w, target, r, scope, nextTemp)
 			return true
 		}
 		op, ok := saCompoundOp(saBinaryOpKind(be))
@@ -743,7 +743,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
-		w.Write(fmt.Sprintf("  %s = %s\n", target, t))
+		saStoreLocal(w, target, t, scope, nextTemp)
 		return true
 	default:
 		ln, col := pos(incr.Pos())

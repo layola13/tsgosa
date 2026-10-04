@@ -178,3 +178,30 @@ main.ts --tsgo --sa--> main.sai --sa build-exe--> out/demo --run--> diff expecte
 | 120_lcm | 递归 gcd 求 lcm | 7 |
 
 已知边界（续5）：helper 内 while 多重绑两家同 RegisterRedefinition（101/103 原形，记 H16；for 形可用）；rest+缺省混合短调拒（沿 step71 门）；`while(1)` 薄口曾落裸 `br 1`（step147 已修）；map/filter 链须函数内（H12 同族）。
+
+## 第七批（121–140）
+
+| demo | 特性 | step/台账 |
+|---|---|---|
+| 121_second_max | 次大值分支 | 2 |
+| 122_rotate | slice+concat 轮转 | 26 |
+| 123_merge | 归并+尾部补齐 | 7 |
+| 124_slug | 串长/首字/下标 | 25 |
+| 125_fact | 递归阶乘 | 7 |
+| 126_clamp | min/max 嵌套钳位 | 23 |
+| 127_sorted | every 有序判定 | 26 |
+| 128_sieve | 埃氏筛（非常量步进） | step148 增量释放修复 |
+| 129_range | 区间求和 | 7 |
+| 130_vowels | 元音计数+形参串== | 25 |
+| 131_super | super 方法调用 | 34 |
+| 132_map_count | Map 读改写计数 | 30 |
+| 133_area | 接口形参求值 | 32 |
+| 134_gcd_loop | while 辗转相除 | 7 |
+| 135_pow_loop | 循环乘方 | 7 |
+| 136_concat_all | concat 合并 | 26 |
+| 137_tri | 三角数 | 7 |
+| 138_diag | 嵌套下标对角线 | 80 |
+| 139_wordlen | 空格下标 | 25 |
+| 140_tally | filter 偶数统计 | 26 |
+
+已知边界（续6）：串 `+=` 累加重绑记 H13（124 改只读形）；构造缺省短调 new 侧元数门（沿 step71）；`for(j..;j+=i)` 与 `j=j+i` 同经增量释放修复。
