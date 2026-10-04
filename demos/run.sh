@@ -132,9 +132,10 @@ run_one_demo() {
   fi
   if [ -f "$d/package.json" ]; then
     # 真实 program 工程（package.json + 多文件 + npm deps）：tsgo build 出 sci
-    # workspace，合并 main.sai 即编译产物（--check 比对进仓 $d/main.sai）。
+    # workspace，合并 main.sa（成员入口，.sa 方为真编译单元）即编译产物
+    #（--check 比对进仓 $d/main.sa）。
     # 预期拒收工程（$d/expect.refused，每行一指纹）：build 必须拒收且指纹全中
-    #（真 zod 本体形；无进仓 main.sai，--check 同判）。
+    #（真 zod 本体形；无进仓 main.sa，--check 同判）。
     if [ -f "$d/expect.refused" ]; then
       if "$TSGO_BIN" build --out "$out/ws" "$d" >"$out/tsgo.log" 2>&1; then
         echo "$n FAIL expected refusal but build passed"
@@ -154,18 +155,18 @@ run_one_demo() {
       echo "$n FAIL tsgo build refused: $(grep -m1 diag "$out/tsgo.log" | head -c 160)"
       return 0
     fi
-    MERGED=$(ls "$out"/ws/packages/*/src/main.sai 2>/dev/null | head -1)
-    if [ -z "$MERGED" ]; then echo "$n FAIL no merged main.sai"; return 0; fi
+    MERGED=$(ls "$out"/ws/packages/*/src/main.sa 2>/dev/null | head -1)
+    if [ -z "$MERGED" ]; then echo "$n FAIL no merged main.sa"; return 0; fi
     if [ "$CHECK" -eq 1 ]; then
-      if ! diff -q "$d/main.sai" "$MERGED" >"$out/diff.txt" 2>&1; then
-        echo "$n FAIL main.sai drift (hand edit or compiler change)"
+      if ! diff -q "$d/main.sa" "$MERGED" >"$out/diff.txt" 2>&1; then
+        echo "$n FAIL main.sa drift (hand edit or compiler change)"
         return 0
       fi
       echo "$n SA-CLEAN"
       return 0
     fi
-    cp "$MERGED" "$d/main.sai"
-    SAI="$d/main.sai"
+    cp "$MERGED" "$d/main.sa"
+    SAI="$d/main.sa"
   else
   if ! "$TSGO_BIN" --sa --out "$SA_OUT" "$d/main.ts" >"$out/tsgo.log" 2>&1; then
     if grep -q "error:" "$out/tsgo.log" 2>/dev/null; then detail="tsgo error"; else detail="transpile refused"; fi

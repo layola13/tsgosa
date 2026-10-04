@@ -16,6 +16,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/compiler"
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/debug"
+	"github.com/microsoft/typescript-go/internal/module"
 	"github.com/microsoft/typescript-go/internal/parser"
 	"github.com/microsoft/typescript-go/internal/printer"
 	"github.com/microsoft/typescript-go/internal/transformers"
@@ -23,6 +24,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/transformers/tstransforms"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
+	"github.com/microsoft/typescript-go/internal/vfs/osvfs"
 	"github.com/microsoft/typescript-go/internal/vfs/vfstest"
 )
 
@@ -2391,7 +2393,7 @@ func RunBuild(args []string) int {
 		modName = saDetectModName(dir)
 	}
 	npmDeps := saReadNpmDeps(dir)
-	res := saLowerProgram(entry, files)
+	res := saLowerProgram(entry, files, dir)
 	report := saProgramReport(entry, modName, res, npmDeps)
 	if err := saWriteWorkspace(out, modName, entry, files, res, npmDeps, report); err != nil {
 		fmt.Fprintf(os.Stderr, "error: scaffold: %v\n", err)
@@ -2482,18 +2484,33 @@ func saProgBuiltinMod(spec string) bool {
 	return strings.HasSuffix(spec, ".wasm") || strings.HasSuffix(spec, ".wit")
 }
 
-// saProgResolveRelative resolves a relative spec against the file set
-// (extensionless/.ts/.js/index candidates, in order).
-func saProgResolveRelative(importer, spec string, files map[string]string) string {
-	dir := path.Dir(importer)
-	if dir == "." {
-		dir = ""
+// saProgResolveRelative resolves a spec against the file set. Primary is the
+// base module resolver (internal/module, Bundler 口径：含 node_modules、
+// package.json exports、`.js`→`.ts` 回退；形状证据：ata.go:189/419、
+// contentmappers.go:18)；仅底座落到 files 集内才认领（node_modules/.d.ts
+// 目标沿旧 Unresolved 聚合），底座不认再走旧 5 候选回退（保旧行为）。
+func saProgResolveRelative(importer, spec string, files map[string]string, dir string, resolver *module.Resolver) string {
+	if resolver != nil && dir != "" {
+		containing := filepath.Join(dir, filepath.FromSlash(importer))
+		if resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil); resolved.IsResolved() {
+			if rel, err := filepath.Rel(dir, resolved.ResolvedFileName); err == nil {
+				if c := path.Clean(filepath.ToSlash(rel)); c != "" {
+					if _, ok := files[c]; ok {
+						return c
+					}
+				}
+			}
+		}
+	}
+	dir2 := path.Dir(importer)
+	if dir2 == "." {
+		dir2 = ""
 	}
 	join := func(base string) string {
-		if dir == "" {
+		if dir2 == "" {
 			return path.Clean(base)
 		}
-		return path.Clean(dir + "/" + base)
+		return path.Clean(dir2 + "/" + base)
 	}
 	for _, c := range []string{join(spec) + ".ts", join(spec) + ".js", join(spec), join(spec) + "/index.ts", join(spec) + "/index.js"} {
 		if _, ok := files[c]; ok {
@@ -2535,14 +2552,26 @@ func saProgModuleSpec(st *ast.Node) string {
 	return imp.ModuleSpecifier.Text()
 }
 
-// saLowerProgram lowers entry plus reachable relative .ts modules.
-func saLowerProgram(entry string, files map[string]string) *saProgResult {
+// saLowerProgram lowers entry plus reachable relative .ts modules. dir is the
+// project root (absolute or not; absolutized for the base resolver).
+func saLowerProgram(entry string, files map[string]string, dir string) *saProgResult {
 	res := &saProgResult{perFile: map[string]string{}}
 	entry = path.Clean(entry)
 	if _, ok := files[entry]; !ok {
 		res.refused = true
 		res.diags = append(res.diags, fmt.Sprintf("entry %s not in file set", entry))
 		return res
+	}
+	// 底座模块解析器（internal/module，磁盘 host + Bundler 口径；单例复用，
+	// 内带缓存；失败 nil 即全走旧候选，行为不变）。
+	var resolver *module.Resolver
+	if absDir, err := filepath.Abs(dir); err == nil {
+		func() {
+			defer func() { _ = recover() }()
+			host := compiler.NewCompilerHost(absDir, osvfs.FS(), libDirectory, nil, nil, nil)
+			resolver = module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler}, "", "", nil)
+			dir = absDir
+		}()
 	}
 	parsed := map[string]*ast.SourceFile{}
 	for p, text := range files {
@@ -2571,7 +2600,7 @@ func saLowerProgram(entry string, files map[string]string) *saProgResult {
 				}
 				continue
 			}
-			if tgt := saProgResolveRelative(p, spec, files); tgt != "" {
+			if tgt := saProgResolveRelative(p, spec, files, dir, resolver); tgt != "" {
 				graph[p] = append(graph[p], tgt)
 				if specOf[p] == nil {
 					specOf[p] = map[string]string{}
@@ -2727,7 +2756,10 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(srcDir, "main.sai"), []byte(res.sai), 0o644); err != nil {
+	// Merged member entry is src/main.sa: the sci/sa workspace resolver
+	// discovers compilation units by .sa (sla/sci workspace demos agree;
+	// .sai artifacts stay per-file for inspection; .ts originals are inert).
+	if err := os.WriteFile(filepath.Join(srcDir, "main.sa"), []byte(res.sai), 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "subset-report.txt"), []byte(report), 0o644); err != nil {
@@ -2748,7 +2780,7 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 	if err := os.WriteFile(filepath.Join(outDir, "sa.mod"), []byte(ws), 0o644); err != nil {
 		return err
 	}
-	readme := "# " + mod + " (tsgo -> SA workspace)\n\nGenerated by tsgo build: TypeScript linked to SA-ASM for the sci/sa toolchain.\n\nEntry: packages/" + mod + "/src/main.sai (member \"" + mod + "\").\n"
+	readme := "# " + mod + " (tsgo -> SA workspace)\n\nGenerated by tsgo build: TypeScript linked to SA-ASM for the sci/sa toolchain.\n\nEntry: packages/" + mod + "/src/main.sa (member \"" + mod + "\").\n"
 	if err := os.WriteFile(filepath.Join(outDir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
