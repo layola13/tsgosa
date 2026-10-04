@@ -208,6 +208,7 @@
 - step179（symlink 穿透 + demo 222，落 `transpile.go` key 策略约 20 行 + `run.sh` parity `-rL` + `demos/222_symlink_nm`，零新 Go 文件）：根因非底座——resolver 回包 realpath 致 rel 必带 `..` 被自家检查丢弃；`saProgKeyFor` 统一键（node_modules 段截断，链接/真实安装同键；界外仍拒）+ `saProgResolveBare`/adopt 同源；边界：链接目标路径须含 node_modules 段（pnpm 式天然满足，非段目标仍拒）；parity 拷贝改 `-rL`（悬空真 FAIL）；222（node_modules→216 相对链接）真机 42，parity DIVERGED（上游无 bare 纳入）。**222/222 + SA-CLEAN + 286 零分歧**；回归 `testrunner` + `vet` 全绿；改动行 gofmt 干净；`main.go` 未动。
 - step180（本地名单转出口，落 `transpile.go` 图/C2 约 50 行，零新 Go 文件、无 demo）：真缺口（UP 过/TN 拒）：`import {add}` + `export {add}` 中转上游 exit 0 真机 42（zod barrel `export {z, z as default}` 同形，命名空间值部分仍后阶段）；图阶段静态建进口 provenance（命名 + 默认，命名空间无单值跳过）+ 本地名单记 `reexpOf` 边（自有函数经 harvest 直解）+ C2 全员 chase 通即无码认领；探针三文件链通真机 42。**222/222 + SA-CLEAN + 286 零分歧**；回归 `testrunner` + `vet` 全绿；改动行 gofmt 干净；`main.go` 未动；用户新纪律：特性可交、demo 不交，本步无 demo。
 - step181（混合默认+命名导入双绑，落 `transpile.go` hook B 约 10 行，零新 Go 文件、无 demo）：真缺口（UP 过/TN 拒）：`import add, {mul}` 默认分支提前认领整句致命名永不到（`unknown function mul`）；默认部处理完落through命名分支（纯默认/默认+命名空间行为零变；`import d, * as ns` 仍跳过）；探针 40+2+6 真机 48。**222/222 + SA-CLEAN + 286 零分歧**；回归 `testrunner` + `vet` 全绿；改动行 gofmt 干净；`main.go` 未动。
+- step182（混合默认+命名空间双绑，落 `transpile.go` hook B 卫句 1 行，零新 Go 文件、无 demo）：真缺口（UP 过 48/TN 拒）：`import add, * as ns` 默认后命名空间成员未绑（step181 卫句仅放行命名）；卫句加放命名空间形，后续既有分支承接；探针 40+2+6 真机 48。**222/222 + SA-CLEAN + 286 零分歧**；回归 `testrunner` + `vet` 全绿；改动行 gofmt 干净；`main.go` 未动；特性可交、demo 不交。
 
 ## 后续 TODO（按优先级排队，逐个击破；探针位 /tmp/probe 可复现；每项附证据与验收）
 ### P0 移植缺口（UP 过 / TN 拒）

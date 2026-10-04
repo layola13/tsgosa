@@ -664,7 +664,7 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "default imports link in a later stage"})
 			}
 		}
-		if nb := clause.NamedBindings; nb == nil || nb.Kind != ast.KindNamedImports {
+		if nb := clause.NamedBindings; nb == nil || (nb.Kind != ast.KindNamedImports && nb.Kind != ast.KindNamespaceImport) {
 			return true
 		}
 	}
