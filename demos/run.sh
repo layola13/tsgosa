@@ -66,7 +66,8 @@ if [ "$CORPUS" -eq 1 ]; then
     if grep -q "refused=true" "$o1/subset-report.txt" 2>/dev/null; then up_ok=0; else up_ok=1; fi
     if "$TSGO_BIN" --sa --out "$o2" "$src" >/dev/null 2>&1; then
       base=$(basename "$src" .ts)
-      if [ -f "$o2/$base.sai" ] && [ ! -s "$o2/subset-report.txt" ]; then port_ok=1; else port_ok=0; fi
+      # 警告行（warning:）不翻 verdict；只有非警告行才算拒绝。
+      if [ -f "$o2/$base.sai" ] && ! grep -qv "warning:" "$o2/subset-report.txt" 2>/dev/null; then port_ok=1; else port_ok=0; fi
     else
       port_ok=0
     fi
