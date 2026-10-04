@@ -247,11 +247,17 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				saDeclareOwned(scope, name)
 				continue
 			}
-			// 实例声明（`const o: C = new C(...)` 注解须同名；`let o = new C()` 推断）。
+			// 实例声明（`const o: C = new C(...)` 注解须同名；`let o = new C()` 推断；
+			// `new N.C()` 经 `N_C` 限定布局，单文件命名空间成员类）。
 			ne := vd.Initializer.AsNewExpression()
 			cname := ""
 			if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
 				cname = ne.Expression.Text()
+			} else if ne.Expression != nil && ne.Expression.Kind == ast.KindPropertyAccessExpression {
+				pa := ne.Expression.AsPropertyAccessExpression()
+				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier {
+					cname = pa.Expression.Text() + "_" + pa.Name().Text()
+				}
 			}
 			if _, ok := scope.classes[cname]; !ok {
 				ln, col := pos(vd.Initializer.Pos())
@@ -1105,11 +1111,12 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 	return true
 }
 
-// saNsFuncMembers 判定运行时 namespace 是否只含函数/类型成员（可走成员函数
-// 直落；含值（const/let/类/嵌套等）一律 false，调用方沿旧 kind-268 拒）。
-// 类型成员（接口/别名/枚举）记录期跳过（无码擦除，与纯类型 ns 同例）。
-// 形状证据：封存 prescanNamespaces 类型分支 + lowerPendingNamespaces 函数面。
-func saNsFuncMembers(st *ast.Node) (string, []*ast.Node, bool) {
+// saNsLowerableMembers 判定运行时 namespace 是否只含函数/类/类型成员
+// （可走成员直落；含值（const/let/嵌套等）一律 false，调用方沿旧 kind-268 拒）。
+// 类型成员（接口/别名/枚举）记录期跳过（无码擦除，与纯类型 ns 同例）；
+// 类成员记 `N_C` 布局（同 ns 函数 `N_f` 惯例）；同 ns 内 heritage 基另步。
+// 形状证据：封存 prescanNamespaces 类型/类分支 + recordClassNamed 全形。
+func saNsLowerableMembers(st *ast.Node) (string, []*ast.Node, bool) {
 	if st == nil || st.Kind != ast.KindModuleDeclaration {
 		return "", nil, false
 	}
@@ -1133,8 +1140,9 @@ func saNsFuncMembers(st *ast.Node) (string, []*ast.Node, bool) {
 			return "", nil, false
 		}
 		switch m.Kind {
-		case ast.KindFunctionDeclaration, ast.KindInterfaceDeclaration,
-			ast.KindTypeAliasDeclaration, ast.KindEnumDeclaration:
+		case ast.KindFunctionDeclaration, ast.KindClassDeclaration,
+			ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration,
+			ast.KindEnumDeclaration:
 		default:
 			return "", nil, false
 		}

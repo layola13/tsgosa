@@ -885,6 +885,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			saRecordClass(st, classes, pos, &refusals)
 			continue
 		}
+		// 命名空间成员类预扫成表（`N_C` 限定布局；同 ns 内 heritage 基另步；
+		// 形状证据：封存 recordClassNamed:9586-9611 具名记录全形）。
+		if ns, members, ok := saNsLowerableMembers(st); ok {
+			for _, m := range members {
+				if m == nil || m.Kind != ast.KindClassDeclaration {
+					continue
+				}
+				mn := m.Name()
+				if mn == nil || mn.Kind != ast.KindIdentifier {
+					continue
+				}
+				saRecordClassNamed(m, ns+"_"+mn.Text(), classes, pos, &refusals)
+			}
+			continue
+		}
 		// 顶层类表达式预扫成表（`const C = class...` 绑定名记录，
 		// 自身具名记别名；无码；形状证据：封存 recordClassNamed:9586-9611）。
 		if bound, ce, ok := saTopLevelClassExpr(st); ok {
@@ -939,9 +954,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		saPrescanFuncSig(fn, st, nm.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
 	}
 	// 预扫二b：命名空间成员函数签名（`N_f` 发射键 + `N.f` 调用键双记；无体
-	// 跳过；非函数/类型成员整块不在此（发射侧同门拒）；形状证据见 saNsFuncMembers）。
+	// 跳过；非函数/类/类型成员整块不在此（发射侧同门拒）；形状证据见 saNsLowerableMembers）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
-		ns, members, ok := saNsFuncMembers(st)
+		ns, members, ok := saNsLowerableMembers(st)
 		if !ok {
 			continue
 		}
@@ -1051,7 +1066,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			// 命名空间成员函数收割（`N.f` 点键 + 发射名记 defLocal；定义侧
 			// step194 发射 `@N_f`；上游 bindNSMembers 点键同形）。
-			if ns, members, ok := saNsFuncMembers(st); ok {
+			if ns, members, ok := saNsLowerableMembers(st); ok {
 				for _, m := range members {
 					if m == nil || m.Kind != ast.KindFunctionDeclaration {
 						continue
@@ -1269,7 +1284,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			// 成员函数直落（`@N_f`；program 前缀由 defPrefix 续接；类型成员
 			// 跳过；含值成员沿旧 kind-268 拒）。
-			if ns, members, ok := saNsFuncMembers(st); ok {
+			if ns, members, ok := saNsLowerableMembers(st); ok {
 				for _, m := range members {
 					if m == nil || m.Kind != ast.KindFunctionDeclaration {
 						continue
