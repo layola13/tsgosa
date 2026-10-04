@@ -1,0 +1,5 @@
+# 纯 .js 包（无 .ts 源码）预期拒收指纹（沿旧 Unresolved；双边同拒非缺口；
+# Unresolved 明细只落 subset-report.txt 文件，不进 stdout，故只钉 stdout 行）
+is not resolvable (bare third-party imports are Phase 3
+unknown function add
+refused: resolve subset-report.txt before running sh build.sh

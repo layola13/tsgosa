@@ -1,0 +1,7 @@
+{
+  "name": "js_only",
+  "version": "1.0.0",
+  "dependencies": {
+    "jsonly-pkg": "1.0.0"
+  }
+}
