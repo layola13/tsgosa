@@ -3128,7 +3128,7 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 	if err := os.WriteFile(filepath.Join(outDir, "README.md"), []byte(readme), 0o644); err != nil {
 		return err
 	}
-	buildsh := "#!/usr/bin/env sh\n# Build the workspace member with the sci toolchain.\nset -eu\nSA_BIN=\"${SA_BIN:-sa}\"\n\"$SA_BIN\" build-workspace -p " + mod + " -o main\n"
+	buildsh := "#!/usr/bin/env sh\n# Build the workspace member with the sci toolchain.\nset -eu\ncd \"$(dirname \"$0\")\"\nif grep -q \"refused=true\" subset-report.txt 2>/dev/null; then\n  echo \"refused: resolve subset-report.txt before building\" >&2\n  exit 1\nfi\nSA_BIN=\"${SA_BIN:-sa}\"\n\"$SA_BIN\" build-workspace -p " + mod + " -o main\n"
 	if err := os.WriteFile(filepath.Join(outDir, "build.sh"), []byte(buildsh), 0o755); err != nil {
 		return err
 	}
