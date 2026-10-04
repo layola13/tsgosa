@@ -3,6 +3,9 @@
 # 用法: ./run.sh [-j N] [--check] [demo目录名...]   (无参数=全量)
 #   -j N / --jobs N: 并行跑 N 例（默认 CPU 数；输出表仍按目录序打印，PASS/FAIL 与串行一致）
 #   --corpus: 对 sa_plugin_ts/demos 语料跑上游/薄口通拒差分（零分歧即过；同样受 -j 控制）
+#   --parity: 对 program demo（package.json 工程）跑上游 build/薄口 build 通拒对照表
+#     （只报告 UP_EXIT/TN_EXIT，不判 PASS/FAIL；有意分歧见 AGENTS step172 矩阵；
+#     上游不可用即 SKIP，不卡门）
 # --check: 只重生成 .sai 并与进仓版逐字节比对(.sai 禁止手改,只能由编译器出;供 CI/提交前自证)
 set -u
 set -o pipefail
@@ -11,10 +14,12 @@ export PATH=$PATH:/opt/zig:/usr/local/go/bin
 JOBS=0
 CHECK=0
 CORPUS=0
+PARITY=0
 while [ "$#" -gt 0 ]; do
   case "${1:-}" in
     --check) CHECK=1; shift ;;
     --corpus) CORPUS=1; shift ;;
+    --parity) PARITY=1; shift ;;
     -j|--jobs) JOBS="${2:-0}"; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     -j*|--jobs=*) JOBS="${1#-j}"; JOBS="${JOBS#--jobs=}"; shift ;;
     --) shift; break ;;
@@ -98,6 +103,67 @@ if [ "$CORPUS" -eq 1 ]; then
   [ -n "$bad" ] && echo "mismatched:$bad"
   [ "$mismatch" -eq 0 ]
   exit $?
+fi
+
+# ---- parity 模式: program demo 上游 build vs 薄口 build 通拒对照（只报告）----
+if [ "$PARITY" -eq 1 ]; then
+  SATSGO_DIR=${SATSGO_DIR:-/content/sa_all/satsgo}
+  UP_BIN=${UP_BIN:-/tmp/tsgo-sa-upstream}
+  if [ ! -d "$SATSGO_DIR/cmd/tsgo-sa" ]; then
+    echo "parity SKIP: upstream not found at $SATSGO_DIR"
+    exit 0
+  fi
+  if [ -n "$(find "$SATSGO_DIR/cmd/tsgo-sa" "$SATSGO_DIR/internal/saemit" -name '*.go' -newer "$UP_BIN" 2>/dev/null | head -1)" ] || [ ! -x "$UP_BIN" ]; then
+    echo "building upstream tsgo-sa ..."
+    (cd "$SATSGO_DIR" && go build -o "$UP_BIN" ./cmd/tsgo-sa) || { echo "parity SKIP: upstream build failed"; exit 0; }
+  fi
+  run_one_parity() {
+    n="$1"
+    d="$HERE/$n"
+    [ -f "$d/package.json" ] || return 0
+    # demo 内 out/ 与上游残留不进上游输入：拷到临时干净树（node_modules fixture 同步带走）。
+    t=$(mktemp -d)
+    for f in "$d"/*; do
+      b=$(basename "$f")
+      case "$b" in out|*.sa) continue ;; esac
+      cp -r "$f" "$t/" 2>/dev/null
+    done
+    uo=$(mktemp -d); to=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$t' '$uo' '$to'" RETURN
+    (cd "$t" && "$UP_BIN" build --out "$uo" . >/dev/null 2>&1); up=$?
+    (cd "$t" && "$TSGO_BIN" build --out "$to" . >/dev/null 2>&1); tn=$?
+    if [ "$up" -eq "$tn" ]; then tag="SAME"; else tag="DIVERGED"; fi
+    echo "$n $tag up=$up tn=$tn"
+  }
+  if [ "$#" -gt 0 ]; then
+    DEMOS=$(printf '%s\n' "$@")
+  else
+    DEMOS=$(ls "$HERE")
+  fi
+  FILTERED=""
+  for n in $DEMOS; do
+    [ -f "$HERE/$n/main.ts" ] || continue
+    [ -f "$HERE/$n/package.json" ] || continue
+    FILTERED="$FILTERED
+$n"
+  done
+  DEMOS="$FILTERED"
+  export TSGO_BIN UP_BIN HERE
+  export -f run_one_parity 2>/dev/null || true
+  tmp_par=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp_par'" EXIT
+  # shellcheck disable=SC2086
+  echo "$DEMOS" | xargs -P "$JOBS" -I{} bash -c 'run_one_parity "$@" >"'"$tmp_par"'/$1.out" 2>&1' _ {} || true
+  printf "%-20s %-9s %s\n" DEMO VERDICT DETAIL
+  for n in $DEMOS; do
+    line=$(cat "$tmp_par/$n.out" 2>/dev/null || echo "$n MISSING")
+    # 行形：`<demo> SAME|DIVERGED up=<u> tn=<t>`
+    set -- $line
+    printf "%-20s %-9s %s\n" "$1" "$2" "$3 $4"
+  done
+  exit 0
 fi
 
 if [ "$#" -gt 0 ]; then
