@@ -216,7 +216,7 @@
 - [ ] H1c 双报去重（三元/str 推断臂内层直报+wrapper 复报 2 vs 上游 1；step138 已对齐位置，计数对齐另立）.
 - [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；unknown-fn 体；datenew " binds" 尾；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.
 - [x] H10 声明/赋值位三元值 → step143 已落地（f64 门仅真浮臂进 + i32 臂记种 + 去 f64 臂双写；`const t`/`r=` 转正且真机值对）.
-- [ ] H11 for-in 增量 UseAfterMove（`t_6` 于 `add t_6, 1`；for-of 同形已修，for-in 另立）.
+- [x] H11 for-in 增量 UseAfterMove → 本轮复验双边同过且真机同值 60，闭环（201_for_in 常绿为证）。
 - [x] H15 绑定嵌套数组 for-of 行绑定 → step153 已修（202_nested_forof 真机 4），本轮复验双边同过同值闭环。
 - [ ] H13 串重绑释放（`s += /s = s+` 重绑缺先释，verifier 报 RegisterRedefinition；上游同例段错误，真上游 bug；另立）.
 - [ ] H14 trim/repeat 指针算术段错误（trim 柄 `out` 已补 own 但运行错，上游 trim 连解析错；另立）.
