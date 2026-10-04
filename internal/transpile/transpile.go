@@ -1373,9 +1373,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			continue
 		}
 		// 混合 namespace 纯量拍扁（函数/类共存时导出纯量照常折叠；非纯整块
-		// 大声拒；类型/嵌套由展平门控；`let`/非导出沿旧门）。
+		// 大声拒；类型/嵌套由展平门控；`let` 未赋值才折（assigned 集判）；
+		// 非导出沿旧门）。
 		if _, ok := saFlattenNsMembers(st); ok {
-			saFoldMixedNsConsts(st, topConsts, topStr, pos, &refusals)
+			saFoldMixedNsConsts(st, topConsts, topStr, assigned, pos, &refusals)
 		}
 	}
 	// Program hook A-const: harvest folded ns const values for dependents

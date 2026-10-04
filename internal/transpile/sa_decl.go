@@ -1153,13 +1153,13 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 
 // saNsMember 是展平后的命名空间成员（路径联结键 + 原节点）。
 type saNsMember struct {
-	under  string    // 发射键：N_M_f（const 为父路径，折叠键另计）
-	dotted string    // 调用键：N.M.f
-	scope  string    // 父路径：N_M（heritage 回退域；顶层 ns 即首段）
-	node   *ast.Node // 成员声明节点（const 为整条 VariableStatement）
-	decl   *ast.Node // const declarator 节点（非 const 为空）
-	isFunc bool      // 函数成真
-	isConst bool     // 纯量声明成真（类成员两假；类型成员展平期跳过）
+	under   string    // 发射键：N_M_f（const 为父路径，折叠键另计）
+	dotted  string    // 调用键：N.M.f
+	scope   string    // 父路径：N_M（heritage 回退域；顶层 ns 即首段）
+	node    *ast.Node // 成员声明节点（const 为整条 VariableStatement）
+	decl    *ast.Node // const declarator 节点（非 const 为空）
+	isFunc  bool      // 函数成真
+	isConst bool      // 纯量声明成真（类成员两假；类型成员展平期跳过）
 }
 
 // saFlattenNsMembers 递归展平运行时 namespace（函数/类成员全收，类型成员
@@ -1206,8 +1206,9 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 					isFunc: m.Kind == ast.KindFunctionDeclaration,
 				})
 			case ast.KindVariableStatement:
-				// 导出 const 声明逐 declarator 记纯量条（折叠消费；`let`/
-				// 非导出/using 沿旧门整块拒，可变 ns 槽另步）。
+				// 导出 const/let 声明逐 declarator 记纯量条（折叠消费；
+				// `let` 须未被赋值（赋值即跳槽，用点大声拒，可变槽另步）；
+				// 非导出/using 沿旧门整块拒）。
 				vs := m.AsVariableStatement()
 				if vs == nil || vs.DeclarationList == nil {
 					return false
@@ -1219,9 +1220,7 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 				if dl == nil || len(dl.Declarations.Nodes) == 0 {
 					return false
 				}
-				if dl.AsNode().Flags&ast.NodeFlagsConst == 0 {
-					return false
-				}
+				// const 与 let 皆容（`let` 折叠与否由赋值扫描定；using 沿旧门）。
 				if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 					return false
 				}
@@ -1282,9 +1281,9 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 
 // saFoldMixedNsConsts 折叠混合 ns 的导出纯量（`N.M.K` 键入顶层折叠值域，
 // 与 `N.K` 读位同键；纯度与 saFoldNamespaceConsts 逐 declarator 同形；
-// 非纯/重名即整块大声拒，副作用永不静默吞）。
+// 非纯/重名即整块大声拒，副作用永不静默吞；`let` 须未被赋值（assigned 集判）。
 // 调用方：整块折叠不成且展平门过时（预扫折叠环；发射侧照常直落函数）。
-func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string]bool, assigned map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	members, ok := saFlattenNsMembers(st)
 	if !ok {
 		return false
@@ -1307,6 +1306,12 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 			return false
 		}
 		seen[key] = true
+		// `let` 被赋值即跳过（槽另步；用点沿旧门大声拒）。
+		if !isNsConstDecl(mb.node) {
+			if nm := vd.Name(); nm != nil && nm.Kind == ast.KindIdentifier && assigned[nm.Text()] {
+				continue
+			}
+		}
 		init := vd.Initializer
 		if init == nil {
 			ln, col := pos(mb.decl.Pos())
@@ -1359,10 +1364,10 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 // 调用方：ns 成员函数发射前后（语句同步落字，out-of-line 体呈文本 baked）。
 func saEnterNsScopeConsts(topConsts map[string]string, topStr map[string]bool, members []saNsMember, scope string) func() {
 	type saved struct {
-		v     string
-		s     bool
-		hasV  bool
-		hasS  bool
+		v    string
+		s    bool
+		hasV bool
+		hasS bool
 	}
 	type seed struct {
 		name string
@@ -1432,6 +1437,23 @@ func saEnterNsScopeConsts(topConsts map[string]string, topStr map[string]bool, m
 			}
 		}
 	}
+}
+
+// isNsConstDecl 判定 ns 成员声明是否为 const（`let` 另判赋值；形状证据：
+// NodeFlagsConst 位，顶层折叠同谓词）。
+func isNsConstDecl(st *ast.Node) bool {
+	if st == nil || st.Kind != ast.KindVariableStatement {
+		return false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil {
+		return false
+	}
+	return dl.AsNode().Flags&ast.NodeFlagsConst != 0
 }
 
 // saFoldNamespaceConsts 折叠单层 `namespace N { export const K = <纯字面> }`
