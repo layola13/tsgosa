@@ -62,8 +62,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			want := ""
 			if vd.Type != nil {
 				tn := vd.Type
+				if tn.Kind != ast.KindTypeReference {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+					return false
+				}
 				ref := tn.AsTypeReferenceNode()
-				if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil {
+				if ref == nil || ref.TypeName == nil {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
 					return false
@@ -115,13 +120,18 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				saDeclareOwned(scope, name)
 				continue
 			}
-			// `new Map()`/`new Set()` 绑定为 map/set 种（零参；有参形大声拒）。
+			// `new Map()`/`new Set()` 绑定为 map/set 种（参数忽略容忍，见 saLowerMapNew）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier &&
 				(ne.Expression.Text() == "Map" || ne.Expression.Text() == "Set") {
 				if vd.Type != nil {
 					tn := vd.Type
+					if tn.Kind != ast.KindTypeReference {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "collection annotation must be Map or Set"})
+						return false
+					}
 					ref := tn.AsTypeReferenceNode()
-					if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil ||
+					if ref == nil || ref.TypeName == nil ||
 						(ref.TypeName.Text() != "Map" && ref.TypeName.Text() != "Set") {
 						ln, col := pos(d.Pos())
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "collection annotation must be Map or Set"})
@@ -153,8 +163,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				if vd.Type != nil {
 					tn := vd.Type
+					if tn.Kind != ast.KindTypeReference {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "date annotation must be Date"})
+						return false
+					}
 					ref := tn.AsTypeReferenceNode()
-					if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil ||
+					if ref == nil || ref.TypeName == nil ||
 						ref.TypeName.Text() != "Date" {
 						ln, col := pos(d.Pos())
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "date annotation must be Date"})
@@ -181,8 +196,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			if vd.Type != nil {
 				tn := vd.Type
+				if tn.Kind != ast.KindTypeReference {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
+					return false
+				}
 				ref := tn.AsTypeReferenceNode()
-				if tn.Kind != ast.KindTypeReference || ref == nil || ref.TypeName == nil ||
+				if ref == nil || ref.TypeName == nil ||
 					ref.TypeName.Text() != cname {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
@@ -688,8 +708,11 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 			return k, true
 		}
 		// 目标仍为单标识符引用则继续跟随，否则（如接口/字面量）止步拒。
+		if tgt.Kind != ast.KindTypeReference {
+			return "", false
+		}
 		nr := tgt.AsTypeReferenceNode()
-		if tgt.Kind != ast.KindTypeReference || nr == nil || nr.TypeName == nil ||
+		if nr == nil || nr.TypeName == nil ||
 			nr.TypeName.Kind != ast.KindIdentifier || nr.TypeArguments != nil {
 			return "", false
 		}

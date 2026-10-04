@@ -897,7 +897,7 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
 				if pd.Type.Kind == ast.KindTypeReference {
-					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 						if _, ok := classes[ref.TypeName.Text()]; ok {
 							kinds[name] = "inst:" + ref.TypeName.Text()
 							continue
@@ -951,7 +951,7 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 		} else if k, ok := saAnnotKind(pd.Type); ok && k == "arr" {
 			kind = "arr"
 		} else if pd.Type.Kind == ast.KindTypeReference {
-			if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+			if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 				if _, ok := classes[ref.TypeName.Text()]; ok {
 					kind = "inst:" + ref.TypeName.Text()
 				}
@@ -1227,6 +1227,9 @@ func saUnionScalarKind(n *ast.Node) (string, bool) {
 			k = "arr"
 		case ast.KindTypeReference:
 			if ref := m.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+				if ref.TypeName.Kind != ast.KindIdentifier {
+					return "", false
+				}
 				switch ref.TypeName.Text() {
 				case "i32":
 					k = "i32"
@@ -1303,6 +1306,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		return "", false
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+			if ref.TypeName.Kind != ast.KindIdentifier {
+				return "", false
+			}
 			switch ref.TypeName.Text() {
 			case "i32":
 				return "i32", true

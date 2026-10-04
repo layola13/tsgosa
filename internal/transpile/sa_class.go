@@ -351,7 +351,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, classes map[string]*saCl
 					} else if k == "arr" {
 						fkind = "arr"
 					}
-				} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 					if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 						fkind = "inst"
 						if def.fsub == nil {
@@ -604,7 +604,7 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes 
 			continue
 		}
 		// 布局表内类/接口名嵌套句柄（与接口门/类字段门同形）。
-		if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+		if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 			if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 				if def.fsub == nil {
 					def.fsub = map[string]string{}
@@ -711,7 +711,7 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 						iname = ex.Text()
 					}
 				case ast.KindTypeReference:
-					if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil {
+					if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil && tn.TypeName.Kind == ast.KindIdentifier {
 						iname = tn.TypeName.Text()
 					}
 				case ast.KindIdentifier:
@@ -773,7 +773,7 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				} else if k == "arr" {
 					fkind = "arr"
 				}
-			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 				// 类/接口类型嵌套字段皆 8B 句柄（布局表同形；实例与接口对象皆句柄）。
 				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 					fkind = "inst"
@@ -1453,7 +1453,7 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 				continue
 			}
 			// 嵌套布局形参（`p: P`）：对象字面按子布局构造，实例直传须同布局。
-			if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil {
+			if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 				if sub, ok := scope.classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 					if a != nil && a.Kind == ast.KindObjectLiteralExpression {
 						v, _, msg := saLowerObjectLiteral(w, a, sub.name, scope, pos, refusals, nextTemp)
@@ -2080,7 +2080,7 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 				continue
 			}
 			if pd.Type.Kind == ast.KindTypeReference {
-				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 					if _, ok := scope.classes[ref.TypeName.Text()]; ok {
 						kinds[i] = "inst:" + ref.TypeName.Text()
 						continue

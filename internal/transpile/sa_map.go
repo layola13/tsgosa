@@ -96,11 +96,8 @@ func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fu
 	return slice, ""
 }
 
-// saLowerMapNew `new Map()`/`new Set()`（零参；有参形大声拒）。
+// saLowerMapNew `new Map()`/`new Set()`（参数忽略容忍；形状证据：封存 lowerNew:8579-8592 不看参数）。
 func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, nextTemp *int) (string, string) {
-	if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
-		return "", "new " + name + "() takes 0 arguments"
-	}
 	sym, mod := "sa_btree_map_new", "sa_std/btree_map.sa"
 	kind := "map"
 	if name == "Set" {
