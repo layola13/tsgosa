@@ -92,6 +92,41 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saDeclareOwned(scope, name)
 			continue
 		}
+		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindRegularExpressionLiteral {
+			// `const re = /pat/flags` 绑 regex 柄（注解缺省或 RegExp，见 sa_date.go）。
+			if vd.Type != nil {
+				tn := vd.Type
+				if tn.Kind != ast.KindTypeReference {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "regex annotation must be RegExp"})
+					return false
+				}
+				ref := tn.AsTypeReferenceNode()
+				if ref == nil || ref.TypeName == nil ||
+					ref.TypeName.Text() != "RegExp" {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "regex annotation must be RegExp"})
+					return false
+				}
+			}
+			pat, flags, ok := saRegexSplitLiteral(vd.Initializer.Text())
+			if !ok {
+				ln, col := pos(vd.Initializer.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "bad regular expression literal"})
+				return false
+			}
+			h, msg := saLowerRegexCompile(w, pat, flags, scope, nextTemp)
+			if msg != "" {
+				ln, col := pos(vd.Initializer.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "regex"
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			continue
+		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
 			// `new Array(n)` 定长零数组（`new Array(a, b)` 落通用拒绝）。
 			if saIsArrayCtor(vd.Initializer) {
@@ -179,6 +214,35 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				h := saLowerDateNew(w, scope, nextTemp)
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = "date"
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
+				continue
+			}
+			// `new RegExp("pat", "flags?")` 绑 regex 柄（注解缺省或 RegExp）。
+			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "RegExp" {
+				if vd.Type != nil {
+					tn := vd.Type
+					if tn.Kind != ast.KindTypeReference {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "regex annotation must be RegExp"})
+						return false
+					}
+					ref := tn.AsTypeReferenceNode()
+					if ref == nil || ref.TypeName == nil ||
+						ref.TypeName.Text() != "RegExp" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "regex annotation must be RegExp"})
+						return false
+					}
+				}
+				h, msg := saLowerRegexNew(w, ne, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(vd.Initializer.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = "regex"
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)
 				continue

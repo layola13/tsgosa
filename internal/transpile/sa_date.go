@@ -3,12 +3,13 @@ package transpile
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
 )
 
-// sa_date.go — Date 最小子集 + 正则拒绝门（step29；JEV 落件 a 置信度 97%）。
+// sa_date.go — Date 最小子集 + 正则 POSIX-ERE 投影（step29 门，step183 起投影）。
 // 形状证据：封存 lowerMethodCall Date 段:4338-4407（now/parse/i64 恒等/
 // getTimezoneOffset 常 0/投影直调）+ 收敛证据 saemit_test.go:739-830 +
 // 投影表 stdlib.go:176-217（time.sai 现货直调）。
@@ -16,9 +17,15 @@ import (
 // setters）大声拒；仅支持 `new Date()` 无参绑定（millis 不透明存种 "date"）
 // 与纯串方法（toISOString/toString/toDateString/toTimeString/toUTCString）
 // 及 getTimezoneOffset 常 0。
-// 正则：satsgo/sa_plugin_ts 均无 lowering 证据（后者 REQUIREMENTS 明确记
-// replace(/./g) 无支持），regex.sai 为无人调用的现货；铁律 4 禁止原创，
-// 故字面量/new RegExp/.test/.exec 一律大声拒。
+// 正则（step183）：sci 底座 `sa_std/text/regex.sai` 现货直投（`@import
+// "sa_std/text/regex.sa"`，用法见 `sci/tests/unit_framework/support/json_regex.sa`
+// + sal 常量 `SA_REGEX_EXTENDED/ICASE/NEWLINE`）：字面量/new RegExp(串字面量)
+// 编译为 regex 柄（ptr 种 "regex"，归属纪律同 map/set 句柄）；`.test(串)` 经
+// `sa_regex_match` 判空（`ne match, 0`）+ `sa_regex_match_free(^match)` 即释；
+// 默认 cflags 取 `SA_REGEX_EXTENDED`(1)，`i` 加 ICASE(2)、`m` 加 NEWLINE(4)；
+// `g/y/d/s/u/v` 无底座位一律大声拒；JS 特有写法（`(?` 前瞻/命名组、`\d\s\w\b` 等
+// 转义类、`\p \u \x`、`\1` 反向引用、NUL）超 POSIX-ERE 即大声拒，永不静默错码；
+// `.exec/replace/split/match` 另步，沿旧门。
 
 // saIsDateNew 识别无参 `new Date()`。
 func saIsDateNew(e *ast.Node) bool {
@@ -296,4 +303,218 @@ func saIsDateI32Call(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	return saDateBaseKind(pa.Expression, scope)
+}
+
+// ---- 正则 POSIX-ERE 投影（step183；底座 `sa_std/text/regex.sai` 现货直调）----
+
+// saRegexSplitLiteral 拆字面量 `/pat/flags`（Text 全形；`\/` 即 `/`）。
+func saRegexSplitLiteral(text string) (string, string, bool) {
+	if len(text) < 2 || text[0] != '/' {
+		return "", "", false
+	}
+	sep := strings.LastIndex(text, "/")
+	if sep <= 0 {
+		return "", "", false
+	}
+	pat := strings.ReplaceAll(text[1:sep], "\\/", "/")
+	return pat, text[sep+1:], true
+}
+
+// saRegexCflags 映 JS flags 为 sal cflags 字面量（EXTENDED=1/ICASE=2/NEWLINE=4）。
+func saRegexCflags(flags string) (string, string) {
+	c := 1
+	for _, f := range flags {
+		switch f {
+		case 'i':
+			c |= 2
+		case 'm':
+			c |= 4
+		default:
+			return "", "RegExp flag " + string(f) + " has no sa_std/text/regex projection (only i/m)"
+		}
+	}
+	return fmt.Sprintf("%d", c), ""
+}
+
+// saRegexGatePattern 查 JS 特有写法（超 POSIX-ERE 即拒因；"" 为过）。
+func saRegexGatePattern(pat string) string {
+	if strings.Contains(pat, "(?") {
+		return "RegExp (? groups need POSIX ERE (no lookahead/named/capture-less groups)"
+	}
+	for i := 0; i < len(pat); i++ {
+		if pat[i] == 0 {
+			return "RegExp NUL byte has no sa_std/text/regex projection"
+		}
+		if pat[i] != '\\' || i+1 >= len(pat) {
+			continue
+		}
+		n := pat[i+1]
+		switch n {
+		case 'd', 'D', 's', 'S', 'w', 'W', 'b', 'B', 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			return string("RegExp \\") + string([]byte{n}) + " needs POSIX ERE (no JS escape classes/backrefs)"
+		}
+		i++
+	}
+	return ""
+}
+
+// saLowerRegexCompile 编译柄（常量池 + `sa_regex_compile`；归属 temp）。
+func saLowerRegexCompile(w printer.EmitTextWriter, pat, flags string, scope *saScope, nextTemp *int) (string, string) {
+	if msg := saRegexGatePattern(pat); msg != "" {
+		return "", msg
+	}
+	cf, msg := saRegexCflags(flags)
+	if msg != "" {
+		return "", msg
+	}
+	scope.addImport("sa_std/text/regex.sa")
+	cname := saStrIntern(scope.strPool, pat)
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_compile(&%s, %d, %s)\n", t, cname, len(pat), cf))
+	saOwnTemp(scope, t)
+	return t, ""
+}
+
+// saLowerRegexNew `new RegExp("pat", "flags?")`（串字面量元のみ）。
+func saLowerRegexNew(w printer.EmitTextWriter, ne *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	var args []*ast.Node
+	if ne.Arguments != nil {
+		args = ne.Arguments.Nodes
+	}
+	if len(args) < 1 || len(args) > 2 {
+		return "", "new RegExp takes 1 pattern and 1 optional flags argument"
+	}
+	if args[0] == nil || args[0].Kind != ast.KindStringLiteral {
+		return "", "new RegExp pattern must be a string literal"
+	}
+	flags := ""
+	if len(args) == 2 {
+		if args[1] == nil || args[1].Kind != ast.KindStringLiteral {
+			return "", "new RegExp flags must be a string literal"
+		}
+		flags = args[1].Text()
+	}
+	return saLowerRegexCompile(w, args[0].Text(), flags, scope, nextTemp)
+}
+
+// saRegexBaseKind 基种判定（regex 绑定或行内字面量/new）。
+func saRegexBaseKind(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindRegularExpressionLiteral {
+		return true
+	}
+	if e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		return ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "RegExp"
+	}
+	if e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "regex" {
+			return true
+		}
+	}
+	return false
+}
+
+// saLowerRegexTest `.test(串)`（match 判空 + 即释；回 i32；无分支直形——
+// miss 时 match 柄为 0，`sa_regex_match_free(0)` 经 takeResourceLocked 取空
+// 回句柄错码，无陷阱（`sci/src/runtime/sa_std.zig:dynamicIndex/sa_std_close`），
+// 故免 br 保线性态一收敛，见 PhiStateConflict）。
+func saLowerRegexTest(w printer.EmitTextWriter, recv string, arg *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if !saIsStrExpr(arg, scope) {
+		return "", "RegExp.test takes a string argument"
+	}
+	h, msg := saEvalStr(w, arg, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	ip, il := saExpandStr(w, h, nextTemp)
+	scope.addImport("sa_std/text/regex.sa")
+	m := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, recv, ip, il))
+	hit := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+	fst := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", fst, fr))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	w.Write(fmt.Sprintf("  !%s\n", fst))
+	return hit, ""
+}
+
+// saLowerRegexCall 正则调用总线（仅 `.test`；`.exec` 另步）。
+func saLowerRegexCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	pa := ce.Expression.AsPropertyAccessExpression()
+	method := pa.Name().Text()
+	if method != "test" {
+		return "", "", "RegExp." + method + " is not in the subset (only .test)"
+	}
+	var args []*ast.Node
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 {
+		return "", "", "RegExp.test takes 1 argument"
+	}
+	recv := ""
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		recv = pa.Expression.Text()
+	} else {
+		var msg string
+		recv, msg = saLowerRegexInlineBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+	}
+	op, msg := saLowerRegexTest(w, recv, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	return op, "i32", ""
+}
+
+// saLowerRegexInlineBase 行内基编译（字面量/new 直编；绑定名直传）。
+func saLowerRegexInlineBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "regex" {
+			return e.Text(), ""
+		}
+		return "", "not a regex call"
+	}
+	if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
+		pat, flags, ok := saRegexSplitLiteral(e.Text())
+		if !ok {
+			return "", "bad regular expression literal"
+		}
+		return saLowerRegexCompile(w, pat, flags, scope, nextTemp)
+	}
+	if e != nil && e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "RegExp" {
+			return saLowerRegexNew(w, ne, scope, pos, refusals, nextTemp)
+		}
+	}
+	return "", "not a regex call"
+}
+
+// saRegexCallKind 正则调用返回种（`.test`→i32；`.exec` 已知名声拒；余下非正则）。
+func saRegexCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Name() == nil || !saRegexBaseKind(pa.Expression, scope) {
+		return "", false
+	}
+	if pa.Name().Text() == "test" {
+		return "i32", true
+	}
+	return "", true
 }

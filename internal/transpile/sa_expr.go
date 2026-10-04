@@ -376,6 +376,16 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return op, false, ""
 			}
 		}
+		// RegExp.test(串)→i32（POSIX-ERE 投影，见 sa_date.go；.exec 另步）。
+		if pa.Name() != nil {
+			if _, ok := saRegexCallKind(ce, scope); ok {
+				op, _, msg := saLowerRegexCall(w, ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
+			}
+		}
 		// Number.isInteger(x)：i32 操作数恒整（求值保留副作用后折 "1"；
 		// 形状证据：封存 lowerCall:3837-3848）。
 		if saIsNumberIsInteger(ce) {
@@ -2111,7 +2121,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "new Date(x) is not lowerable (only arg-less now-shape binds)"
 			}
 			if ne.Expression.Text() == "RegExp" {
-				return "", "regular expressions are not lowerable (no base lowering; regex.sai is unprojected stock)"
+				return "", "regex value needs a regex binding (const re = /.../ or new RegExp)"
 			}
 			if _, ok := scope.classes[ne.Expression.Text()]; ok {
 				return "", "instance in i32 expression (bind it first)"
@@ -2699,7 +2709,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		return op, ""
 	case ast.KindRegularExpressionLiteral:
-		return "", "regular expressions are not lowerable (no base lowering; regex.sai is unprojected stock)"
+		return "", "regex literal needs a regex binding (const re = /.../)"
 	case ast.KindDeleteExpression:
 		return "", "delete operator is not lowerable (static layouts cannot drop fields; Maps/Sets use .delete())"
 	case ast.KindAwaitExpression:
