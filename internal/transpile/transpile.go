@@ -1182,7 +1182,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, link)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
