@@ -27,6 +27,7 @@ L_endif_3:
   r = t_4
   call @assertEq(r, 7)
   !r
+  call @assertEq(2, 2)
   t_5 = sext 99 as i64
   t_6 = alloc 64
   t_7 = alloc 8

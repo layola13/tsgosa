@@ -553,7 +553,7 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 			return false, false
 		}
 		if prop == "only" {
-			return fail(base + "." + prop + " needs whole-file buffering (not yet)")
+			return fail(base + "." + prop + " is supported inside describe() only (function/top-level buffering not yet)")
 		}
 		var margs []*ast.Node
 		if ce.Arguments != nil {
@@ -624,28 +624,90 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	}
 	if name == "describe" {
 		// 分组透明：hook 进出按栈存取，体内 test/afterAll 经分区消化递归。
-		savedBefore, savedAfter := scope.testBefore, scope.testAfter
-		ok := saInlineDescribeBody(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
-		scope.testBefore, scope.testAfter = savedBefore, savedAfter
-		if !ok {
+		if !saRunDescribe(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 			return true, false
 		}
 		return true, true
 	}
+	if !saInlineTestWithHooks(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return true, false
+	}
+	return true, true
+}
+
+// saInlineTestWithHooks 按“前钩+本体+后钩”内联一个测试体（各单元自带块域）。
+func saInlineTestWithHooks(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	for _, hb := range scope.testBefore {
 		if !saInlineTestUnit(w, hb, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-			return true, false
+			return false
 		}
 	}
 	if !saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-		return true, false
+		return false
 	}
 	for _, hb := range scope.testAfter {
 		if !saInlineTestUnit(w, hb, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-			return true, false
+			return false
 		}
 	}
-	return true, true
+	return true
+}
+
+// saRunDescribe 跑一个 describe 体（hook 进出按栈存取防外泄）。
+func saRunDescribe(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	savedBefore, savedAfter := scope.testBefore, scope.testAfter
+	ok := saInlineDescribeBody(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.testBefore, scope.testAfter = savedBefore, savedAfter
+	return ok
+}
+
+// saOnlyCallBody 解析成员式 `.only` 调用（`test|it|describe.only("name", cb)`；
+// 名静态 + 回调验形，不发射；畸形记拒因返 ok=false）。
+func saOnlyCallBody(st *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) (body *ast.Node, kind string, ok bool) {
+	fail := func(msg string) (*ast.Node, string, bool) {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return nil, "", false
+	}
+	e := st.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return nil, "", true
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindPropertyAccessExpression {
+		return nil, "", true
+	}
+	pa := callee.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+		return nil, "", true
+	}
+	base, prop := pa.Expression.Text(), pa.Name().Text()
+	if prop != "only" || (base != "test" && base != "it" && base != "describe") {
+		return nil, "", true
+	}
+	if !saIsUnresolvedTestName(scope, base) {
+		return nil, "", true
+	}
+	kind = "test"
+	if base == "describe" {
+		kind = "describe"
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 2 {
+		return fail(base + ".only takes a name and a callback (2 arguments)")
+	}
+	if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(base + ".only name must be a string literal")
+	}
+	bd, good := saCheckTestCallback(argNodes[1], base+".only", st, pos, refusals)
+	if !good {
+		return nil, "", false
+	}
+	return bd, kind, true
 }
 
 // saAfterAllBody 识别 afterAll 调用语句并取回调体（1 参回调 / 2 参静态名 +
@@ -690,6 +752,46 @@ func saAfterAllBody(s *ast.Node, scope *saScope, pos func(int) (int, int), refus
 
 // saInlineDescribeBody 内联 describe 体并将其 afterAll 延后（两阶段分区：先体
 // 后钩；嵌套 describe/test 经语句分发递归，嵌套 afterAll 由内层分区就地消化）。
+// saSkipTestCall 仅验形不发射（only 模式下跳过普通 test/describe 注册：
+// 名静态 + 回调验形；体语句一律不降）。
+func saSkipTestCall(st *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	e := st.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return true
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindIdentifier {
+		return true
+	}
+	name := callee.Text()
+	if name != "test" && name != "it" && name != "describe" {
+		return true
+	}
+	if !saIsUnresolvedTestName(scope, name) {
+		return true
+	}
+	fail := func(msg string) bool {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 2 {
+		return fail(name + " takes a name and a callback (2 arguments)")
+	}
+	if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(name + " name must be a string literal")
+	}
+	if _, ok := saCheckTestCallback(argNodes[1], name, st, pos, refusals); !ok {
+		return false
+	}
+	return true
+}
+
 func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	if body.Kind != ast.KindBlock {
 		return saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
@@ -697,6 +799,15 @@ func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool,
 	stmts, ok := saBlockStmts(body)
 	if !ok {
 		return false
+	}
+	// only 预扫（直接子语句有任一 .only 即整域只跑标记项；外域不受影响，
+	// 差异已文档化；嵌套 describe 内 .only 由内层分区递归处理）。
+	onlyMode := false
+	for _, st := range stmts {
+		if saOnlyMark(st, scope) != "" {
+			onlyMode = true
+			break
+		}
 	}
 	var afters []*ast.Node
 	saved := saScopeEnter(scope)
@@ -712,6 +823,40 @@ func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool,
 			}
 			afters = append(afters, ab)
 			continue
+		}
+		if onlyMode {
+			if saOnlyMark(st, scope) != "" {
+				ob, kind, good := saOnlyCallBody(st, scope, pos, refusals)
+				if !good {
+					armOK = false
+					break
+				}
+				if kind == "describe" {
+					savedBefore, savedAfter := scope.testBefore, scope.testAfter
+					ok := saInlineDescribeBody(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+					scope.testBefore, scope.testAfter = savedBefore, savedAfter
+					if !ok {
+						armOK = false
+						break
+					}
+				} else if !saInlineTestWithHooks(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+					armOK = false
+					break
+				}
+				continue
+			}
+			// 非标记 test/describe 注册：验形跳过；其余语句照常降。
+			if e := st.AsExpressionStatement().Expression; e != nil && e.Kind == ast.KindCallExpression {
+				if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
+					if nm := ce.Expression.Text(); nm == "test" || nm == "it" || nm == "describe" {
+						if !saSkipTestCall(st, scope, pos, refusals) {
+							armOK = false
+							break
+						}
+						continue
+					}
+				}
+			}
 		}
 		done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if failed {
@@ -733,6 +878,39 @@ func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool,
 		}
 	}
 	return true
+}
+
+// saOnlyMark 识别直接子语句中的 `test|it|describe.only("name", cb)`（基名须
+// 未解析；返回族名 test/describe，it 归 test；其余返空；畸形由 lowering 侧按
+// 同形大声拒，不在此判）。
+func saOnlyMark(st *ast.Node, scope *saScope) string {
+	e := st.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return ""
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindPropertyAccessExpression {
+		return ""
+	}
+	pa := callee.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+		return ""
+	}
+	base, prop := pa.Expression.Text(), pa.Name().Text()
+	if prop != "only" {
+		return ""
+	}
+	if base != "test" && base != "it" && base != "describe" {
+		return ""
+	}
+	if !saIsUnresolvedTestName(scope, base) {
+		return ""
+	}
+	if base == "describe" {
+		return "describe"
+	}
+	return "test"
 }
 
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值

@@ -22,4 +22,12 @@ describe("math", () => {
   test("much later");
   it("eventually");
 });
+describe("focused", () => {
+  test("skipped would fail", () => {
+    assertEq(1, 2);
+  });
+  test.only("runs", () => {
+    assertEq(2, 2);
+  });
+});
 console.log(99);
