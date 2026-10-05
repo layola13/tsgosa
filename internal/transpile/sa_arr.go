@@ -3919,11 +3919,19 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if msg != "" {
 			return "", "", msg
 		}
+		// 针值记种检查（串/实例句柄禁与 i32 元比较；字面量沿求值门；铁律 4）。
+		if msg := saCheckI32Value(scope, want); msg != "" {
+			return "", "", msg
+		}
 		from := ""
 		if len(argNodes) > 1 {
 			var msg string
 			from, msg = i32arg(1)
 			if msg != "" {
+				return "", "", msg
+			}
+			// 起始下标记种检查（与 at 同形；铁律 4）。
+			if msg := saCheckIntIndex(scope, from); msg != "" {
 				return "", "", msg
 			}
 		} else if method != "lastIndexOf" {
@@ -3946,11 +3954,19 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			if msg != "" {
 				return "", "", msg
 			}
+			// 切片下标记种检查（与 at 同形；铁律 4）。
+			if msg := saCheckIntIndex(scope, start); msg != "" {
+				return "", "", msg
+			}
 		}
 		if len(argNodes) > 1 {
 			var msg string
 			end, msg = i32arg(1)
 			if msg != "" {
+				return "", "", msg
+			}
+			// 切片下标记种检查（与 at 同形；铁律 4）。
+			if msg := saCheckIntIndex(scope, end); msg != "" {
 				return "", "", msg
 			}
 		}
@@ -3964,6 +3980,10 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		v, msg := i32arg(0)
 		if msg != "" {
+			return "", "", msg
+		}
+		// 下标记种检查（串/实例句柄禁作槽位；与下标读同形；铁律 4）。
+		if msg := saCheckIntIndex(scope, v); msg != "" {
 			return "", "", msg
 		}
 		return saLowerArrayAt(w, recv, v, scope, nextTemp), "i32", ""
