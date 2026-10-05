@@ -76,6 +76,12 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported element rhs: " + msg})
 		return false
 	}
+	// 元素右值记种检查（串/实例句柄禁入 i32 槽；与上同形；铁律 4）。
+	if msg := saCheckI32Value(scope, rhs); msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported element rhs: " + msg})
+		return false
+	}
 	saLowerElementStore(w, base, idx, rhs, nextTemp)
 	return true
 }
@@ -113,6 +119,12 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 		cur := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
 		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+			return false
+		}
+		// 复合右值记种检查（串/实例句柄禁入 i32 累加；与标识符目标同形；铁律 4）。
+		if msg := saCheckI32Value(scope, r); msg != "" {
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
 			return false
@@ -184,6 +196,12 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
 						return false
 					}
+					// 复合右值记种检查（与局部目标同形；铁律 4）。
+					if msg := saCheckI32Value(scope, r); msg != "" {
+						ln, col := pos(where.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+						return false
+					}
 					op, _ := saCompoundOp(saBinaryOpKind(be))
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
@@ -201,6 +219,12 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 					cur := saModLoadI32(w, ms, scope, nextTemp)
 					r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 					if msg != "" {
+						ln, col := pos(where.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+						return false
+					}
+					// 复合右值记种检查（与局部目标同形；铁律 4）。
+					if msg := saCheckI32Value(scope, r); msg != "" {
 						ln, col := pos(where.Pos())
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
 						return false
@@ -230,6 +254,12 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	}
 	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+		return false
+	}
+	// 复合右值记种检查（串/实例句柄禁入 i32 累加；与声明/实参位同形；铁律 4）。
+	if msg := saCheckI32Value(scope, r); msg != "" {
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
 		return false
@@ -331,6 +361,12 @@ func saLowerLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scop
 	}
 	if msg != "" {
 		return "", msg
+	}
+	// 逻辑赋值右值记种检查（i32/bool 目标禁串/实例句柄；str 目标沿串求值；铁律 4）。
+	if kind != "str" {
+		if msg := saCheckI32Value(scope, rhs); msg != "" {
+			return "", msg
+		}
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", name, rhs))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, saSnapImm(w, rhs, nextTemp)))
@@ -507,6 +543,12 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		op, msg = saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 	}
 	if msg != "" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
+		return false
+	}
+	// 语句赋值右值记种检查（串/实例句柄禁入 i32/bool 位；str/实例/数组目标沿上分支；铁律 4）。
+	if msg := saCheckI32Value(scope, op); msg != "" {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported assignment rhs: " + msg})
 		return false

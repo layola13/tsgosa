@@ -2888,6 +2888,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if msg != "" {
 				return "", msg
 			}
+			// i32 目标记种检查（串/实例句柄禁入；str 目标沿上串分支；铁律 4）。
+			if msg := saCheckI32Value(scope, op); msg != "" {
+				return "", msg
+			}
 			saStoreLocal(w, target, op, scope, nextTemp)
 			return target, ""
 		}
