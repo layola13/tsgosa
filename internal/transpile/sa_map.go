@@ -96,6 +96,21 @@ func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fu
 	return slice, ""
 }
 
+// saLowerMapIndexLoad lowering `m[k]` 读（脱糖为 map-get；值恒 i32，与
+// `.get(k)` 同形同值；上游 `m[k]` 系数组地址错码，禁照抄，见铁律 4）。
+func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/btree_map.sa")
+	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
+	saOwnTemp(scope, t)
+	return t, ""
+}
+
 // saLowerMapNew `new Map()`/`new Set()`（参数忽略容忍；形状证据：封存 lowerNew:8579-8592 不看参数）。
 func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, nextTemp *int) (string, string) {
 	sym, mod := "sa_btree_map_new", "sa_std/btree_map.sa"

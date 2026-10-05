@@ -320,6 +320,18 @@ func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTe
 // `?.` 空基归零；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	isOpt := ea.QuestionDotToken != nil
+	// Map 种基走 get 脱糖（`m[k]` ≡ `m.get(k)`；Set 无键值，大声拒）。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[ea.Expression.Text()]; ok && (k == "map" || k == "set") {
+			if k == "set" {
+				return "", "Set index reads need .has (no keyed values)"
+			}
+			if isOpt {
+				return "", "optional map index reads are not lowerable"
+			}
+			return saLowerMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		}
+	}
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", "index base must be bound array"
