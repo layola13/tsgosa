@@ -692,6 +692,23 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 		}
 		src, def = h, d2
 	}
+	if def != nil && src == "" && vd.Initializer != nil && saCouldBeInst(vd.Initializer, scope) &&
+		(vd.Initializer.Kind == ast.KindElementAccessExpression || vd.Initializer.Kind == ast.KindCallExpression) {
+		// 注解+下标/调用源（`const {x}: T = M[k]`；注解定布局，源须同布局；
+		// 与上分支同形；布局错配沿本函数旧文拒）。
+		h, d2, msg := saInstBaseElem(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		if d2 == nil || d2.name != def.name {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
+			return false
+		}
+		src = h
+	}
 	if def == nil {
 		// 命名空间别名源（`const {f} = N` / `const {add} = u`）：成员直绑
 		// 限定被调；布局源另走上门。形状证据：封存 link_nsobject.go
