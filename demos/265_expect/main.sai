@@ -89,424 +89,434 @@ L_exp_ok_20:
 L_exp_fail_21:
   panic(2501)
 L_exp_ok_22:
-  t_17 = call @add(1, 2)
-  t_18 = sgt t_17, 2
-  br t_18 -> L_exp_fail_23, L_exp_ok_24
+  t_17 = ne 1, 0
+  br t_17 -> L_exp_fail_23, L_exp_ok_24
 L_exp_fail_23:
   panic(2501)
 L_exp_ok_24:
-  t_19 = call @add(1, 2)
-  t_20 = sge t_19, 3
-  br t_20 -> L_exp_fail_25, L_exp_ok_26
+  t_18 = eq 0, 0
+  br t_18 -> L_exp_fail_25, L_exp_ok_26
 L_exp_fail_25:
   panic(2501)
 L_exp_ok_26:
-  t_21 = call @add(1, 2)
-  t_22 = slt t_21, 4
-  br t_22 -> L_exp_fail_27, L_exp_ok_28
+  t_19 = call @add(1, 2)
+  t_20 = sgt t_19, 2
+  br t_20 -> L_exp_fail_27, L_exp_ok_28
 L_exp_fail_27:
   panic(2501)
 L_exp_ok_28:
-  t_23 = call @add(1, 2)
-  t_24 = sle t_23, 3
-  br t_24 -> L_exp_fail_29, L_exp_ok_30
+  t_21 = call @add(1, 2)
+  t_22 = sge t_21, 3
+  br t_22 -> L_exp_fail_29, L_exp_ok_30
 L_exp_fail_29:
   panic(2501)
 L_exp_ok_30:
-  t_25 = call @add(1, 2)
-  t_26 = sle t_25, 3
-  br t_26 -> L_exp_fail_31, L_exp_ok_32
+  t_23 = call @add(1, 2)
+  t_24 = slt t_23, 4
+  br t_24 -> L_exp_fail_31, L_exp_ok_32
 L_exp_fail_31:
   panic(2501)
 L_exp_ok_32:
-  t_27 = call @add(1, 2)
-  t_28 = sge t_27, 3
-  br t_28 -> L_exp_fail_33, L_exp_ok_34
+  t_25 = call @add(1, 2)
+  t_26 = sle t_25, 3
+  br t_26 -> L_exp_fail_33, L_exp_ok_34
 L_exp_fail_33:
   panic(2501)
 L_exp_ok_34:
+  t_27 = call @add(1, 2)
+  t_28 = sle t_27, 3
+  br t_28 -> L_exp_fail_35, L_exp_ok_36
+L_exp_fail_35:
+  panic(2501)
+L_exp_ok_36:
+  t_29 = call @add(1, 2)
+  t_30 = sge t_29, 3
+  br t_30 -> L_exp_fail_37, L_exp_ok_38
+L_exp_fail_37:
+  panic(2501)
+L_exp_ok_38:
+  !t_29
   !t_27
   !t_25
   !t_23
   !t_21
   !t_19
-  !t_17
-  t_29 = alloc 16
-  store t_29 + 0, &str_const_0 as ptr
-  store t_29 + 8, 5 as u64
-  t_30 = alloc 16
-  store t_30 + 0, &str_const_1 as ptr
-  store t_30 + 8, 3 as u64
-  t_31 = load t_29 + 0 as ptr
-  t_32 = load t_29 + 8 as u64
-  t_33 = load t_30 + 0 as ptr
-  t_34 = load t_30 + 8 as u64
-  t_35 = call @sa_string_index_of(t_31, t_32, t_33, t_34, 0)
-  t_36 = eq t_35, -1
-  !t_35
-  !t_29
-  !t_30
-  br t_36 -> L_exp_fail_35, L_exp_ok_36
-L_exp_fail_35:
-  panic(2501)
-L_exp_ok_36:
-  t_37 = alloc 16
-  store t_37 + 0, &str_const_0 as ptr
-  store t_37 + 8, 5 as u64
-  t_38 = alloc 16
-  store t_38 + 0, &str_const_2 as ptr
-  store t_38 + 8, 2 as u64
-  t_39 = load t_37 + 0 as ptr
-  t_40 = load t_37 + 8 as u64
-  t_41 = load t_38 + 0 as ptr
-  t_42 = load t_38 + 8 as u64
-  t_43 = call @sa_string_starts_with(t_39, t_40, t_41, t_42)
-  t_44 = eq t_43, 0
-  !t_43
+  t_31 = alloc 16
+  store t_31 + 0, &str_const_0 as ptr
+  store t_31 + 8, 5 as u64
+  t_32 = alloc 16
+  store t_32 + 0, &str_const_1 as ptr
+  store t_32 + 8, 3 as u64
+  t_33 = load t_31 + 0 as ptr
+  t_34 = load t_31 + 8 as u64
+  t_35 = load t_32 + 0 as ptr
+  t_36 = load t_32 + 8 as u64
+  t_37 = call @sa_string_index_of(t_33, t_34, t_35, t_36, 0)
+  t_38 = eq t_37, -1
   !t_37
-  !t_38
-  br t_44 -> L_exp_fail_37, L_exp_ok_38
-L_exp_fail_37:
-  panic(2501)
-L_exp_ok_38:
-  t_45 = alloc 16
-  store t_45 + 0, &str_const_0 as ptr
-  store t_45 + 8, 5 as u64
-  t_46 = alloc 16
-  store t_46 + 0, &str_const_3 as ptr
-  store t_46 + 8, 2 as u64
-  t_47 = load t_45 + 0 as ptr
-  t_48 = load t_45 + 8 as u64
-  t_49 = load t_46 + 0 as ptr
-  t_50 = load t_46 + 8 as u64
-  t_51 = call @sa_string_ends_with(t_47, t_48, t_49, t_50)
-  t_52 = eq t_51, 0
-  !t_51
-  !t_45
-  !t_46
-  br t_52 -> L_exp_fail_39, L_exp_ok_40
+  !t_31
+  !t_32
+  br t_38 -> L_exp_fail_39, L_exp_ok_40
 L_exp_fail_39:
   panic(2501)
 L_exp_ok_40:
-  t_53 = alloc 16
-  store t_53 + 0, &str_const_0 as ptr
-  store t_53 + 8, 5 as u64
-  t_54 = alloc 16
-  store t_54 + 0, &str_const_4 as ptr
-  store t_54 + 8, 1 as u64
-  t_55 = load t_53 + 0 as ptr
-  t_56 = load t_53 + 8 as u64
-  t_57 = load t_54 + 0 as ptr
-  t_58 = load t_54 + 8 as u64
-  t_59 = call @sa_string_index_of(t_55, t_56, t_57, t_58, 0)
-  t_60 = ne t_59, -1
-  !t_59
-  !t_53
-  !t_54
-  br t_60 -> L_exp_fail_41, L_exp_ok_42
+  t_39 = alloc 16
+  store t_39 + 0, &str_const_0 as ptr
+  store t_39 + 8, 5 as u64
+  t_40 = alloc 16
+  store t_40 + 0, &str_const_2 as ptr
+  store t_40 + 8, 2 as u64
+  t_41 = load t_39 + 0 as ptr
+  t_42 = load t_39 + 8 as u64
+  t_43 = load t_40 + 0 as ptr
+  t_44 = load t_40 + 8 as u64
+  t_45 = call @sa_string_starts_with(t_41, t_42, t_43, t_44)
+  t_46 = eq t_45, 0
+  !t_45
+  !t_39
+  !t_40
+  br t_46 -> L_exp_fail_41, L_exp_ok_42
 L_exp_fail_41:
   panic(2501)
 L_exp_ok_42:
-  t_61 = alloc 16
-  store t_61 + 0, &str_const_0 as ptr
-  store t_61 + 8, 5 as u64
-  t_62 = alloc 16
-  store t_62 + 0, &str_const_3 as ptr
-  store t_62 + 8, 2 as u64
-  t_63 = load t_61 + 0 as ptr
-  t_64 = load t_61 + 8 as u64
-  t_65 = load t_62 + 0 as ptr
-  t_66 = load t_62 + 8 as u64
-  t_67 = call @sa_string_starts_with(t_63, t_64, t_65, t_66)
-  t_68 = ne t_67, 0
-  !t_67
-  !t_61
-  !t_62
-  br t_68 -> L_exp_fail_43, L_exp_ok_44
+  t_47 = alloc 16
+  store t_47 + 0, &str_const_0 as ptr
+  store t_47 + 8, 5 as u64
+  t_48 = alloc 16
+  store t_48 + 0, &str_const_3 as ptr
+  store t_48 + 8, 2 as u64
+  t_49 = load t_47 + 0 as ptr
+  t_50 = load t_47 + 8 as u64
+  t_51 = load t_48 + 0 as ptr
+  t_52 = load t_48 + 8 as u64
+  t_53 = call @sa_string_ends_with(t_49, t_50, t_51, t_52)
+  t_54 = eq t_53, 0
+  !t_53
+  !t_47
+  !t_48
+  br t_54 -> L_exp_fail_43, L_exp_ok_44
 L_exp_fail_43:
   panic(2501)
 L_exp_ok_44:
-  t_69 = alloc 16
-  store t_69 + 0, &str_const_0 as ptr
-  store t_69 + 8, 5 as u64
-  t_70 = alloc 16
-  store t_70 + 0, &str_const_2 as ptr
-  store t_70 + 8, 2 as u64
-  t_71 = load t_69 + 0 as ptr
-  t_72 = load t_69 + 8 as u64
-  t_73 = load t_70 + 0 as ptr
-  t_74 = load t_70 + 8 as u64
-  t_75 = call @sa_string_ends_with(t_71, t_72, t_73, t_74)
-  t_76 = ne t_75, 0
-  !t_75
-  !t_69
-  !t_70
-  br t_76 -> L_exp_fail_45, L_exp_ok_46
+  t_55 = alloc 16
+  store t_55 + 0, &str_const_0 as ptr
+  store t_55 + 8, 5 as u64
+  t_56 = alloc 16
+  store t_56 + 0, &str_const_4 as ptr
+  store t_56 + 8, 1 as u64
+  t_57 = load t_55 + 0 as ptr
+  t_58 = load t_55 + 8 as u64
+  t_59 = load t_56 + 0 as ptr
+  t_60 = load t_56 + 8 as u64
+  t_61 = call @sa_string_index_of(t_57, t_58, t_59, t_60, 0)
+  t_62 = ne t_61, -1
+  !t_61
+  !t_55
+  !t_56
+  br t_62 -> L_exp_fail_45, L_exp_ok_46
 L_exp_fail_45:
   panic(2501)
 L_exp_ok_46:
-  t_77 = alloc 16
-  store t_77 + 0, &str_const_5 as ptr
-  store t_77 + 8, 6 as u64
-  t_78 = alloc 16
-  store t_78 + 0, &str_const_6 as ptr
-  store t_78 + 8, 3 as u64
-  t_79 = load t_77 + 0 as ptr
-  t_80 = load t_77 + 8 as u64
-  t_81 = load t_78 + 0 as ptr
-  t_82 = load t_78 + 8 as u64
-  t_83 = call @sa_string_index_of(t_79, t_80, t_81, t_82, 0)
-  t_84 = eq t_83, -1
-  !t_83
-  !t_77
-  !t_78
-  br t_84 -> L_exp_fail_47, L_exp_ok_48
+  t_63 = alloc 16
+  store t_63 + 0, &str_const_0 as ptr
+  store t_63 + 8, 5 as u64
+  t_64 = alloc 16
+  store t_64 + 0, &str_const_3 as ptr
+  store t_64 + 8, 2 as u64
+  t_65 = load t_63 + 0 as ptr
+  t_66 = load t_63 + 8 as u64
+  t_67 = load t_64 + 0 as ptr
+  t_68 = load t_64 + 8 as u64
+  t_69 = call @sa_string_starts_with(t_65, t_66, t_67, t_68)
+  t_70 = ne t_69, 0
+  !t_69
+  !t_63
+  !t_64
+  br t_70 -> L_exp_fail_47, L_exp_ok_48
 L_exp_fail_47:
   panic(2501)
 L_exp_ok_48:
-  t_85 = alloc 16
-  store t_85 + 0, &str_const_5 as ptr
-  store t_85 + 8, 6 as u64
-  t_86 = alloc 16
-  store t_86 + 0, &str_const_7 as ptr
-  store t_86 + 8, 2 as u64
-  t_87 = load t_85 + 0 as ptr
-  t_88 = load t_85 + 8 as u64
-  t_89 = load t_86 + 0 as ptr
-  t_90 = load t_86 + 8 as u64
-  t_91 = call @sa_string_index_of(t_87, t_88, t_89, t_90, 0)
-  t_92 = ne t_91, -1
-  !t_91
-  !t_85
-  !t_86
-  br t_92 -> L_exp_fail_49, L_exp_ok_50
+  t_71 = alloc 16
+  store t_71 + 0, &str_const_0 as ptr
+  store t_71 + 8, 5 as u64
+  t_72 = alloc 16
+  store t_72 + 0, &str_const_2 as ptr
+  store t_72 + 8, 2 as u64
+  t_73 = load t_71 + 0 as ptr
+  t_74 = load t_71 + 8 as u64
+  t_75 = load t_72 + 0 as ptr
+  t_76 = load t_72 + 8 as u64
+  t_77 = call @sa_string_ends_with(t_73, t_74, t_75, t_76)
+  t_78 = ne t_77, 0
+  !t_77
+  !t_71
+  !t_72
+  br t_78 -> L_exp_fail_49, L_exp_ok_50
 L_exp_fail_49:
   panic(2501)
 L_exp_ok_50:
-  t_93 = call @sa_regex_compile(&str_const_8, 7, 1)
-  t_94 = alloc 16
-  store t_94 + 0, &str_const_5 as ptr
-  store t_94 + 8, 6 as u64
-  t_95 = load t_94 + 0 as ptr
-  t_96 = load t_94 + 8 as u64
-  t_97 = call @sa_regex_match(t_93, &t_95, t_96)
-  t_98 = ne t_97, 0
-  t_99 = call @sa_regex_match_free(^t_97)
-  t_100 = load t_99 + 0 as i32
-  !t_99
-  !t_100
-  !t_93
-  t_101 = eq t_98, 0
-  br t_101 -> L_exp_fail_51, L_exp_ok_52
+  t_79 = alloc 16
+  store t_79 + 0, &str_const_5 as ptr
+  store t_79 + 8, 6 as u64
+  t_80 = alloc 16
+  store t_80 + 0, &str_const_6 as ptr
+  store t_80 + 8, 3 as u64
+  t_81 = load t_79 + 0 as ptr
+  t_82 = load t_79 + 8 as u64
+  t_83 = load t_80 + 0 as ptr
+  t_84 = load t_80 + 8 as u64
+  t_85 = call @sa_string_index_of(t_81, t_82, t_83, t_84, 0)
+  t_86 = eq t_85, -1
+  !t_85
+  !t_79
+  !t_80
+  br t_86 -> L_exp_fail_51, L_exp_ok_52
 L_exp_fail_51:
   panic(2501)
 L_exp_ok_52:
-  t_102 = call @sa_regex_compile(&str_const_9, 7, 1)
-  t_103 = alloc 16
-  store t_103 + 0, &str_const_5 as ptr
-  store t_103 + 8, 6 as u64
-  t_104 = load t_103 + 0 as ptr
-  t_105 = load t_103 + 8 as u64
-  t_106 = call @sa_regex_match(t_102, &t_104, t_105)
-  t_107 = ne t_106, 0
-  t_108 = call @sa_regex_match_free(^t_106)
-  t_109 = load t_108 + 0 as i32
-  !t_108
-  !t_109
-  !t_102
-  t_110 = ne t_107, 0
-  br t_110 -> L_exp_fail_53, L_exp_ok_54
+  t_87 = alloc 16
+  store t_87 + 0, &str_const_5 as ptr
+  store t_87 + 8, 6 as u64
+  t_88 = alloc 16
+  store t_88 + 0, &str_const_7 as ptr
+  store t_88 + 8, 2 as u64
+  t_89 = load t_87 + 0 as ptr
+  t_90 = load t_87 + 8 as u64
+  t_91 = load t_88 + 0 as ptr
+  t_92 = load t_88 + 8 as u64
+  t_93 = call @sa_string_index_of(t_89, t_90, t_91, t_92, 0)
+  t_94 = ne t_93, -1
+  !t_93
+  !t_87
+  !t_88
+  br t_94 -> L_exp_fail_53, L_exp_ok_54
 L_exp_fail_53:
   panic(2501)
 L_exp_ok_54:
-  !t_103
-  !t_94
-  t_111 = alloc 16
-  t_112 = alloc 12
-  t_113 = add t_112, 0
-  store t_113 + 0, 1 as i32
-  t_114 = add t_112, 4
-  store t_114 + 0, 2 as i32
-  t_115 = add t_112, 8
-  store t_115 + 0, 3 as i32
-  store t_111 + 0, t_112 as ptr
-  store t_111 + 8, 3 as u64
-  !t_112
-  t_116 = load t_111 + 8 as u64
-  t_117 = eq t_116, 3
-  !t_111
-  br t_117 -> L_exp_fail_55, L_exp_ok_56
+  t_95 = call @sa_regex_compile(&str_const_8, 7, 1)
+  t_96 = alloc 16
+  store t_96 + 0, &str_const_5 as ptr
+  store t_96 + 8, 6 as u64
+  t_97 = load t_96 + 0 as ptr
+  t_98 = load t_96 + 8 as u64
+  t_99 = call @sa_regex_match(t_95, &t_97, t_98)
+  t_100 = ne t_99, 0
+  t_101 = call @sa_regex_match_free(^t_99)
+  t_102 = load t_101 + 0 as i32
+  !t_101
+  !t_102
+  !t_95
+  t_103 = eq t_100, 0
+  br t_103 -> L_exp_fail_55, L_exp_ok_56
 L_exp_fail_55:
   panic(2501)
 L_exp_ok_56:
-  t_118 = alloc 16
-  store t_118 + 0, &str_const_0 as ptr
-  store t_118 + 8, 5 as u64
-  t_119 = load t_118 + 8 as u64
-  t_120 = eq t_119, 5
-  !t_118
-  br t_120 -> L_exp_fail_57, L_exp_ok_58
+  t_104 = call @sa_regex_compile(&str_const_9, 7, 1)
+  t_105 = alloc 16
+  store t_105 + 0, &str_const_5 as ptr
+  store t_105 + 8, 6 as u64
+  t_106 = load t_105 + 0 as ptr
+  t_107 = load t_105 + 8 as u64
+  t_108 = call @sa_regex_match(t_104, &t_106, t_107)
+  t_109 = ne t_108, 0
+  t_110 = call @sa_regex_match_free(^t_108)
+  t_111 = load t_110 + 0 as i32
+  !t_110
+  !t_111
+  !t_104
+  t_112 = ne t_109, 0
+  br t_112 -> L_exp_fail_57, L_exp_ok_58
 L_exp_fail_57:
   panic(2501)
 L_exp_ok_58:
-  t_121 = alloc 16
-  t_122 = alloc 12
-  t_123 = add t_122, 0
-  store t_123 + 0, 1 as i32
-  t_124 = add t_122, 4
-  store t_124 + 0, 2 as i32
-  t_125 = add t_122, 8
-  store t_125 + 0, 3 as i32
-  store t_121 + 0, t_122 as ptr
-  store t_121 + 8, 3 as u64
-  !t_122
-  t_126 = load t_121 + 8 as u64
-  t_127 = ne t_126, 2
-  !t_121
-  br t_127 -> L_exp_fail_59, L_exp_ok_60
+  !t_105
+  !t_96
+  t_113 = alloc 16
+  t_114 = alloc 12
+  t_115 = add t_114, 0
+  store t_115 + 0, 1 as i32
+  t_116 = add t_114, 4
+  store t_116 + 0, 2 as i32
+  t_117 = add t_114, 8
+  store t_117 + 0, 3 as i32
+  store t_113 + 0, t_114 as ptr
+  store t_113 + 8, 3 as u64
+  !t_114
+  t_118 = load t_113 + 8 as u64
+  t_119 = eq t_118, 3
+  !t_113
+  br t_119 -> L_exp_fail_59, L_exp_ok_60
 L_exp_fail_59:
   panic(2501)
 L_exp_ok_60:
-  t_128 = alloc 16
-  store t_128 + 0, &str_const_10 as ptr
-  store t_128 + 8, 4 as u64
-  t_129 = load t_128 + 0 as ptr
-  t_130 = load t_128 + 8 as u64
-  call @sa_print_bytes(&t_129, t_130)
-  !t_128
-  t_131 = alloc 16
-  store t_131 + 0, &str_const_11 as ptr
-  store t_131 + 8, 1 as u64
-  t_132 = load t_131 + 0 as ptr
-  t_133 = load t_131 + 8 as u64
-  call @sa_print_bytes(&t_132, t_133)
-  !t_131
-  t_134 = alloc 16
-  store t_134 + 0, &str_const_12 as ptr
-  store t_134 + 8, 1 as u64
-  t_135 = alloc 16
-  store t_135 + 0, &str_const_12 as ptr
-  store t_135 + 8, 1 as u64
-  t_136 = load t_134 + 0 as ptr
-  t_137 = load t_134 + 8 as u64
-  t_138 = load t_135 + 0 as ptr
-  t_139 = load t_135 + 8 as u64
-  t_140 = call @sa_string_index_of(t_136, t_137, t_138, t_139, 0)
-  t_141 = eq t_140, 0
-  t_142 = eq t_137, t_139
-  t_143 = and t_141, t_142
-  t_144 = eq t_143, 0
-  !t_140
-  !t_134
-  !t_135
-  br t_144 -> L_exp_fail_61, L_exp_ok_62
+  t_120 = alloc 16
+  store t_120 + 0, &str_const_0 as ptr
+  store t_120 + 8, 5 as u64
+  t_121 = load t_120 + 8 as u64
+  t_122 = eq t_121, 5
+  !t_120
+  br t_122 -> L_exp_fail_61, L_exp_ok_62
 L_exp_fail_61:
   panic(2501)
 L_exp_ok_62:
-  t_145 = alloc 16
-  store t_145 + 0, &str_const_12 as ptr
-  store t_145 + 8, 1 as u64
-  t_146 = alloc 16
-  store t_146 + 0, &str_const_12 as ptr
-  store t_146 + 8, 1 as u64
-  t_147 = load t_145 + 0 as ptr
-  t_148 = load t_145 + 8 as u64
-  t_149 = load t_146 + 0 as ptr
-  t_150 = load t_146 + 8 as u64
-  t_151 = call @sa_string_index_of(t_147, t_148, t_149, t_150, 0)
-  t_152 = eq t_151, 0
-  t_153 = eq t_148, t_150
-  t_154 = and t_152, t_153
-  t_155 = eq t_154, 0
-  !t_151
-  !t_145
-  !t_146
-  br t_155 -> L_exp_fail_63, L_exp_ok_64
+  t_123 = alloc 16
+  t_124 = alloc 12
+  t_125 = add t_124, 0
+  store t_125 + 0, 1 as i32
+  t_126 = add t_124, 4
+  store t_126 + 0, 2 as i32
+  t_127 = add t_124, 8
+  store t_127 + 0, 3 as i32
+  store t_123 + 0, t_124 as ptr
+  store t_123 + 8, 3 as u64
+  !t_124
+  t_128 = load t_123 + 8 as u64
+  t_129 = ne t_128, 2
+  !t_123
+  br t_129 -> L_exp_fail_63, L_exp_ok_64
 L_exp_fail_63:
   panic(2501)
 L_exp_ok_64:
-  t_156 = alloc 16
-  store t_156 + 0, &str_const_12 as ptr
-  store t_156 + 8, 1 as u64
-  t_157 = alloc 16
-  store t_157 + 0, &str_const_13 as ptr
-  store t_157 + 8, 1 as u64
-  t_158 = load t_156 + 0 as ptr
-  t_159 = load t_156 + 8 as u64
-  t_160 = load t_157 + 0 as ptr
-  t_161 = load t_157 + 8 as u64
-  t_162 = call @sa_string_index_of(t_158, t_159, t_160, t_161, 0)
-  t_163 = eq t_162, 0
-  t_164 = eq t_159, t_161
-  t_165 = and t_163, t_164
-  t_166 = ne t_165, 0
-  !t_162
-  !t_156
-  !t_157
-  br t_166 -> L_exp_fail_65, L_exp_ok_66
+  t_130 = alloc 16
+  store t_130 + 0, &str_const_10 as ptr
+  store t_130 + 8, 4 as u64
+  t_131 = load t_130 + 0 as ptr
+  t_132 = load t_130 + 8 as u64
+  call @sa_print_bytes(&t_131, t_132)
+  !t_130
+  t_133 = alloc 16
+  store t_133 + 0, &str_const_11 as ptr
+  store t_133 + 8, 1 as u64
+  t_134 = load t_133 + 0 as ptr
+  t_135 = load t_133 + 8 as u64
+  call @sa_print_bytes(&t_134, t_135)
+  !t_133
+  t_136 = alloc 16
+  store t_136 + 0, &str_const_12 as ptr
+  store t_136 + 8, 1 as u64
+  t_137 = alloc 16
+  store t_137 + 0, &str_const_12 as ptr
+  store t_137 + 8, 1 as u64
+  t_138 = load t_136 + 0 as ptr
+  t_139 = load t_136 + 8 as u64
+  t_140 = load t_137 + 0 as ptr
+  t_141 = load t_137 + 8 as u64
+  t_142 = call @sa_string_index_of(t_138, t_139, t_140, t_141, 0)
+  t_143 = eq t_142, 0
+  t_144 = eq t_139, t_141
+  t_145 = and t_143, t_144
+  t_146 = eq t_145, 0
+  !t_142
+  !t_136
+  !t_137
+  br t_146 -> L_exp_fail_65, L_exp_ok_66
 L_exp_fail_65:
   panic(2501)
 L_exp_ok_66:
-  t_167 = alloc 16
-  store t_167 + 0, &str_const_14 as ptr
-  store t_167 + 8, 3 as u64
-  t_168 = alloc 16
-  store t_168 + 0, &str_const_15 as ptr
-  store t_168 + 8, 2 as u64
-  t_169 = load t_167 + 0 as ptr
-  t_170 = load t_167 + 8 as u64
-  t_171 = load t_168 + 0 as ptr
-  t_172 = load t_168 + 8 as u64
-  t_173 = call @sa_string_concat(t_169, t_170, t_171, t_172)
-  t_174 = call @sa_fmt_buffer_data(t_173)
-  t_175 = call @sa_fmt_buffer_len(t_173)
-  t_176 = alloc 16
-  store t_176 + 0, t_174 as ptr
-  store t_176 + 8, t_175 as u64
-  !t_174
-  !t_175
-  !t_173
-  !t_167
-  !t_168
-  t_177 = alloc 16
-  store t_177 + 0, &str_const_16 as ptr
-  store t_177 + 8, 5 as u64
-  t_178 = load t_176 + 0 as ptr
-  t_179 = load t_176 + 8 as u64
-  t_180 = load t_177 + 0 as ptr
-  t_181 = load t_177 + 8 as u64
-  t_182 = call @sa_string_index_of(t_178, t_179, t_180, t_181, 0)
-  t_183 = eq t_182, 0
-  t_184 = eq t_179, t_181
-  t_185 = and t_183, t_184
-  t_186 = eq t_185, 0
-  !t_182
-  !t_176
-  !t_177
-  br t_186 -> L_exp_fail_67, L_exp_ok_68
+  t_147 = alloc 16
+  store t_147 + 0, &str_const_12 as ptr
+  store t_147 + 8, 1 as u64
+  t_148 = alloc 16
+  store t_148 + 0, &str_const_12 as ptr
+  store t_148 + 8, 1 as u64
+  t_149 = load t_147 + 0 as ptr
+  t_150 = load t_147 + 8 as u64
+  t_151 = load t_148 + 0 as ptr
+  t_152 = load t_148 + 8 as u64
+  t_153 = call @sa_string_index_of(t_149, t_150, t_151, t_152, 0)
+  t_154 = eq t_153, 0
+  t_155 = eq t_150, t_152
+  t_156 = and t_154, t_155
+  t_157 = eq t_156, 0
+  !t_153
+  !t_147
+  !t_148
+  br t_157 -> L_exp_fail_67, L_exp_ok_68
 L_exp_fail_67:
   panic(2501)
 L_exp_ok_68:
-  t_187 = sext 42 as i64
-  t_188 = alloc 64
-  t_189 = alloc 8
-  t_190 = call @sa_fmt_i64_into(t_187, 10, t_188, 64, &t_189)
-  t_191 = load t_189 + 0 as u64
-  t_192 = alloc 16
-  store t_192 + 0, t_188 as ptr
-  store t_192 + 8, t_191 as u64
-  !t_190
-  t_193 = load t_192 + 0 as ptr
-  t_194 = load t_192 + 8 as u64
-  call @sa_print_bytes(&t_193, t_194)
+  t_158 = alloc 16
+  store t_158 + 0, &str_const_12 as ptr
+  store t_158 + 8, 1 as u64
+  t_159 = alloc 16
+  store t_159 + 0, &str_const_13 as ptr
+  store t_159 + 8, 1 as u64
+  t_160 = load t_158 + 0 as ptr
+  t_161 = load t_158 + 8 as u64
+  t_162 = load t_159 + 0 as ptr
+  t_163 = load t_159 + 8 as u64
+  t_164 = call @sa_string_index_of(t_160, t_161, t_162, t_163, 0)
+  t_165 = eq t_164, 0
+  t_166 = eq t_161, t_163
+  t_167 = and t_165, t_166
+  t_168 = ne t_167, 0
+  !t_164
+  !t_158
+  !t_159
+  br t_168 -> L_exp_fail_69, L_exp_ok_70
+L_exp_fail_69:
+  panic(2501)
+L_exp_ok_70:
+  t_169 = alloc 16
+  store t_169 + 0, &str_const_14 as ptr
+  store t_169 + 8, 3 as u64
+  t_170 = alloc 16
+  store t_170 + 0, &str_const_15 as ptr
+  store t_170 + 8, 2 as u64
+  t_171 = load t_169 + 0 as ptr
+  t_172 = load t_169 + 8 as u64
+  t_173 = load t_170 + 0 as ptr
+  t_174 = load t_170 + 8 as u64
+  t_175 = call @sa_string_concat(t_171, t_172, t_173, t_174)
+  t_176 = call @sa_fmt_buffer_data(t_175)
+  t_177 = call @sa_fmt_buffer_len(t_175)
+  t_178 = alloc 16
+  store t_178 + 0, t_176 as ptr
+  store t_178 + 8, t_177 as u64
+  !t_176
+  !t_177
+  !t_175
+  !t_169
+  !t_170
+  t_179 = alloc 16
+  store t_179 + 0, &str_const_16 as ptr
+  store t_179 + 8, 5 as u64
+  t_180 = load t_178 + 0 as ptr
+  t_181 = load t_178 + 8 as u64
+  t_182 = load t_179 + 0 as ptr
+  t_183 = load t_179 + 8 as u64
+  t_184 = call @sa_string_index_of(t_180, t_181, t_182, t_183, 0)
+  t_185 = eq t_184, 0
+  t_186 = eq t_181, t_183
+  t_187 = and t_185, t_186
+  t_188 = eq t_187, 0
+  !t_184
+  !t_178
+  !t_179
+  br t_188 -> L_exp_fail_71, L_exp_ok_72
+L_exp_fail_71:
+  panic(2501)
+L_exp_ok_72:
+  t_189 = sext 42 as i64
+  t_190 = alloc 64
+  t_191 = alloc 8
+  t_192 = call @sa_fmt_i64_into(t_189, 10, t_190, 64, &t_191)
+  t_193 = load t_191 + 0 as u64
+  t_194 = alloc 16
+  store t_194 + 0, t_190 as ptr
+  store t_194 + 8, t_193 as u64
   !t_192
-  t_195 = alloc 16
-  store t_195 + 0, &str_const_11 as ptr
-  store t_195 + 8, 1 as u64
-  t_196 = load t_195 + 0 as ptr
-  t_197 = load t_195 + 8 as u64
-  call @sa_print_bytes(&t_196, t_197)
-  !t_195
-  !t_189
-  !t_188
+  t_195 = load t_194 + 0 as ptr
+  t_196 = load t_194 + 8 as u64
+  call @sa_print_bytes(&t_195, t_196)
+  !t_194
+  t_197 = alloc 16
+  store t_197 + 0, &str_const_11 as ptr
+  store t_197 + 8, 1 as u64
+  t_198 = load t_197 + 0 as ptr
+  t_199 = load t_197 + 8 as u64
+  call @sa_print_bytes(&t_198, t_199)
+  !t_197
+  !t_191
+  !t_190
   ret 0

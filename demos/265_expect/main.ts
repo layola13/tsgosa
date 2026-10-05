@@ -22,6 +22,8 @@ describe("more", () => {
     expect(0).toBeFalsy();
     expect(1).not.toBeNull();
     expect(0).not.toBeTruthy();
+    expect(1).toBeDefined();
+    expect(0).not.toBeDefined();
   });
   test("compare", () => {
     expect(add(1, 2)).toBeGreaterThan(2);

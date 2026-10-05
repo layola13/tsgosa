@@ -626,7 +626,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	if !saIsUnresolvedTestName(scope, "expect") {
 		return false, false
 	}
-	isZero := matcher == "toBeNull" || matcher == "toBeUndefined" ||
+	isZero := matcher == "toBeNull" || matcher == "toBeUndefined" || matcher == "toBeDefined" ||
 		matcher == "toBeTruthy" || matcher == "toBeFalsy"
 	cmpName := ""
 	switch matcher {
@@ -641,7 +641,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
 		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" && matcher != "toMatch" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeDefined/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -655,7 +655,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		margs = ce.Arguments.Nodes
 	}
 	if isZero {
-		// 零元匹配器（`toBeNull/toBeUndefined` 即柄零判，`toBeTruthy` 即
+		// 零元匹配器（`toBeNull/toBeUndefined` 即柄零判，`toBeDefined`/`toBeTruthy` 即
 		// 非零判，`toBeFalsy` 即零判；i32/bool 通道恒 0/1，空吸收同门）。
 		if len(margs) != 0 {
 			return fail("expect()." + matcher + " takes no arguments")
@@ -665,7 +665,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 			return fail(msg)
 		}
 		cmp := "eq"
-		if matcher == "toBeTruthy" {
+		if matcher == "toBeTruthy" || matcher == "toBeDefined" {
 			cmp = "ne"
 		}
 		if neg {
