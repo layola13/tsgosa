@@ -580,7 +580,8 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 // saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言
 // （i32 两侧既有求值 + `ne` + 不等即 `panic(2501)`，与 `throw` 终结同形，
 // 测试 fail-fast 口径一致；`expect` 被用户绑定时沿旧路，禁劫持）。
-// 匹配器仅 toBe/toEqual/toStrictEqual（`not` 取反经 `eq` 同门）；其余匹配器/非 i32 臂另步大声拒。
+// 匹配器：toBe 系（i32）/零元系（i32 零判）/比较系（i32）/串系（`not` 取反
+// 同门；其余匹配器/异种臂另步大声拒。
 // 返回（接管，成功）。
 func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
@@ -638,8 +639,9 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	case "toBeLessThanOrEqual":
 		cmpName = "sle"
 	}
-	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan)")
+	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
+		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -688,6 +690,66 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	}
 	if len(margs) != 1 {
 		return fail("expect()." + matcher + " takes one expected value")
+	}
+	if matcher == "toContain" || matcher == "toStartsWith" || matcher == "toEndsWith" {
+		// 串匹配器（`includes/startsWith/endsWith` 既有原语同指令同序：
+		// 封存 sa_str.go 对应分支；布尔化后进败臂，`.not` 翻转比较符；
+		// 自清洁释所创归属临时量）。
+		scope.addImport("sa_std/string.sai")
+		ah, msg := saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		nh, msg := saEvalStr(w, margs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		ap, al := saExpandStr(w, ah, nextTemp)
+		np, nl := saExpandStr(w, nh, nextTemp)
+		// booleanize 布尔化失败条件并发射败臂（cond 为 `eq/ne` 比较，
+		// `neg` 翻转比较符；发射后自清洁释所创句柄）。
+		var pendTemps []string
+		booleanize := func(cmp, a, b string) (bool, bool) {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, a, b))
+			for _, h := range pendTemps {
+				saReleaseOwnedTemp(w, scope, h)
+			}
+			saReleaseOwnedTemp(w, scope, ah)
+			saReleaseOwnedTemp(w, scope, nh)
+			failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
+			*nextLabel++
+			okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+			w.Write(failL + ":\n")
+			w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+			w.Write(okL + ":\n")
+			return true, true
+		}
+		failCmp := "eq"
+		if neg {
+			failCmp = "ne"
+		}
+		if matcher == "toContain" {
+			idx := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, np, nl))
+			saOwnTemp(scope, idx)
+			pendTemps = []string{idx}
+			return booleanize(failCmp, idx, "-1")
+		}
+		sym := "sa_string_starts_with"
+		if matcher == "toEndsWith" {
+			sym = "sa_string_ends_with"
+		}
+		o := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @%s(%s, %s, %s, %s)\n", o, sym, ap, al, np, nl))
+		saOwnTemp(scope, o)
+		pendTemps = []string{o}
+		return booleanize(failCmp, o, "0")
 	}
 	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
 	if msg != "" {

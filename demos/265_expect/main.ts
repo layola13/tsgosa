@@ -31,5 +31,13 @@ describe("more", () => {
     expect(add(1, 2)).not.toBeGreaterThan(3);
     expect(add(1, 2)).not.toBeLessThan(3);
   });
+  test("strings", () => {
+    expect("hello").toContain("ell");
+    expect("hello").toStartsWith("he");
+    expect("hello").toEndsWith("lo");
+    expect("hello").not.toContain("z");
+    expect("hello").not.toStartsWith("lo");
+    expect("hello").not.toEndsWith("he");
+  });
 });
 console.log(42);
