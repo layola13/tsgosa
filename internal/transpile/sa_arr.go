@@ -816,6 +816,21 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array literal: " + msg})
 			return false
 		}
+		// 显式 i32 元注解收串元拒（4 字节槽截断句柄；串注解/无注解沿既有口径；
+		// 按语法种判定；铁律 4）。
+		if vd.Type != nil && !saIsStringArrayAnnot(vd.Type) &&
+			(vd.Type.Kind == ast.KindArrayType || (vd.Type.Kind == ast.KindTypeReference && vd.Type.AsTypeReferenceNode() != nil)) {
+			if al := vd.Initializer.AsArrayLiteralExpression(); al != nil && al.Elements != nil {
+				for _, el := range al.Elements.Nodes {
+					if el != nil && el.Kind != ast.KindSpreadElement && el.Kind != ast.KindOmittedExpression &&
+						(saIsStrValue(el, scope) || saCouldBeInst(el, scope)) {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element kind mismatch (non-string array takes i32 values)"})
+						return false
+					}
+				}
+			}
+		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		scope.types[name] = "arr"
 		saConsumeOwn(scope, h)
@@ -3683,6 +3698,17 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
+		}
+		// 已知 i32 数组收串/实例值拒（4 字节槽截断句柄；串标数组沿既有串元口径；
+		// 按语法种判定（字面量未必记种）；铁律 4）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
+				if scope.arrStr == nil || !scope.arrStr[pa.Expression.Text()] {
+					if saIsStrValue(argNodes[0], scope) || saCouldBeInst(argNodes[0], scope) {
+						return "", "", "array element kind mismatch (non-string array takes i32 values)"
+					}
+				}
+			}
 		}
 		return saLowerArrayPush(w, recv, v, scope, nextTemp), "i32", ""
 	case "pop":
