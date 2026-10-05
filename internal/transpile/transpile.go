@@ -2655,6 +2655,9 @@ type saInlineRet struct {
 	slot string
 	end  string
 	kind string
+	// scopeBase 为内联体 ownOrder 基点（return 存槽后释基点之后的新生归属；
+	// 封存 releaseDeeperThan:2684，调用方域保持 live）。
+	scopeBase int
 }
 
 // saStrPool 是文件级字符串常量池（`@const str_const_N = utf8:"...\\0"` 行在
@@ -3003,7 +3006,9 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	if scope.inlineRet != nil {
 		// 回调体内 return：存槽+jmp end（裸 return 只跳过余下回调体）。
 		// 形状证据：封存 callbackValue:5222-5249。
+		// 内联新生归属随存槽释（槽值已汇合，调用方域保持 live；封存 2684）。
 		if rs.Expression == nil {
+			saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
 			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
 			return true, false
 		}
@@ -3015,6 +3020,7 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 				return false, true
 			}
 			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", scope.inlineRet.slot, sop))
+			saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
 			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
 			return true, false
 		}
@@ -3025,6 +3031,7 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			return false, true
 		}
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", scope.inlineRet.slot, op))
+		saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
 		w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
 		return true, false
 	}

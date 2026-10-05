@@ -3122,7 +3122,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		kind = "str"
 	}
 	savedRet := scope.inlineRet
-	scope.inlineRet = &saInlineRet{slot: slot, end: endL, kind: kind}
+	scope.inlineRet = &saInlineRet{slot: slot, end: endL, kind: kind, scopeBase: len(scope.ownOrder)}
 	stmts, ok := saBlockStmts(body)
 	if !ok {
 		scope.inlineRet = savedRet
