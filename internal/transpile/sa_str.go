@@ -95,6 +95,11 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 				return scope.mapVals[ea.Expression.Text()] == "str"
 			}
 		}
+		// 串下标读即串值（`s[i]` 与 charAt 同串位；`?.` 沿旧门）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			saIsStrExpr(ea.Expression, scope) {
+			return true
+		}
 		return false
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
@@ -359,6 +364,20 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return "", "map value is not a string"
 			}
+		}
+		// 串下标读（`s[i]` 即 charAt 同形；先语法判串基，旧拒因逐字不变；
+		// `?.` 沿旧门）。
+		if ea.QuestionDotToken == nil && saIsStrExpr(ea.Expression, scope) {
+			h, msg := saEvalStr(w, ea.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			bp, _ := saExpandStr(w, h, nextTemp)
+			return saLowerStrIndexChar(w, bp, idx, scope, nextTemp), ""
 		}
 		return "", "not a string expression"
 	case ast.KindBinaryExpression:
@@ -971,6 +990,22 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 
 // saLowerStrMethod lowering 串方法全集（投影表 stdlib.go:95-105 + 封存
 // lowerStringMethod:7173-7386；split 需串元数组，超 i32 槽模型，大声拒）。
+// saLowerStrIndexChar 取单字柄（`charAt`/`s[i]` 同形；无界检查与既有
+// charAt 一字之差无：越界未定义，调用方禁另行加塞语义）。
+func saLowerStrIndexChar(w printer.EmitTextWriter, bp, sel string, scope *saScope, nextTemp *int) string {
+	addr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, bp, sel))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, addr))
+	w.Write(fmt.Sprintf("  store %s + 8, 1 as u64\n", out))
+	// 取字柄归属(返前释放；上游同形).
+	saOwnTemp(scope, out)
+	return out
+}
+
 func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	scope.addImport("sa_std/string.sai")
 	args := []*ast.Node{}
@@ -1166,17 +1201,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = add %s, %s\n", sel, a, adj))
 		}
-		addr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, bp, sel))
-		out := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, addr))
-		w.Write(fmt.Sprintf("  store %s + 8, 1 as u64\n", out))
-		// 取字柄归属(返前释放；上游同形).
-		saOwnTemp(scope, out)
-		return out, false, ""
+		return saLowerStrIndexChar(w, bp, sel, scope, nextTemp), false, ""
 	case "trim", "trimStart", "trimEnd":
 		// ascii 三件套合成（形状证据：封存 lowerStringMethod:7304-7335）。
 		start := fmt.Sprintf("t_%d", *nextTemp)
