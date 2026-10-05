@@ -119,12 +119,14 @@ L_idx_end_15:
   t_56 = load t_55 + 0 as ptr
   t_57 = load t_55 + 8 as u64
   call @sa_print_bytes(&t_56, t_57)
+  !t_55
   t_58 = alloc 16
   store t_58 + 0, &str_const_0 as ptr
   store t_58 + 8, 1 as u64
   t_59 = load t_58 + 0 as ptr
   t_60 = load t_58 + 8 as u64
   call @sa_print_bytes(&t_59, t_60)
+  !t_58
   t_61 = alloc 8
   t_62 = load b + 8 as u64
   t_63 = ult 1, t_62
@@ -154,12 +156,14 @@ L_idx_end_18:
   t_75 = load t_74 + 0 as ptr
   t_76 = load t_74 + 8 as u64
   call @sa_print_bytes(&t_75, t_76)
+  !t_74
   t_77 = alloc 16
   store t_77 + 0, &str_const_0 as ptr
   store t_77 + 8, 1 as u64
   t_78 = load t_77 + 0 as ptr
   t_79 = load t_77 + 8 as u64
   call @sa_print_bytes(&t_78, t_79)
+  !t_77
   t_80 = alloc 8
   t_81 = load b + 8 as u64
   t_82 = ult 2, t_81
@@ -189,12 +193,14 @@ L_idx_end_21:
   t_94 = load t_93 + 0 as ptr
   t_95 = load t_93 + 8 as u64
   call @sa_print_bytes(&t_94, t_95)
+  !t_93
   t_96 = alloc 16
   store t_96 + 0, &str_const_0 as ptr
   store t_96 + 8, 1 as u64
   t_97 = load t_96 + 0 as ptr
   t_98 = load t_96 + 8 as u64
   call @sa_print_bytes(&t_97, t_98)
+  !t_96
   t_99 = alloc 8
   t_100 = load a + 8 as u64
   t_101 = ult 1, t_100
@@ -224,6 +230,7 @@ L_idx_end_24:
   t_113 = load t_112 + 0 as ptr
   t_114 = load t_112 + 8 as u64
   call @sa_print_bytes(&t_113, t_114)
+  !t_112
   t_115 = alloc 16
   store t_115 + 0, &str_const_1 as ptr
   store t_115 + 8, 1 as u64
@@ -231,19 +238,12 @@ L_idx_end_24:
   t_117 = load t_115 + 8 as u64
   call @sa_print_bytes(&t_116, t_117)
   !t_115
-  !t_112
   !t_109
   !t_108
-  !t_96
-  !t_93
   !t_90
   !t_89
-  !t_77
-  !t_74
   !t_71
   !t_70
-  !t_58
-  !t_55
   !t_52
   !t_51
   !b

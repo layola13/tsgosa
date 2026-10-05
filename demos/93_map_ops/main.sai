@@ -39,12 +39,14 @@
   t_15 = load t_14 + 0 as ptr
   t_16 = load t_14 + 8 as u64
   call @sa_print_bytes(&t_15, t_16)
+  !t_14
   t_17 = alloc 16
   store t_17 + 0, &str_const_2 as ptr
   store t_17 + 8, 1 as u64
   t_18 = load t_17 + 0 as ptr
   t_19 = load t_17 + 8 as u64
   call @sa_print_bytes(&t_18, t_19)
+  !t_17
   t_20 = call @sa_btree_map_len(&m)
   t_21 = sext t_20 as i64
   t_22 = alloc 64
@@ -58,12 +60,14 @@
   t_27 = load t_26 + 0 as ptr
   t_28 = load t_26 + 8 as u64
   call @sa_print_bytes(&t_27, t_28)
+  !t_26
   t_29 = alloc 16
   store t_29 + 0, &str_const_3 as ptr
   store t_29 + 8, 1 as u64
   t_30 = load t_29 + 0 as ptr
   t_31 = load t_29 + 8 as u64
   call @sa_print_bytes(&t_30, t_31)
+  !t_29
   t_32 = alloc 16
   store t_32 + 0, &str_const_0 as ptr
   store t_32 + 8, 1 as u64
@@ -85,12 +89,14 @@
   t_43 = load t_42 + 0 as ptr
   t_44 = load t_42 + 8 as u64
   call @sa_print_bytes(&t_43, t_44)
+  !t_42
   t_45 = alloc 16
   store t_45 + 0, &str_const_2 as ptr
   store t_45 + 8, 1 as u64
   t_46 = load t_45 + 0 as ptr
   t_47 = load t_45 + 8 as u64
   call @sa_print_bytes(&t_46, t_47)
+  !t_45
   t_48 = call @sa_btree_map_len(&m)
   t_49 = sext t_48 as i64
   t_50 = alloc 64
@@ -104,6 +110,7 @@
   t_55 = load t_54 + 0 as ptr
   t_56 = load t_54 + 8 as u64
   call @sa_print_bytes(&t_55, t_56)
+  !t_54
   t_57 = alloc 16
   store t_57 + 0, &str_const_3 as ptr
   store t_57 + 8, 1 as u64
@@ -111,12 +118,9 @@
   t_59 = load t_57 + 8 as u64
   call @sa_print_bytes(&t_58, t_59)
   !t_57
-  !t_54
   !t_51
   !t_50
   !t_48
-  !t_45
-  !t_42
   !t_39
   !t_38
   !t_36
@@ -124,13 +128,9 @@
   !t_34
   !t_33
   !t_32
-  !t_29
-  !t_26
   !t_23
   !t_22
   !t_20
-  !t_17
-  !t_14
   !t_11
   !t_10
   !t_7

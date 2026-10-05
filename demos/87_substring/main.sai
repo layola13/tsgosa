@@ -78,12 +78,14 @@ L_cl_done_19:
   t_19 = load t_18 + 0 as ptr
   t_20 = load t_18 + 8 as u64
   call @sa_print_bytes(&t_19, t_20)
+  !t_18
   t_21 = alloc 16
   store t_21 + 0, &str_const_1 as ptr
   store t_21 + 8, 1 as u64
   t_22 = load t_21 + 0 as ptr
   t_23 = load t_21 + 8 as u64
   call @sa_print_bytes(&t_22, t_23)
+  !t_21
   t_24 = load s + 0 as ptr
   t_25 = load s + 8 as u64
   t_26 = slt 2, 0
@@ -142,6 +144,7 @@ L_cl_loe_33:
   t_39 = load t_38 + 0 as ptr
   t_40 = load t_38 + 8 as u64
   call @sa_print_bytes(&t_39, t_40)
+  !t_38
   t_41 = alloc 16
   store t_41 + 0, &str_const_2 as ptr
   store t_41 + 8, 1 as u64
@@ -149,8 +152,5 @@ L_cl_loe_33:
   t_43 = load t_41 + 8 as u64
   call @sa_print_bytes(&t_42, t_43)
   !t_41
-  !t_38
-  !t_21
-  !t_18
   !s
   ret 0

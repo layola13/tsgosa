@@ -17,6 +17,7 @@
   t_9 = load t_8 + 0 as ptr
   t_10 = load t_8 + 8 as u64
   call @sa_print_bytes(&t_9, t_10)
+  !t_8
   t_11 = alloc 16
   store t_11 + 0, &str_const_0 as ptr
   store t_11 + 8, 1 as u64
@@ -24,7 +25,6 @@
   t_13 = load t_11 + 8 as u64
   call @sa_print_bytes(&t_12, t_13)
   !t_11
-  !t_8
   !t_5
   !t_4
   !t_2

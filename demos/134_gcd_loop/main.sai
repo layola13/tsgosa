@@ -34,6 +34,7 @@ L_while_end_3:
   t_13 = load t_12 + 0 as ptr
   t_14 = load t_12 + 8 as u64
   call @sa_print_bytes(&t_13, t_14)
+  !t_12
   t_15 = alloc 16
   store t_15 + 0, &str_const_0 as ptr
   store t_15 + 8, 1 as u64
@@ -41,7 +42,6 @@ L_while_end_3:
   t_17 = load t_15 + 8 as u64
   call @sa_print_bytes(&t_16, t_17)
   !t_15
-  !t_12
   !t_9
   !t_8
   ret 0

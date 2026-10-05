@@ -52,12 +52,14 @@ L_node_ok_2:
   t_22 = load t_21 + 0 as ptr
   t_23 = load t_21 + 8 as u64
   call @sa_print_bytes(&t_22, t_23)
+  !t_21
   t_24 = alloc 16
   store t_24 + 0, &str_const_2 as ptr
   store t_24 + 8, 1 as u64
   t_25 = load t_24 + 0 as ptr
   t_26 = load t_24 + 8 as u64
   call @sa_print_bytes(&t_25, t_26)
+  !t_24
   t_27 = alloc 8
   t_28 = call @sa_node_plugin_crypto_random_bytes(16, &t_27)
   t_29 = ne t_28, 0
@@ -83,6 +85,7 @@ L_node_ok_4:
   t_39 = load t_38 + 0 as ptr
   t_40 = load t_38 + 8 as u64
   call @sa_print_bytes(&t_39, t_40)
+  !t_38
   t_41 = alloc 16
   store t_41 + 0, &str_const_3 as ptr
   store t_41 + 8, 1 as u64
@@ -90,13 +93,10 @@ L_node_ok_4:
   t_43 = load t_41 + 8 as u64
   call @sa_print_bytes(&t_42, t_43)
   !t_41
-  !t_38
   !t_35
   !t_34
   !t_31
   !t_28
-  !t_24
-  !t_21
   !t_18
   !t_17
   !t_14

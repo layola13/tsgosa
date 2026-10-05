@@ -12,6 +12,7 @@
   t_2 = load t_1 + 0 as ptr
   t_3 = load t_1 + 8 as u64
   call @sa_print_bytes(&t_2, t_3)
+  !t_1
   t_4 = alloc 16
   store t_4 + 0, &str_const_1 as ptr
   store t_4 + 8, 1 as u64
@@ -19,7 +20,6 @@
   t_6 = load t_4 + 8 as u64
   call @sa_print_bytes(&t_5, t_6)
   !t_4
-  !t_1
   ret
 @main() -> i32:
   t_18 = call @__arrow_1()
@@ -45,6 +45,7 @@
   t_13 = load t_12 + 0 as ptr
   t_14 = load t_12 + 8 as u64
   call @sa_print_bytes(&t_13, t_14)
+  !t_12
   t_15 = alloc 16
   store t_15 + 0, &str_const_1 as ptr
   store t_15 + 8, 1 as u64
@@ -52,7 +53,6 @@
   t_17 = load t_15 + 8 as u64
   call @sa_print_bytes(&t_16, t_17)
   !t_15
-  !t_12
   !t_9
   !t_8
   ret 0

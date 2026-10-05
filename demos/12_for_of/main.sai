@@ -45,12 +45,14 @@ L_forof_body_2:
   t_21 = load t_20 + 0 as ptr
   t_22 = load t_20 + 8 as u64
   call @sa_print_bytes(&t_21, t_22)
+  !t_20
   t_23 = alloc 16
   store t_23 + 0, &str_const_2 as ptr
   store t_23 + 8, 1 as u64
   t_24 = load t_23 + 0 as ptr
   t_25 = load t_23 + 8 as u64
   call @sa_print_bytes(&t_24, t_25)
+  !t_23
   !s
   t_26 = add t_7, 1
   t_7 = t_26

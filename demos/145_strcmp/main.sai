@@ -62,12 +62,14 @@ L_for_end_3:
   t_24 = load t_23 + 0 as ptr
   t_25 = load t_23 + 8 as u64
   call @sa_print_bytes(&t_24, t_25)
+  !t_23
   t_26 = alloc 16
   store t_26 + 0, &str_const_2 as ptr
   store t_26 + 8, 1 as u64
   t_27 = load t_26 + 0 as ptr
   t_28 = load t_26 + 8 as u64
   call @sa_print_bytes(&t_27, t_28)
+  !t_26
   t_29 = alloc 16
   store t_29 + 0, &str_const_0 as ptr
   store t_29 + 8, 3 as u64
@@ -87,6 +89,7 @@ L_for_end_3:
   t_38 = load t_37 + 0 as ptr
   t_39 = load t_37 + 8 as u64
   call @sa_print_bytes(&t_38, t_39)
+  !t_37
   t_40 = alloc 16
   store t_40 + 0, &str_const_3 as ptr
   store t_40 + 8, 1 as u64
@@ -94,14 +97,11 @@ L_for_end_3:
   t_42 = load t_40 + 8 as u64
   call @sa_print_bytes(&t_41, t_42)
   !t_40
-  !t_37
   !t_34
   !t_33
   !t_31
   !t_30
   !t_29
-  !t_26
-  !t_23
   !t_20
   !t_19
   !t_17

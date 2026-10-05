@@ -113,6 +113,7 @@ L_idx_end_10:
   t_52 = load t_51 + 0 as ptr
   t_53 = load t_51 + 8 as u64
   call @sa_print_bytes(&t_52, t_53)
+  !t_51
   t_54 = alloc 16
   store t_54 + 0, &str_const_0 as ptr
   store t_54 + 8, 1 as u64
@@ -120,7 +121,6 @@ L_idx_end_10:
   t_56 = load t_54 + 8 as u64
   call @sa_print_bytes(&t_55, t_56)
   !t_54
-  !t_51
   !t_48
   !t_47
   !n

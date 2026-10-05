@@ -26,12 +26,14 @@
   t_9 = load t_8 + 0 as ptr
   t_10 = load t_8 + 8 as u64
   call @sa_print_bytes(&t_9, t_10)
+  !t_8
   t_11 = alloc 16
   store t_11 + 0, &str_const_1 as ptr
   store t_11 + 8, 1 as u64
   t_12 = load t_11 + 0 as ptr
   t_13 = load t_11 + 8 as u64
   call @sa_print_bytes(&t_12, t_13)
+  !t_11
   t_14 = alloc 16
   store t_14 + 0, &str_const_2 as ptr
   store t_14 + 8, 6 as u64
@@ -52,12 +54,14 @@
   t_23 = load t_22 + 0 as ptr
   t_24 = load t_22 + 8 as u64
   call @sa_print_bytes(&t_23, t_24)
+  !t_22
   t_25 = alloc 16
   store t_25 + 0, &str_const_1 as ptr
   store t_25 + 8, 1 as u64
   t_26 = load t_25 + 0 as ptr
   t_27 = load t_25 + 8 as u64
   call @sa_print_bytes(&t_26, t_27)
+  !t_25
   t_28 = load s + 0 as ptr
   t_29 = load s + 8 as u64
   t_30 = alloc 16
@@ -78,12 +82,14 @@
   t_40 = load t_39 + 0 as ptr
   t_41 = load t_39 + 8 as u64
   call @sa_print_bytes(&t_40, t_41)
+  !t_39
   t_42 = alloc 16
   store t_42 + 0, &str_const_1 as ptr
   store t_42 + 8, 1 as u64
   t_43 = load t_42 + 0 as ptr
   t_44 = load t_42 + 8 as u64
   call @sa_print_bytes(&t_43, t_44)
+  !t_42
   t_45 = alloc 16
   store t_45 + 0, &str_const_4 as ptr
   store t_45 + 8, 5 as u64
@@ -108,12 +114,14 @@
   t_58 = load t_57 + 0 as ptr
   t_59 = load t_57 + 8 as u64
   call @sa_print_bytes(&t_58, t_59)
+  !t_57
   t_60 = alloc 16
   store t_60 + 0, &str_const_1 as ptr
   store t_60 + 8, 1 as u64
   t_61 = load t_60 + 0 as ptr
   t_62 = load t_60 + 8 as u64
   call @sa_print_bytes(&t_61, t_62)
+  !t_60
   t_63 = load csv + 0 as ptr
   t_64 = load csv + 8 as u64
   t_65 = slt 2, 0
@@ -172,6 +180,7 @@ L_cl_loe_14:
   t_78 = load t_77 + 0 as ptr
   t_79 = load t_77 + 8 as u64
   call @sa_print_bytes(&t_78, t_79)
+  !t_77
   t_80 = alloc 16
   store t_80 + 0, &str_const_1 as ptr
   store t_80 + 8, 1 as u64
@@ -179,24 +188,15 @@ L_cl_loe_14:
   t_82 = load t_80 + 8 as u64
   call @sa_print_bytes(&t_81, t_82)
   !t_80
-  !t_77
-  !t_60
-  !t_57
   !t_54
   !t_53
   !t_51
   !t_48
   !csv
-  !t_42
-  !t_39
   !t_36
   !t_35
   !t_33
   !t_30
-  !t_25
-  !t_22
-  !t_11
-  !t_8
   !t_5
   !t_4
   !s

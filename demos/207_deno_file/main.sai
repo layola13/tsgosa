@@ -68,6 +68,7 @@ L_node_ok_6:
   t_31 = load t_30 + 0 as ptr
   t_32 = load t_30 + 8 as u64
   call @sa_print_bytes(&t_31, t_32)
+  !t_30
   t_33 = alloc 16
   store t_33 + 0, &str_const_2 as ptr
   store t_33 + 8, 1 as u64
@@ -75,7 +76,6 @@ L_node_ok_6:
   t_35 = load t_33 + 8 as u64
   call @sa_print_bytes(&t_34, t_35)
   !t_33
-  !t_30
   !t_27
   !t_26
   !t_22

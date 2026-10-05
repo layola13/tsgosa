@@ -59,12 +59,14 @@ L_node_ok_4:
   t_27 = load t_26 + 0 as ptr
   t_28 = load t_26 + 8 as u64
   call @sa_print_bytes(&t_27, t_28)
+  !t_26
   t_29 = alloc 16
   store t_29 + 0, &str_const_1 as ptr
   store t_29 + 8, 1 as u64
   t_30 = load t_29 + 0 as ptr
   t_31 = load t_29 + 8 as u64
   call @sa_print_bytes(&t_30, t_31)
+  !t_29
   t_32 = load d + 8 as u64
   t_33 = sext t_32 as i64
   t_34 = alloc 64
@@ -78,6 +80,7 @@ L_node_ok_4:
   t_39 = load t_38 + 0 as ptr
   t_40 = load t_38 + 8 as u64
   call @sa_print_bytes(&t_39, t_40)
+  !t_38
   t_41 = alloc 16
   store t_41 + 0, &str_const_2 as ptr
   store t_41 + 8, 1 as u64
@@ -85,11 +88,8 @@ L_node_ok_4:
   t_43 = load t_41 + 8 as u64
   call @sa_print_bytes(&t_42, t_43)
   !t_41
-  !t_38
   !t_35
   !t_34
-  !t_29
-  !t_26
   !t_23
   !t_22
   !d

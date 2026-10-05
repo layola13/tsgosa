@@ -120,6 +120,7 @@ L_for_end_3:
   t_71 = load t_70 + 0 as ptr
   t_72 = load t_70 + 8 as u64
   call @sa_print_bytes(&t_71, t_72)
+  !t_70
   t_73 = alloc 16
   store t_73 + 0, &str_const_6 as ptr
   store t_73 + 8, 1 as u64
@@ -127,7 +128,6 @@ L_for_end_3:
   t_75 = load t_73 + 8 as u64
   call @sa_print_bytes(&t_74, t_75)
   !t_73
-  !t_70
   !t_67
   !t_66
   !n

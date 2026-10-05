@@ -16,6 +16,7 @@
   t_7 = load t_6 + 0 as ptr
   t_8 = load t_6 + 8 as u64
   call @sa_print_bytes(&t_7, t_8)
+  !t_6
   t_9 = alloc 16
   store t_9 + 0, &jslib_impl__str_const_0 as ptr
   store t_9 + 8, 1 as u64
@@ -23,7 +24,6 @@
   t_11 = load t_9 + 8 as u64
   call @sa_print_bytes(&t_10, t_11)
   !t_9
-  !t_6
   !t_3
   !t_2
   !x

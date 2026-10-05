@@ -32,12 +32,14 @@ L_endif_6:
   t_10 = load t_9 + 0 as ptr
   t_11 = load t_9 + 8 as u64
   call @sa_print_bytes(&t_10, t_11)
+  !t_9
   t_12 = alloc 16
   store t_12 + 0, &str_const_0 as ptr
   store t_12 + 8, 1 as u64
   t_13 = load t_12 + 0 as ptr
   t_14 = load t_12 + 8 as u64
   call @sa_print_bytes(&t_13, t_14)
+  !t_12
   t_15 = call @isWeekend(1)
   t_16 = sext t_15 as i64
   t_17 = alloc 64
@@ -51,12 +53,14 @@ L_endif_6:
   t_22 = load t_21 + 0 as ptr
   t_23 = load t_21 + 8 as u64
   call @sa_print_bytes(&t_22, t_23)
+  !t_21
   t_24 = alloc 16
   store t_24 + 0, &str_const_0 as ptr
   store t_24 + 8, 1 as u64
   t_25 = load t_24 + 0 as ptr
   t_26 = load t_24 + 8 as u64
   call @sa_print_bytes(&t_25, t_26)
+  !t_24
   t_27 = call @isWeekend(6)
   t_28 = sext t_27 as i64
   t_29 = alloc 64
@@ -70,6 +74,7 @@ L_endif_6:
   t_34 = load t_33 + 0 as ptr
   t_35 = load t_33 + 8 as u64
   call @sa_print_bytes(&t_34, t_35)
+  !t_33
   t_36 = alloc 16
   store t_36 + 0, &str_const_1 as ptr
   store t_36 + 8, 1 as u64
@@ -77,17 +82,12 @@ L_endif_6:
   t_38 = load t_36 + 8 as u64
   call @sa_print_bytes(&t_37, t_38)
   !t_36
-  !t_33
   !t_30
   !t_29
   !t_27
-  !t_24
-  !t_21
   !t_18
   !t_17
   !t_15
-  !t_12
-  !t_9
   !t_6
   !t_5
   !t_3

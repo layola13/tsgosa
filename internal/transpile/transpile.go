@@ -2907,15 +2907,6 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
 		return
 	}
-	if len(stmts) == 0 {
-		if !isVoid {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-			return
-		}
-		w.Write("  ret\n")
-		return
-	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve
@@ -2930,11 +2921,24 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if fn.Parameters != nil {
 		saSeedParamMapVals(fn.Parameters.Nodes, paramKinds, classes, scope)
 	}
-	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒）。
+	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒；
+	// 空体亦展开，与上游空体 drain 同形）。
 	if _, _, pendings, ok := saSynthParams(fn, scope.classes, scope.aliasOf, scope.enums); ok && len(pendings) > 0 {
 		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
 			return
 		}
+	}
+	if len(stmts) == 0 {
+		if !isVoid {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
+			return
+		}
+		// 空体亦释归属（含形参/drain 句柄；与落空尾同律；无 @main 库形 verifier
+		// 要求有释；封存上游空体实发 `!x; return`）。
+		saReleaseAllOwnedExcept(w, scope, "")
+		w.Write("  ret\n")
+		return
 	}
 	terminated := false
 	for _, s := range stmts {

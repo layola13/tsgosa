@@ -2747,7 +2747,14 @@ func saArmTerminates(stmts []*ast.Node) bool {
 	if len(stmts) == 0 {
 		return false
 	}
-	return saStmtTerminates(stmts[len(stmts)-1])
+	// 终结后皆不可达（落字侧 saLowerArm 同律抑制死码）：任一句终结即臂终结；
+	// 只看末句会误判 `[return; dead]` 致终结符后多发 jmp 触 verifier。
+	for _, s := range stmts {
+		if saStmtTerminates(s) {
+			return true
+		}
+	}
+	return false
 }
 
 func saEmbeddedBlock(n *ast.Node) ([]*ast.Node, bool) {

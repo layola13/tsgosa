@@ -1495,6 +1495,10 @@ func saLowerConsoleLog(w printer.EmitTextWriter, ce *ast.CallExpression, scope *
 			seg := saLowerStringLiteral(w, " ", scope, nextTemp)
 			bp, bl := saExpandStr(w, seg, nextTemp)
 			w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+			// 段头即释（字面量头为归属临时量；具名句柄非 temp 天然跳过；
+			// 臂域 exit 截断归属表，尾释覆盖不到，此处即释为唯一释放点；
+			// 封存上游臂内实发 call 后 `!t` 同形）。
+			saReleaseOwnedTemp(w, scope, seg)
 		}
 		seg, msg := saToSlice(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -1502,10 +1506,12 @@ func saLowerConsoleLog(w printer.EmitTextWriter, ce *ast.CallExpression, scope *
 		}
 		bp, bl := saExpandStr(w, seg, nextTemp)
 		w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+		saReleaseOwnedTemp(w, scope, seg)
 	}
 	seg := saLowerStringLiteral(w, "\n", scope, nextTemp)
 	bp, bl := saExpandStr(w, seg, nextTemp)
 	w.Write(fmt.Sprintf("  call @sa_print_bytes(&%s, %s)\n", bp, bl))
+	saReleaseOwnedTemp(w, scope, seg)
 	return true, ""
 }
 

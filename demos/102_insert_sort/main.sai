@@ -136,12 +136,14 @@ L_idx_end_16:
   t_62 = load t_61 + 0 as ptr
   t_63 = load t_61 + 8 as u64
   call @sa_print_bytes(&t_62, t_63)
+  !t_61
   t_64 = alloc 16
   store t_64 + 0, &str_const_0 as ptr
   store t_64 + 8, 1 as u64
   t_65 = load t_64 + 0 as ptr
   t_66 = load t_64 + 8 as u64
   call @sa_print_bytes(&t_65, t_66)
+  !t_64
   t_67 = alloc 8
   t_68 = load a + 8 as u64
   t_69 = ult 1, t_68
@@ -171,12 +173,14 @@ L_idx_end_19:
   t_81 = load t_80 + 0 as ptr
   t_82 = load t_80 + 8 as u64
   call @sa_print_bytes(&t_81, t_82)
+  !t_80
   t_83 = alloc 16
   store t_83 + 0, &str_const_0 as ptr
   store t_83 + 8, 1 as u64
   t_84 = load t_83 + 0 as ptr
   t_85 = load t_83 + 8 as u64
   call @sa_print_bytes(&t_84, t_85)
+  !t_83
   t_86 = alloc 8
   t_87 = load a + 8 as u64
   t_88 = ult 2, t_87
@@ -206,12 +210,14 @@ L_idx_end_22:
   t_100 = load t_99 + 0 as ptr
   t_101 = load t_99 + 8 as u64
   call @sa_print_bytes(&t_100, t_101)
+  !t_99
   t_102 = alloc 16
   store t_102 + 0, &str_const_0 as ptr
   store t_102 + 8, 1 as u64
   t_103 = load t_102 + 0 as ptr
   t_104 = load t_102 + 8 as u64
   call @sa_print_bytes(&t_103, t_104)
+  !t_102
   t_105 = alloc 8
   t_106 = load a + 8 as u64
   t_107 = ult 3, t_106
@@ -241,12 +247,14 @@ L_idx_end_25:
   t_119 = load t_118 + 0 as ptr
   t_120 = load t_118 + 8 as u64
   call @sa_print_bytes(&t_119, t_120)
+  !t_118
   t_121 = alloc 16
   store t_121 + 0, &str_const_0 as ptr
   store t_121 + 8, 1 as u64
   t_122 = load t_121 + 0 as ptr
   t_123 = load t_121 + 8 as u64
   call @sa_print_bytes(&t_122, t_123)
+  !t_121
   t_124 = alloc 8
   t_125 = load a + 8 as u64
   t_126 = ult 4, t_125
@@ -276,6 +284,7 @@ L_idx_end_28:
   t_138 = load t_137 + 0 as ptr
   t_139 = load t_137 + 8 as u64
   call @sa_print_bytes(&t_138, t_139)
+  !t_137
   t_140 = alloc 16
   store t_140 + 0, &str_const_1 as ptr
   store t_140 + 8, 1 as u64
@@ -283,23 +292,14 @@ L_idx_end_28:
   t_142 = load t_140 + 8 as u64
   call @sa_print_bytes(&t_141, t_142)
   !t_140
-  !t_137
   !t_134
   !t_133
-  !t_121
-  !t_118
   !t_115
   !t_114
-  !t_102
-  !t_99
   !t_96
   !t_95
-  !t_83
-  !t_80
   !t_77
   !t_76
-  !t_64
-  !t_61
   !t_58
   !t_57
   !a

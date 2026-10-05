@@ -30,12 +30,14 @@ L_abs_end_3:
   t_12 = load t_11 + 0 as ptr
   t_13 = load t_11 + 8 as u64
   call @sa_print_bytes(&t_12, t_13)
+  !t_11
   t_14 = alloc 16
   store t_14 + 0, &str_const_0 as ptr
   store t_14 + 8, 1 as u64
   t_15 = load t_14 + 0 as ptr
   t_16 = load t_14 + 8 as u64
   call @sa_print_bytes(&t_15, t_16)
+  !t_14
   t_17 = fptosi 7.9
   t_18 = fcmp_lt 7.9, 0.0
   t_19 = sitofp t_17
@@ -59,6 +61,7 @@ L_fl_end_5:
   t_29 = load t_28 + 0 as ptr
   t_30 = load t_28 + 8 as u64
   call @sa_print_bytes(&t_29, t_30)
+  !t_28
   t_31 = alloc 16
   store t_31 + 0, &str_const_0 as ptr
   store t_31 + 8, 1 as u64
@@ -66,11 +69,8 @@ L_fl_end_5:
   t_33 = load t_31 + 8 as u64
   call @sa_print_bytes(&t_32, t_33)
   !t_31
-  !t_28
   !t_25
   !t_24
-  !t_14
-  !t_11
   !t_8
   !t_7
   ret 0

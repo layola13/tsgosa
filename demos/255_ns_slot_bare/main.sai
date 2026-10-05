@@ -96,6 +96,7 @@ L_ms_done_15:
   t_40 = load t_39 + 0 as ptr
   t_41 = load t_39 + 8 as u64
   call @sa_print_bytes(&t_40, t_41)
+  !t_39
   t_42 = alloc 16
   store t_42 + 0, &str_const_0 as ptr
   store t_42 + 8, 1 as u64
@@ -103,7 +104,6 @@ L_ms_done_15:
   t_44 = load t_42 + 8 as u64
   call @sa_print_bytes(&t_43, t_44)
   !t_42
-  !t_39
   !t_36
   !t_35
   !t_33
