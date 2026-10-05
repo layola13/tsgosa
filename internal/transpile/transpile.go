@@ -1113,6 +1113,21 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		q := prefix + remote
 		link.resolve[local] = q
 		link.seed[q] = hv.sig
+		// 传递布局播种（签名中 inst: 布局随函数签名入调用方表，供返回/实参
+		// 记种消解；调用方本地同名定义优先由 hook C-class 去重保障；未导出
+		// 沿当前行为（不播种，下游大声拒）；匿名合成布局不在收割域）。
+		for _, k := range append([]string{hv.sig.retKind}, hv.sig.paramKinds...) {
+			if len(k) > 5 && k[:5] == "inst:" {
+				if ch, ok := link.classHarvests[tgt][k[5:]]; ok && ch.exported && ch.def != nil {
+					if link.classSeed == nil {
+						link.classSeed = map[string]*saClassDef{}
+					}
+					if _, dup := link.classSeed[k[5:]]; !dup {
+						link.classSeed[k[5:]] = ch.def
+					}
+				}
+			}
+		}
 	}
 	return true
 }
@@ -1373,7 +1388,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 类收割：具名类声明记布局指针 + export 旗（上游 program.go
 			// sharedClassDefs + expOf 同形；类表达式/默认导出类/heritage 基
 			// 跨文件另步，沿旧门）。
-			if st.Kind == ast.KindClassDeclaration {
+			// 接口收割：具名接口声明记布局指针 + export 旗（与类同表，调用方
+			// 域读/联合消解复用实例通道；形状证据同上）。
+			if st.Kind == ast.KindClassDeclaration || st.Kind == ast.KindInterfaceDeclaration {
 				if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 					if def, ok := classes[nm.Text()]; ok && def != nil {
 						if link.classHarvest == nil {
@@ -3263,6 +3280,11 @@ func RunBuild(args []string) int {
 	if out == "" {
 		out = dir
 	}
+	// 输出子树复建跳过（out 落源树内时，上轮写出的 packages 拷贝不得回灌；
+	// out==dir 原位模式沿旧行为；形如 tsc 默认排除 outDir）。
+	outAbs, _ := filepath.Abs(out)
+	dirAbs, _ := filepath.Abs(dir)
+	skipOut := outAbs != "" && dirAbs != "" && outAbs != dirAbs
 	files := map[string]string{}
 	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -3272,6 +3294,13 @@ func RunBuild(args []string) int {
 			base := filepath.Base(p)
 			if base == "node_modules" || base == ".git" {
 				return filepath.SkipDir
+			}
+			if skipOut {
+				if ap, err := filepath.Abs(p); err == nil {
+					if ap == outAbs || strings.HasPrefix(ap, outAbs+string(filepath.Separator)) {
+						return filepath.SkipDir
+					}
+				}
 			}
 			return nil
 		}

@@ -1806,6 +1806,13 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		if lsig, ok := scope.funcs[q]; ok {
 			return saEvalFuncCall(w, name, q, lsig, ce, scope, pos, refusals, nextTemp)
 		}
+		// 自文件函数（签名按本名取，发射按限定名；定义侧同前缀；
+		// 导入名不触此分支，未播种导入沿旧 unknown 门）。
+		if _, isImport := scope.linkResolve[name]; !isImport {
+			if sig, ok := scope.funcs[name]; ok {
+				return saEvalFuncCall(w, name, q, sig, ce, scope, pos, refusals, nextTemp)
+			}
+		}
 		return "", false, "unknown function " + name
 	}
 	if !ok {
