@@ -307,6 +307,52 @@ func saSnapImm(w printer.EmitTextWriter, op string, nextTemp *int) string {
 	return t
 }
 
+// saLowerModLogicAssign lowering 模块槽 `m &&= b`/`m ||= b`/`m ??= b`
+// （i32 槽；读-测-写经既有槽口 saModLoadI32/saModStoreI32，真短路两臂经槽
+// 汇合同 saLowerLogicAssign 槽形；`??=` 与局部同口径视 0 为空；str 槽沿旧门）。
+func saLowerModLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, ms *saModState, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	op := saBinaryOpKind(be)
+	cur := saModLoadI32(w, ms, scope, nextTemp)
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	test := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if op == ast.KindAmpersandAmpersandEqualsToken {
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", test, cur))
+	} else {
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", test, cur))
+	}
+	assignL := fmt.Sprintf("L_modlogas_assign_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	skipL := fmt.Sprintf("L_modlogas_skip_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_modlogas_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", test, assignL, skipL))
+	w.Write(fmt.Sprintf("%s:\n", assignL))
+	rhs, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckI32Value(scope, rhs); msg != "" {
+		return "", msg
+	}
+	rv := saSnapImm(w, rhs, nextTemp)
+	saModStoreI32(w, ms, rv, scope, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, rv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", skipL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, cur))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
+
 // saLowerLogicAssign lowering `a &&= b`/`a ||= b`/`a ??= b`（真短路：
 // 目标读一次，RHS 只在赋值臂求值，两臂经槽汇合；形状证据：封存
 // lowerLogicAssign:3439-3565，`??` 槽形见 lowerBinary:3182-3206）。
@@ -318,6 +364,13 @@ func saLowerLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scop
 		return "", "logical assignment target is not lowerable"
 	}
 	name := be.Left.Text()
+	// 模块槽目标（i32 宽经槽口；str 槽与未知沿旧门）。
+	if ms, ok := scope.modVars[name]; ok {
+		if ms.w == "i32" {
+			return saLowerModLogicAssign(w, be, ms, scope, pos, refusals, nextTemp)
+		}
+		return "", "logical assignment target is not lowerable"
+	}
 	kind, ok := scope.types[name]
 	if !ok || (kind != "i32" && kind != "bool" && kind != "str") {
 		return "", "logical assignment target is not lowerable"
