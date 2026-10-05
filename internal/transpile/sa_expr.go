@@ -2912,6 +2912,23 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return "", "only +/==/!= operate on strings"
 		}
+		if saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {
+			// 实例句柄禁入纯算术/位运算（指针误作整数；`==/!=` 空比较与
+			// `&&`/`||` 沿既有门（上游同形），余算符一律拒；铁律 4）。
+			if be.OperatorToken != nil {
+				switch be.OperatorToken.Kind {
+				case ast.KindPlusToken, ast.KindMinusToken,
+					ast.KindAsteriskToken, ast.KindSlashToken,
+					ast.KindPercentToken,
+					ast.KindLessThanLessThanToken,
+					ast.KindGreaterThanGreaterThanToken,
+					ast.KindGreaterThanGreaterThanGreaterThanToken,
+					ast.KindAmpersandToken, ast.KindBarToken,
+					ast.KindCaretToken:
+					return "", "instance value in i32 expression"
+				}
+			}
+		}
 		op, ok := map[ast.Kind]string{
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
 			ast.KindAsteriskToken: "mul", ast.KindSlashToken: "div",
