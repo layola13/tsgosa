@@ -802,7 +802,8 @@ func saArrowParamNames(arrow *ast.Node) ([]string, bool) {
 }
 
 // saFuncDefaultTables 记录每形参缺省（与形参同长；有 Initializer 即 true，
-// 缺省表达式原节点供短调字面量回放；非字面量短调大声拒；形状证据：封存
+// 缺省表达式原节点供短调字面量回放；无初值 `?` 记可省（undefined 即 0，
+// 补齐侧按种垫）；非字面量短调大声拒；形状证据：封存
 // funcDefaults/funcDefaultExpr + padDefaultArgs）。
 func saFuncDefaultTables(nodes []*ast.Node) ([]bool, []*ast.Node) {
 	defs := make([]bool, len(nodes))
@@ -812,6 +813,8 @@ func saFuncDefaultTables(nodes []*ast.Node) ([]bool, []*ast.Node) {
 		if pd != nil && pd.Initializer != nil {
 			defs[i] = true
 			dexprs[i] = pd.Initializer
+		} else if pd != nil && pd.QuestionToken != nil {
+			defs[i] = true
 		}
 	}
 	return defs, dexprs

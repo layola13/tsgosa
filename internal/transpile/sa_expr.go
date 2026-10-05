@@ -916,7 +916,12 @@ func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, arg
 			init = sig.defaultExprs[i]
 		}
 		if init == nil {
-			return nil, fmt.Sprintf("omitted default argument %d of %s has no recorded default (short calls need a literal default)", i+1, fname)
+			// 无初值 `?` 省略（undefined 即 0；i32/bool 垫 0；余下沿旧门）。
+			if i < len(sig.paramKinds) && (sig.paramKinds[i] == "i32" || sig.paramKinds[i] == "bool") {
+				out = append(out, "0")
+				continue
+			}
+			return nil, fmt.Sprintf("omitted optional argument %d of %s needs a default or explicit passing", i+1, fname)
 		}
 		if !saIsLiteralDefault(init) {
 			return nil, fmt.Sprintf("omitted default argument %d of %s is not a literal (non-literal defaults do not replay at short calls)", i+1, fname)

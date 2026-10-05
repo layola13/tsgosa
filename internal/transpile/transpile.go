@@ -1916,7 +1916,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 	taken := map[string]bool{}
 	for idx, p := range paramNodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.QuestionToken != nil {
+		if pd == nil {
+			return nil, nil, nil, false
+		}
+		// `?` 可选形参（种按注解/缺省 i32；省略经缺省表补 undefined 即 0；
+		// 跳位省略被补齐 positional + 元数门天然拒）。
+		if pd.QuestionToken != nil && pd.DotDotDotToken != nil {
 			return nil, nil, nil, false
 		}
 		if pd.DotDotDotToken != nil {
@@ -2089,7 +2094,7 @@ func saParamNames(fn *ast.FunctionDeclaration) ([]string, bool) {
 	taken := map[string]bool{}
 	for idx, p := range fn.Parameters.Nodes {
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.QuestionToken != nil {
+		if pd == nil {
 			return nil, false
 		}
 		if pd.DotDotDotToken != nil {
