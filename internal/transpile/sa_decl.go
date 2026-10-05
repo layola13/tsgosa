@@ -2730,6 +2730,9 @@ func saModMaterialize(w printer.EmitTextWriter, text string, scope *saScope, nex
 	ln = fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+	// 具化头末用即释（回读后即死；守卫 init 分支内具化者 join 后释放非支配，
+	// 必就地释；直序调用方尾释经旗标跳过）。
+	saReleaseOwnedTemp(w, scope, h)
 	return pv, ln
 }
 
