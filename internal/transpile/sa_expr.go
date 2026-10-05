@@ -100,6 +100,33 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return op, ""
 			}
 		}
+		// 条件位实例空比较（`o === null` 即柄零判，`==/!=` 同形；与 ??
+		// 空合同行同门同吸收口径；直读标识符形，调用/字段链沿旧门）。
+		if be := cond.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			(be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+			cmp := "eq"
+			if be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken {
+				cmp = "ne"
+			}
+			var subj *ast.Node
+			if be.Left != nil && be.Left.Kind == ast.KindIdentifier &&
+				saIsInstOperandSyntax(be.Left, scope) && saIsNullLit(be.Right, scope) {
+				subj = be.Left
+			} else if be.Right != nil && be.Right.Kind == ast.KindIdentifier &&
+				saIsInstOperandSyntax(be.Right, scope) && saIsNullLit(be.Left, scope) {
+				subj = be.Right
+			}
+			if subj != nil {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, cmp, subj.Text()))
+				return t, ""
+			}
+		}
 		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -1969,6 +1996,12 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
 					return a.Text(), ""
 				}
+			}
+			// 空字面量即 0 句柄（与 `Box|null` 空吸收同形；封存上游实发
+			// `call @f(0)`；错类沿旧门）。
+			if a != nil && (a.Kind == ast.KindNullKeyword ||
+				(a.Kind == ast.KindIdentifier && a.Text() == "undefined")) {
+				return "0", ""
 			}
 			return "", "instance argument needs matching class"
 		}
