@@ -435,7 +435,7 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		return false
 	}
 	if pat.Kind == ast.KindObjectBindingPattern {
-		return saLowerObjDestructuringDecl(w, d, vd, pat, scope, pos, refusals)
+		return saLowerObjDestructuringDecl(w, d, vd, pat, scope, pos, refusals, nextTemp)
 	}
 	if pat.Kind != ast.KindArrayBindingPattern {
 		ln, col := pos(d.Pos())
@@ -617,7 +617,7 @@ func saLowerNsDestructuringDecl(d *ast.Node, pat *ast.Node, src string, scope *s
 // 串域头指针读记 str，其余 i32；rest/缺省/嵌套/计算键/未知域/重名一律大声拒。
 // 形状证据：封存 destructureObject:5465-5509（源绑定布局 + 串名字面键 +
 // 按域种读回）+ 本仓形参排空对象位（串/i32 双臂 + 同文拒因）；字面量源另步）。
-func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	var def *saClassDef
 	if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
 		if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
@@ -632,6 +632,36 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 				def, _ = scope.classes[k[5:]]
 			}
 		}
+	}
+	if def == nil && vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
+		// 字面量源现场具化（无注解按键集匹配；具名注解须同名，泛型优先
+		// 具化；封存 destructureObject:5465-5509 + layoutOfLiteral 键集匹配）。
+		want := ""
+		if vd.Type != nil {
+			if vd.Type.Kind != ast.KindTypeReference {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object destructuring needs a recorded struct layout"})
+				return false
+			}
+			if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+				want = ref.TypeName.Text()
+				if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+					if lname, ok := saInstantiateIface(want, ref.TypeArguments.Nodes, scope.classes); ok {
+						want = lname
+					}
+				}
+			}
+		}
+		h, defname, msg := saLowerObjectLiteral(w, vd.Initializer, want, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		if d2, ok := scope.classes[defname]; ok {
+			def = d2
+		}
+		src = h
 	}
 	if def == nil {
 		// 命名空间别名源（`const {f} = N` / `const {add} = u`）：成员直绑

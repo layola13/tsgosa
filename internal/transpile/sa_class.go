@@ -1493,7 +1493,20 @@ func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*s
 // saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
 // 形状证据：封存 layoutOfLiteral:8953-8975 + matchLayout 名集匹配）。
 func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
-	var hit *saClassDef
+	hits := saMatchIfaceList(keys, classes)
+	if len(hits) > 1 {
+		return nil, "object literal matches no unique recorded interface layout (declare the interface first)"
+	}
+	if len(hits) == 0 {
+		return nil, "object literal matches no recorded interface layout (declare the interface first)"
+	}
+	return hits[0], ""
+}
+
+// saMatchIfaceList 列出键集全命中的接口布局（saMatchIface 的无拒因版，
+// 供值种决胜复用；拒因文案由调用方沿既有用语）。
+func saMatchIfaceList(keys []string, classes map[string]*saClassDef) []*saClassDef {
+	var hits []*saClassDef
 	for _, def := range classes {
 		if !def.isIface || len(def.fields) != len(keys) {
 			continue
@@ -1508,15 +1521,30 @@ func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, s
 		if !ok {
 			continue
 		}
-		if hit != nil {
-			return nil, "object literal matches no unique recorded interface layout (declare the interface first)"
+		hits = append(hits, def)
+	}
+	return hits
+}
+
+// saLitFieldKind 初判字面量域值种（i32/str；余下空；封存 checker 值种直觉的
+// 语法子集：字面量与已定种绑定名，不做求值）。
+func saLitFieldKind(init *ast.Node, scope *saScope) string {
+	if init == nil {
+		return ""
+	}
+	switch init.Kind {
+	case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "i32"
+	case ast.KindIdentifier:
+		if k, ok := scope.types[init.Text()]; ok && (k == "i32" || k == "bool") {
+			return "i32"
 		}
-		hit = def
+		return ""
 	}
-	if hit == nil {
-		return nil, "object literal matches no recorded interface layout (declare the interface first)"
+	if saIsStrExpr(init, scope) {
+		return "str"
 	}
-	return hit, ""
+	return ""
 }
 
 // saMatchWantIface 注解优先直命中（名在表、键集相等即用；其余一律nil
@@ -1841,6 +1869,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	var spreads []spreadSrc
 	var ops []op
 	var keys []string
+	fieldVals := map[string]string{}
 	for _, p := range ol.Properties.Nodes {
 		if p.Kind == ast.KindSpreadAssignment {
 			se := p.AsSpreadAssignment().Expression.AsNode()
@@ -1913,6 +1942,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 			ops = append(ops, op{spread: -1, fname: fname, init: p.AsPropertyAssignment().Initializer})
 			keys = append(keys, fname)
+			fieldVals[fname] = saLitFieldKind(p.AsPropertyAssignment().Initializer, scope)
 		case ast.KindShorthandPropertyAssignment:
 			fname, ok := saObjPropName(p)
 			if !ok {
@@ -1920,6 +1950,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 			ops = append(ops, op{spread: -1, fname: fname, init: p.Name()})
 			keys = append(keys, fname)
+			fieldVals[fname] = saLitFieldKind(p.Name(), scope)
 		default:
 			return "", "", "object literal property is not lowerable (methods refused)"
 		}
@@ -1940,9 +1971,32 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		return "", "", msg
 	}
 	if def == nil {
-		def, msg = saMatchIface(uniq, scope.classes)
-		if msg != "" {
-			return "", "", msg
+		hits := saMatchIfaceList(uniq, scope.classes)
+		if len(hits) == 0 {
+			return "", "", "object literal matches no recorded interface layout (declare the interface first)"
+		}
+		def = hits[0]
+		if len(hits) > 1 {
+			// 值种决胜（模板与单态键集并存时按字面量值种计分；唯一最高
+			// 分即用，平分沿旧多命中门；单命中零行为变）。
+			best, bestScore, tied := hits[0], -1, false
+			for _, h := range hits {
+				s := 0
+				for _, f := range h.fields {
+					if vk, ok := fieldVals[f.name]; ok && vk != "" && h.fkinds[f.name] == vk {
+						s++
+					}
+				}
+				if s > bestScore {
+					best, bestScore, tied = h, s, false
+				} else if s == bestScore {
+					tied = true
+				}
+			}
+			if tied {
+				return "", "", "object literal matches no unique recorded interface layout (declare the interface first)"
+			}
+			def = best
 		}
 	}
 	if want != "" && def.name != want {
