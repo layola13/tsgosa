@@ -39,5 +39,10 @@ describe("more", () => {
     expect("hello").not.toStartsWith("lo");
     expect("hello").not.toEndsWith("he");
   });
+  test("length", () => {
+    expect([1, 2, 3]).toHaveLength(3);
+    expect("hello").toHaveLength(5);
+    expect([1, 2, 3]).not.toHaveLength(2);
+  });
 });
 console.log(42);

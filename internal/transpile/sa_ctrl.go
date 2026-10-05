@@ -640,8 +640,8 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 		cmpName = "sle"
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
-		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith)")
+		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -750,6 +750,45 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 		saOwnTemp(scope, o)
 		pendTemps = []string{o}
 		return booleanize(failCmp, o, "0")
+	}
+	if matcher == "toHaveLength" {
+		// 数组/串长度断言（句柄总线求柄：绑定/字面量/链式经 saArrValueOf，
+		// 串经 saEvalStr；头 +8 u64 即长，与 `.length` 落字同形；`.not` 翻转）。
+		if len(margs) != 1 {
+			return fail("expect().toHaveLength takes one expected value")
+		}
+		bop, msg := saEvalI32(w, margs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		h, hmsg := saArrValueOf(w, iargs[0], scope, pos, refusals, nextTemp)
+		if hmsg != "" {
+			var smsg string
+			h, smsg = saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)
+			if smsg != "" {
+				return fail(hmsg)
+			}
+		}
+		lt := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lt, h))
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		cmp := "eq"
+		if neg {
+			cmp = "ne"
+		}
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, lt, bop))
+		saReleaseOwnedTemp(w, scope, h)
+		failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
+		*nextLabel++
+		okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+		w.Write(failL + ":\n")
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		w.Write(okL + ":\n")
+		return true, true
 	}
 	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
 	if msg != "" {

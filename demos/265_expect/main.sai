@@ -233,26 +233,72 @@ L_exp_ok_44:
 L_exp_fail_45:
   panic(2501)
 L_exp_ok_46:
-  t_77 = sext 42 as i64
-  t_78 = alloc 64
-  t_79 = alloc 8
-  t_80 = call @sa_fmt_i64_into(t_77, 10, t_78, 64, &t_79)
-  t_81 = load t_79 + 0 as u64
-  t_82 = alloc 16
-  store t_82 + 0, t_78 as ptr
-  store t_82 + 8, t_81 as u64
-  !t_80
-  t_83 = load t_82 + 0 as ptr
-  t_84 = load t_82 + 8 as u64
-  call @sa_print_bytes(&t_83, t_84)
-  !t_82
-  t_85 = alloc 16
-  store t_85 + 0, &str_const_5 as ptr
-  store t_85 + 8, 1 as u64
-  t_86 = load t_85 + 0 as ptr
-  t_87 = load t_85 + 8 as u64
-  call @sa_print_bytes(&t_86, t_87)
-  !t_85
-  !t_79
+  t_77 = alloc 16
+  t_78 = alloc 12
+  t_79 = add t_78, 0
+  store t_79 + 0, 1 as i32
+  t_80 = add t_78, 4
+  store t_80 + 0, 2 as i32
+  t_81 = add t_78, 8
+  store t_81 + 0, 3 as i32
+  store t_77 + 0, t_78 as ptr
+  store t_77 + 8, 3 as u64
   !t_78
+  t_82 = load t_77 + 8 as u64
+  t_83 = eq t_82, 3
+  !t_77
+  br t_83 -> L_exp_fail_47, L_exp_ok_48
+L_exp_fail_47:
+  panic(2501)
+L_exp_ok_48:
+  t_84 = alloc 16
+  store t_84 + 0, &str_const_0 as ptr
+  store t_84 + 8, 5 as u64
+  t_85 = load t_84 + 8 as u64
+  t_86 = eq t_85, 5
+  !t_84
+  br t_86 -> L_exp_fail_49, L_exp_ok_50
+L_exp_fail_49:
+  panic(2501)
+L_exp_ok_50:
+  t_87 = alloc 16
+  t_88 = alloc 12
+  t_89 = add t_88, 0
+  store t_89 + 0, 1 as i32
+  t_90 = add t_88, 4
+  store t_90 + 0, 2 as i32
+  t_91 = add t_88, 8
+  store t_91 + 0, 3 as i32
+  store t_87 + 0, t_88 as ptr
+  store t_87 + 8, 3 as u64
+  !t_88
+  t_92 = load t_87 + 8 as u64
+  t_93 = ne t_92, 2
+  !t_87
+  br t_93 -> L_exp_fail_51, L_exp_ok_52
+L_exp_fail_51:
+  panic(2501)
+L_exp_ok_52:
+  t_94 = sext 42 as i64
+  t_95 = alloc 64
+  t_96 = alloc 8
+  t_97 = call @sa_fmt_i64_into(t_94, 10, t_95, 64, &t_96)
+  t_98 = load t_96 + 0 as u64
+  t_99 = alloc 16
+  store t_99 + 0, t_95 as ptr
+  store t_99 + 8, t_98 as u64
+  !t_97
+  t_100 = load t_99 + 0 as ptr
+  t_101 = load t_99 + 8 as u64
+  call @sa_print_bytes(&t_100, t_101)
+  !t_99
+  t_102 = alloc 16
+  store t_102 + 0, &str_const_5 as ptr
+  store t_102 + 8, 1 as u64
+  t_103 = load t_102 + 0 as ptr
+  t_104 = load t_102 + 8 as u64
+  call @sa_print_bytes(&t_103, t_104)
+  !t_102
+  !t_96
+  !t_95
   ret 0
