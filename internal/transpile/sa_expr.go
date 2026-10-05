@@ -60,6 +60,11 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			if k == "map" || k == "set" || k == "date" {
 				return "", k + " " + nm + " in condition"
 			}
+			// 实例句柄真值即非零（空为 0 句柄；`br` 直吃寄存器，与上游
+			// lowerIf 通用 lowerExpr+br 同形；封存 materializeCond 非立即量直通）。
+			if strings.HasPrefix(k, "inst:") {
+				return nm, ""
+			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in condition"
 			}
