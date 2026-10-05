@@ -1250,7 +1250,7 @@ func saIsArrMethod(m string) bool {
 	switch m {
 	case "push", "pop", "shift", "unshift", "fill", "sort", "indexOf", "lastIndexOf",
 		"includes", "reverse", "slice", "at", "join", "copyWithin", "toReversed",
-		"toSorted", "with", "toSpliced", "concat",
+		"toSorted", "with", "toSpliced", "splice", "concat",
 		"forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
 		"some", "every", "reduce", "reduceRight":
 		return true
@@ -2794,6 +2794,88 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 	return dest, ""
 }
 
+// saLowerArraySplice 原地删段返删除段（2 参形；插入形另步；钳位段与
+// saLowerToSpliced 同形，删除段 alloc 同形，原地前移经 saCopyRange 前向
+// 逐元覆写读总在写前；形状证据：封存 lowerToSpliced:6923-6975）。
+func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if len(args) != 2 {
+		return "", "splice takes a start and a delete count in this step (insertions not lowerable yet)"
+	}
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	sdata := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, recv))
+	start, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	del, msg := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	s := saArrayClampLen(w, start, ln, scope, nextTemp)
+	maxdel := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", maxdel, ln, s))
+	d := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", d, del))
+	neg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, d))
+	keepNeg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub 1, %s\n", keepNeg, neg))
+	d0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", d0, d, keepNeg))
+	over := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", over, d0, maxdel))
+	gap := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", gap, maxdel, d0))
+	fix := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", fix, gap, over))
+	d1 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", d1, d0, fix))
+	d = d1
+	d1p := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", d1p, d))
+	nby := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, d1p))
+	ddata := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, d))
+	w.Write(fmt.Sprintf("  !%s\n", ddata))
+	dloop := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
+	s2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", s2, s, d))
+	saCopyRange(w, sdata, dloop, s, s2, "0", scope, nextTemp)
+	saCopyRange(w, sdata, sdata, s2, ln, s, scope, nextTemp)
+	nlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen, ln, d))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, nlen))
+	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
+	return dest, ""
+}
+
 // saLowerArrayConcat 首尾相接（数组逐元，标量 push；形状证据：封存 lowerArrayConcat:7061-7090）。
 func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
@@ -4080,6 +4162,12 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		return cp, "arr", ""
 	case "toSpliced":
 		h, msg := saLowerToSpliced(w, recv, argNodes, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		return h, "arr", ""
+	case "splice":
+		h, msg := saLowerArraySplice(w, recv, argNodes, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
