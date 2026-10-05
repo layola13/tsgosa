@@ -160,6 +160,14 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		}
 		return "", "struct return needs a recorded interface layout"
 	}
+	// 实例空合空回退（`return M[k] ?? null`；左须同布局实例源，右须空字面量；
+	// 封存 lowerBinary:3182-3206 通用槽形，本仓只收空右臂，余形由槽内拒）。
+	if strings.HasPrefix(retKind, "inst:") && e != nil && e.Kind == ast.KindBinaryExpression {
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+			return saLowerNullishInstNull(w, be, retKind, scope, pos, refusals, nextTemp)
+		}
+	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
 	}
@@ -3097,6 +3105,79 @@ func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *s
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
+
+// saLowerNullishInstNull 实例空合空回退（`return M[k] ?? null`；左须同布局实例源
+// （具化表下标读/同种标识符），右须空字面量（null/undefined，子集皆 0 句柄）；
+// 槽形镜像封存 lowerBinary:3182-3206 + 本仓 saLowerNullish，值宽按 ptr；
+// 非空右臂/异种左源沿旧门大声拒）。
+func saLowerNullishInstNull(w printer.EmitTextWriter, be *ast.BinaryExpression, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	isNone := false
+	if be.Right != nil {
+		switch be.Right.Kind {
+		case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+			isNone = true
+		case ast.KindLiteralType:
+			if lit := be.Right.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				isNone = true
+			}
+		}
+	}
+	if !isNone {
+		return "", "only null fallback lowerable for struct nullish return"
+	}
+	var l string
+	switch {
+	case be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression:
+		ea := be.Left.AsElementAccessExpression()
+		if ea.Expression == nil || ea.Expression.Kind != ast.KindIdentifier {
+			return "", "index base must be bound array"
+		}
+		if ea.QuestionDotToken != nil {
+			return "", "optional map index reads are not lowerable"
+		}
+		t, msg := saLowerMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if k, ok := scope.types[t]; !ok || k != retKind {
+			return "", "struct return needs matching struct value"
+		}
+		l = t
+	case be.Left != nil && be.Left.Kind == ast.KindIdentifier:
+		if k, ok := scope.types[be.Left.Text()]; !ok || k != retKind {
+			return "", "struct return needs matching struct value"
+		}
+		l = be.Left.Text()
+	default:
+		return "", "struct nullish return needs a struct value or index read"
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	tL := fmt.Sprintf("L_null_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_null_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_null_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	saOwnTemp(scope, out)
 	return out, ""
 }
 

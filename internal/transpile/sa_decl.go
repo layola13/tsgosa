@@ -903,6 +903,14 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		}
 		return "", false
 	}
+	if t.Kind == ast.KindUnionType {
+		// 单类+空联合返回记实例句柄（`Size|null` 即 Size 布局，空吸收为 0 句柄；
+		// 与形参 1979-1989 同形；封存 union 首个已知布局；其余联合沿旧门）。
+		if inst, ok := saUnionInstKind(t.AsUnionTypeNode(), classes); ok {
+			return inst, true
+		}
+		return "", false
+	}
 	if t.Kind != ast.KindTypeReference {
 		return "", false
 	}
