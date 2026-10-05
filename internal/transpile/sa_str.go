@@ -250,6 +250,11 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		}
 		return false
 	}
+	// i32 `toString()` 即串返回（`String(x)` interp 同形；可证 i32 门内聚）。
+	if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil &&
+		saIsToStringableI32(pa.Expression, scope) {
+		return true
+	}
 	return saIsStrExpr(pa.Expression, scope)
 }
 
@@ -909,6 +914,82 @@ func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	return true
 }
 
+// saIsToStringableI32 报告表达式是否可证 i32（数值字面量/i32 标识（局部
+// 遮蔽优先）/i32 模块槽/算术位运算一元递归；bool 字面量/标识/比较逻辑一律否；
+// 不落字，`toString` 数值门专用）。
+func saIsToStringableI32(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		return true
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return false
+	case ast.KindIdentifier:
+		nm := e.Text()
+		if k, ok := scope.types[nm]; ok {
+			return k == "i32"
+		}
+		if ms, ok := scope.modVars[nm]; ok {
+			return ms.w == "i32"
+		}
+		// 顶层数值折叠（未被赋值名恒折叠；纯整数字面文本方收，表达式文本沿旧门）。
+		if text, ok := scope.topConsts[nm]; ok && !scope.topStr[nm] {
+			return saIsIntLitText(text)
+		}
+		return false
+	case ast.KindParenthesizedExpression:
+		return saIsToStringableI32(e.AsParenthesizedExpression().Expression, scope)
+	case ast.KindPrefixUnaryExpression:
+		ue := e.AsPrefixUnaryExpression()
+		if ue == nil {
+			return false
+		}
+		switch ue.Operator {
+		case ast.KindMinusToken, ast.KindPlusToken, ast.KindTildeToken:
+			return saIsToStringableI32(ue.Operand, scope)
+		}
+		return false
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		if be.OperatorToken == nil {
+			return false
+		}
+		switch be.OperatorToken.Kind {
+		case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken,
+			ast.KindSlashToken, ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
+			ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
+			ast.KindGreaterThanGreaterThanGreaterThanToken, ast.KindAmpersandToken,
+			ast.KindBarToken, ast.KindCaretToken:
+			return saIsToStringableI32(be.Left, scope) && saIsToStringableI32(be.Right, scope)
+		}
+		return false
+	}
+	return false
+}
+
+// saIsIntLitText 报告文本是否为纯整数字面量（可选前导负号；`toString`
+// 折叠门专用，不作数值语义）。
+func saIsIntLitText(text string) bool {
+	if text == "" {
+		return false
+	}
+	i := 0
+	if text[0] == '-' {
+		i = 1
+	}
+	if i >= len(text) {
+		return false
+	}
+	for ; i < len(text); i++ {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // saLowerStrCall lowering 串调用：String(x)/String.from*/串方法/同文件 string 函数。
 func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "String" {
@@ -973,6 +1054,28 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		if pa.QuestionDotToken != nil {
 			return "", false, "optional member call not lowerable"
+		}
+		// i32 `toString()`（`String(x)` interp 同形；bool 拼写 `true/false`
+		// 与数值 `0/1` 殊形，只收可证 i32 形，余下沿旧门）。
+		if pa.Name() != nil && pa.Name().Text() == "toString" {
+			args := []*ast.Node{}
+			if ce.Arguments != nil {
+				args = ce.Arguments.Nodes
+			}
+			if len(args) != 0 {
+				return "", false, "toString takes 0 arguments"
+			}
+			if !saIsToStringableI32(pa.Expression, scope) {
+				return "", false, "toString receiver must be a number (booleans need true/false spelling)"
+			}
+			v, msg := saEvalI32(w, pa.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			if smsg := saCheckI32Value(scope, v); smsg != "" {
+				return "", false, smsg
+			}
+			return saRenderInterp(w, v, scope, nextTemp), false, ""
 		}
 		recv, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {

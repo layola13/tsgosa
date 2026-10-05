@@ -462,6 +462,12 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}
+		// i32 `toString()`（`String(x)` interp 同形；bool 拼写殊形由
+		// saIsToStringableI32 拒；串基沿上门）。
+		if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil &&
+			saIsToStringableI32(pa.Expression, scope) {
+			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
+		}
 		// 数组成员调用与 Array.from（基为数组位；其余成员拒）。
 		// 管线经 scope 内取（addImport/nextLabel 已随 scope 走，无需改签名）。
 		if pa.Name() != nil {
