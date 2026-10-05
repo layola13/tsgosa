@@ -1956,6 +1956,10 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 				if msg != "" {
 					return "", false, msg
 				}
+				// rest 余元记种检查（串/实例句柄禁入 i32 余槽；展开元沿整片口径；铁律 4）。
+				if msg := saCheckI32Value(scope, v); msg != "" {
+					return "", false, msg
+				}
 				saLowerArrayPush(w, h, v, scope, nextTemp)
 			}
 			saOwnTemp(scope, h)
