@@ -1905,11 +1905,8 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 		}
 		// 非标识符实参的结果记种检查（串/实例句柄禁入 i32 位；标识符直传
 		// 沿上口径；读位只建种不验种，验种在此；铁律 4）。
-		if k, ok := scope.types[op]; ok && (k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
-			if k == "str" {
-				return "", "string value in i32 expression"
-			}
-			return "", "instance value in i32 expression"
+		if msg := saCheckI32Value(scope, op); msg != "" {
+			return "", msg
 		}
 		return op, ""
 	}
@@ -2321,6 +2318,18 @@ func saUnwrapTransparent(e *ast.Node) *ast.Node {
 		}
 	}
 	return e
+}
+
+// saCheckI32Value 守 i32 值位记种（串/实例句柄禁入；求值只建种不验种，验种在
+// 各 i32 值位（存/实参/下标）；沿用 string/instance value 文族；铁律 4）。
+func saCheckI32Value(scope *saScope, v string) string {
+	if k, ok := scope.types[v]; ok && (k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		if k == "str" {
+			return "string value in i32 expression"
+		}
+		return "instance value in i32 expression"
+	}
+	return ""
 }
 
 func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {

@@ -160,6 +160,10 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 	if msg != "" {
 		return msg
 	}
+	// 无表映射值位记种检查（串/实例句柄禁入 i32 槽；有表分支各按表种办；铁律 4）。
+	if msg := saCheckI32Value(scope, v); msg != "" {
+		return msg
+	}
 	w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
 	return ""
 }
@@ -395,6 +399,10 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			}
 			v, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
 			if msg != "" {
+				return "", "", msg
+			}
+			// 无表映射值位记种检查（与下标存同形；铁律 4）。
+			if msg := saCheckI32Value(scope, v); msg != "" {
 				return "", "", msg
 			}
 			w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
