@@ -3033,6 +3033,12 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 					kinds[i] = "f64"
 					continue
 				}
+				// 串形参（调用方串求值，体经串快照绑定；封存 inlineClassMethod
+				// 串别名分支；上游同形）。
+				if k == "str" {
+					kinds[i] = "str"
+					continue
+				}
 				if k != "i32" && k != "bool" {
 					return "", "method parameters must be i32"
 				}
@@ -3106,6 +3112,15 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 				}
 			}
 			return "", "method map argument must be a bound map"
+		}
+		// 串形参实参串求值（`text: string`；绑定核快照串句柄；上游串别名同形）。
+		if i < len(kinds) && kinds[i] == "str" {
+			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			argVals = append(argVals, v)
+			continue
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
