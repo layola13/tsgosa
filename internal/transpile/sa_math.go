@@ -101,6 +101,33 @@ func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 // saEvalMathPow 求 `Math.pow(base, expo)`（形状证据：封存 lowerMathInline
 // pow:5781-5806，即 lowerPowLoop 循环形；本薄口 saLowerPow:1130-1168 同形，
 // 此处复用同发射，仅标号前缀取 L_mpow_ 以区分表达式位）。
+// saEvalMathSign 求 `Math.sign(x)`（无分支形：`(x>0)-(x<0)`，i32 恒精确
+// 含 0；上游拒（`Math.sign is not supported`），本仓 thin-lead，数学恒等式
+// 无语义风险；操作数经既有 i32 门）。
+func saEvalMathSign(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 {
+		return "", false, "Math.sign needs 1 argument"
+	}
+	v, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	p := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", p, v))
+	n := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", n, v))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", out, p, n))
+	return out, false, ""
+}
+
 func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {
@@ -550,7 +577,7 @@ func saMathMethodName(n *ast.Node) (string, bool) {
 		return "", false
 	}
 	switch pa.Name().Text() {
-	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random":
+	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random", "sign":
 		return pa.Name().Text(), true
 	}
 	return "", false
@@ -574,6 +601,8 @@ func saEvalMathMethod(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 		return saEvalMathLog10(w, ce, scope, pos, refusals, nextTemp)
 	case "random":
 		return saEvalMathRandom(w, ce, scope, pos, refusals, nextTemp)
+	case "sign":
+		return saEvalMathSign(w, ce, scope, pos, refusals, nextTemp)
 	}
 	return "", false, "unsupported Math method " + method
 }
