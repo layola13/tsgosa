@@ -917,10 +917,13 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 	}
 	if ref.TypeArguments != nil {
 		// 泛型返回具化（`(): Box<i32>` 记 `inst:Box_i32`；不可具化沿旧门；
-		// 封存 layoutOfAnnotation 同形）。
+		// 封存 layoutOfAnnotation 同形）+ Record 返回记 map 种（Z1）。
 		if len(ref.TypeArguments.Nodes) > 0 {
 			if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
 				return "inst:" + lname, true
+			}
+			if _, ok := saRecordValueKind(t, classes); ok {
+				return "map", true
 			}
 		}
 		return "", false
@@ -1729,6 +1732,10 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		scope.types[p] = kinds[p]
 		saDeclareOwned(scope, p)
 	}
+	// Record 形参值种播种（读侧按表记种；无表恒 i32；与函数序同形）。
+	if pl := arrow.ParameterList(); pl != nil {
+		saSeedParamMapVals(pl.Nodes, kinds, classes, scope)
+	}
 	if len(arrowPendings) > 0 {
 		if !saDrainDestructuredParams(w, arrowPendings, scope, pos, refusals, nextLabel, nextTemp) {
 			return
@@ -2056,7 +2063,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 // saSigRetSuffix 返回签名后缀（string/inst 句柄即 ptr，其余 i32；
  // 封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
 func saSigRetSuffix(retKind string) string {
-	if retKind == "string" || strings.HasPrefix(retKind, "inst:") {
+	if retKind == "string" || retKind == "map" || strings.HasPrefix(retKind, "inst:") {
 		return " -> ptr"
 	}
 	return " -> i32"

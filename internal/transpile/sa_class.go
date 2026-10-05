@@ -2877,6 +2877,14 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			}
 			if pd.Type.Kind == ast.KindTypeReference {
 				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+					// `Record<string,T>` 形参记 map 种（值种播种与函数序同形）。
+					if vkind, ok := saRecordValueKind(pd.Type, scope.classes); ok {
+						kinds[i] = "map"
+						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+							saSetMapVal(scope, nm.Text(), vkind)
+						}
+						continue
+					}
 					if _, ok := scope.classes[ref.TypeName.Text()]; ok {
 						kinds[i] = "inst:" + ref.TypeName.Text()
 						continue
@@ -2925,6 +2933,16 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			}
 			argVals = append(argVals, v)
 			continue
+		}
+		// map 形参实参直传句柄（`m` 须为已绑 map；与实例直传同形）。
+		if i < len(kinds) && kinds[i] == "map" {
+			if a != nil && a.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[a.Text()]; ok && k == "map" {
+					argVals = append(argVals, a.Text())
+					continue
+				}
+			}
+			return "", "method map argument must be a bound map"
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {

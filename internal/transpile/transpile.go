@@ -1947,6 +1947,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 								continue
 							}
 						}
+						// `Record<string,T>` 形参记 map 种（值种绑定点播种；
+						// 不可识别沿旧门拒；封存 annotationType 用户类型面）。
+						if _, ok := saRecordValueKind(pd.Type, classes); ok {
+							kinds[name] = "map"
+							continue
+						}
 						if _, ok := classes[ref.TypeName.Text()]; ok {
 							kinds[name] = "inst:" + ref.TypeName.Text()
 							continue
@@ -2112,7 +2118,7 @@ func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, a
 		return nil, false
 	}
 	for _, v := range kinds {
-		if v != "i32" && v != "bool" && v != "arr" && v != "str" && v != "f64" && !(len(v) > 5 && v[:5] == "inst:") {
+		if v != "i32" && v != "bool" && v != "arr" && v != "str" && v != "f64" && v != "map" && !(len(v) > 5 && v[:5] == "inst:") {
 			return nil, false
 		}
 	}
@@ -2625,7 +2631,7 @@ type saScope struct {
 	arrNest     map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
-	arrStr       map[string]bool
+	arrStr map[string]bool
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
 	mapVals      map[string]string
@@ -2848,6 +2854,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		scope.types[p] = paramKinds[p]
 		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
 		saDeclareOwned(scope, p)
+	}
+	// Record 形参值种播种（读侧按表记种；无表恒 i32）。
+	if fn.Parameters != nil {
+		saSeedParamMapVals(fn.Parameters.Nodes, paramKinds, classes, scope)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒）。
 	if _, _, pendings, ok := saSynthParams(fn, scope.classes, scope.aliasOf, scope.enums); ok && len(pendings) > 0 {

@@ -2928,6 +2928,8 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		aok   bool
 		own   *saOwn
 		ownOk bool
+		mv    string
+		mvok  bool
 	}
 	keep := map[string]saved{}
 	bind := func(name, kind string) {
@@ -2942,7 +2944,8 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				oc = *oo
 				oo = &oc
 			}
-			keep[name] = saved{kind: old, ok: ok, alias: oa, aok: aok, own: oo, ownOk: ook}
+			mv, mvok := scope.mapVals[name]
+			keep[name] = saved{kind: old, ok: ok, alias: oa, aok: aok, own: oo, ownOk: ook, mv: mv, mvok: mvok}
 		}
 		scope.types[name] = kind
 	}
@@ -2962,6 +2965,14 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				scope.ownState[name] = s.own
 			} else {
 				delete(scope.ownState, name)
+			}
+			if s.mvok {
+				if scope.mapVals == nil {
+					scope.mapVals = map[string]string{}
+				}
+				scope.mapVals[name] = s.mv
+			} else if scope.mapVals != nil {
+				delete(scope.mapVals, name)
 			}
 		}
 	}
@@ -3021,6 +3032,18 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		if i < len(kinds) && kinds[i] == "arr" {
 			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
 			bind(name, "arr")
+			continue
+		}
+		// map 柄直传绑定（值种随调用点表，缺表恒 i32；快照恢复同 types；
+		// 同名实参跳过自拷，禁重定义）。
+		if i < len(kinds) && kinds[i] == "map" {
+			if argVals[i] != name {
+				w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			}
+			bind(name, "map")
+			if mv, ok := scope.mapVals[argVals[i]]; ok {
+				saSetMapVal(scope, name, mv)
+			}
 			continue
 		}
 		// string elements snapshot the handle word and bind str (upstream

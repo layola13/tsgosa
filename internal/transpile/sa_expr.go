@@ -141,6 +141,13 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			}
 			return "", "struct return needs matching struct value"
 		}
+		// Map 返回：同种句柄直传（`return m`；字面量仍须声明绑定，沿旧门）。
+		if retKind == "map" {
+			if k, ok := scope.types[e.Text()]; ok && k == "map" {
+				return e.Text(), ""
+			}
+			return "", "map return needs matching map value"
+		}
 	}
 	// 返回位字面量具化（`return {...}` 配注解接口布局；封存 checker_layout l1）。
 	if e != nil && e.Kind == ast.KindObjectLiteralExpression && strings.HasPrefix(retKind, "inst:") {

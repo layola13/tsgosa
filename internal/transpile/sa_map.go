@@ -141,6 +141,30 @@ func saSetMapVal(scope *saScope, name, vkind string) {
 	scope.mapVals[name] = vkind
 }
 
+// saSeedParamMapVals 播形参 map 值种（`m: Record<string,T>` 按注解记表；
+// 无注解/i32 缺省不记，读侧恒 i32；函数/箭头序同形共用）。
+func saSeedParamMapVals(paramNodes []*ast.Node, kinds map[string]string, classes map[string]*saClassDef, scope *saScope) {
+	for _, pn := range paramNodes {
+		if pn == nil {
+			continue
+		}
+		pd := pn.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || kinds[nm.Text()] != "map" {
+			continue
+		}
+		if pd.Type == nil {
+			continue
+		}
+		if vkind, ok := saRecordValueKind(pd.Type, classes); ok {
+			saSetMapVal(scope, nm.Text(), vkind)
+		}
+	}
+}
+
 // saRecordValueKind 认 `Record<string, T>` 值种（T 经 `saAnnotKind` i32/bool
 // 即 `"i32"`；具名接口即 `"inst:T"`；余形 false 沿旧门）。
 func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
