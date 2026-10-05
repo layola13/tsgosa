@@ -1854,6 +1854,31 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 	if isVoid {
 		return refuse(body, "unsupported void arrow expression body")
 	}
+	// void 调用表达式体先判单发射：后走求值尝试会先落一次字（void 值位拒），
+	// 再调即双发射（225 双打印实证，双边同错）；用户 void 函数经 saCallRetKind，
+	// console.* 方法恒 void（log/error/time/timeEnd/clear 皆无返回值），先判命中
+	// 者直走单发射；其余 void 内建沿旧路（残留双发射已文档化）。
+	if body.Kind == ast.KindCallExpression {
+		ceVO := body.AsCallExpression()
+		voidKnown := false
+		if k, ok := saCallRetKind(ceVO, scope); ok && k == "void" {
+			voidKnown = true
+		}
+		if !voidKnown && ceVO.Expression != nil && ceVO.Expression.Kind == ast.KindPropertyAccessExpression {
+			if pa := ceVO.Expression.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "console" {
+				voidKnown = true
+			}
+		}
+		if voidKnown {
+			_, _, cmsg := saEvalCall(w, ceVO, scope, pos, refusals, nextTemp)
+			if cmsg != "" {
+				return refuse(body, cmsg)
+			}
+			saReleaseAllOwnedExcept(w, scope, "")
+			w.Write("  ret 0\n")
+			return true
+		}
+	}
 	op, msg := saEvalReturnOperand(w, body, retKind, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		// 表达式体求值不成而语句可 lower 者（如 void 调用）：按语句发射 +

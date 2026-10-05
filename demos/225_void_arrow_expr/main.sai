@@ -22,15 +22,15 @@
   !t_1
   ret
 @main() -> i32:
-  t_29 = call @__arrow_1()
-  t_40 = alloc 16
-  store t_40 + 0, &str_const_2 as ptr
-  store t_40 + 8, 3 as u64
-  t_41 = call @__arrow_2(t_40)
+  t_18 = call @__arrow_1()
+  t_24 = alloc 16
+  store t_24 + 0, &str_const_2 as ptr
+  store t_24 + 8, 3 as u64
+  t_25 = call @__arrow_2(t_24)
   call @greet()
-  !t_41
-  !t_40
-  !t_29
+  !t_25
+  !t_24
+  !t_18
   ret 0
 @__arrow_1() -> i32:
   t_7 = sext 1 as i64
@@ -51,53 +51,21 @@
   t_16 = load t_15 + 0 as ptr
   t_17 = load t_15 + 8 as u64
   call @sa_print_bytes(&t_16, t_17)
-  t_18 = sext 1 as i64
-  t_19 = alloc 64
-  t_20 = alloc 8
-  t_21 = call @sa_fmt_i64_into(t_18, 10, t_19, 64, &t_20)
-  t_22 = load t_20 + 0 as u64
-  t_23 = alloc 16
-  store t_23 + 0, t_19 as ptr
-  store t_23 + 8, t_22 as u64
-  !t_21
-  t_24 = load t_23 + 0 as ptr
-  t_25 = load t_23 + 8 as u64
-  call @sa_print_bytes(&t_24, t_25)
-  t_26 = alloc 16
-  store t_26 + 0, &str_const_1 as ptr
-  store t_26 + 8, 1 as u64
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  call @sa_print_bytes(&t_27, t_28)
-  !t_26
-  !t_23
-  !t_20
-  !t_19
   !t_15
   !t_12
   !t_9
   !t_8
   ret 0
 @__arrow_2(s: ptr) -> i32:
-  t_30 = load s + 0 as ptr
-  t_31 = load s + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  t_32 = alloc 16
-  store t_32 + 0, &str_const_1 as ptr
-  store t_32 + 8, 1 as u64
-  t_33 = load t_32 + 0 as ptr
-  t_34 = load t_32 + 8 as u64
-  call @sa_print_bytes(&t_33, t_34)
-  t_35 = load s + 0 as ptr
-  t_36 = load s + 8 as u64
-  call @sa_print_bytes(&t_35, t_36)
-  t_37 = alloc 16
-  store t_37 + 0, &str_const_1 as ptr
-  store t_37 + 8, 1 as u64
-  t_38 = load t_37 + 0 as ptr
-  t_39 = load t_37 + 8 as u64
-  call @sa_print_bytes(&t_38, t_39)
-  !t_37
-  !t_32
+  t_19 = load s + 0 as ptr
+  t_20 = load s + 8 as u64
+  call @sa_print_bytes(&t_19, t_20)
+  t_21 = alloc 16
+  store t_21 + 0, &str_const_1 as ptr
+  store t_21 + 8, 1 as u64
+  t_22 = load t_21 + 0 as ptr
+  t_23 = load t_21 + 8 as u64
+  call @sa_print_bytes(&t_22, t_23)
+  !t_21
   !s
   ret 0
