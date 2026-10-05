@@ -1954,6 +1954,16 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 		if len(sig.paramKinds) == total && sig.paramKinds[i] == "f64" {
 			return saEvalF64(w, a, scope, pos, refusals, nextTemp)
 		}
+		// map 形参走句柄直传（Record 字典柄；与 arr/str 句柄位同形，
+		// 值种由被调注解 `saSeedParamMapVals` 自定，调用方只传柄）。
+		if len(sig.paramKinds) == total && sig.paramKinds[i] == "map" {
+			if a != nil && a.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[a.Text()]; ok && k == "map" {
+					return a.Text(), ""
+				}
+			}
+			return "", "map argument needs a bound map"
+		}
 		if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
 			if a != nil && a.Kind == ast.KindIdentifier {
 				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
