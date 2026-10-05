@@ -56,5 +56,11 @@ describe("more", () => {
       console.log("side");
     }).not.toThrow();
   });
+  test("streq", () => {
+    expect("a").toBe("a");
+    expect("a").toEqual("a");
+    expect("a").not.toBe("b");
+    expect("hi " + "bo").toBe("hi bo");
+  });
 });
 console.log(42);

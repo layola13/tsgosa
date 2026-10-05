@@ -853,6 +853,11 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		}
 		return true, true
 	}
+	// 任一臂串值即串相等（先语法分流零发射；与 `==` 内容相等同形；
+	// 混种沿串门大声拒，禁静默强转）。
+	if saIsStrValue(iargs[0], scope) || saIsStrValue(margs[0], scope) {
+		return saLowerExpectStrEq(w, s, neg, iargs[0], margs[0], scope, pos, refusals, nextLabel, nextTemp)
+	}
 	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return fail(msg)
@@ -884,6 +889,59 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		}
 	}
 	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, aop, bop))
+	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
+	*nextLabel++
+	okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+	w.Write(failL + ":\n")
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+	w.Write(okL + ":\n")
+	return true, true
+}
+
+// saLowerExpectStrEq lowering 串 `toBe/toEqual`（内容等 + 等长，与 `==`
+// 内容相等同指令同序，idx 自清洁；`.not` 翻转比较符；混种沿串门大声拒）。
+func saLowerExpectStrEq(w printer.EmitTextWriter, s *ast.Node, neg bool, actual, expected *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	scope.addImport("sa_std/string.sai")
+	ah, msg := saEvalStr(w, actual, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return fail(msg)
+	}
+	nh, msg := saEvalStr(w, expected, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return fail(msg)
+	}
+	ap, al := saExpandStr(w, ah, nextTemp)
+	np, nl := saExpandStr(w, nh, nextTemp)
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, np, nl))
+	saOwnTemp(scope, idx)
+	at0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
+	samelen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, al, nl))
+	both := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	cmp := "eq"
+	if neg {
+		cmp = "ne"
+	}
+	w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, cmp, both))
+	saReleaseOwnedTemp(w, scope, idx)
+	saReleaseOwnedTemp(w, scope, ah)
+	saReleaseOwnedTemp(w, scope, nh)
 	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
 	*nextLabel++
 	okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
