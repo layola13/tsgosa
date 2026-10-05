@@ -524,6 +524,90 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 // 钩子：beforeEach/afterEach 注册体按序贴到后续 test 内联前/后（同域顺序语义，
 // 无套件提升——vitest 会提升，此处以文本序为准）；beforeAll 就地跑一次；afterAll
 // 需整域缓冲未做，大声拒。describe 自身透明（只分组），其内 hook 进出按栈存取
+// saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言
+// （i32 两侧既有求值 + `ne` + 不等即 `panic(2501)`，与 `throw` 终结同形，
+// 测试 fail-fast 口径一致；`expect` 被用户绑定时沿旧路，禁劫持）。
+// 匹配器仅 toBe/toEqual/toStrictEqual；`.not`/其余匹配器/非 i32 臂另步大声拒。
+// 返回（接管，成功）。
+func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	ce := e.AsCallExpression()
+	outer := ce.Expression
+	if outer == nil || outer.Kind != ast.KindPropertyAccessExpression {
+		return false, false
+	}
+	opa := outer.AsPropertyAccessExpression()
+	if opa == nil || opa.Expression == nil || opa.Name() == nil {
+		return false, false
+	}
+	matcher := opa.Name().Text()
+	base := opa.Expression
+	// `.not` 修饰形（`expect(x).not.toBe(y)`）另步，禁静默吞否定位。
+	if base.Kind == ast.KindPropertyAccessExpression {
+		bpa := base.AsPropertyAccessExpression()
+		if bpa != nil && bpa.Name() != nil && bpa.Name().Text() == "not" {
+			return fail("expect().not is not lowerable yet")
+		}
+		return false, false
+	}
+	if base.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	inner := base.AsCallExpression()
+	ib := inner.Expression
+	if ib == nil || ib.Kind != ast.KindIdentifier || ib.Text() != "expect" {
+		return false, false
+	}
+	if !saIsUnresolvedTestName(scope, "expect") {
+		return false, false
+	}
+	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual)")
+	}
+	var iargs []*ast.Node
+	if inner.Arguments != nil {
+		iargs = inner.Arguments.Nodes
+	}
+	if len(iargs) != 1 {
+		return fail("expect takes one value")
+	}
+	var margs []*ast.Node
+	if ce.Arguments != nil {
+		margs = ce.Arguments.Nodes
+	}
+	if len(margs) != 1 {
+		return fail("expect()." + matcher + " takes one expected value")
+	}
+	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return fail(msg)
+	}
+	bop, msg := saEvalI32(w, margs[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return fail(msg)
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, %s\n", t, aop, bop))
+	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
+	*nextLabel++
+	okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+	w.Write(failL + ":\n")
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+	w.Write(okL + ":\n")
+	return true, true
+}
+
 // 防外泄。返回（接管，成功）。
 func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
@@ -539,6 +623,10 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	callee := ce.Expression
 	if callee == nil {
 		return false, false
+	}
+	// `expect(actual).toBe(expected)` 语句断言就地内联（测试域分发；未命中沿旧路）。
+	if handled, ok := saLowerExpectAssertion(w, s, scope, pos, refusals, nextLabel, nextTemp); handled {
+		return handled, ok
 	}
 	// 成员式 `test.only/skip/todo`（`describe/it` 同）：skip 跳发射（体仅验形）、
 	// todo 空过（1 串参，或附体忽略）、only 整文件缓冲未做大声拒；基名劫持规则同。
