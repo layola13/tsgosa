@@ -993,6 +993,28 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 			}
 		}
 	}
+	if e != nil && e.Kind == ast.KindCallExpression {
+		// 调用结果基（`M.get(k)` 实例映射取；具实例签名的同文件函数调用；
+		// 种以求值后记种为准，此处只放行语法形；`?.` 沿旧门）。
+		if ce := e.AsCallExpression(); ce != nil && ce.QuestionDotToken == nil && ce.Expression != nil {
+			if ce.Expression.Kind == ast.KindPropertyAccessExpression {
+				pa := ce.Expression.AsPropertyAccessExpression()
+				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil &&
+					pa.Name().Text() == "get" && pa.QuestionDotToken == nil {
+					if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" {
+						if vk, ok := scope.mapVals[pa.Expression.Text()]; ok {
+							return len(vk) > 5 && vk[:5] == "inst:"
+						}
+					}
+				}
+			}
+			if ce.Expression.Kind == ast.KindIdentifier {
+				if sig, ok := scope.funcs[ce.Expression.Text()]; ok {
+					return !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:"
+				}
+			}
+		}
+	}
 	return false
 }
 
@@ -2223,9 +2245,29 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	return h, def.name, ""
 }
 
-// saInstBaseElem 解析 map 索引实例基（`m["a"].x`；索引经 get 脱糖，结果
+// saInstBaseElem 解析实例基发射位（map 索引 `m["a"].x` 经 get 脱糖，结果
+// 按记种消解；调用结果 `M.get(k).f`/实例签名函数调用求值后按记种消解；
+// 上游 lowerExpr 通用基同形）。
 // temp 按建表值种记 `inst:T`；非 map 索引/错种沿旧门大声拒，永不空-def-无-msg）。
 func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
+	if e != nil && e.Kind == ast.KindCallExpression {
+		// 调用结果基（`M.get(k).f`；求值后按记种消解布局；上游 lowerExpr 通用基同形）。
+		ce := e.AsCallExpression()
+		op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", nil, msg
+		}
+		if voidCall {
+			return "", nil, "void call cannot be an instance base"
+		}
+		if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
+			if def, ok := scope.classes[k[5:]]; ok {
+				return op, def, ""
+			}
+			return "", nil, "unknown class " + k[5:]
+		}
+		return "", nil, "call did not yield an instance"
+	}
 	if e == nil || e.Kind != ast.KindElementAccessExpression {
 		return "", nil, "not a map index base"
 	}
