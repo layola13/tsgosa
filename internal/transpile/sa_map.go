@@ -118,8 +118,8 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 }
 
 // saLowerMapIndexStore lowering `m[k] = v`（脱糖为 map-set；值种按建表记
-// （`Record<string,T>` 具化表，无表恒 i32；str 经串求值；与 `.set(k, v)` 同形同值；
-// Set 无键值大声拒由调用方守卫）。
+// （`Record<string,T>` 具化表，无表恒 i32；str 经串求值，inst 经布局现场构造或
+// 同布局绑定直传；与 `.set(k, v)` 同形同值；Set 无键值大声拒由调用方守卫）。
 func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
 	scope.addImport("sa_std/btree_map.sa")
 	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
@@ -130,6 +130,28 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 		v, msg := saEvalStr(w, rhs, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return msg
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+		return ""
+	}
+	if vk := scope.mapVals[recv]; vk != "" && len(vk) > 5 && vk[:5] == "inst:" {
+		// 实例值存（字面量经该布局现场构造，同布局绑定直传；错种大声拒，
+		// 禁 i32 值混入句柄槽；与字面量构造 260-283 同形同序，值柄留归属）。
+		want := vk[5:]
+		var v string
+		if rhs != nil && rhs.Kind == ast.KindObjectLiteralExpression {
+			lh, lname, msg := saLowerObjectLiteral(w, rhs, want, scope, pos, refusals, nextTemp)
+			if msg != "" || lname != want {
+				return "record value does not match interface " + want
+			}
+			v = lh
+		} else if rhs != nil && rhs.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[rhs.Text()]; !ok || k != vk {
+				return "record value does not match interface " + want
+			}
+			v = rhs.Text()
+		} else {
+			return "record value does not match interface " + want
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
 		return ""
@@ -345,6 +367,28 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 				v, msg := saEvalStr(w, argNodes[1], scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", "", msg
+				}
+				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+				return "0", "i32", ""
+			}
+			if vk := scope.mapVals[recv]; vk != "" && len(vk) > 5 && vk[:5] == "inst:" {
+				// 实例值存（与下标存同形同序，见上）。
+				want := vk[5:]
+				rhs := argNodes[1]
+				var v string
+				if rhs != nil && rhs.Kind == ast.KindObjectLiteralExpression {
+					lh, lname, msg := saLowerObjectLiteral(w, rhs, want, scope, pos, refusals, nextTemp)
+					if msg != "" || lname != want {
+						return "", "", "record value does not match interface " + want
+					}
+					v = lh
+				} else if rhs != nil && rhs.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[rhs.Text()]; !ok || k != vk {
+						return "", "", "record value does not match interface " + want
+					}
+					v = rhs.Text()
+				} else {
+					return "", "", "record value does not match interface " + want
 				}
 				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
 				return "0", "i32", ""
