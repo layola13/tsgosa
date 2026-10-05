@@ -2958,7 +2958,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "only +/==/!= operate on strings"
 		}
 		if saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {
-			// 实例句柄禁入纯算术/位运算（指针误作整数；`==/!=` 空比较与
+			// 实例句柄禁入纯算术/位运算与大小比较（指针误作整数；`==/!=` 空比较与
 			// `&&`/`||` 沿既有门（上游同形），余算符一律拒；铁律 4）。
 			if be.OperatorToken != nil {
 				switch be.OperatorToken.Kind {
@@ -2969,7 +2969,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					ast.KindGreaterThanGreaterThanToken,
 					ast.KindGreaterThanGreaterThanGreaterThanToken,
 					ast.KindAmpersandToken, ast.KindBarToken,
-					ast.KindCaretToken:
+					ast.KindCaretToken,
+					ast.KindLessThanToken, ast.KindLessThanEqualsToken,
+					ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken:
 					return "", "instance value in i32 expression"
 				}
 			}
