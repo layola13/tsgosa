@@ -832,6 +832,216 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	return true, true
 }
 
+// saCheckEachCallback 校验 each 回调（箭头/函数表达式；形参数 == 行宽且
+// 皆裸标识符；注解须与列种一致；体非空、无 return，与 test 回调同门）。
+func saCheckEachCallback(fn *ast.Node, width int, kinds []string, name string, s *ast.Node, pos func(int) (int, int), refusals *[]SARefusal) (body *ast.Node, pnames []string, ok bool) {
+	fail := func(msg string) (*ast.Node, []string, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return nil, nil, false
+	}
+	if fn == nil || (fn.Kind != ast.KindArrowFunction && fn.Kind != ast.KindFunctionExpression) {
+		return fail(name + ".each callback must be an arrow or function expression")
+	}
+	params := fn.Parameters()
+	if len(params) != width {
+		return fail(fmt.Sprintf("%s callback takes %d parameters (%d given)", name+".each", width, len(params)))
+	}
+	for i, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			return fail(name + ".each parameters must be plain identifiers")
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			return fail(name + ".each parameters must be plain identifiers")
+		}
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+			return fail(name + ".each parameters must be plain identifiers")
+		}
+		if pd.Type != nil {
+			if k, kok := saAnnotKind(pd.Type); !kok || k != kinds[i] {
+				return fail(name + ".each parameter type must match the table")
+			}
+		}
+		pnames = append(pnames, nm.Text())
+	}
+	body = fn.Body()
+	if body == nil {
+		return fail(name + ".each callback has no body")
+	}
+	if saContainsReturn(body) {
+		return fail(name + ".each body must not return (use assertions)")
+	}
+	return body, pnames, true
+}
+
+// saEachCellKind 报告 each 表元的绑定种（数字字面量即 i32，串字面量即
+// str；无发射纯判定；其余沿旧门）。
+func saEachCellKind(v *ast.Node) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	switch v.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return "str", true
+	case ast.KindNumericLiteral:
+		return "i32", true
+	}
+	return "", false
+}
+
+// saLowerTestEach lowering `test.each(table)(title, fn)`（`it.each` 同；
+// 行字面量表逐行内联顺序执行，fail-fast，与注册体同口径；标题仅验形不落字）。
+// 行：数组字面量行（N 元）或标量行（回调单参）；元须 i32/str 字面量且列种
+// 一致；回调形参裸标识符，注解须与列种一致；空表零例通过。
+func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *ast.Node, title *ast.Node, fn *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	if table == nil || table.Kind != ast.KindArrayLiteralExpression {
+		return fail(base + ".each table must be an array literal")
+	}
+	if title == nil || (title.Kind != ast.KindStringLiteral && title.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(base + ".each title must be a string literal")
+	}
+	elems := []*ast.Node{}
+	if al := table.AsArrayLiteralExpression(); al != nil && al.Elements != nil {
+		elems = al.Elements.Nodes
+	}
+	type rowT struct {
+		vals  []*ast.Node
+		kinds []string
+	}
+	var rows []rowT
+	width := -1
+	for _, r := range elems {
+		var vals []*ast.Node
+		if r != nil && r.Kind == ast.KindArrayLiteralExpression {
+			if rl := r.AsArrayLiteralExpression(); rl != nil && rl.Elements != nil {
+				vals = rl.Elements.Nodes
+			}
+		} else {
+			vals = []*ast.Node{r}
+		}
+		if width < 0 {
+			width = len(vals)
+		}
+		if len(vals) != width {
+			return fail(base + ".each rows must all have the same width")
+		}
+		kinds := make([]string, len(vals))
+		for i, v := range vals {
+			k, ok := saEachCellKind(v)
+			if !ok {
+				return fail(base + ".each cells must be number or string literals")
+			}
+			kinds[i] = k
+		}
+		rows = append(rows, rowT{vals: vals, kinds: kinds})
+	}
+	if width < 0 {
+		width = 0
+	}
+	colKinds := make([]string, width)
+	for c := 0; c < width; c++ {
+		colKinds[c] = rows[0].kinds[c]
+		for _, r := range rows[1:] {
+			if r.kinds[c] != colKinds[c] {
+				return fail(base + ".each column kinds must be consistent")
+			}
+		}
+	}
+	body, pnames, ok := saCheckEachCallback(fn, width, colKinds, base, s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	for _, r := range rows {
+		saved := saScopeEnter(scope)
+		caseOK := true
+		for c := range r.vals {
+			var op string
+			var msg string
+			if r.kinds[c] == "str" {
+				op, msg = saEvalStr(w, r.vals[c], scope, pos, refusals, nextTemp)
+			} else {
+				op, msg = saEvalI32(w, r.vals[c], scope, pos, refusals, nextTemp)
+			}
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				caseOK = false
+				break
+			}
+			// 形参种预置（saStoreLocal 只管归属不管种表，声明点同形）。
+			scope.types[pnames[c]] = r.kinds[c]
+			saStoreLocal(w, pnames[c], op, scope, nextTemp)
+		}
+		if caseOK {
+			if !saInlineTestWithHooks(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+				caseOK = false
+			}
+		}
+		saReleaseDeeperThan(w, scope, saved.owned)
+		saScopeExit(scope, saved)
+		if !caseOK {
+			return true, false
+		}
+	}
+	return true, true
+}
+
+// saLowerEachOuter 分发外层 `test.each(table)(title, fn)`（`it.each` 同；
+// 形不合沿旧路；劫持沿旧路）。
+func saLowerEachOuter(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpression, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	inner := callee.AsCallExpression()
+	if inner == nil || inner.Expression == nil || inner.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false, false
+	}
+	pa := inner.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+		return false, false
+	}
+	base, prop := pa.Expression.Text(), pa.Name().Text()
+	if prop != "each" || (base != "test" && base != "it" && base != "describe") {
+		return false, false
+	}
+	if !saIsUnresolvedTestName(scope, base) {
+		return false, false
+	}
+	if base == "describe" {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "describe.each is not lowerable yet"})
+		return true, false
+	}
+	if !saIsUnresolvedTestName(scope, base) {
+		return false, false
+	}
+	var targs []*ast.Node
+	if inner.Arguments != nil {
+		targs = inner.Arguments.Nodes
+	}
+	var oargs []*ast.Node
+	if ce.Arguments != nil {
+		oargs = ce.Arguments.Nodes
+	}
+	if len(targs) != 1 || len(oargs) != 2 {
+		return fail(base + ".each takes a table and (title, callback)")
+	}
+	return saLowerTestEach(w, s, base, targs[0], oargs[0], oargs[1], isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+}
+
 // 防外泄。返回（接管，成功）。
 func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
@@ -852,6 +1062,14 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	if handled, ok := saLowerExpectAssertion(w, s, scope, pos, refusals, nextLabel, nextTemp); handled {
 		return handled, ok
 	}
+	// `test.each(table)(title, fn)` 行展开（`it.each` 同；劫持规则同注册名；
+	// 未命中沿旧路）。
+	if callee.Kind == ast.KindCallExpression {
+		if handled, ok := saLowerEachOuter(w, s, ce, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
+			return handled, ok
+		}
+		return false, false
+	}
 	// 成员式 `test.only/skip/todo`（`describe/it` 同）：skip 跳发射（体仅验形）、
 	// todo 空过（1 串参，或附体忽略）、only 整文件缓冲未做大声拒；基名劫持规则同。
 	if callee.Kind == ast.KindPropertyAccessExpression {
@@ -865,6 +1083,14 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		}
 		if !saIsUnresolvedTestName(scope, base) {
 			return false, false
+		}
+		// 内层 `test.each(table)` 单独成句无意义（须续接 `(title, fn)`）；
+		// `describe.each` 另步。
+		if prop == "each" {
+			if base == "describe" {
+				return fail("describe.each is not lowerable yet")
+			}
+			return fail(base + ".each(table) needs (title, callback)")
 		}
 		if prop != "only" && prop != "skip" && prop != "todo" {
 			return false, false
