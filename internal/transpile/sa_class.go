@@ -1494,6 +1494,24 @@ func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, s
 	return hit, ""
 }
 
+// saMatchWantIface 注解优先直命中（名在表、键集相等即用；其余一律nil
+// 交既有匹配门，拒因文案零变）。
+func saMatchWantIface(want string, keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
+	if want == "" {
+		return nil, ""
+	}
+	def, ok := classes[want]
+	if !ok || def == nil || !def.isIface || len(def.fields) != len(keys) {
+		return nil, ""
+	}
+	for _, k := range keys {
+		if _, has := def.offsets[k]; !has {
+			return nil, ""
+		}
+	}
+	return def, ""
+}
+
 // saObjPropName 解析字面量键（标识符/串字面量/字面计算键；简写由调用方展值。
 // 形状证据：封存 objPropName:8984-9007）。
 func saObjPropName(p *ast.Node) (string, bool) {
@@ -1890,9 +1908,17 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			uniq = append(uniq, k)
 		}
 	}
-	def, msg := saMatchIface(uniq, scope.classes)
+	// 注解优先直命中（单态具化名精确消歧：模板与实例键集相同时按键集
+	// 匹配必多命中；名/键集不符下探既有匹配门）。
+	def, msg := saMatchWantIface(want, uniq, scope.classes)
 	if msg != "" {
 		return "", "", msg
+	}
+	if def == nil {
+		def, msg = saMatchIface(uniq, scope.classes)
+		if msg != "" {
+			return "", "", msg
+		}
 	}
 	if want != "" && def.name != want {
 		return "", "", "object literal does not match interface " + want

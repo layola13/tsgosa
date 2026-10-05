@@ -101,6 +101,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					return false
 				}
 				want = ref.TypeName.Text()
+				// 泛型具化优先（`const b: Box<i32> = {...}` 按单态布局具化；
+				// 不可具化下探既有擦除；封存 layoutOfAnnotation 同形）。
+				if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+					if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, scope.classes); ok {
+						want = lname
+					}
+				}
 				if def, ok := scope.classes[want]; !ok || !def.isIface {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
@@ -353,6 +360,17 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 		}
 		vkind, ok := saAnnotKind(vd.Type)
+		if !ok {
+			// 泛型具化优先（`const b: Box<i32> = mk()` 按单态记种；
+			// 不可具化下探既有链；封存 layoutOfAnnotation 同形）。
+			if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+				if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+					if lname, iok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, scope.classes); iok {
+						vkind, ok = "inst:"+lname, true
+					}
+				}
+			}
+		}
 		if !ok {
 			// 单标识符非泛型类型别名经顶层别名表消解（`type Count = i32`；
 			// 封存 lowerVarDeclList:1462 注解语义消解同形；失败沿旧门）。
@@ -889,6 +907,13 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		return "", false
 	}
 	if ref.TypeArguments != nil {
+		// 泛型返回具化（`(): Box<i32>` 记 `inst:Box_i32`；不可具化沿旧门；
+		// 封存 layoutOfAnnotation 同形）。
+		if len(ref.TypeArguments.Nodes) > 0 {
+			if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
+				return "inst:" + lname, true
+			}
+		}
 		return "", false
 	}
 	if _, ok := classes[ref.TypeName.Text()]; ok {
