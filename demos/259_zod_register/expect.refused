@@ -1,0 +1,8 @@
+# zod 实践二（注册/派生/superRefine/顶层 safeParse）预期拒收指纹（`tsgo build` 必拒且行全中；改编译器拒因须同步改此档）
+# 真机对照：bun 加载即崩（4.6.5 无 `.ip()`，`TypeError: z.string().ip is not a function`，safeParse 永不到），故无 expected.stdout。
+# 上游同向拒收（顶层变量门），零 panic。
+step2 refuses kind 244 (only top-level functions)
+unsupported initializer: only direct function calls lowerable
+unsupported condition kind: only .length member access lowerable
+is not resolvable (bare third-party imports are Phase 3
+refused: resolve subset-report.txt before running sh build.sh
