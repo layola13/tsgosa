@@ -1787,16 +1787,22 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		saScopeLinkFill(escope, link)
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
-		for _, s := range entryStmts {
-			if terminated {
-				// 死码静默抑制（封存 lowerBlockStatement:820-823 同形；抑制非
-				// 错译，活码不落此路）。
-				continue
-			}
-			if done, failed := saLowerStmt(w, s, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp); failed {
-				break
-			} else if done {
-				terminated = true
+		// 测试缓冲委托（顶层 afterAll/.only 直接子命中才走缓冲核，否则沿旧路）。
+		if saScopeNeedsTestBuffer(entryStmts, escope) {
+			_, term := saLowerBufferedScope(w, entryStmts, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp)
+			terminated = term
+		} else {
+			for _, s := range entryStmts {
+				if terminated {
+					// 死码静默抑制（封存 lowerBlockStatement:820-823 同形；抑制非
+					// 错译，活码不落此路）。
+					continue
+				}
+				if done, failed := saLowerStmt(w, s, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp); failed {
+					break
+				} else if done {
+					terminated = true
+				}
 			}
 		}
 		if !terminated {
@@ -3129,6 +3135,11 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 }
 
 func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	// 测试缓冲委托（afterAll/.only 直接子命中才走缓冲核，否则沿旧路字节一致）。
+	if saScopeNeedsTestBuffer(stmts, scope) {
+		ok, _ := saLowerBufferedScope(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		return ok
+	}
 	saved := saScopeEnter(scope)
 	defer saScopeExit(scope, saved)
 	terminated := false

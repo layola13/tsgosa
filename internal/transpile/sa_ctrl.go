@@ -490,6 +490,11 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 	if !ok {
 		return false
 	}
+	// 测试缓冲委托（回调体内 afterAll/.only 直接子命中才走缓冲核）。
+	if saScopeNeedsTestBuffer(stmts, scope) {
+		ok, _ := saLowerBufferedScope(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		return ok
+	}
 	// 回调体自带块域（箭头内局部名不外泄；直驱语句循环以保本域记账可见，
 	// saLowerArm 内置 exit 会提前裁掉记账致出口扫尾看不见；出口扫尾释本域归属，
 	// 否则顶层合成 @main 无函数尾声扫尾即 MemoryLeak）。
@@ -800,84 +805,8 @@ func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool,
 	if !ok {
 		return false
 	}
-	// only 预扫（直接子语句有任一 .only 即整域只跑标记项；外域不受影响，
-	// 差异已文档化；嵌套 describe 内 .only 由内层分区递归处理）。
-	onlyMode := false
-	for _, st := range stmts {
-		if saOnlyMark(st, scope) != "" {
-			onlyMode = true
-			break
-		}
-	}
-	var afters []*ast.Node
-	saved := saScopeEnter(scope)
-	terminated, armOK := false, true
-	for _, st := range stmts {
-		if terminated {
-			continue
-		}
-		if ab, found := saAfterAllBody(st, scope, pos, refusals); found {
-			if ab == nil {
-				armOK = false
-				break
-			}
-			afters = append(afters, ab)
-			continue
-		}
-		if onlyMode {
-			if saOnlyMark(st, scope) != "" {
-				ob, kind, good := saOnlyCallBody(st, scope, pos, refusals)
-				if !good {
-					armOK = false
-					break
-				}
-				if kind == "describe" {
-					savedBefore, savedAfter := scope.testBefore, scope.testAfter
-					ok := saInlineDescribeBody(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
-					scope.testBefore, scope.testAfter = savedBefore, savedAfter
-					if !ok {
-						armOK = false
-						break
-					}
-				} else if !saInlineTestWithHooks(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-					armOK = false
-					break
-				}
-				continue
-			}
-			// 非标记 test/describe 注册：验形跳过；其余语句照常降。
-			if e := st.AsExpressionStatement().Expression; e != nil && e.Kind == ast.KindCallExpression {
-				if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
-					if nm := ce.Expression.Text(); nm == "test" || nm == "it" || nm == "describe" {
-						if !saSkipTestCall(st, scope, pos, refusals) {
-							armOK = false
-							break
-						}
-						continue
-					}
-				}
-			}
-		}
-		done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
-		if failed {
-			armOK = false
-			break
-		}
-		if done {
-			terminated = true
-		}
-	}
-	saReleaseDeeperThan(w, scope, saved.owned)
-	saScopeExit(scope, saved)
-	if !armOK {
-		return false
-	}
-	for _, ab := range afters {
-		if !saInlineTestUnit(w, ab, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
-			return false
-		}
-	}
-	return true
+	ok, _ = saLowerBufferedScope(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return ok
 }
 
 // saOnlyMark 识别直接子语句中的 `test|it|describe.only("name", cb)`（基名须
@@ -911,6 +840,122 @@ func saOnlyMark(st *ast.Node, scope *saScope) string {
 		return "describe"
 	}
 	return "test"
+}
+
+// saIsAfterAllCall 纯判定直接子语句是否为未解析 afterAll 调用（无发射无记拒；
+// 畸形亦命中，交 lowering 侧同形大声拒）。
+func saIsAfterAllCall(st *ast.Node, scope *saScope) bool {
+	e := st.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindIdentifier || callee.Text() != "afterAll" {
+		return false
+	}
+	return saIsTestHookName(scope, "afterAll")
+}
+
+// saScopeNeedsTestBuffer 预扫语句表是否需测试缓冲（直接子含未解析 afterAll
+// 或 .only 注册；纯判定无发射；命中者走缓冲核，否则沿旧路字节一致）。
+func saScopeNeedsTestBuffer(stmts []*ast.Node, scope *saScope) bool {
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindExpressionStatement {
+			continue
+		}
+		if saIsAfterAllCall(st, scope) {
+			return true
+		}
+		if saOnlyMark(st, scope) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// saLowerBufferedScope 带测试缓冲的语句表 lowering（afterAll 延后 + .only
+// 分区；无触发时与直驱循环字节一致；调用方（arm/合成/回调内联）预扫命中才委托）。
+// 返回（成功，终结）：终结供合成循环补 ret 判定。
+func saLowerBufferedScope(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	onlyMode := false
+	for _, st := range stmts {
+		if st != nil && saOnlyMark(st, scope) != "" {
+			onlyMode = true
+			break
+		}
+	}
+	var afters []*ast.Node
+	saved := saScopeEnter(scope)
+	terminated, armOK := false, true
+	lowerOne := func(st *ast.Node) {
+		if terminated || !armOK {
+			return
+		}
+		if ab, found := saAfterAllBody(st, scope, pos, refusals); found {
+			if ab == nil {
+				armOK = false
+				return
+			}
+			afters = append(afters, ab)
+			return
+		}
+		if onlyMode {
+			if saOnlyMark(st, scope) != "" {
+				ob, kind, good := saOnlyCallBody(st, scope, pos, refusals)
+				if !good {
+					armOK = false
+					return
+				}
+				if kind == "describe" {
+					if !saRunDescribe(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+						armOK = false
+					}
+				} else if !saInlineTestWithHooks(w, ob, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+					armOK = false
+				}
+				return
+			}
+			if e := st.AsExpressionStatement().Expression; e != nil && e.Kind == ast.KindCallExpression {
+				if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
+					if nm := ce.Expression.Text(); nm == "test" || nm == "it" || nm == "describe" {
+						if !saSkipTestCall(st, scope, pos, refusals) {
+							armOK = false
+						}
+						return
+					}
+				}
+			}
+		}
+		done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			armOK = false
+			return
+		}
+		if done {
+			terminated = true
+		}
+	}
+	for _, st := range stmts {
+		if st == nil {
+			continue
+		}
+		lowerOne(st)
+		if !armOK {
+			break
+		}
+	}
+	saReleaseDeeperThan(w, scope, saved.owned)
+	saScopeExit(scope, saved)
+	if !armOK {
+		return false, terminated
+	}
+	for _, ab := range afters {
+		if !saInlineTestUnit(w, ab, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false, terminated
+		}
+	}
+	return true, terminated
 }
 
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
