@@ -527,7 +527,7 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 // saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言
 // （i32 两侧既有求值 + `ne` + 不等即 `panic(2501)`，与 `throw` 终结同形，
 // 测试 fail-fast 口径一致；`expect` 被用户绑定时沿旧路，禁劫持）。
-// 匹配器仅 toBe/toEqual/toStrictEqual；`.not`/其余匹配器/非 i32 臂另步大声拒。
+// 匹配器仅 toBe/toEqual/toStrictEqual（`not` 取反经 `eq` 同门）；其余匹配器/非 i32 臂另步大声拒。
 // 返回（接管，成功）。
 func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
@@ -550,13 +550,16 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	}
 	matcher := opa.Name().Text()
 	base := opa.Expression
-	// `.not` 修饰形（`expect(x).not.toBe(y)`）另步，禁静默吞否定位。
+	// `.not` 修饰形（`expect(x).not.toBe(y)`）解包取反（相等即败走 `eq`，
+	// 与肯定形同槽同终结；非 `not` 属性基沿旧路，禁静默错位）。
+	neg := false
 	if base.Kind == ast.KindPropertyAccessExpression {
 		bpa := base.AsPropertyAccessExpression()
-		if bpa != nil && bpa.Name() != nil && bpa.Name().Text() == "not" {
-			return fail("expect().not is not lowerable yet")
+		if bpa == nil || bpa.Name() == nil || bpa.Name().Text() != "not" || bpa.Expression == nil {
+			return false, false
 		}
-		return false, false
+		neg = true
+		base = bpa.Expression
 	}
 	if base.Kind != ast.KindCallExpression {
 		return false, false
@@ -596,7 +599,11 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, %s\n", t, aop, bop))
+	cmp := "ne"
+	if neg {
+		cmp = "eq"
+	}
+	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, aop, bop))
 	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
 	*nextLabel++
 	okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)

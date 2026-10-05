@@ -11,5 +11,9 @@ describe("more", () => {
   test("strict", () => {
     expect(4).toStrictEqual(4);
   });
+  test("negation", () => {
+    expect(add(1, 2)).not.toBe(4);
+    expect(add(2, 3)).not.toEqual(6);
+  });
 });
 console.log(42);
