@@ -88,7 +88,15 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 	case ast.KindFalseKeyword:
 		return "0", ""
 	default:
-		return saEvalI32(w, cond, scope, pos, refusals, nextTemp)
+		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		// 串值条件禁入（空串 falsy 而头指针恒真；与串绑定同门；实例沿直通口径）。
+		if k, ok := scope.types[op]; ok && k == "str" {
+			return "", "string value in condition"
+		}
+		return op, ""
 	}
 }
 
@@ -185,7 +193,15 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			return e.Text(), ""
 		}
 	}
-	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
+	op, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	// 返回 number 位记种检查（串/实例句柄禁入；与声明/实参位同形；铁律 4）。
+	if msg := saCheckI32Value(scope, op); msg != "" {
+		return "", msg
+	}
+	return op, ""
 }
 
 // saEvalBool 求布尔操作数（0/1 表示与 i32 统一）：绑定 bool 标识符直用，
