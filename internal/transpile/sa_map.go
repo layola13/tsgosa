@@ -117,13 +117,22 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 	return t, ""
 }
 
-// saLowerMapIndexStore lowering `m[k] = v`（脱糖为 map-set；值恒 i32，与
-// `.set(k, v)` 同形同值；Set 无键值大声拒由调用方守卫）。
+// saLowerMapIndexStore lowering `m[k] = v`（脱糖为 map-set；值种按建表记
+// （`Record<string,T>` 具化表，无表恒 i32；str 经串求值；与 `.set(k, v)` 同形同值；
+// Set 无键值大声拒由调用方守卫）。
 func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
 	scope.addImport("sa_std/btree_map.sa")
 	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return msg
+	}
+	if scope.mapVals[recv] == "str" {
+		v, msg := saEvalStr(w, rhs, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+		return ""
 	}
 	v, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -166,7 +175,7 @@ func saSeedParamMapVals(paramNodes []*ast.Node, kinds map[string]string, classes
 }
 
 // saRecordValueKind 认 `Record<string, T>` 值种（T 经 `saAnnotKind` i32/bool
-// 即 `"i32"`；具名接口即 `"inst:T"`；余形 false 沿旧门）。
+// 即 `"i32"`，string 即 `"str"`；具名接口即 `"inst:T"`；余形 false 沿旧门）。
 func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
 	if t == nil || t.Kind != ast.KindTypeReference {
 		return "", false
@@ -187,6 +196,9 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 	if k, ok := saAnnotKind(ref.TypeArguments.Nodes[1]); ok && (k == "i32" || k == "bool") {
 		return "i32", true
 	}
+	if k, ok := saAnnotKind(ref.TypeArguments.Nodes[1]); ok && k == "str" {
+		return "str", true
+	}
 	if ref.TypeArguments.Nodes[1] != nil && ref.TypeArguments.Nodes[1].Kind == ast.KindTypeLiteral {
 		// 匿名对象值合成布局（Z1；合成失败沿旧门）。
 		if lname, ok := saSynthAnonLayout(ref.TypeArguments.Nodes[1], classes); ok {
@@ -205,7 +217,7 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 }
 
 // saLowerRecordLiteral lowering `const m: Record<string,T> = {a: v}`
-// （Map 具化 + 逐键 insert；i32 值经求值，具名接口值经该布局现场构造或
+// （Map 具化 + 逐键 insert；i32 值经 i32 求值，str 值经串求值，具名接口值经该布局现场构造或
 // 同布局绑定直传；方法/spread/计算键/错种值沿旧门大声拒）。
 func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	ol := n.AsObjectLiteralExpression()
@@ -249,7 +261,15 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 		}
 		kh := saLowerStringLiteral(w, fname, scope, nextTemp)
 		var v string
-		if vkind == "i32" {
+		if vkind == "str" {
+			var msg string
+			v, msg = saEvalStr(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+		} else if vkind == "i32" {
 			var msg string
 			v, msg = saEvalI32(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -302,8 +322,9 @@ func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression,
 	return t, ""
 }
 
-// saLowerMapCall Map/Set 调用总线（返回 operand/种/errMsg；种恒 i32
-// （keys 系另行拒）；形状证据：lowerMapMethod/lowerSetMethod）。
+// saLowerMapCall Map/Set 调用总线（返回 operand/种/errMsg；Map 值种按建表记
+// （`Record<string,T>` 具化表，无表恒 i32；str/inst 经对应求值；keys 系另行拒）；
+// 形状证据：lowerMapMethod/lowerSetMethod）。
 func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -319,6 +340,14 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
+			}
+			if scope.mapVals[recv] == "str" {
+				v, msg := saEvalStr(w, argNodes[1], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+				return "0", "i32", ""
 			}
 			v, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -339,6 +368,9 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
+			if vk := scope.mapVals[recv]; vk != "" {
+				return t, vk, ""
+			}
 			return t, "i32", ""
 		case "has":
 			if len(argNodes) != 1 {

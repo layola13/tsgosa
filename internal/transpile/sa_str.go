@@ -212,6 +212,16 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
+		// Map 串值读即串值（`M.get(k)`；值种按建表记，与下标读同形）。
+		if pa.Name() != nil && pa.Name().Text() == "get" {
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" {
+					if scope.mapVals[pa.Expression.Text()] == "str" {
+						return true
+					}
+				}
+			}
+		}
 		// 类方法串返回（`c.get(): string`；声明种为准，体求值走内联）。
 		if pa.Name() != nil {
 			if mn, ok := saLookupMethod(pa.Expression, pa.Name().Text(), scope); ok {
