@@ -2439,6 +2439,10 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if msg != "" {
 			return "", msg
 		}
+		// 构造器 i32 形参记种检查（串/实例句柄禁入；与声明/实参位同形；铁律 4）。
+		if msg := saCheckI32Value(scope, v); msg != "" {
+			return "", msg
+		}
 		paramVal[nm.Text()] = v
 	}
 	body := def.ctor.Body()

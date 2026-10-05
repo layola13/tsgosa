@@ -150,6 +150,16 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 				return "record value does not match interface " + want
 			}
 			v = rhs.Text()
+		} else if rhs != nil && (rhs.Kind == ast.KindElementAccessExpression || rhs.Kind == ast.KindCallExpression) {
+			// 同布局转存（`M2[k] = M1[k]`；求值后记种须同表；与解构读值同形）。
+			t, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			if k, ok := scope.types[t]; !ok || k != vk {
+				return "record value does not match interface " + want
+			}
+			v = t
 		} else {
 			return "record value does not match interface " + want
 		}
@@ -391,6 +401,16 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 						return "", "", "record value does not match interface " + want
 					}
 					v = rhs.Text()
+				} else if rhs != nil && (rhs.Kind == ast.KindElementAccessExpression || rhs.Kind == ast.KindCallExpression) {
+					// 同布局转存（与下标存同形）。
+					t, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
+					if k, ok := scope.types[t]; !ok || k != vk {
+						return "", "", "record value does not match interface " + want
+					}
+					v = t
 				} else {
 					return "", "", "record value does not match interface " + want
 				}

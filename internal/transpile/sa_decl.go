@@ -504,6 +504,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 			return false
 		}
+		// 注解 i32/bool 位记种检查（串/实例句柄禁入；无注解推断沿传播口径不动；铁律 4）。
+		if msg := saCheckI32Value(scope, op); msg != "" {
+			ln, col := pos(vd.Initializer.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
 		// f64 temps never coerce into i32/bool locals (stay loud).
 		if k, ok := scope.types[op]; ok && k == "f64" {
 			ln, col := pos(d.Pos())
