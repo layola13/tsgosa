@@ -2620,6 +2620,14 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 			}
 		}
 		return "", false
+	case ast.KindTypePredicate:
+		// 类型谓词/断言签名擦除（`x is T` 即 boolean，`asserts x [is T]`
+		// 即 void；运行时皆无值语义：谓词返 0/1 走既有 bool 通道，断言
+		// 正常落空/抛错走 void；封存上游实发谓词 `-> i32` 同通道）。
+		if pn := t.AsTypePredicateNode(); pn != nil && pn.AssertsModifier != nil {
+			return "void", true
+		}
+		return "boolean", true
 	default:
 		return "", false
 	}
