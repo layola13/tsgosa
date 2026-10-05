@@ -316,6 +316,15 @@ func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTe
 	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", ptrT, rhs))
 }
 
+// saCheckIntIndex 守下标整数种（串/实例句柄禁作槽位下标；元素求值只建种不验种；
+// 下标读/存/链三处共用；铁律 4 高于同形）。
+func saCheckIntIndex(scope *saScope, idx string) string {
+	if k, ok := scope.types[idx]; ok && (k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		return "array index must be an integer"
+	}
+	return ""
+}
+
 // saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`/`a?.[i]`（基为绑定数组或数组值调用；
 // `?.` 空基归零；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -338,6 +347,9 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	}
 	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckIntIndex(scope, idx); msg != "" {
 		return "", msg
 	}
 	if isOpt {
@@ -414,6 +426,9 @@ func saArrStoreBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 		}
 		idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 		if msg != "" {
+			return "", msg
+		}
+		if msg := saCheckIntIndex(scope, idx); msg != "" {
 			return "", msg
 		}
 		return saLowerCheckedIndex(w, inner, idx, scope.nextLabel, nextTemp), ""
@@ -1484,6 +1499,9 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		}
 		idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 		if msg != "" {
+			return "", msg
+		}
+		if msg := saCheckIntIndex(scope, idx); msg != "" {
 			return "", msg
 		}
 		return saLowerCheckedIndex(w, inner, idx, scope.nextLabel, nextTemp), ""
