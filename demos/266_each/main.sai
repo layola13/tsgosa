@@ -34,19 +34,19 @@ L_exp_fail_3:
 L_exp_ok_4:
   !t_4
   n = 1
-  t_6 = sgt n, 0
+  t_6 = sle n, 0
   br t_6 -> L_exp_fail_5, L_exp_ok_6
 L_exp_fail_5:
   panic(2501)
 L_exp_ok_6:
   n = 2
-  t_7 = sgt n, 0
+  t_7 = sle n, 0
   br t_7 -> L_exp_fail_7, L_exp_ok_8
 L_exp_fail_7:
   panic(2501)
 L_exp_ok_8:
   n = 3
-  t_8 = sgt n, 0
+  t_8 = sle n, 0
   br t_8 -> L_exp_fail_9, L_exp_ok_10
 L_exp_fail_9:
   panic(2501)

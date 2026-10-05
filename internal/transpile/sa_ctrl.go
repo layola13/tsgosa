@@ -664,9 +664,9 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		if msg != "" {
 			return fail(msg)
 		}
-		cmp := "eq"
+		cmp := "ne"
 		if matcher == "toBeTruthy" || matcher == "toBeDefined" {
-			cmp = "ne"
+			cmp = "eq"
 		}
 		if neg {
 			if cmp == "eq" {
@@ -784,9 +784,9 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lt, h))
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		cmp := "eq"
+		cmp := "ne"
 		if neg {
-			cmp = "ne"
+			cmp = "eq"
 		}
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, lt, bop))
 		saReleaseOwnedTemp(w, scope, h)
@@ -877,19 +877,20 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		cmp = "eq"
 	}
 	if cmpName != "" {
-		// 大小比较（i32 有符号直比；`.not` 取逆命题，恒满足排中律）。
-		cmp = cmpName
+		// 大小比较（i32 有符号直比；落字为失败条件即逆命题，
+		// `.not` 取原命题，恒满足排中律）。
+		switch cmpName {
+		case "sgt":
+			cmp = "sle"
+		case "sge":
+			cmp = "slt"
+		case "slt":
+			cmp = "sge"
+		case "sle":
+			cmp = "sgt"
+		}
 		if neg {
-			switch cmpName {
-			case "sgt":
-				cmp = "sle"
-			case "sge":
-				cmp = "slt"
-			case "slt":
-				cmp = "sge"
-			case "sle":
-				cmp = "sgt"
-			}
+			cmp = cmpName
 		}
 	}
 	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, aop, bop))
