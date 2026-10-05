@@ -825,11 +825,40 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 // `@make(x: i32, y: i32) -> ptr:`）。泛型实例化/未知名沿旧门 false。
 // 注意 160 分歧：上游把 i32 别名参数/返回标 `ptr`（疑似未消解回退），本仓按
 // 别名语义消解为 i32——值流一致且更忠实，禁静默错码高于逐字同形。
+// 匿名返回按域集匹配唯一接口（`(): {a:i32;b:i32}` 经 saMatchIface 记 inst;
+// 0/多匹配沿旧门 false 大声拒；封存 checker_layout l2 + matchLayout 名集匹配）。
 func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	if k, ok := saReturnKind(t); ok {
 		return k, true
 	}
-	if t == nil || t.Kind != ast.KindTypeReference {
+	if t == nil {
+		return "", false
+	}
+	if t.Kind == ast.KindTypeLiteral {
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return "", false
+		}
+		var keys []string
+		for _, m := range lit.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				return "", false
+			}
+			nm := m.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				return "", false
+			}
+			keys = append(keys, nm.Text())
+		}
+		if len(keys) == 0 {
+			return "", false
+		}
+		if hit, _ := saMatchIface(keys, classes); hit != nil {
+			return "inst:" + hit.name, true
+		}
+		return "", false
+	}
+	if t.Kind != ast.KindTypeReference {
 		return "", false
 	}
 	if k, ok := saResolveAliasKind(t, aliasOf); ok {
