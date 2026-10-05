@@ -695,34 +695,15 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		// 串匹配器（`includes/startsWith/endsWith` 既有原语同指令同序：
 		// 封存 sa_str.go 对应分支；布尔化后进败臂，`.not` 翻转比较符；
 		// 自清洁释所创归属临时量）。
-		// `toMatch` 串形即子串（含 `toContain` 同形；正则形求值前即拒）。
-		if matcher == "toMatch" && len(margs) == 1 && margs[0] != nil &&
-			margs[0].Kind == ast.KindRegularExpressionLiteral {
-			return fail("expect().toMatch with regexp is not lowerable yet")
-		}
-		scope.addImport("sa_std/string.sai")
-		ah, msg := saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return fail(msg)
-		}
-		nh, msg := saEvalStr(w, margs[0], scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return fail(msg)
-		}
-		ap, al := saExpandStr(w, ah, nextTemp)
-		np, nl := saExpandStr(w, nh, nextTemp)
-		// booleanize 布尔化失败条件并发射败臂（cond 为 `eq/ne` 比较，
-		// `neg` 翻转比较符；发射后自清洁释所创句柄）。
-		var pendTemps []string
-		booleanize := func(cmp, a, b string) (bool, bool) {
+		// booleanize 布尔化失败条件并发射败臂（`neg` 翻转已由调用方选定
+		// 比较符；发射后自清洁释 pend 句柄）。
+		booleanize := func(cmp, a, b string, pend []string) (bool, bool) {
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, a, b))
-			for _, h := range pendTemps {
+			for _, h := range pend {
 				saReleaseOwnedTemp(w, scope, h)
 			}
-			saReleaseOwnedTemp(w, scope, ah)
-			saReleaseOwnedTemp(w, scope, nh)
 			failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
 			*nextLabel++
 			okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
@@ -737,13 +718,38 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		if neg {
 			failCmp = "ne"
 		}
+		// `toMatch` 正则形（行内编译 + test，封存 InlineBase/Test 同形；
+		// actual 只求值一次，recv 自清洁）。
+		if matcher == "toMatch" && len(margs) == 1 && saRegexBaseKind(margs[0], scope) {
+			recv, msg := saLowerRegexInlineBase(w, margs[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail(msg)
+			}
+			hit, msg := saLowerRegexTest(w, recv, iargs[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail(msg)
+			}
+			saReleaseOwnedTemp(w, scope, recv)
+			return booleanize(failCmp, hit, "0", nil)
+		}
+		// `toMatch` 串形即子串（含 `toContain` 同形）。
+		scope.addImport("sa_std/string.sai")
+		ah, msg := saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		nh, msg := saEvalStr(w, margs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		ap, al := saExpandStr(w, ah, nextTemp)
+		np, nl := saExpandStr(w, nh, nextTemp)
 		if matcher == "toContain" || matcher == "toMatch" {
 			idx := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, np, nl))
 			saOwnTemp(scope, idx)
-			pendTemps = []string{idx}
-			return booleanize(failCmp, idx, "-1")
+			return booleanize(failCmp, idx, "-1", []string{idx, ah, nh})
 		}
 		sym := "sa_string_starts_with"
 		if matcher == "toEndsWith" {
@@ -753,8 +759,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @%s(%s, %s, %s, %s)\n", o, sym, ap, al, np, nl))
 		saOwnTemp(scope, o)
-		pendTemps = []string{o}
-		return booleanize(failCmp, o, "0")
+		return booleanize(failCmp, o, "0", []string{o, ah, nh})
 	}
 	if matcher == "toHaveLength" {
 		// 数组/串长度断言（句柄总线求柄：绑定/字面量/链式经 saArrValueOf，

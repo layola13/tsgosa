@@ -40,6 +40,8 @@ describe("more", () => {
     expect("hello").not.toEndsWith("he");
     expect("abc123").toMatch("c12");
     expect("abc123").not.toMatch("z9");
+    expect("abc123").toMatch(/c[0-9]+/);
+    expect("abc123").not.toMatch(/z[0-9]+/);
   });
   test("length", () => {
     expect([1, 2, 3]).toHaveLength(3);
