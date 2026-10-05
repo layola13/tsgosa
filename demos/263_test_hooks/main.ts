@@ -27,6 +27,9 @@ function runSuite(): number {
       hits = hits + 1;
       passed = passed + 1;
     });
+    afterAll(() => {
+      hits = hits + 7;
+    });
   });
   test("after", () => {
     assertEq(add(2, 3), 5);

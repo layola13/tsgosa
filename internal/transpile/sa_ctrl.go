@@ -581,7 +581,7 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		return false, false
 	}
 	if name == "afterAll" {
-		return fail("afterAll needs whole-scope buffering (not yet)")
+		return fail("afterAll is supported inside describe() only (function/top-level buffering not yet)")
 	}
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -618,9 +618,9 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		return true, true
 	}
 	if name == "describe" {
-		// 分组透明：hook 进出按栈存取，体内 test 递归经语句分发。
+		// 分组透明：hook 进出按栈存取，体内 test/afterAll 经分区消化递归。
 		savedBefore, savedAfter := scope.testBefore, scope.testAfter
-		ok := saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		ok := saInlineDescribeBody(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		scope.testBefore, scope.testAfter = savedBefore, savedAfter
 		if !ok {
 			return true, false
@@ -641,6 +641,93 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		}
 	}
 	return true, true
+}
+
+// saAfterAllBody 识别 afterAll 调用语句并取回调体（1 参回调 / 2 参静态名 +
+// 回调；非 afterAll 调用返 found=false；畸形记拒因返 found=true 体 nil）。
+func saAfterAllBody(s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) (body *ast.Node, found bool) {
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return nil, false
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindIdentifier || callee.Text() != "afterAll" {
+		return nil, false
+	}
+	if !saIsTestHookName(scope, "afterAll") {
+		return nil, false
+	}
+	fail := func(msg string) (*ast.Node, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return nil, true
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	fnIdx := 0
+	if len(argNodes) == 2 {
+		if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return fail("afterAll name must be a string literal")
+		}
+		fnIdx = 1
+	} else if len(argNodes) != 1 {
+		return fail("afterAll takes a callback (1 argument)")
+	}
+	bd, ok := saCheckTestCallback(argNodes[fnIdx], "afterAll", s, pos, refusals)
+	if !ok {
+		return nil, true
+	}
+	return bd, true
+}
+
+// saInlineDescribeBody 内联 describe 体并将其 afterAll 延后（两阶段分区：先体
+// 后钩；嵌套 describe/test 经语句分发递归，嵌套 afterAll 由内层分区就地消化）。
+func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	if body.Kind != ast.KindBlock {
+		return saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	}
+	stmts, ok := saBlockStmts(body)
+	if !ok {
+		return false
+	}
+	var afters []*ast.Node
+	saved := saScopeEnter(scope)
+	terminated, armOK := false, true
+	for _, st := range stmts {
+		if terminated {
+			continue
+		}
+		if ab, found := saAfterAllBody(st, scope, pos, refusals); found {
+			if ab == nil {
+				armOK = false
+				break
+			}
+			afters = append(afters, ab)
+			continue
+		}
+		done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			armOK = false
+			break
+		}
+		if done {
+			terminated = true
+		}
+	}
+	saReleaseDeeperThan(w, scope, saved.owned)
+	saScopeExit(scope, saved)
+	if !armOK {
+		return false
+	}
+	for _, ab := range afters {
+		if !saInlineTestUnit(w, ab, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return false
+		}
+	}
+	return true
 }
 
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值

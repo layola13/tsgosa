@@ -42,49 +42,52 @@ L_endif_3:
   t_9 = add hits, 1000
   !hits
   hits = t_9
-  t_10 = add hits, 100
+  t_10 = add hits, 7
   !hits
   hits = t_10
-  t_11 = call @add(2, 3)
-  call @assertEq(t_11, 5)
-  t_12 = add hits, 1
+  t_11 = add hits, 100
   !hits
-  hits = t_12
-  t_13 = add passed, 1
+  hits = t_11
+  t_12 = call @add(2, 3)
+  call @assertEq(t_12, 5)
+  t_13 = add hits, 1
+  !hits
+  hits = t_13
+  t_14 = add passed, 1
   !passed
-  passed = t_13
-  !t_11
-  t_14 = add hits, 1000
+  passed = t_14
+  !t_12
+  t_15 = add hits, 1000
   !hits
-  hits = t_14
-  t_15 = mul hits, 10
-  t_16 = add t_15, passed
+  hits = t_15
+  t_16 = mul hits, 10
+  t_17 = add t_16, passed
   !passed
   !hits
-  ret t_16
+  ret t_17
 @main() -> i32:
-  t_17 = call @runSuite()
-  t_18 = sext t_17 as i64
-  t_19 = alloc 64
-  t_20 = alloc 8
-  t_21 = call @sa_fmt_i64_into(t_18, 10, t_19, 64, &t_20)
-  t_22 = load t_20 + 0 as u64
-  t_23 = alloc 16
-  store t_23 + 0, t_19 as ptr
-  store t_23 + 8, t_22 as u64
+  t_18 = call @runSuite()
+  t_19 = sext t_18 as i64
+  t_20 = alloc 64
+  t_21 = alloc 8
+  t_22 = call @sa_fmt_i64_into(t_19, 10, t_20, 64, &t_21)
+  t_23 = load t_21 + 0 as u64
+  t_24 = alloc 16
+  store t_24 + 0, t_20 as ptr
+  store t_24 + 8, t_23 as u64
+  !t_22
+  t_25 = load t_24 + 0 as ptr
+  t_26 = load t_24 + 8 as u64
+  call @sa_print_bytes(&t_25, t_26)
+  t_27 = alloc 16
+  store t_27 + 0, &str_const_0 as ptr
+  store t_27 + 8, 1 as u64
+  t_28 = load t_27 + 0 as ptr
+  t_29 = load t_27 + 8 as u64
+  call @sa_print_bytes(&t_28, t_29)
+  !t_27
+  !t_24
   !t_21
-  t_24 = load t_23 + 0 as ptr
-  t_25 = load t_23 + 8 as u64
-  call @sa_print_bytes(&t_24, t_25)
-  t_26 = alloc 16
-  store t_26 + 0, &str_const_0 as ptr
-  store t_26 + 8, 1 as u64
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  call @sa_print_bytes(&t_27, t_28)
-  !t_26
-  !t_23
   !t_20
-  !t_19
-  !t_17
+  !t_18
   ret 0
