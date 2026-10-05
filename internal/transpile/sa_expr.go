@@ -2062,6 +2062,10 @@ func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression,
 		if msg != "" {
 			return "", msg
 		}
+		// 取反记种检查（串/实例句柄禁作整数；`!` 沿上游同形不动；铁律 4）。
+		if msg := saCheckI32Value(scope, arg); msg != "" {
+			return "", msg
+		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = sub 0, %s\n", t, arg))

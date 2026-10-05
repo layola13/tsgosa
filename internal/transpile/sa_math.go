@@ -41,6 +41,18 @@ func saIsNumberIsInteger(ce *ast.CallExpression) bool {
 // saEvalMathAbs 求 `Math.abs(x)`（形状证据：封存 lowerMathInline abs:5754-5780
 // 分支汇合原样：alloc 8 槽 + `sge x, 0` + br + 两臂 store + end load + 释放。
 // 其余 Math.* 本薄口大声拒；`Math.abs` 别名调用不认（无 mathAliases 表，拒）。
+// saMathI32Arg 求 Math 整形参并验记种（串/实例句柄禁入；各方法共用；铁律 4）。
+func saMathI32Arg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckI32Value(scope, v); msg != "" {
+		return "", msg
+	}
+	return v, ""
+}
+
 func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {
@@ -49,7 +61,7 @@ func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	if len(args) != 1 {
 		return "", false, "Math.abs needs 1 argument"
 	}
-	v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	v, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", false, msg
 	}
@@ -97,11 +109,11 @@ func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	if len(args) != 2 {
 		return "", false, "Math.pow needs 2 arguments"
 	}
-	base, msgB := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	base, msgB := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msgB != "" {
 		return "", false, msgB
 	}
-	expo, msgE := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+	expo, msgE := saMathI32Arg(w, args[1], scope, pos, refusals, nextTemp)
 	if msgE != "" {
 		return "", false, msgE
 	}
@@ -205,7 +217,7 @@ func saEvalMathRounding(w printer.EmitTextWriter, method string, ce *ast.CallExp
 	if args[0] != nil && args[0].Kind == ast.KindNumericLiteral && saIsFloatLit(args[0].Text()) {
 		return saLowerMathRoundingFloat(w, method, args[0].Text(), scope, nextTemp), false, ""
 	}
-	v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	v, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", false, msg
 	}
@@ -234,11 +246,11 @@ func saEvalMathMinMax(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	if len(args) != 2 {
 		return "", false, "Math." + method + " takes two scalars or one spread slice"
 	}
-	a0, msg0 := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	a0, msg0 := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg0 != "" {
 		return "", false, msg0
 	}
-	a1, msg1 := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+	a1, msg1 := saMathI32Arg(w, args[1], scope, pos, refusals, nextTemp)
 	if msg1 != "" {
 		return "", false, msg1
 	}
@@ -287,7 +299,7 @@ func saEvalMathSqrt(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	if len(args) != 1 {
 		return "", false, "Math.sqrt needs 1 argument"
 	}
-	x, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	x, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", false, msg
 	}
@@ -374,7 +386,7 @@ func saEvalMathLog10(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 	if len(args) != 1 {
 		return "", false, "Math.log10 needs 1 argument"
 	}
-	x, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
+	x, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", false, msg
 	}
