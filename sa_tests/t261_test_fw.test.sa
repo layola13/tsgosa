@@ -1,0 +1,34 @@
+@import "../demos/261_test_fw/main.sa"
+@import "sa_std/testing/assert.sai"
+
+@test "verifyAddition"():
+L_ENTRY:
+    call @verifyAddition()
+    return
+
+@test "verifyMul"():
+L_ENTRY:
+    call @verifyMul()
+    return
+
+@test "verifyGreet"():
+L_ENTRY:
+    call @verifyGreet()
+    return
+
+@test "verifyCatchRecovery"():
+L_ENTRY:
+    call @verifyCatchRecovery()
+    return
+
+@test "verifyCatchSkipped"():
+L_ENTRY:
+    call @verifyCatchSkipped()
+    return
+
+@test "runner-count"():
+L_ENTRY:
+    n = call @main__user()
+    call @sa_assert_eq_i64(n, 5, 26101)
+    !n
+    return

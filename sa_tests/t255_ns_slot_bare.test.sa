@@ -1,0 +1,9 @@
+@import "../demos/255_ns_slot_bare/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "255_ns_slot_bare"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 17, 25501)
+    !v
+    return

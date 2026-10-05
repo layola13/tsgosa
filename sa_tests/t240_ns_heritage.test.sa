@@ -1,0 +1,9 @@
+@import "../demos/240_ns_heritage/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "240_ns_heritage"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 7, 24001)
+    !v
+    return

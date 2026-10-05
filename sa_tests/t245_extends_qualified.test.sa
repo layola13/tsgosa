@@ -1,0 +1,9 @@
+@import "../demos/245_extends_qualified/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "245_extends_qualified"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 7, 24501)
+    !v
+    return

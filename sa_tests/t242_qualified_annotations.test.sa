@@ -1,0 +1,9 @@
+@import "../demos/242_qualified_annotations/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "242_qualified_annotations"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 42, 24201)
+    !v
+    return
