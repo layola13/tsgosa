@@ -583,7 +583,7 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 // 匹配器：toBe 系（i32）/零元系（i32 零判）/比较系（i32）/串系（`not` 取反
 // 同门；其余匹配器/异种臂另步大声拒。
 // 返回（接管，成功）。
-func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
+func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
@@ -640,8 +640,8 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 		cmpName = "sle"
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
-		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength)")
+		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -688,7 +688,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 		w.Write(okL + ":\n")
 		return true, true
 	}
-	if len(margs) != 1 {
+	if matcher != "toThrow" && len(margs) != 1 {
 		return fail("expect()." + matcher + " takes one expected value")
 	}
 	if matcher == "toContain" || matcher == "toStartsWith" || matcher == "toEndsWith" {
@@ -788,6 +788,59 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 		w.Write(failL + ":\n")
 		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
 		w.Write(okL + ":\n")
+		return true, true
+	}
+	if matcher == "toThrow" {
+		// 抛断言静态判定（SA panic 不可恢复，catch 不能 resume，无动态捕获；
+		// 只认内联箭头/函数表达式体顶层无条件 throw：前缀直行照跑副作用，
+		// throw 及其后 erased；条件/调用/标识符引用/带参匹配另步大声拒）。
+		if len(margs) != 0 {
+			return fail("expect().toThrow with expected error is not lowerable yet")
+		}
+		target := iargs[0]
+		if target == nil || (target.Kind != ast.KindArrowFunction && target.Kind != ast.KindFunctionExpression) {
+			return fail("expect().toThrow needs an inline arrow or function expression")
+		}
+		if target.Body() == nil || target.Body().Kind != ast.KindBlock {
+			return fail("expect().toThrow body must be a block")
+		}
+		tstmts, bok := saBlockStmts(target.Body())
+		if !bok {
+			return fail("expect().toThrow body must be a block")
+		}
+		idx := saThrowPrefixEnd(tstmts)
+		if idx == -2 {
+			return fail("expect().toThrow body must be straight-line with an unconditional throw")
+		}
+		saved := saScopeEnter(scope)
+		throwOK := true
+		end := len(tstmts)
+		if idx >= 0 {
+			end = idx
+		}
+		for _, st := range tstmts[:end] {
+			done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if failed {
+				throwOK = false
+				break
+			}
+			if done {
+				break
+			}
+		}
+		saReleaseDeeperThan(w, scope, saved.owned)
+		saScopeExit(scope, saved)
+		if !throwOK {
+			return true, false
+		}
+		willThrow := idx >= 0
+		if neg {
+			willThrow = !willThrow
+		}
+		if !willThrow {
+			// 未抛（或 `.not` 下有抛）即败：直發 panic。
+			w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		}
 		return true, true
 	}
 	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
@@ -1042,6 +1095,79 @@ func saLowerEachOuter(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpress
 	return saLowerTestEach(w, s, base, targs[0], oargs[0], oargs[1], isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 }
 
+// saSubtreeHasCall 报告子树是否含调用/构造（throw 静态判定用；
+// 函数边界内不计——内联体外函数不执行）。
+func saSubtreeHasCall(n *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		switch x.Kind {
+		case ast.KindCallExpression, ast.KindNewExpression:
+			// `console.log` 可证不抛（落字无 panic；参数照查，
+			// `console.log(f())` 的 f 可抛）。
+			if x.Kind == ast.KindCallExpression {
+				if ce := x.AsCallExpression(); ce != nil && saIsConsoleLog(ce) {
+					if ce.Arguments != nil {
+						for _, a := range ce.Arguments.Nodes {
+							walk(a)
+							if found {
+								return
+							}
+						}
+					}
+					return
+				}
+			}
+			found = true
+			return
+		case ast.KindFunctionDeclaration, ast.KindFunctionExpression,
+			ast.KindArrowFunction, ast.KindClassDeclaration:
+			return
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
+// saIsThrowPrefixPure 报告语句能否作 toThrow 前缀（直行纯语句：
+// 无调用/控制流/return/throw/声明；var 初值与表达式须同纯）。
+func saIsThrowPrefixPure(st *ast.Node) bool {
+	if st == nil {
+		return true
+	}
+	switch st.Kind {
+	case ast.KindVariableStatement, ast.KindExpressionStatement,
+		ast.KindEmptyStatement, ast.KindDebuggerStatement:
+		return !saSubtreeHasCall(st)
+	default:
+		return false
+	}
+}
+
+// saThrowPrefixEnd 报告体顶层首个无条件 throw 下标（-1 即无线索；
+// -2 即含调用/控制流等复杂形，动态捕获另步）。
+func saThrowPrefixEnd(stmts []*ast.Node) int {
+	for i, st := range stmts {
+		if st == nil {
+			continue
+		}
+		if st.Kind == ast.KindThrowStatement {
+			return i
+		}
+		if !saIsThrowPrefixPure(st) {
+			return -2
+		}
+	}
+	return -1
+}
+
 // 防外泄。返回（接管，成功）。
 func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
@@ -1059,7 +1185,7 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		return false, false
 	}
 	// `expect(actual).toBe(expected)` 语句断言就地内联（测试域分发；未命中沿旧路）。
-	if handled, ok := saLowerExpectAssertion(w, s, scope, pos, refusals, nextLabel, nextTemp); handled {
+	if handled, ok := saLowerExpectAssertion(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
 		return handled, ok
 	}
 	// `test.each(table)(title, fn)` 行展开（`it.each` 同；劫持规则同注册名；

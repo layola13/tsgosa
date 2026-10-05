@@ -44,5 +44,13 @@ describe("more", () => {
     expect("hello").toHaveLength(5);
     expect([1, 2, 3]).not.toHaveLength(2);
   });
+  test("throws", () => {
+    expect(() => {
+      throw new Error("x");
+    }).toThrow();
+    expect(() => {
+      console.log("side");
+    }).not.toThrow();
+  });
 });
 console.log(42);

@@ -7,7 +7,8 @@
 @const str_const_2 = utf8:"he\0"
 @const str_const_3 = utf8:"lo\0"
 @const str_const_4 = utf8:"z\0"
-@const str_const_5 = utf8:"\n\0"
+@const str_const_5 = utf8:"side\0"
+@const str_const_6 = utf8:"\n\0"
 @add(a: i32, b: i32) -> i32:
   t_1 = add a, b
   !b
@@ -279,26 +280,40 @@ L_exp_ok_50:
 L_exp_fail_51:
   panic(2501)
 L_exp_ok_52:
-  t_94 = sext 42 as i64
-  t_95 = alloc 64
-  t_96 = alloc 8
-  t_97 = call @sa_fmt_i64_into(t_94, 10, t_95, 64, &t_96)
-  t_98 = load t_96 + 0 as u64
-  t_99 = alloc 16
-  store t_99 + 0, t_95 as ptr
-  store t_99 + 8, t_98 as u64
+  t_94 = alloc 16
+  store t_94 + 0, &str_const_5 as ptr
+  store t_94 + 8, 4 as u64
+  t_95 = load t_94 + 0 as ptr
+  t_96 = load t_94 + 8 as u64
+  call @sa_print_bytes(&t_95, t_96)
+  !t_94
+  t_97 = alloc 16
+  store t_97 + 0, &str_const_6 as ptr
+  store t_97 + 8, 1 as u64
+  t_98 = load t_97 + 0 as ptr
+  t_99 = load t_97 + 8 as u64
+  call @sa_print_bytes(&t_98, t_99)
   !t_97
-  t_100 = load t_99 + 0 as ptr
-  t_101 = load t_99 + 8 as u64
-  call @sa_print_bytes(&t_100, t_101)
-  !t_99
-  t_102 = alloc 16
-  store t_102 + 0, &str_const_5 as ptr
-  store t_102 + 8, 1 as u64
-  t_103 = load t_102 + 0 as ptr
-  t_104 = load t_102 + 8 as u64
-  call @sa_print_bytes(&t_103, t_104)
+  t_100 = sext 42 as i64
+  t_101 = alloc 64
+  t_102 = alloc 8
+  t_103 = call @sa_fmt_i64_into(t_100, 10, t_101, 64, &t_102)
+  t_104 = load t_102 + 0 as u64
+  t_105 = alloc 16
+  store t_105 + 0, t_101 as ptr
+  store t_105 + 8, t_104 as u64
+  !t_103
+  t_106 = load t_105 + 0 as ptr
+  t_107 = load t_105 + 8 as u64
+  call @sa_print_bytes(&t_106, t_107)
+  !t_105
+  t_108 = alloc 16
+  store t_108 + 0, &str_const_6 as ptr
+  store t_108 + 8, 1 as u64
+  t_109 = load t_108 + 0 as ptr
+  t_110 = load t_108 + 8 as u64
+  call @sa_print_bytes(&t_109, t_110)
+  !t_108
   !t_102
-  !t_96
-  !t_95
+  !t_101
   ret 0
