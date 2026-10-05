@@ -532,7 +532,47 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	}
 	ce := e.AsCallExpression()
 	callee := ce.Expression
-	if callee == nil || callee.Kind != ast.KindIdentifier {
+	if callee == nil {
+		return false, false
+	}
+	// 成员式 `test.only/skip/todo`（`describe/it` 同）：skip 跳发射（体仅验形）、
+	// todo 空过（1 串参，或附体忽略）、only 整文件缓冲未做大声拒；基名劫持规则同。
+	if callee.Kind == ast.KindPropertyAccessExpression {
+		pa := callee.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+			return false, false
+		}
+		base, prop := pa.Expression.Text(), pa.Name().Text()
+		if base != "test" && base != "describe" && base != "it" {
+			return false, false
+		}
+		if !saIsUnresolvedTestName(scope, base) {
+			return false, false
+		}
+		if prop != "only" && prop != "skip" && prop != "todo" {
+			return false, false
+		}
+		if prop == "only" {
+			return fail(base + "." + prop + " needs whole-file buffering (not yet)")
+		}
+		var margs []*ast.Node
+		if ce.Arguments != nil {
+			margs = ce.Arguments.Nodes
+		}
+		if len(margs) < 1 || len(margs) > 2 {
+			return fail(base + "." + prop + " takes a name and an optional callback")
+		}
+		if margs[0] == nil || (margs[0].Kind != ast.KindStringLiteral && margs[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return fail(base + "." + prop + " name must be a string literal")
+		}
+		if len(margs) == 2 {
+			if _, ok := saCheckTestCallback(margs[1], base+"."+prop, s, pos, refusals); !ok {
+				return true, false
+			}
+		}
+		return true, true
+	}
+	if callee.Kind != ast.KindIdentifier {
 		return false, false
 	}
 	name := callee.Text()

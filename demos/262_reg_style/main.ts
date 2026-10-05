@@ -15,5 +15,9 @@ describe("math", () => {
     const r = add(3, 4);
     assertEq(r, 7);
   });
+  test.skip("broken", () => {
+    assertEq(add(1, 1), 999);
+  });
+  test.todo("later");
 });
 console.log(99);
