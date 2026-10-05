@@ -640,8 +640,8 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		cmpName = "sle"
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
-		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow)")
+		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" && matcher != "toMatch" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -691,10 +691,15 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	if matcher != "toThrow" && len(margs) != 1 {
 		return fail("expect()." + matcher + " takes one expected value")
 	}
-	if matcher == "toContain" || matcher == "toStartsWith" || matcher == "toEndsWith" {
+	if matcher == "toContain" || matcher == "toStartsWith" || matcher == "toEndsWith" || matcher == "toMatch" {
 		// 串匹配器（`includes/startsWith/endsWith` 既有原语同指令同序：
 		// 封存 sa_str.go 对应分支；布尔化后进败臂，`.not` 翻转比较符；
 		// 自清洁释所创归属临时量）。
+		// `toMatch` 串形即子串（含 `toContain` 同形；正则形求值前即拒）。
+		if matcher == "toMatch" && len(margs) == 1 && margs[0] != nil &&
+			margs[0].Kind == ast.KindRegularExpressionLiteral {
+			return fail("expect().toMatch with regexp is not lowerable yet")
+		}
 		scope.addImport("sa_std/string.sai")
 		ah, msg := saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -732,7 +737,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		if neg {
 			failCmp = "ne"
 		}
-		if matcher == "toContain" {
+		if matcher == "toContain" || matcher == "toMatch" {
 			idx := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, np, nl))
