@@ -1939,6 +1939,14 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 			if !ok {
 				if pd.Type.Kind == ast.KindTypeReference {
 					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+						// 泛型具化优先（`b: Box<i32>` 记 `inst:Box_i32`，宽表精确；
+						// 不可具化下探既有擦除；封存 layoutOfAnnotation 同形）。
+						if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+							if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
+								kinds[name] = "inst:" + lname
+								continue
+							}
+						}
 						if _, ok := classes[ref.TypeName.Text()]; ok {
 							kinds[name] = "inst:" + ref.TypeName.Text()
 							continue
