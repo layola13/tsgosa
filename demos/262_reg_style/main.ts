@@ -19,5 +19,7 @@ describe("math", () => {
     assertEq(add(1, 1), 999);
   });
   test.todo("later");
+  test("much later");
+  it("eventually");
 });
 console.log(99);

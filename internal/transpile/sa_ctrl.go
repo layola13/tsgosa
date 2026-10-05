@@ -587,11 +587,16 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	if ce.Arguments != nil {
 		argNodes = ce.Arguments.Nodes
 	}
-	// 钩子一参（回调）或双参（静态串名 + 回调，名忽略）；注册固定双参。
+	// 钩子一参（回调）或双参（静态串名 + 回调，名忽略）；注册固定双参；
+	// 单参 test/it("name") 即 todo 空过（vitest 无回调即 pending 同形）。
 	fnIdx := 1
 	if isHook && len(argNodes) == 1 {
 		fnIdx = 0
 	} else {
+		if len(argNodes) == 1 && (name == "test" || name == "it") &&
+			argNodes[0] != nil && (argNodes[0].Kind == ast.KindStringLiteral || argNodes[0].Kind == ast.KindNoSubstitutionTemplateLiteral) {
+			return true, true
+		}
 		if len(argNodes) != 2 {
 			return fail(name + " takes a name and a callback (2 arguments)")
 		}
