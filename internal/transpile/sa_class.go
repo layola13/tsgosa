@@ -1183,8 +1183,21 @@ func saIfaceFieldKind(ftn *ast.TypeNode, fname string, def *saClassDef, classes 
 			fkind = "arr"
 		}
 	} else if ftn.Kind == ast.KindUnionType {
-		// union-typed fields lower as ptr handle slots (cf class record).
-		fkind = "arr"
+		// 字面量联合按标量归种（`"m"|"f"` 即 str，数字联合即 i32；经
+		// `saUnionScalarKind` 与注解核同形；余形落 ptr 句柄槽；形状证据：
+		// 封存 saNameOfType:235-264 default 恒 ptr + 本仓 saLitFieldKind）。
+		if uk, ok := saUnionScalarKind(ftn.AsNode()); ok {
+			switch uk {
+			case "str":
+				fkind = "str"
+			case "arr":
+				fkind = "arr"
+			default:
+				fkind = "i32"
+			}
+		} else {
+			fkind = "arr"
+		}
 	} else if ftn.Kind == ast.KindAnyKeyword || ftn.Kind == ast.KindUnknownKeyword {
 		// `any` fields lower as ptr handle slots (cf class record).
 		fkind = "arr"

@@ -2274,6 +2274,26 @@ func saUnionScalarKind(n *ast.Node) (string, bool) {
 			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
 				continue
 			}
+			// 字面量联合按值种归一（`"m"|"f"` 即 str，`1|2` 即 i32；形状证据：
+			// 封存 saNameOfType 字面量按基种 + 本仓 saLitFieldKind 数字/bool 即 i32）。
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil {
+				switch lit.Kind {
+				case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+					if kind != "" && kind != "str" {
+						return "", false
+					}
+					kind = "str"
+					continue
+				case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+					if kind != "" && kind != "i32" && kind != "bool" {
+						return "", false
+					}
+					if kind == "" {
+						kind = "i32"
+					}
+					continue
+				}
+			}
 			return "", false
 		}
 		var k string
