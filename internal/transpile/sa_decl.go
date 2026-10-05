@@ -86,6 +86,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
 			// 对象字面量声明（注解须为同名接口；无注解按键集匹配）。
+			// `Record<string,i32>` 注解走 Map 具化（Z1；非 i32 值沿旧门）。
+			if vd.Type != nil && saRecordValueKind(vd.Type) {
+				if !saLowerRecordLiteral(w, name, vd.Initializer, scope, pos, refusals, nextTemp) {
+					return false
+				}
+				continue
+			}
 			want := ""
 			if vd.Type != nil {
 				tn := vd.Type

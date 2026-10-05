@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
@@ -125,6 +126,84 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 	}
 	w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
 	return ""
+}
+
+// saRecordValueKind 认 `Record<string, T>` 值种（仅 i32/bool 值可落 Map
+// i32 槽；串/对象/余下一律 false 沿旧门）。
+func saRecordValueKind(t *ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeName.Text() != "Record" {
+		return false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
+		return false
+	}
+	if ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[0].Kind != ast.KindStringKeyword {
+		return false
+	}
+	k, ok := saAnnotKind(ref.TypeArguments.Nodes[1])
+	return ok && (k == "i32" || k == "bool")
+}
+
+// saLowerRecordLiteral lowering `const m: Record<string,i32> = {a: 1}`
+// （Map 具化 + 逐键 insert；键须标识/串字面量，值须 i32；方法/spread/
+// 计算键/非 i32 值沿旧门大声拒）。
+func saLowerRecordLiteral(w printer.EmitTextWriter, name string, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	ol := n.AsObjectLiteralExpression()
+	h, msg := saLowerMapNew(w, "Map", nil, scope, nextTemp)
+	if msg != "" {
+		ln, col := pos(n.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+	scope.types[name] = "map"
+	saConsumeOwn(scope, h)
+	saDeclareOwned(scope, name)
+	for _, p := range ol.Properties.Nodes {
+		var fname, keyText string
+		var init *ast.Node
+		switch p.Kind {
+		case ast.KindPropertyAssignment:
+			fn, ok := saObjPropName(p)
+			if !ok {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed property names must be literals (dynamic keys have no static layout)"})
+				return false
+			}
+			fname = fn
+			init = p.AsPropertyAssignment().Initializer
+		case ast.KindShorthandPropertyAssignment:
+			fn, ok := saObjPropName(p)
+			if !ok {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed property names must be literals (dynamic keys have no static layout)"})
+				return false
+			}
+			fname = fn
+			init = p.Name()
+		default:
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object literal property is not lowerable (methods refused)"})
+			return false
+		}
+		keyText = strconv.Quote(fname)
+		kh := saLowerStringLiteral(w, keyText, scope, nextTemp)
+		v, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(p.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", name, kh, v))
+	}
+	return true
 }
 
 // saLowerMapNew `new Map()`/`new Set()`（参数忽略容忍；形状证据：封存 lowerNew:8579-8592 不看参数）。
