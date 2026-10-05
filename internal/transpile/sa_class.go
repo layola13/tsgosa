@@ -1125,6 +1125,85 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	return true
 }
 
+// saRecordTypeAlias 记录对象字面量类型别名布局（`type X = {a: T, ...}`；
+// 非字面量目标（联合/基元/引用）不记，含泛型形参别名不记（l5/l6 史诗级另立），
+// 方法签名不占槽，与接口同形；嵌套具名域经已记录表解子布局（声明序依赖，
+// 未记录落 arr 句柄，与接口未知引用同例）。形状证据：封存 recordTypeAlias
+// 全形 + planck TransformValue/RotValue/Vec2Value 形。
+func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	ta := st.AsTypeAliasDeclaration()
+	nm := st.Name()
+	if ta == nil || ta.Type == nil || nm == nil || nm.Kind != ast.KindIdentifier {
+		return true
+	}
+	name := nm.Text()
+	if _, dup := classes[name]; dup {
+		ln, col := pos(st.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate type " + name})
+		return false
+	}
+	tgt := ta.Type
+	if tgt == nil || tgt.Kind != ast.KindTypeLiteral {
+		return true
+	}
+	if ta.TypeParameters != nil && len(ta.TypeParameters.Nodes) > 0 {
+		return true
+	}
+	lit := tgt.AsTypeLiteralNode()
+	if lit == nil || lit.Members == nil {
+		return true
+	}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true}
+	off := 0
+	for _, m := range lit.Members.Nodes {
+		if m.Kind != ast.KindPropertySignature {
+			continue
+		}
+		fn := m.Name()
+		if fn == nil || fn.Kind != ast.KindIdentifier {
+			continue
+		}
+		pd := m.AsPropertySignatureDeclaration()
+		fkind := "i32"
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+				if k == "str" {
+					fkind = "str"
+				} else if k == "arr" {
+					fkind = "arr"
+				}
+			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
+				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
+					fkind = "inst"
+					if def.fsub == nil {
+						def.fsub = map[string]string{}
+					}
+					def.fsub[fn.Text()] = sub.name
+				} else {
+					fkind = "arr"
+				}
+			} else {
+				fkind = "arr"
+			}
+		}
+		if _, dup := def.offsets[fn.Text()]; dup {
+			continue
+		}
+		off = saAlignOff(off, fkind)
+		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
+		def.offsets[fn.Text()] = off
+		def.fkinds[fn.Text()] = fkind
+		sz, _ := saFieldWidth(fkind)
+		off += sz
+	}
+	if len(def.fields) == 0 {
+		return true
+	}
+	def.size = off
+	classes[name] = def
+	return true
+}
+
 // saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
 // 形状证据：封存 layoutOfLiteral:8953-8975 + matchLayout 名集匹配）。
 func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, string) {

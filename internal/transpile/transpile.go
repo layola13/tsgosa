@@ -1201,6 +1201,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			saRecordIface(st, classes, pos, &refusals)
 			continue
 		}
+		if st.Kind == ast.KindTypeAliasDeclaration {
+			// 对象字面量别名入布局表（`type X = {...}`；余形擦除无码）。
+			saRecordTypeAlias(st, classes, pos, &refusals)
+			continue
+		}
 		if st.Kind == ast.KindEnumDeclaration {
 			// 整数枚举预扫成表（布局记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 			nm := st.AsEnumDeclaration().Name()
