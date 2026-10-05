@@ -1400,7 +1400,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			handledTop[st] = true
 			continue
 		}
-		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals) {
+		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals, tcx) {
 			handledTop[st] = true
 			continue
 		}

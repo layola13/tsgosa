@@ -983,7 +983,7 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 // 部分纯洁不记半吊子；非纯（require 等）返回 false 留发射环拒。
 // 可变顶层（函数内赋值）无槽，另域 modstate。
 // 形状证据：封存 tryTopLevelConst:2894-2972。
-func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
 	}
@@ -1016,6 +1016,13 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		init := vd.Initializer
 		if init == nil {
 			return false
+		}
+		// env-probe 取臂（`typeof U==="undefined"?A:B` 未声明名化纯量；
+		// 封存 probeFoldedInit:212-222；已声明/异形沿旧门）。
+		if init.Kind == ast.KindConditionalExpression {
+			if arm, ok := saEnvProbeArm(init.AsConditionalExpression(), tcx); ok {
+				init = arm
+			}
 		}
 		switch init.Kind {
 		case ast.KindNumericLiteral:
