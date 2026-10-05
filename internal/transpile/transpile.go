@@ -3060,6 +3060,9 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	case ast.KindEmptyStatement:
 		// 空语句 no-op（形状证据：封存 :886-887）。
 		return false, false
+	case ast.KindTypeAliasDeclaration, ast.KindInterfaceDeclaration:
+		// 局部类型声明擦除（纯类型零运行时；顶层同律；别名引用另步大声拒）。
+		return false, false
 	case ast.KindBlock:
 		// 裸块作语句（switch 臂 `{...}` / 独立 `{...}`）：块域 + 共享语句
 		// 全集；终结态经 saLowerArm 回传（封存 :847-852 pushScope + 逐语句
