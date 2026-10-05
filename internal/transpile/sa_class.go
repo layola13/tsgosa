@@ -1204,6 +1204,53 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(in
 	return true
 }
 
+// saAliasReady 报告别名是否可一次记（字面量目标的具名引用域须已入表，
+// 否则推迟到表齐后；非字面量/泛型/标量可定种域恒真，沿既有语义一次记）。
+func saAliasReady(st *ast.Node, classes map[string]*saClassDef) bool {
+	ta := st.AsTypeAliasDeclaration()
+	if ta == nil || ta.Type == nil {
+		return true
+	}
+	tgt := ta.Type
+	if tgt == nil || tgt.Kind != ast.KindTypeLiteral {
+		return true
+	}
+	if ta.TypeParameters != nil && len(ta.TypeParameters.Nodes) > 0 {
+		return true
+	}
+	lit := tgt.AsTypeLiteralNode()
+	if lit == nil || lit.Members == nil {
+		return true
+	}
+	for _, m := range lit.Members.Nodes {
+		if m == nil || m.Kind != ast.KindPropertySignature {
+			continue
+		}
+		fn := m.Name()
+		if fn == nil || fn.Kind != ast.KindIdentifier {
+			continue
+		}
+		pd := m.AsPropertySignatureDeclaration()
+		if pd == nil || pd.Type == nil {
+			continue
+		}
+		if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+			continue
+		}
+		if pd.Type.Kind != ast.KindTypeReference {
+			continue
+		}
+		ref := pd.Type.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			continue
+		}
+		if _, ok := classes[ref.TypeName.Text()]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
 // 形状证据：封存 layoutOfLiteral:8953-8975 + matchLayout 名集匹配）。
 func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, string) {

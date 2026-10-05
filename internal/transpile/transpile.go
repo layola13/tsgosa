@@ -1148,6 +1148,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	enums := map[string]map[string]int64{}
 	enumNonInt := map[string]map[string]bool{}
 	classes := map[string]*saClassDef{}
+	// 别名待记队列（嵌套引用前向声明时推迟到表齐后 fixpoint 补记，声明序无关）。
+	var pendingAlias []*ast.Node
 	// 跨文件 heritage 预播种（导入类布局须在本地记录期前可见；单文件 link
 	// 空零行为变；形状证据见 saPreseedImportedClasses）。
 	saPreseedImportedClasses(sf, classes, link)
@@ -1202,8 +1204,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			continue
 		}
 		if st.Kind == ast.KindTypeAliasDeclaration {
-			// 对象字面量别名入布局表（`type X = {...}`；余形擦除无码）。
-			saRecordTypeAlias(st, classes, pos, &refusals)
+			// 对象字面量别名入布局表（`type X = {...}`；余形擦除无码；
+			// 嵌套引用未齐先挂队，表齐后补记，声明序无关）。
+			if saAliasReady(st, classes) {
+				saRecordTypeAlias(st, classes, pos, &refusals)
+			} else {
+				pendingAlias = append(pendingAlias, st)
+			}
 			continue
 		}
 		if st.Kind == ast.KindEnumDeclaration {
@@ -1224,6 +1231,27 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			continue
 		}
+	}
+	// 别名 fixpoint 补记（前向嵌套引用待表齐；无进展即按既有回退语义记，
+	// 真未知引用落 arr 句柄，与单遍同形；cap 防环）。
+	for len(pendingAlias) > 0 {
+		progressed := false
+		var rest []*ast.Node
+		for _, st := range pendingAlias {
+			if saAliasReady(st, classes) {
+				saRecordTypeAlias(st, classes, pos, &refusals)
+				progressed = true
+			} else {
+				rest = append(rest, st)
+			}
+		}
+		if !progressed {
+			for _, st := range rest {
+				saRecordTypeAlias(st, classes, pos, &refusals)
+			}
+			break
+		}
+		pendingAlias = rest
 	}
 	// 预扫二：函数签名（形参种含实例注解，须类型表先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
