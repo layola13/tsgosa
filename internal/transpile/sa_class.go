@@ -1031,6 +1031,13 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 				case ast.KindTypeReference:
 					if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil && tn.TypeName.Kind == ast.KindIdentifier {
 						iname = tn.TypeName.Text()
+						// 泛型基具化（`extends Box<i32>` 按单态展平；不可具化
+						// 沿旧擦除；封存 instantiateLayout 继承位同形）。
+						if tn.TypeArguments != nil && len(tn.TypeArguments.Nodes) > 0 {
+							if lname, ok := saInstantiateIface(iname, tn.TypeArguments.Nodes, classes); ok {
+								iname = lname
+							}
+						}
 					}
 				case ast.KindIdentifier:
 					iname = el.Text()
@@ -1059,6 +1066,16 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 							def.fsub = map[string]string{}
 						}
 						def.fsub[f.name] = sub
+					}
+					// 模板节点透传（单态基除外：其 fdefs 为代入前原形，
+					// 缺节点时具化回退模板已算种，见 saInstantiateIface）。
+					if !base.isMono && base.fdefs != nil {
+						if fd, ok := base.fdefs[f.name]; ok && fd != nil {
+							if def.fdefs == nil {
+								def.fdefs = map[string]*ast.TypeNode{}
+							}
+							def.fdefs[f.name] = fd
+						}
 					}
 					sz, _ := saFieldWidth(fk)
 					off += sz
@@ -1447,7 +1464,15 @@ func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*s
 	classes[mangled] = def
 	off := 0
 	for _, f := range tmpl.fields {
-		fkind, sub := saSubstFieldKind(tmpl.fdefs[f.name], pmap, classes)
+		// 继承展平域无模板节点：沿模板已算种直用（fsub 同步）。
+		fkind, sub := tmpl.fkinds[f.name], tmpl.fsub[f.name]
+		if fkind == "" {
+			fkind = "i32"
+			sub = ""
+		}
+		if fd, ok := tmpl.fdefs[f.name]; ok && fd != nil {
+			fkind, sub = saSubstFieldKind(fd, pmap, classes)
+		}
 		off = saAlignOff(off, fkind)
 		def.fields = append(def.fields, saClassField{name: f.name, offset: off})
 		def.offsets[f.name] = off
