@@ -44,7 +44,8 @@ type saStaticVal struct {
 // fkinds 为字段种表，i32/str/arr/inst，句柄种 8 字节对齐；
 // fsub 为嵌套字段的子布局名（fkinds inst 时有效）；
 // tparams/fdefs 为泛型接口模板（具化前只存不用，单态实例另行派生）；
-// isMono 为单态派生布局（与用户声明名区分，防键碰撞静默复用）。
+// isMono 为单态派生布局（与用户声明名区分，防键碰撞静默复用）；
+// isSynth 为字面量合成布局（不参与键集匹配，保多命中拒不变）。
 type saClassDef struct {
 	name          string
 	fields        []saClassField
@@ -67,6 +68,7 @@ type saClassDef struct {
 	isIface       bool
 	isAbstract    bool
 	isMono        bool
+	isSynth       bool
 }
 
 // saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst 句柄 8/8；
@@ -1107,45 +1109,7 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 			continue
 		}
 		pd := m.AsPropertySignatureDeclaration()
-		fkind := "i32"
-		if pd.Type != nil {
-			// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
-			// string/arr 为句柄 8 字节槽；已记录接口名（TypeReference）为嵌套
-			// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；未记录用户类型
-			// （含泛型形参）落 arr 句柄槽；余下无槽，拒。
-			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
-				if k == "str" {
-					fkind = "str"
-				} else if k == "arr" {
-					fkind = "arr"
-				}
-			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
-				// 类/接口类型嵌套字段皆 8B 句柄（布局表同形；实例与接口对象皆句柄）。
-				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
-					fkind = "inst"
-					if def.fsub == nil {
-						def.fsub = map[string]string{}
-					}
-					def.fsub[fn.Text()] = sub.name
-				} else {
-					// 未记录用户类型（含泛型形参 `T`）落 ptr 句柄槽（8B；封存
-					// saNameOfType:197-199 用户类型皆 ptr 句柄 + recordLayout:9375
-					// `saname := saNameOfType(ftn)` 直映 + widthOf 默认 8,8；本仓句柄种为 arr）。
-					fkind = "arr"
-				}
-			} else if pd.Type.Kind == ast.KindUnionType {
-				// union-typed fields lower as ptr handle slots (cf class record).
-				fkind = "arr"
-			} else if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
-				// `any` fields lower as ptr handle slots (cf class record).
-				fkind = "arr"
-			} else {
-				// 余下类型（字面量/对象字面量/函数/元组等）皆落 ptr 句柄槽（8B；
-				// 形状证据：封存 saNameOfType:235-264 default 分支恒 "ptr" +
-				// widthOf:268-278 default 8,8；本仓句柄种为 arr，与未知引用同例）。
-				fkind = "arr"
-			}
-		}
+		fkind := saIfaceFieldKind(pd.Type, fn.Text(), def, classes)
 		if _, dup := def.offsets[fn.Text()]; dup {
 			// 基展平字段重声明：守基偏移（形状证据同类分支）。
 			if ownIface[fn.Text()] {
@@ -1172,6 +1136,146 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	}
 	def.size = off
 	classes[name] = def
+	return true
+}
+
+// saIfaceFieldKind 解接口域种（纯搬运原记录循环体，零语义变；新增一支：
+// 字面量目标递归合成匿名布局，合成失败沿旧门 arr）。
+// 形状证据：封存 saNameOfType:197-199 + recordLayout:9375 + widthOf 默认 8,8。
+func saIfaceFieldKind(ftn *ast.TypeNode, fname string, def *saClassDef, classes map[string]*saClassDef) string {
+	fkind := "i32"
+	if ftn == nil {
+		return fkind
+	}
+	// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
+	// string/arr 为句柄 8 字节槽；已记录接口名（TypeReference）为嵌套
+	// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；未记录用户类型
+	// （含泛型形参）落 arr 句柄槽；余下无槽，拒。
+	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+		if k == "str" {
+			fkind = "str"
+		} else if k == "arr" {
+			fkind = "arr"
+		}
+	} else if ftn.Kind == ast.KindTypeReference && ftn.AsTypeReferenceNode() != nil && ftn.AsTypeReferenceNode().TypeName != nil && ftn.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
+		// 类/接口类型嵌套字段皆 8B 句柄（布局表同形；实例与接口对象皆句柄）。
+		if sub, ok := classes[ftn.AsTypeReferenceNode().TypeName.Text()]; ok {
+			fkind = "inst"
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[fname] = sub.name
+		} else {
+			// 未记录用户类型（含泛型形参 `T`）落 ptr 句柄槽（8B；封存
+			// saNameOfType:197-199 用户类型皆 ptr 句柄 + recordLayout:9375
+			// `saname := saNameOfType(ftn)` 直映 + widthOf 默认 8,8；本仓句柄种为 arr）。
+			fkind = "arr"
+		}
+	} else if ftn.Kind == ast.KindTypeLiteral {
+		// 嵌套字面量目标递归合成匿名布局（Z1；合成失败沿旧门 arr）。
+		if sub, ok := saSynthAnonLayout(ftn, classes); ok {
+			fkind = "inst"
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[fname] = sub
+		} else {
+			fkind = "arr"
+		}
+	} else if ftn.Kind == ast.KindUnionType {
+		// union-typed fields lower as ptr handle slots (cf class record).
+		fkind = "arr"
+	} else if ftn.Kind == ast.KindAnyKeyword || ftn.Kind == ast.KindUnknownKeyword {
+		// `any` fields lower as ptr handle slots (cf class record).
+		fkind = "arr"
+	} else {
+		// 余下类型（字面量/对象字面量/函数/元组等）皆落 ptr 句柄槽（8B；
+		// 形状证据：封存 saNameOfType:235-264 default 分支恒 "ptr" +
+		// widthOf:268-278 default 8,8；本仓句柄种为 arr，与未知引用同例）。
+		fkind = "arr"
+	}
+	return fkind
+}
+
+// saSynthAnonLayout 由字面量目标合成匿名接口布局（名按域集派生 `Anon_a_b`，
+// 同名异种 `_2` 递加，全程确定性；同形复用，空域/坏形 false；合成布局记
+// isSynth，不参与键集匹配（保既有多命中拒不变），仅注解直命中可用）。
+func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	if ftn == nil || ftn.Kind != ast.KindTypeLiteral {
+		return "", false
+	}
+	lit := ftn.AsTypeLiteralNode()
+	if lit == nil || lit.Members == nil {
+		return "", false
+	}
+	var fields []string
+	fdefs := map[string]*ast.TypeNode{}
+	for _, m := range lit.Members.Nodes {
+		if m == nil || m.Kind != ast.KindPropertySignature {
+			continue
+		}
+		fn := m.Name()
+		if fn == nil || fn.Kind != ast.KindIdentifier {
+			continue
+		}
+		if _, dup := fdefs[fn.Text()]; dup {
+			continue
+		}
+		pd := m.AsPropertySignatureDeclaration()
+		if pd == nil || pd.Type == nil {
+			continue
+		}
+		fields = append(fields, fn.Text())
+		fdefs[fn.Text()] = pd.Type
+	}
+	if len(fields) == 0 {
+		return "", false
+	}
+	base := "Anon_" + saMonoName(strings.Join(fields, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if saAnonLayoutEqual(def, fields, fdefs, classes) {
+				return def.name, true
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}}
+		off := 0
+		for _, fname := range fields {
+			fkind := saIfaceFieldKind(fdefs[fname], fname, def, classes)
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			def.fdefs[fname] = fdefs[fname]
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def.name, true
+	}
+}
+
+// saAnonLayoutEqual 判定既有合成布局与给定域集同形（域数/域名/种全等；
+// 种按当前表重算后比对，表变化致异种即不复用，后缀另建）。
+func saAnonLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.TypeNode, classes map[string]*saClassDef) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	probe := &saClassDef{fsub: map[string]string{}}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		if saIfaceFieldKind(fdefs[fname], fname, probe, classes) != def.fkinds[fname] {
+			return false
+		}
+	}
 	return true
 }
 
@@ -1518,7 +1622,7 @@ func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, s
 func saMatchIfaceList(keys []string, classes map[string]*saClassDef) []*saClassDef {
 	var hits []*saClassDef
 	for _, def := range classes {
-		if !def.isIface || len(def.fields) != len(keys) {
+		if !def.isIface || def.isSynth || len(def.fields) != len(keys) {
 			continue
 		}
 		ok := true

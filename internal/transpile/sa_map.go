@@ -187,6 +187,13 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 	if k, ok := saAnnotKind(ref.TypeArguments.Nodes[1]); ok && (k == "i32" || k == "bool") {
 		return "i32", true
 	}
+	if ref.TypeArguments.Nodes[1] != nil && ref.TypeArguments.Nodes[1].Kind == ast.KindTypeLiteral {
+		// 匿名对象值合成布局（Z1；合成失败沿旧门）。
+		if lname, ok := saSynthAnonLayout(ref.TypeArguments.Nodes[1], classes); ok {
+			return "inst:" + lname, true
+		}
+		return "", false
+	}
 	if ref.TypeArguments.Nodes[1] != nil && ref.TypeArguments.Nodes[1].Kind == ast.KindTypeReference {
 		if aref := ref.TypeArguments.Nodes[1].AsTypeReferenceNode(); aref != nil && aref.TypeName != nil && aref.TypeName.Kind == ast.KindIdentifier {
 			if def, ok := classes[aref.TypeName.Text()]; ok && def.isIface {
