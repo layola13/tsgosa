@@ -1618,6 +1618,10 @@ func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos
 		if msg != "" {
 			return "", msg
 		}
+		// 长度记种检查（串/实例句柄禁作分配长；指针×4 即爆内存；铁律 4）。
+		if msg := saCheckI32Value(scope, v); msg != "" {
+			return "", msg
+		}
 		return saNewSizedArray(w, v, nextTemp), ""
 	}
 	h := saNewEmptyArray(w, nextTemp)
