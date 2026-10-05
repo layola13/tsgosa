@@ -981,6 +981,16 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 			return len(k) > 5 && k[:5] == "inst:"
 		}
 	}
+	if e != nil && e.Kind == ast.KindElementAccessExpression {
+		// map 索引基（值种 inst 即实例；封存 layoutOfNode 调用位同形）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[ea.Expression.Text()]; ok && k == "map" {
+				if vk, ok := scope.mapVals[ea.Expression.Text()]; ok {
+					return len(vk) > 5 && vk[:5] == "inst:"
+				}
+			}
+		}
+	}
 	return false
 }
 
@@ -2094,6 +2104,25 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[o.fname], v))
 	}
 	return h, def.name, ""
+}
+
+// saInstBaseElem 解析 map 索引实例基（`m["a"].x`；索引经 get 脱糖，结果
+// temp 按建表值种记 `inst:T`；非 map 索引/错种沿旧门大声拒，永不空-def-无-msg）。
+func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
+	if e == nil || e.Kind != ast.KindElementAccessExpression {
+		return "", nil, "not a map index base"
+	}
+	op, msg := saLowerIndexLoadExpr(w, e.AsElementAccessExpression(), scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", nil, msg
+	}
+	if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
+		if def, ok := scope.classes[k[5:]]; ok {
+			return op, def, ""
+		}
+		return "", nil, "unknown class " + k[5:]
+	}
+	return "", nil, "map index did not yield an instance"
 }
 
 func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {

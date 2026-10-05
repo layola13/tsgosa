@@ -2427,6 +2427,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if msg != "" {
 				return "", msg
 			}
+			// map 索引实例基（`m["a"].x`；saInstBase 只认标识符/this）。
+			if def == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
+				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+			}
+			if def == nil {
+				return "", "instance base did not resolve to a recorded layout"
+			}
 			fname := pa.Name().Text()
 			if strings.HasPrefix(fname, "#") {
 				key, msg := saPrivResolve(def, fname, scope.thisClass)

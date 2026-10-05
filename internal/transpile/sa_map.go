@@ -3,7 +3,6 @@ package transpile
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
@@ -97,8 +96,9 @@ func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fu
 	return slice, ""
 }
 
-// saLowerMapIndexLoad lowering `m[k]` 读（脱糖为 map-get；值恒 i32，与
-// `.get(k)` 同形同值；上游 `m[k]` 系数组地址错码，禁照抄，见铁律 4）。
+// saLowerMapIndexLoad lowering `m[k]` 读（脱糖为 map-get；值种按建表记
+// （`Record<string,T>` 具化表，无表恒 i32，与 `.get(k)` 同形同值）；上游
+// `m[k]` 系数组地址错码，禁照抄，见铁律 4）。
 func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	scope.addImport("sa_std/btree_map.sa")
 	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
@@ -109,6 +109,11 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
 	saOwnTemp(scope, t)
+	vkind := scope.mapVals[recv]
+	if vkind == "" {
+		vkind = "i32"
+	}
+	scope.types[t] = vkind
 	return t, ""
 }
 
@@ -128,33 +133,50 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 	return ""
 }
 
-// saRecordValueKind 认 `Record<string, T>` 值种（仅 i32/bool 值可落 Map
-// i32 槽；串/对象/余下一律 false 沿旧门）。
-func saRecordValueKind(t *ast.TypeNode) bool {
+// saSetMapVal records a map handle value kind (lazy table; nil-safe reads).
+func saSetMapVal(scope *saScope, name, vkind string) {
+	if scope.mapVals == nil {
+		scope.mapVals = map[string]string{}
+	}
+	scope.mapVals[name] = vkind
+}
+
+// saRecordValueKind 认 `Record<string, T>` 值种（T 经 `saAnnotKind` i32/bool
+// 即 `"i32"`；具名接口即 `"inst:T"`；余形 false 沿旧门）。
+func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
 	if t == nil || t.Kind != ast.KindTypeReference {
-		return false
+		return "", false
 	}
 	ref := t.AsTypeReferenceNode()
 	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
-		return false
+		return "", false
 	}
 	if ref.TypeName.Text() != "Record" {
-		return false
+		return "", false
 	}
 	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
-		return false
+		return "", false
 	}
 	if ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[0].Kind != ast.KindStringKeyword {
-		return false
+		return "", false
 	}
-	k, ok := saAnnotKind(ref.TypeArguments.Nodes[1])
-	return ok && (k == "i32" || k == "bool")
+	if k, ok := saAnnotKind(ref.TypeArguments.Nodes[1]); ok && (k == "i32" || k == "bool") {
+		return "i32", true
+	}
+	if ref.TypeArguments.Nodes[1] != nil && ref.TypeArguments.Nodes[1].Kind == ast.KindTypeReference {
+		if aref := ref.TypeArguments.Nodes[1].AsTypeReferenceNode(); aref != nil && aref.TypeName != nil && aref.TypeName.Kind == ast.KindIdentifier {
+			if def, ok := classes[aref.TypeName.Text()]; ok && def.isIface {
+				return "inst:" + def.name, true
+			}
+		}
+	}
+	return "", false
 }
 
-// saLowerRecordLiteral lowering `const m: Record<string,i32> = {a: 1}`
-// （Map 具化 + 逐键 insert；键须标识/串字面量，值须 i32；方法/spread/
-// 计算键/非 i32 值沿旧门大声拒）。
-func saLowerRecordLiteral(w printer.EmitTextWriter, name string, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+// saLowerRecordLiteral lowering `const m: Record<string,T> = {a: v}`
+// （Map 具化 + 逐键 insert；i32 值经求值，具名接口值经该布局现场构造或
+// 同布局绑定直传；方法/spread/计算键/错种值沿旧门大声拒）。
+func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	ol := n.AsObjectLiteralExpression()
 	h, msg := saLowerMapNew(w, "Map", nil, scope, nextTemp)
 	if msg != "" {
@@ -164,10 +186,11 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name string, n *ast.Node, sc
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 	scope.types[name] = "map"
+	saSetMapVal(scope, name, vkind)
 	saConsumeOwn(scope, h)
 	saDeclareOwned(scope, name)
 	for _, p := range ol.Properties.Nodes {
-		var fname, keyText string
+		var fname string
 		var init *ast.Node
 		switch p.Kind {
 		case ast.KindPropertyAssignment:
@@ -193,13 +216,40 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name string, n *ast.Node, sc
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object literal property is not lowerable (methods refused)"})
 			return false
 		}
-		keyText = strconv.Quote(fname)
-		kh := saLowerStringLiteral(w, keyText, scope, nextTemp)
-		v, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			ln, col := pos(p.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-			return false
+		kh := saLowerStringLiteral(w, fname, scope, nextTemp)
+		var v string
+		if vkind == "i32" {
+			var msg string
+			v, msg = saEvalI32(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+		} else {
+			want := vkind[5:]
+			if init != nil && init.Kind == ast.KindObjectLiteralExpression {
+				lh, lname, msg := saLowerObjectLiteral(w, init, want, scope, pos, refusals, nextTemp)
+				if msg != "" || lname != want {
+					ln, col := pos(p.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "record value does not match interface " + want})
+					return false
+				}
+				// 值柄留归属（尾声释放，序在 map 之前，体后无读，sound；
+				// consume 会致 map 仍引用而 verifier 报漏）。
+				v = lh
+			} else if init != nil && init.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[init.Text()]; !ok || k != vkind {
+					ln, col := pos(p.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "record value does not match interface " + want})
+					return false
+				}
+				v = init.Text()
+			} else {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "record value does not match interface " + want})
+				return false
+			}
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", name, kh, v))
 	}

@@ -2626,6 +2626,9 @@ type saScope struct {
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr       map[string]bool
+	// mapVals records map handle value kinds ("i32" default; "inst:T" for
+	// Record<string,T> constructions; reads bind result temps accordingly).
+	mapVals      map[string]string
 	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)
 	importRemote map[string]string // import alias remote names (local -> remote; cf importedRemote)
 	// Program-link environment (nil-equivalent when empty; single-file lowering
