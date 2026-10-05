@@ -19,4 +19,12 @@ it.each([
 test.each([])("empty", () => {
   expect(1).toBe(1);
 });
+describe.each([
+  [1, 2, 3],
+  [4, 5, 9],
+])("sums", (a: number, b: number, expected: number) => {
+  test("adds", () => {
+    expect(a + b).toBe(expected);
+  });
+});
 console.log(11);

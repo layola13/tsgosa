@@ -958,11 +958,19 @@ func saEachCellKind(v *ast.Node) (string, bool) {
 // 行字面量表逐行内联顺序执行，fail-fast，与注册体同口径；标题仅验形不落字）。
 // 行：数组字面量行（N 元）或标量行（回调单参）；元须 i32/str 字面量且列种
 // 一致；回调形参裸标识符，注解须与列种一致；空表零例通过。
-func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *ast.Node, title *ast.Node, fn *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
-	fail := func(msg string) (bool, bool) {
+// saEachRow 为 each 一行（字面量值 + 绑定种）。
+type saEachRow struct {
+	vals  []*ast.Node
+	kinds []string
+}
+
+// saParseEachTable 解析 each 表与标题（字面量表 + 串标题 + 等宽 + 列种一致；
+// 纯判定零发射；空表零行宽 0）。
+func saParseEachTable(s *ast.Node, base string, table *ast.Node, title *ast.Node, pos func(int) (int, int), refusals *[]SARefusal) (rows []saEachRow, width int, ok bool) {
+	fail := func(msg string) ([]saEachRow, int, bool) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-		return true, false
+		return nil, 0, false
 	}
 	if table == nil || table.Kind != ast.KindArrayLiteralExpression {
 		return fail(base + ".each table must be an array literal")
@@ -974,12 +982,7 @@ func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *
 	if al := table.AsArrayLiteralExpression(); al != nil && al.Elements != nil {
 		elems = al.Elements.Nodes
 	}
-	type rowT struct {
-		vals  []*ast.Node
-		kinds []string
-	}
-	var rows []rowT
-	width := -1
+	width = -1
 	for _, r := range elems {
 		var vals []*ast.Node
 		if r != nil && r.Kind == ast.KindArrayLiteralExpression {
@@ -1003,24 +1006,24 @@ func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *
 			}
 			kinds[i] = k
 		}
-		rows = append(rows, rowT{vals: vals, kinds: kinds})
+		rows = append(rows, saEachRow{vals: vals, kinds: kinds})
 	}
 	if width < 0 {
 		width = 0
 	}
-	colKinds := make([]string, width)
 	for c := 0; c < width; c++ {
-		colKinds[c] = rows[0].kinds[c]
 		for _, r := range rows[1:] {
-			if r.kinds[c] != colKinds[c] {
+			if r.kinds[c] != rows[0].kinds[c] {
 				return fail(base + ".each column kinds must be consistent")
 			}
 		}
 	}
-	body, pnames, ok := saCheckEachCallback(fn, width, colKinds, base, s, pos, refusals)
-	if !ok {
-		return true, false
-	}
+	return rows, width, true
+}
+
+// saLowerEachRows 行绑定 + 逐行体内联（fail-fast；体 lowering 由调用方注入：
+// test 族经 hooks，describe 经 describe 内联； bindings 逐行域隔离）。
+func saLowerEachRows(w printer.EmitTextWriter, s *ast.Node, rows []saEachRow, body *ast.Node, pnames []string, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, lowerBody func(body *ast.Node) bool) (bool, bool) {
 	for _, r := range rows {
 		saved := saScopeEnter(scope)
 		caseOK := true
@@ -1043,7 +1046,7 @@ func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *
 			saStoreLocal(w, pnames[c], op, scope, nextTemp)
 		}
 		if caseOK {
-			if !saInlineTestWithHooks(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			if !lowerBody(body) {
 				caseOK = false
 			}
 		}
@@ -1054,6 +1057,46 @@ func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *
 		}
 	}
 	return true, true
+}
+
+func saLowerTestEach(w printer.EmitTextWriter, s *ast.Node, base string, table *ast.Node, title *ast.Node, fn *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	rows, width, ok := saParseEachTable(s, base, table, title, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	var kinds []string
+	if len(rows) > 0 {
+		kinds = rows[0].kinds
+	}
+	body, pnames, ok := saCheckEachCallback(fn, width, kinds, base, s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	return saLowerEachRows(w, s, rows, body, pnames, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp,
+		func(b *ast.Node) bool {
+			return saInlineTestWithHooks(w, b, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		})
+}
+
+// saLowerDescribeEach lowering `describe.each(table)(title, fn)`（行复用
+// test.each 核，体经 describe 内联；嵌套 test 照常注册）。
+func saLowerDescribeEach(w printer.EmitTextWriter, s *ast.Node, table *ast.Node, title *ast.Node, fn *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	rows, width, ok := saParseEachTable(s, "describe", table, title, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	var kinds []string
+	if len(rows) > 0 {
+		kinds = rows[0].kinds
+	}
+	body, pnames, ok := saCheckEachCallback(fn, width, kinds, "describe", s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	return saLowerEachRows(w, s, rows, body, pnames, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp,
+		func(b *ast.Node) bool {
+			return saInlineDescribeBody(w, b, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		})
 }
 
 // saLowerEachOuter 分发外层 `test.each(table)(title, fn)`（`it.each` 同；
@@ -1083,14 +1126,6 @@ func saLowerEachOuter(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpress
 	if !saIsUnresolvedTestName(scope, base) {
 		return false, false
 	}
-	if base == "describe" {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "describe.each is not lowerable yet"})
-		return true, false
-	}
-	if !saIsUnresolvedTestName(scope, base) {
-		return false, false
-	}
 	var targs []*ast.Node
 	if inner.Arguments != nil {
 		targs = inner.Arguments.Nodes
@@ -1101,6 +1136,9 @@ func saLowerEachOuter(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpress
 	}
 	if len(targs) != 1 || len(oargs) != 2 {
 		return fail(base + ".each takes a table and (title, callback)")
+	}
+	if base == "describe" {
+		return saLowerDescribeEach(w, s, targs[0], oargs[0], oargs[1], isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	}
 	return saLowerTestEach(w, s, base, targs[0], oargs[0], oargs[1], isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 }
@@ -1220,12 +1258,8 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		if !saIsUnresolvedTestName(scope, base) {
 			return false, false
 		}
-		// 内层 `test.each(table)` 单独成句无意义（须续接 `(title, fn)`）；
-		// `describe.each` 另步。
+		// 内层 `.each(table)` 单独成句无意义（须续接 `(title, fn)`）。
 		if prop == "each" {
-			if base == "describe" {
-				return fail("describe.each is not lowerable yet")
-			}
 			return fail(base + ".each(table) needs (title, callback)")
 		}
 		if prop != "only" && prop != "skip" && prop != "todo" {

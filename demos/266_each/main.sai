@@ -93,26 +93,44 @@ L_exp_fail_13:
 L_exp_ok_14:
   !sub
   !s
-  t_25 = sext 11 as i64
-  t_26 = alloc 64
-  t_27 = alloc 8
-  t_28 = call @sa_fmt_i64_into(t_25, 10, t_26, 64, &t_27)
-  t_29 = load t_27 + 0 as u64
-  t_30 = alloc 16
-  store t_30 + 0, t_26 as ptr
-  store t_30 + 8, t_29 as u64
-  !t_28
-  t_31 = load t_30 + 0 as ptr
-  t_32 = load t_30 + 8 as u64
-  call @sa_print_bytes(&t_31, t_32)
+  a = 1
+  b = 2
+  expected = 3
+  t_25 = add a, b
+  t_26 = ne t_25, expected
+  br t_26 -> L_exp_fail_15, L_exp_ok_16
+L_exp_fail_15:
+  panic(2501)
+L_exp_ok_16:
+  a = 4
+  b = 5
+  expected = 9
+  t_27 = add a, b
+  t_28 = ne t_27, expected
+  br t_28 -> L_exp_fail_17, L_exp_ok_18
+L_exp_fail_17:
+  panic(2501)
+L_exp_ok_18:
+  t_29 = sext 11 as i64
+  t_30 = alloc 64
+  t_31 = alloc 8
+  t_32 = call @sa_fmt_i64_into(t_29, 10, t_30, 64, &t_31)
+  t_33 = load t_31 + 0 as u64
+  t_34 = alloc 16
+  store t_34 + 0, t_30 as ptr
+  store t_34 + 8, t_33 as u64
+  !t_32
+  t_35 = load t_34 + 0 as ptr
+  t_36 = load t_34 + 8 as u64
+  call @sa_print_bytes(&t_35, t_36)
+  !t_34
+  t_37 = alloc 16
+  store t_37 + 0, &str_const_4 as ptr
+  store t_37 + 8, 1 as u64
+  t_38 = load t_37 + 0 as ptr
+  t_39 = load t_37 + 8 as u64
+  call @sa_print_bytes(&t_38, t_39)
+  !t_37
+  !t_31
   !t_30
-  t_33 = alloc 16
-  store t_33 + 0, &str_const_4 as ptr
-  store t_33 + 8, 1 as u64
-  t_34 = load t_33 + 0 as ptr
-  t_35 = load t_33 + 8 as u64
-  call @sa_print_bytes(&t_34, t_35)
-  !t_33
-  !t_27
-  !t_26
   ret 0
