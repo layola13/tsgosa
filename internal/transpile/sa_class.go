@@ -2284,6 +2284,172 @@ func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	return "", nil, "map index did not yield an instance"
 }
 
+// saEvalInstOperand 求实例操作数句柄（标识符/下标/调用/字段链读；返回柄+种）：
+// 复用既有读位（saInstBaseElem/saEvalCall/saEvalI32 字段链），只收 inst 记种，
+// 非实例沿旧门大声拒；供通用空合槽与条件位同行分支共用（封存 lowerBinary:3182-3206 槽形）。
+func saEvalInstOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	u := saUnwrapTransparent(e)
+	if u != nil && u.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[u.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			if _, ok := scope.classes[k[5:]]; !ok {
+				return "", "", "unknown class " + k[5:]
+			}
+			return u.Text(), k, ""
+		}
+		return "", "", "not an instance operand"
+	}
+	if saCouldBeInst(u, scope) {
+		h, def, msg := saInstBaseElem(w, u, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		if def == nil {
+			return "", "", "instance base did not resolve to a recorded layout"
+		}
+		if k, ok := scope.types[h]; ok && len(k) > 5 && k[:5] == "inst:" {
+			return h, k, ""
+		}
+		return "", "", "map index did not yield an instance"
+	}
+	if u != nil && u.Kind == ast.KindPropertyAccessExpression {
+		op, msg := saEvalI32(w, u, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
+			return op, k, ""
+		}
+		return "", "", "not an instance operand"
+	}
+	return "", "", "not an instance operand"
+}
+
+// saLowerNullishInst 通用实例空合槽（左右皆同布局实例则右惰性，或右为空字面量；
+// 槽形镜像 saLowerNullish/saLowerNullishInstNull，值宽按 ptr；异布局/非实例大声拒）。
+func saLowerNullishInst(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	l, lkind, msg := saEvalInstOperand(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	isNullRight := false
+	if be.Right != nil {
+		switch be.Right.Kind {
+		case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+			isNullRight = true
+		}
+		if !isNullRight && be.Right.Kind == ast.KindIdentifier && be.Right.Text() == "undefined" {
+			if _, ok := scope.types["undefined"]; !ok {
+				isNullRight = true
+			}
+		}
+	}
+	var r, rkind string
+	if isNullRight {
+		r = "0"
+		rkind = lkind
+	} else {
+		var m string
+		r, rkind, m = saEvalInstOperand(w, be.Right, scope, pos, refusals, nextTemp)
+		if m != "" {
+			return "", m
+		}
+		if rkind != lkind {
+			return "", "instance nullish arms must share a layout (or use null fallback)"
+		}
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	tL := fmt.Sprintf("L_null_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_null_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_null_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[out] = lkind
+	saOwnTemp(scope, out)
+	return out, ""
+}
+
+// saIsNullLit 报告空字面量（null/undefined（含未绑定标识符）；子集皆 0 句柄）。
+func saIsNullLit(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	case ast.KindIdentifier:
+		if e.Text() == "undefined" {
+			if _, ok := scope.types["undefined"]; !ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// saIsInstOperandSyntax 无发射预判实例操作数形状（标识符 inst 种/下标·调用 saCouldBeInst/
+// 字段链已知 inst 域；供 ?? 分发先行选路，禁误吞 i32 串 sound 形）。
+func saIsInstOperandSyntax(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return false
+	}
+	if u.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[u.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			return true
+		}
+		return false
+	}
+	if saCouldBeInst(u, scope) {
+		return true
+	}
+	if u.Kind == ast.KindPropertyAccessExpression {
+		pa := u.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil {
+			return false
+		}
+		fname := pa.Name().Text()
+		// 直接基为具名实例：查布局字段种。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if def, ok := scope.classes[k[5:]]; ok {
+					if fk, ok := def.fkinds[fname]; ok && fk == "inst" {
+						return true
+					}
+				}
+			}
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+			if def, ok := scope.classes[scope.thisClass]; ok {
+				if fk, ok := def.fkinds[fname]; ok && fk == "inst" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 	if e != nil && e.Kind == ast.KindThisKeyword {
 		if scope.thisSelf == "" {

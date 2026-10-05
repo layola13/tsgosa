@@ -680,6 +680,29 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareOwned(scope, name)
 			return true
 		}
+		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindQuestionQuestionToken &&
+			saIsInstOperandSyntax(be.Left, scope) &&
+			(saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
+			// 无注解空合推断（实例臂即实例；与三元分支同形，槽宽按 ptr）。
+			h, msg := saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			if k, ok := scope.types[h]; ok && len(k) > 5 && k[:5] == "inst:" {
+				scope.types[name] = k
+			} else {
+				scope.types[name] = "i32"
+			}
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			saCopyInstFn(scope, h, name)
+			saPropArrNest(scope, h, name)
+			return true
+		}
 	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {

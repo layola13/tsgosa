@@ -87,6 +87,28 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		return "1", ""
 	case ast.KindFalseKeyword:
 		return "0", ""
+	case ast.KindBinaryExpression:
+		// 条件位实例空合同行（`if (a ?? b)`/`while (M[k] ?? null)`：柄非零即真；
+		// 与值位同槽同形；须与 sound 形（i32/串拒）同行先判，否则误拒）。
+		if be := cond.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+			if saIsInstOperandSyntax(be.Left, scope) && (saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
+				op, msg := saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return op, ""
+			}
+		}
+		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		// 串值条件禁入（空串 falsy 而头指针恒真；与串绑定同门；实例沿直通口径）。
+		if k, ok := scope.types[op]; ok && k == "str" {
+			return "", "string value in condition"
+		}
+		return op, ""
 	default:
 		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -2940,6 +2962,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
 			// `??` 空合槽须先于串门（i32 位，右惰性；串臂走串槽，i32 位大声拒，
 			// 禁串句柄误作整数，铁律 4 高于同形）。
+			// 实例空合同行：同布局双实例或左实例+空右臂走 ptr 通用槽（与返回位同形）。
+			if saIsInstOperandSyntax(be.Left, scope) && (saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
+				return saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
+			}
+			// 混合臂禁入 i32 槽（实例句柄误作整数即静默错码；与串门同形大声拒）。
+			if saIsInstOperandSyntax(be.Left, scope) || saIsInstOperandSyntax(be.Right, scope) ||
+				saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {
+				return "", "instance nullish arms must share a layout (or use null fallback)"
+			}
 			if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
 				return "", "string value in i32 expression"
 			}
