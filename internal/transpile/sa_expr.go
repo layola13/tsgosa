@@ -612,7 +612,76 @@ func saLowerTernaryF64Join(w printer.EmitTextWriter, condOp, aKind, aText, bKind
 	return res
 }
 
+// saDeclaredAt 报告 binder 是否在该位置解出名字（值/类型/import 统算可见；
+// 无 ctx 一律 false。形状证据：封存 declaredAt:205-219）。
+func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
+	if tcx == nil || tcx.check == nil || n == nil {
+		return false
+	}
+	found := false
+	func() {
+		defer func() { _ = recover() }()
+		if sym := tcx.check.GetSymbolAtLocation(n); sym != nil {
+			found = true
+		}
+	}()
+	return found
+}
+
+// saEnvProbeArm 折叠 `typeof U ===/!== "undefined" ? A : B`（任一操作数序）
+// 为被取臂：U 须为 binder 不可见标识符（SA 无环境全局；tcx 缺席不折，
+// 封存 envProbeArm:188-210 + splitTypeofCompare:120-151）。已声明名、
+// 非标识/非三元形一律 false，调用方走既有 lowering 与拒因。
+func saEnvProbeArm(ce *ast.ConditionalExpression, tcx *saTypeCtx) (*ast.Node, bool) {
+	if ce == nil || ce.Condition == nil || ce.Condition.Kind != ast.KindBinaryExpression {
+		return nil, false
+	}
+	be := ce.Condition.AsBinaryExpression()
+	neg := false
+	switch saBinaryOpKind(be) {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		neg = true
+	default:
+		return nil, false
+	}
+	var typeOp, litNode *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindTypeOfExpression {
+			typeOp = side
+		}
+		if side != nil && side.Kind == ast.KindStringLiteral {
+			litNode = side
+		}
+	}
+	if typeOp == nil || litNode == nil || litNode.Text() != "undefined" {
+		return nil, false
+	}
+	inner := typeOp.AsTypeOfExpression().Expression
+	if inner == nil || inner.Kind != ast.KindIdentifier {
+		return nil, false
+	}
+	// binder 权威：无 ctx 或可解出一律不折（语法 fallback 会发明事实）。
+	if tcx == nil || saDeclaredAt(tcx, inner) {
+		return nil, false
+	}
+	if !neg {
+		return ce.WhenTrue, true
+	}
+	return ce.WhenFalse, true
+}
+
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
+	// env-probe 折叠：未声明名 `typeof` 三元取臂直值（i32 经求值核，串经串核；
+	// 异形臂下探既有 lowering，原拒因不变）。
+	if arm, ok := saEnvProbeArm(ce, scope.tcx); ok {
+		if op, msg := saEvalI32(w, arm, scope, pos, refusals, nextTemp); msg == "" {
+			return op, false, ""
+		}
+		if sv, msg := saEvalStr(w, arm, scope, pos, refusals, nextTemp); msg == "" {
+			return sv, true, ""
+		}
+	}
 	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(where.Pos())
