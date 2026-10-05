@@ -44,6 +44,22 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 	}
 	base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		// Map 种基走 set 脱糖（`m[k] = v` ≡ `m.set(k, v)`；Set 无键值拒）。
+		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[ea.Expression.Text()]; ok && (k == "map" || k == "set") {
+				if k == "set" {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Set index stores need .add (no keyed values)"})
+					return false
+				}
+				if msg := saLowerMapIndexStore(w, ea.Expression.Text(), ea.ArgumentExpression, be.Right, scope, pos, refusals, nextTemp); msg != "" {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				return true
+			}
+		}
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
 		return false
@@ -75,6 +91,14 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 		}
 		base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {
+			// Map/Set 种基复合写须读改写回，另步；此处大声拒（禁数组错码）。
+			if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[ea.Expression.Text()]; ok && (k == "map" || k == "set") {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "map compound stores need read-modify-write (not lowerable)"})
+					return false
+				}
+			}
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
 			return false
