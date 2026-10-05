@@ -1899,7 +1899,19 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 				return a.Text(), ""
 			}
 		}
-		return saEvalBool(w, a, scope, pos, refusals, nextTemp)
+		op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		// 非标识符实参的结果记种检查（串/实例句柄禁入 i32 位；标识符直传
+		// 沿上口径；读位只建种不验种，验种在此；铁律 4）。
+		if k, ok := scope.types[op]; ok && (k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+			if k == "str" {
+				return "", "string value in i32 expression"
+			}
+			return "", "instance value in i32 expression"
+		}
+		return op, ""
 	}
 	if ce.Arguments != nil {
 		nodes := ce.Arguments.Nodes
