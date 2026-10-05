@@ -2363,6 +2363,18 @@ func saUnionInstKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef) (str
 			}
 			return "", false
 		}
+		if m.Kind == ast.KindTypeLiteral {
+			// 匿名对象成员合成布局（`{unit,verb}|null` 即合成接口布局；
+			// 与 Record 匿名对象值 190-196 同形；合成失败沿旧门）。
+			if lname, ok := saSynthAnonLayout(m, classes); ok {
+				if found != "" {
+					return "", false
+				}
+				found = "inst:" + lname
+				continue
+			}
+			return "", false
+		}
 		if m.Kind != ast.KindTypeReference {
 			return "", false
 		}
