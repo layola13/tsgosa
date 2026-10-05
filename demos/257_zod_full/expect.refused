@@ -1,0 +1,8 @@
+# 地狱 zod 全语法预期拒收指纹（`tsgo build` 必拒且行全中；改编译器拒因须同步改此档）
+# 三重 verdict：tsc 5.9.3 报 5 错（deepPartial 不存在/addIssue 缺 origin/function().args 不存在/merge 两处），
+# node/bun 加载即崩（`deepPartial is not a function`，testAll 永不到），故无 expected.stdout。
+# 薄口与上游双边大声拒、零 panic（QualifiedName/泛型早经 step152/186/203 加固）。
+step2 refuses kind 244 (only top-level functions)
+unsupported initializer: only direct function calls lowerable
+is not resolvable (bare third-party imports are Phase 3
+refused: resolve subset-report.txt before running sh build.sh
