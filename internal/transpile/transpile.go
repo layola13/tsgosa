@@ -3006,6 +3006,13 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		}
 		return false, false
 	case ast.KindExpressionStatement:
+		// 测试注册调用就地内联（test/describe/it + 箭头体；未命中沿旧路）。
+		if handled, ok := saLowerTestRegistration(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
+			if !ok {
+				return false, true
+			}
+			return false, false
+		}
 		if !saLowerExprStmt(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
 		}

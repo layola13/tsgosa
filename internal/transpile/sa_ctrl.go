@@ -382,6 +382,150 @@ func saLowerLogicAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scop
 	return out, ""
 }
 
+// saContainsReturn 报告子树是否含 return（函数边界重置；内联进调用方后
+// return 会逃出外层函数，故注册回调体一律禁 return；镜像 saContainsThrow）。
+func saContainsReturn(n *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		if x.Kind == ast.KindReturnStatement {
+			found = true
+			return
+		}
+		switch x.Kind {
+		case ast.KindFunctionDeclaration, ast.KindArrowFunction,
+			ast.KindFunctionExpression, ast.KindClassDeclaration:
+			return
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
+// saIsTestRegistrationName 报告未解析的测试注册名（test/describe/it；已解析
+// 的同名函数/别名/导入沿旧路，禁劫持）。
+func saIsTestRegistrationName(scope *saScope, name string) bool {
+	if name != "test" && name != "describe" && name != "it" {
+		return false
+	}
+	if scope == nil {
+		return true
+	}
+	if _, ok := scope.funcs[name]; ok {
+		return false
+	}
+	if k, ok := scope.types[name]; ok && len(k) > 3 && k[:3] == "fn:" {
+		return false
+	}
+	if _, ok := scope.mathAlias[name]; ok {
+		return false
+	}
+	if _, ok := scope.linkResolve[name]; ok {
+		return false
+	}
+	if _, ok := scope.imports[name]; ok {
+		return false
+	}
+	return true
+}
+
+// saLowerTestRegistration lowering 测试注册调用（`test/describe/it("name", () => {...})`
+// 箭头体就地内联顺序执行；fail-fast，无隔离；用户 mandate 全量测试框架 track 2）。
+// 形状：未解析名 + 双参（静态串名 + 零参箭头/函数表达式块体/表达式体）；体禁 return
+// （内联后逃出外层）；describe 嵌套经语句分发递归。返回（接管，成功）。
+func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindIdentifier {
+		return false, false
+	}
+	name := callee.Text()
+	if !saIsTestRegistrationName(scope, name) {
+		return false, false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 2 {
+		return fail(name + " takes a name and a callback (2 arguments)")
+	}
+	if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(name + " name must be a string literal")
+	}
+	fn := argNodes[1]
+	if fn == nil || (fn.Kind != ast.KindArrowFunction && fn.Kind != ast.KindFunctionExpression) {
+		return fail(name + " callback must be an arrow or function expression")
+	}
+	if len(fn.Parameters()) != 0 {
+		return fail(name + " callback takes no parameters")
+	}
+	body := fn.Body()
+	if body == nil {
+		return fail(name + " callback has no body")
+	}
+	if saContainsReturn(body) {
+		return fail(name + " body must not return (use assertions)")
+	}
+	if body.Kind != ast.KindBlock {
+		if body.Kind == ast.KindCallExpression {
+			if _, _, msg := saEvalCall(w, body.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
+				return fail(msg)
+			}
+			return true, true
+		}
+		if _, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp); msg != "" {
+			return fail(msg)
+		}
+		return true, true
+	}
+	stmts, ok := saBlockStmts(body)
+	if !ok {
+		return fail("unsupported " + name + " body")
+	}
+	// 回调体自带块域（箭头内局部名不外泄；直驱语句循环以保本域记账可见，
+	// saLowerArm 内置 exit 会提前裁掉记账致出口扫尾看不见；出口扫尾释本域归属，
+	// 否则顶层合成 @main 无函数尾声扫尾即 MemoryLeak）。
+	saved := saScopeEnter(scope)
+	terminated := false
+	armOK := true
+	for _, st := range stmts {
+		if terminated {
+			continue
+		}
+		done, failed := saLowerStmt(w, st, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if failed {
+			armOK = false
+			break
+		}
+		if done {
+			terminated = true
+		}
+	}
+	saReleaseDeeperThan(w, scope, saved.owned)
+	saScopeExit(scope, saved)
+	if !armOK {
+		return true, false
+	}
+	return true, true
+}
+
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
 // （`x = <i32>`，x 须已绑定；复合/短路赋分流）。其余一律大声拒。
 func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
