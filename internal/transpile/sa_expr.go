@@ -417,6 +417,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 					}
 				}
 			}
+			// `?.` 方法守卫（`b.m?.()`/`b?.m()` 空基即 0；串返回/未知方法沿旧直调门；
+			// 回调表已在上分支直通。封存 lowerGuardedCall:4108 槽形）。
+			if pa.Name() != nil && (ce.QuestionDotToken != nil || pa.QuestionDotToken != nil) {
+				if mn, ok := def.methods[pa.Name().Text()]; ok {
+					if k, kok := saMethodReturnKind(mn); !kok || k != "str" {
+						op, msg := saLowerGuardedMethodCall(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", false, msg
+						}
+						return op, false, ""
+					}
+				}
+			}
 			op, msg := saInlineMethod(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
 				return "", false, msg
