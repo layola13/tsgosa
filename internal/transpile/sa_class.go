@@ -2587,6 +2587,44 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	return t, ""
 }
 
+// saLowerGuardedFieldLoad lowering `b?.v`（inst i32 字段空守卫 join；
+// 形状证据：satsgo lowerGuardedProperty:saemit.go + 本仓 saLowerOptionalIndex:sa_arr.go:231。
+// 基经 saInstBase 仅 This/Identifier 即纯基（封存 isPureBase 同形）；非 i32 种沿旧门）。
+func saLowerGuardedFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, scope *saScope, nextTemp *int) (string, string) {
+	if k := def.fkinds[field]; k != "" && k != "i32" {
+		return "", "optional field access on non-i32 field is not lowerable"
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	nullL := fmt.Sprintf("L_prop_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_prop_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_prop_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, h))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	v, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
+}
+
 // saChainBase 解对象链基（`q.p`→内层句柄；递归支持多层；
 // 叶子由调用方按表读/存；非 inst 链节一律失败，调用方沿旧门）。
 func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {

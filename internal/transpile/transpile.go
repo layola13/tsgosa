@@ -1930,6 +1930,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					}
 				}
 				if pd.Type.Kind == ast.KindUnionType {
+					// 单类+空联合形参记实例句柄（`b: Box|null` 即 Box 布局，
+					// 空吸收为 0 句柄；封存 union 首个已知布局同形；其余仍缺省 i32）。
+					if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), classes); ok {
+						kinds[name] = inst
+						continue
+					}
 					// 非折叠联合形参缺省 i32（cf tUnknown signature default；可折叠已由 saAnnotKind 办）。
 					kinds[name] = "i32"
 					continue
@@ -2268,6 +2274,47 @@ func saUnionScalarKind(n *ast.Node) (string, bool) {
 		return "", false
 	}
 	return kind, true
+}
+
+// saUnionInstKind 取单类+空联合的实例种（`Box|null` 即 `inst:Box`，空吸收为 0
+// 句柄；多类/全空/非类成员一律 false。封存 union 首个已知布局同形的语法子集）。
+func saUnionInstKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef) (string, bool) {
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	found := ""
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+			return "", false
+		}
+		if m.Kind != ast.KindTypeReference {
+			return "", false
+		}
+		ref := m.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		if _, ok := classes[ref.TypeName.Text()]; !ok {
+			return "", false
+		}
+		if found != "" {
+			return "", false
+		}
+		found = "inst:" + ref.TypeName.Text()
+	}
+	if found == "" {
+		return "", false
+	}
+	return found, true
 }
 
 // saAnnotKind 映射类型注解到子集种类（证据：封存 annotationType:166-210）。

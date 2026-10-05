@@ -2340,6 +2340,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return t, ""
 			}
 			if _, ok := def.offsets[fname]; ok {
+				// `b?.v` 空守卫 join（底座复用；封存 lowerGuardedProperty）。
+				if pa.QuestionDotToken != nil {
+					t, msg := saLowerGuardedFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return t, ""
+				}
 				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
