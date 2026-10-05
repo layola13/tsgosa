@@ -2634,6 +2634,9 @@ func saEmitModSetRaw(w printer.EmitTextWriter, key uint64, val string, scope *sa
 	okL := fmt.Sprintf("L_ms_ok_%d", *scope.nextLabel)
 	*scope.nextLabel++
 	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", bad, st))
+	// 调用结果末用即释（verifier 调用帧归属律；trunc/算术纯量不动）。
+	saOwnTemp(scope, st)
+	saReleaseOwnedTemp(w, scope, st)
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bad, badL, okL))
 	w.Write(fmt.Sprintf("%s:\n", badL))
 	w.Write(fmt.Sprintf("  panic(%d)\n", 1403))
@@ -2656,6 +2659,9 @@ func saEmitModEnsure(w printer.EmitTextWriter, ms *saModState, scope *saScope, n
 	initL := fmt.Sprintf("L_ms_init_%d", *scope.nextLabel)
 	*scope.nextLabel++
 	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, f))
+	// 守卫调用结果末用即释（与 setRaw 同律）。
+	saOwnTemp(scope, f)
+	saReleaseOwnedTemp(w, scope, f)
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, doneL, initL))
 	w.Write(fmt.Sprintf("%s:\n", initL))
 	iv := fmt.Sprintf("t_%d", *nextTemp)
@@ -2677,6 +2683,9 @@ func saModLoadI32(w printer.EmitTextWriter, ms *saModState, scope *saScope, next
 	n := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", n, t))
+	// 槽读调用结果末用即释（trunc 即末用；verifier 调用帧归属律）。
+	saOwnTemp(scope, t)
+	saReleaseOwnedTemp(w, scope, t)
 	scope.addImport("sa_std/modstate.sai")
 	return n
 }
@@ -2737,6 +2746,9 @@ func saEmitModEnsureStr(w printer.EmitTextWriter, ms *saModState, scope *saScope
 	initL := fmt.Sprintf("L_ms_init_%d", *scope.nextLabel)
 	*scope.nextLabel++
 	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, f))
+	// 守卫调用结果末用即释（串版与 i32 版同律）。
+	saOwnTemp(scope, f)
+	saReleaseOwnedTemp(w, scope, f)
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, doneL, initL))
 	w.Write(fmt.Sprintf("%s:\n", initL))
 	pv, ln := saModMaterialize(w, ms.init, scope, nextTemp)
@@ -2765,6 +2777,12 @@ func saModLoadStr(w printer.EmitTextWriter, ms *saModState, scope *saScope, next
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, tp))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, tl))
+	// 串槽双读调用结果末用即释；回柄登记归属随调用方释放。
+	saOwnTemp(scope, tp)
+	saReleaseOwnedTemp(w, scope, tp)
+	saOwnTemp(scope, tl)
+	saReleaseOwnedTemp(w, scope, tl)
+	saOwnTemp(scope, h)
 	scope.addImport("sa_std/modstate.sai")
 	return h
 }

@@ -7,17 +7,20 @@
 @N_f(x: i32) -> i32:
   t_1 = call @sa_modstate_get_u64(3562364823401547661)
   t_2 = ne t_1, 0
+  !t_1
   br t_2 -> L_ms_done_1, L_ms_init_2
 L_ms_init_2:
   t_3 = trunc 7 as u64
   t_4 = call @sa_modstate_set_u64(7663832995646557554, t_3)
   t_5 = ne t_4, 0
+  !t_4
   br t_5 -> L_ms_bad_3, L_ms_ok_4
 L_ms_bad_3:
   panic(1403)
 L_ms_ok_4:
   t_6 = call @sa_modstate_set_u64(3562364823401547661, 1)
   t_7 = ne t_6, 0
+  !t_6
   br t_7 -> L_ms_bad_5, L_ms_ok_6
 L_ms_bad_5:
   panic(1403)
@@ -26,6 +29,7 @@ L_ms_ok_6:
 L_ms_done_1:
   t_8 = call @sa_modstate_get_u64(7663832995646557554)
   t_9 = trunc t_8 as i32
+  !t_8
   t_10 = add x, t_9
   !x
   ret t_10
@@ -33,17 +37,20 @@ L_ms_done_1:
   t_11 = trunc 8 as u64
   t_12 = call @sa_modstate_get_u64(3562364823401547661)
   t_13 = ne t_12, 0
+  !t_12
   br t_13 -> L_ms_done_7, L_ms_init_8
 L_ms_init_8:
   t_14 = trunc 7 as u64
   t_15 = call @sa_modstate_set_u64(7663832995646557554, t_14)
   t_16 = ne t_15, 0
+  !t_15
   br t_16 -> L_ms_bad_9, L_ms_ok_10
 L_ms_bad_9:
   panic(1403)
 L_ms_ok_10:
   t_17 = call @sa_modstate_set_u64(3562364823401547661, 1)
   t_18 = ne t_17, 0
+  !t_17
   br t_18 -> L_ms_bad_11, L_ms_ok_12
 L_ms_bad_11:
   panic(1403)
@@ -52,6 +59,7 @@ L_ms_ok_12:
 L_ms_done_7:
   t_19 = call @sa_modstate_set_u64(7663832995646557554, t_11)
   t_20 = ne t_19, 0
+  !t_19
   br t_20 -> L_ms_bad_13, L_ms_ok_14
 L_ms_bad_13:
   panic(1403)
@@ -59,17 +67,20 @@ L_ms_ok_14:
   t_21 = call @N_f(40)
   t_22 = call @sa_modstate_get_u64(3562364823401547661)
   t_23 = ne t_22, 0
+  !t_22
   br t_23 -> L_ms_done_15, L_ms_init_16
 L_ms_init_16:
   t_24 = trunc 7 as u64
   t_25 = call @sa_modstate_set_u64(7663832995646557554, t_24)
   t_26 = ne t_25, 0
+  !t_25
   br t_26 -> L_ms_bad_17, L_ms_ok_18
 L_ms_bad_17:
   panic(1403)
 L_ms_ok_18:
   t_27 = call @sa_modstate_set_u64(3562364823401547661, 1)
   t_28 = ne t_27, 0
+  !t_27
   br t_28 -> L_ms_bad_19, L_ms_ok_20
 L_ms_bad_19:
   panic(1403)
@@ -78,6 +89,7 @@ L_ms_ok_20:
 L_ms_done_15:
   t_29 = call @sa_modstate_get_u64(7663832995646557554)
   t_30 = trunc t_29 as i32
+  !t_29
   t_31 = add t_21, t_30
   !t_21
   ret t_31
