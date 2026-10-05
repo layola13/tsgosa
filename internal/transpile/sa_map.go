@@ -368,10 +368,13 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
-			if vk := scope.mapVals[recv]; vk != "" {
-				return t, vk, ""
+			// 读回种按建表记临时量（与下标读 112-116 同形；否则下游把句柄当 i32 用）。
+			vkind := scope.mapVals[recv]
+			if vkind == "" {
+				vkind = "i32"
 			}
-			return t, "i32", ""
+			scope.types[t] = vkind
+			return t, vkind, ""
 		case "has":
 			if len(argNodes) != 1 {
 				return "", "", "Map.has needs 1 argument"

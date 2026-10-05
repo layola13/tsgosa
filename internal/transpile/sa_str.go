@@ -443,7 +443,15 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// 实例 str 域读（头指针即串值，临时量已记 str）。
 			if saCouldBeInst(pa.Expression, scope) {
 				h, def, msg := saInstBase(pa.Expression, scope)
+				// map 索引实例基（`m[k].f`；saInstBase 只认标识符/this；
+				// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
+				if msg == "" && def == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
+					h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+				}
 				if msg == "" {
+					if def == nil {
+						return "", "instance base did not resolve to a recorded layout"
+					}
 					fname := pa.Name().Text()
 					if strings.HasPrefix(fname, "#") {
 						key, msg := saPrivResolve(def, fname, scope.thisClass)

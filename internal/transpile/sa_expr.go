@@ -435,6 +435,17 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if msg != "" {
 				return "", false, msg
 			}
+			// map 索引实例基（`m[k].m()`；saInstBase 只认标识符/this；
+			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
+			if def == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
+				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+			}
+			if def == nil {
+				return "", false, "instance base did not resolve to a recorded layout"
+			}
 			// this.函数字段去虚化（`this.pick(e)` 回放实例捕获箭头，先于方法分发；
 			// 形状证据：封存 lowerPropertyCall:4269-4280）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && pa.Name() != nil {
@@ -2684,6 +2695,17 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						h, def, msg := saInstBase(lpa.Expression, scope)
 						if msg != "" {
 							return "", msg
+						}
+						// map 索引实例基（`m[k].f = v`；saInstBase 只认标识符/this；
+						// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
+						if def == nil && lpa.Expression != nil && lpa.Expression.Kind == ast.KindElementAccessExpression {
+							h, def, msg = saInstBaseElem(w, lpa.Expression, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
+						}
+						if def == nil {
+							return "", "instance base did not resolve to a recorded layout"
 						}
 						fname := lpa.Name().Text()
 						if strings.HasPrefix(fname, "#") {
