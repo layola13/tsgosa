@@ -142,6 +142,17 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			return "", "struct return needs matching struct value"
 		}
 	}
+	// 返回位字面量具化（`return {...}` 配注解接口布局；封存 checker_layout l1）。
+	if e != nil && e.Kind == ast.KindObjectLiteralExpression && strings.HasPrefix(retKind, "inst:") {
+		if def, ok := scope.classes[retKind[5:]]; ok && def.isIface {
+			h, _, msg := saLowerObjectLiteral(w, e, retKind[5:], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return h, ""
+		}
+		return "", "struct return needs a recorded interface layout"
+	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
 	}
@@ -1934,6 +1945,13 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 	w.Write(fmt.Sprintf("  %s = %s\n", t, call))
 	// 调用结果临时量归属（用后仍须返前释放；封存 lowerCall 各分支 ownTemp）。
 	saOwnTemp(scope, t)
+	// 工厂句柄种直记（`const v = mk()` 经返回种得布局，调用方按种分发；
+	// 封存 checker_layout l1；非 inst 种沿旧路）。
+	if strings.HasPrefix(sig.retKind, "inst:") {
+		if _, ok := scope.classes[sig.retKind[5:]]; ok {
+			scope.types[t] = sig.retKind
+		}
+	}
 	return t, false, ""
 }
 
