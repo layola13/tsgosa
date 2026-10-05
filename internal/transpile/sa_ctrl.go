@@ -640,8 +640,8 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		cmpName = "sle"
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
-		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" && matcher != "toMatch" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeDefined/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
+		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" && matcher != "toMatch" && matcher != "toBeNaN" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeDefined/toBeTruthy/toBeFalsy/toBeNaN/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -653,6 +653,22 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	var margs []*ast.Node
 	if ce.Arguments != nil {
 		margs = ce.Arguments.Nodes
+	}
+	if matcher == "toBeNaN" {
+		// `toBeNaN` 恒判定（i32 子集无 NaN：浮点字面量早拒，f64 另门；
+		// 肯定恒败，`.not` 恒过；实参照常求值保副作用）。
+		if len(margs) != 0 {
+			return fail("expect().toBeNaN takes no arguments")
+		}
+		aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		_ = aop
+		if !neg {
+			w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		}
+		return true, true
 	}
 	if isZero {
 		// 零元匹配器（`toBeNull/toBeUndefined` 即柄零判，`toBeDefined`/`toBeTruthy` 即

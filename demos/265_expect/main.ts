@@ -24,6 +24,7 @@ describe("more", () => {
     expect(0).not.toBeTruthy();
     expect(1).toBeDefined();
     expect(0).not.toBeDefined();
+    expect(1).not.toBeNaN();
   });
   test("compare", () => {
     expect(add(1, 2)).toBeGreaterThan(2);
