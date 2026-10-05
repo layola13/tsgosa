@@ -2496,6 +2496,41 @@ func saSuperBase(scope *saScope) (*saClassDef, string, string) {
 
 // saLowerNewClass 具化 `new C(...)`（布局 alloc + 构造 wiring；
 // 形状证据：封存 lowerNewClass:9899-9962 + wireCtorStatement:9968-10001）。
+// saNewStmtClassName 消解裸 `new` 语句的类名（标识符 + `N.C` 限定即 `N_C`；
+// 与声明绑定 sa_decl.go:295-304 同形；Date/Map/Set/Array 构造沿旧门）。
+func saNewStmtClassName(ne *ast.NewExpression) (string, string) {
+	if ne == nil || ne.Expression == nil {
+		return "", "new expression is not lowerable"
+	}
+	if ne.Expression.Kind == ast.KindIdentifier {
+		name := ne.Expression.Text()
+		switch name {
+		case "Date", "Map", "Set", "Array":
+			return "", "new " + name + " needs a binding (statement discard not lowerable yet)"
+		}
+		return name, ""
+	}
+	if ne.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ne.Expression.AsPropertyAccessExpression()
+		if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier {
+			return pa.Expression.Text() + "_" + pa.Name().Text(), ""
+		}
+	}
+	return "", "new expression is not lowerable"
+}
+
+// saLowerNewStmt lowering 裸 `new C();` 语句的构造半程（返回待释句柄，
+// 释放由调用方经既有释放口；构造副作用保留；上游 jsDocPrivateConstructor.sai
+// 同形 `alloc` + `!`；封存声明绑定 saLowerNewClass 同核）。
+func saLowerNewStmt(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	ne := e.AsNewExpression()
+	cname, msg := saNewStmtClassName(ne)
+	if msg != "" {
+		return "", msg
+	}
+	return saLowerNewClass(w, cname, ne, scope, pos, refusals, nextTemp)
+}
+
 func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	def, ok := scope.classes[name]
 	if !ok {

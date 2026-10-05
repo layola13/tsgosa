@@ -1093,6 +1093,19 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return true
 	}
 	if e.Kind != ast.KindBinaryExpression {
+		// 裸 `new C();` 语句：构造照常（副作用保留）+ 句柄即释丢弃
+		// （上游 jsDocPrivateConstructor.sai 同形 `alloc` + `!`；构造核
+		// 复用声明绑定 saLowerNewClass，释放走既有归属口）。
+		if e.Kind == ast.KindNewExpression {
+			if h, msg := saLowerNewStmt(w, e, scope, pos, refusals, nextTemp); msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported new statement: " + msg})
+				return false
+			} else {
+				saReleaseOwnedTemp(w, scope, h)
+				return true
+			}
+		}
 		// 其余表达式语句求值后丢弃（证据：封存 lowerExprStatement:2712-2715
 		// 只 lower 表达式：`i++` 等副作用保留，无副作用的纯表达式亦然）。
 		if _, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp); msg != "" {
