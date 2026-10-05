@@ -1858,6 +1858,31 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	return true
 }
 
+// saEvalSwitchVal 求 switch 判别/case 值（i32 优先、败则串沿旧门、再败则
+// bool 标识直读/字面量折 1/0；bool 通道恒 0/1，eq 分发 sound，混合臂恒假落
+// default 与既有串/i32 混合 rule 同形；调用返 bool 等非直读形沿旧门）。
+func saEvalSwitchVal(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	v, imsg := saEvalI32(w, e, scope, pos, refusals, nextTemp)
+	if imsg == "" {
+		return v, ""
+	}
+	if h, smsg := saEvalStr(w, e, scope, pos, refusals, nextTemp); smsg == "" {
+		return h, ""
+	}
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "bool" {
+			return e.Text(), ""
+		}
+	}
+	if e != nil && e.Kind == ast.KindTrueKeyword {
+		return "1", ""
+	}
+	if e != nil && e.Kind == ast.KindFalseKeyword {
+		return "0", ""
+	}
+	return "", imsg
+}
+
 // saCasePart 是 switch 一臂（case 子句节点；default 另记）。
 type saCasePart struct {
 	node *ast.Node
@@ -1869,16 +1894,12 @@ type saCasePart struct {
 // 2/3 臂走上游 SWITCH_2/3 宏（证据：封存 tryLowerSwitchMacro:2502-2588）。
 func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	sw := s.AsSwitchStatement()
-	// discriminant i32 优先、败则串（串句柄 eq 分发，与上游 lowerExpr 通用同形）。
-	disc, msg := saEvalI32(w, sw.Expression, scope, pos, refusals, nextTemp)
+	// discriminant i32 优先、败则串、再败则 bool（与 case 值同门 saEvalSwitchVal）。
+	disc, msg := saEvalSwitchVal(w, sw.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		if h, smsg := saEvalStr(w, sw.Expression, scope, pos, refusals, nextTemp); smsg == "" {
-			disc = h
-		} else {
-			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
-			return false
-		}
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
+		return false
 	}
 	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
 	var parts []saCasePart
@@ -1921,17 +1942,12 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	lowered := true
 	for i, p := range parts {
 		w.Write(fmt.Sprintf("%s:\n", testLabels[i]))
-		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
+		val, vmsg := saEvalSwitchVal(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
 		if vmsg != "" {
-			// case 值败则串（与 discriminant 同门；混合臂 eq 恒假落 default）。
-			if h, smsg := saEvalStr(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp); smsg == "" {
-				val = h
-			} else {
-				ln, col := pos(p.node.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
-				lowered = false
-				break
-			}
+			ln, col := pos(p.node.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+			lowered = false
+			break
 		}
 		cmp := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -1975,15 +1991,11 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	// case 值前置求值（legacy 与体交错，运行时序由标号固定；两形各求值一次）。
 	vals := make([]string, len(parts))
 	for i, p := range parts {
-		val, vmsg := saEvalI32(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
+		val, vmsg := saEvalSwitchVal(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
 		if vmsg != "" {
-			if h, smsg := saEvalStr(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp); smsg == "" {
-				val = h
-			} else {
-				ln, col := pos(p.node.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
-				return false
-			}
+			ln, col := pos(p.node.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported case value: " + vmsg})
+			return false
 		}
 		vals[i] = val
 	}
