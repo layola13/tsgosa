@@ -1053,6 +1053,28 @@ func saLowerBufferedScope(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bo
 	return true, terminated
 }
 
+// saIsPureValueOp 报告二元操作符是否为纯值运算（语句位求值丢弃安全集：
+// 算术/位运算/比较/`&& ||` 指令形/`**`；`??`/逗号/`in`/赋值族沿旧门大声拒）。
+func saIsPureValueOp(op ast.Kind) bool {
+	switch op {
+	case ast.KindPlusToken, ast.KindMinusToken,
+		ast.KindAsteriskToken, ast.KindSlashToken,
+		ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
+		ast.KindLessThanLessThanToken,
+		ast.KindGreaterThanGreaterThanToken,
+		ast.KindGreaterThanGreaterThanGreaterThanToken,
+		ast.KindAmpersandToken, ast.KindBarToken,
+		ast.KindCaretToken,
+		ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken,
+		ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken,
+		ast.KindLessThanToken, ast.KindLessThanEqualsToken,
+		ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken,
+		ast.KindAmpersandAmpersandToken, ast.KindBarBarToken:
+		return true
+	}
+	return false
+}
+
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
 // （`x = <i32>`，x 须已绑定；复合/短路赋分流）。其余一律大声拒。
 func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
@@ -1093,10 +1115,20 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
 		return saLowerCompound(w, be, scope, pos, refusals, nextTemp, s)
 	}
-	if be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken {
+	if be.OperatorToken == nil || (be.OperatorToken.Kind != ast.KindEqualsToken && !saIsPureValueOp(saBinaryOpKind(be))) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (plain x = i32 only)"})
 		return false
+	}
+	if be.OperatorToken.Kind != ast.KindEqualsToken {
+		// 纯值二元表达式语句求值后丢弃（`1 + 2;`；与非二元臂同形，封存 lowerExprStatement:2712-2715；
+		// 上游 simpleTest.sai 同形 `t_1 = add 1, 2` 直接丢弃）。
+		if _, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp); msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement: " + msg})
+			return false
+		}
+		return true
 	}
 	// 元素目标 `a[i] = v`（仅 plain `=`；复合走 saLowerCompound 的元素分支）。
 	if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
