@@ -42,13 +42,17 @@ type saStaticVal struct {
 // staticGetters/staticSetters 为静态存取器内联体（`C.g`/`C.s = v` 类名分发，
 // 空 this 内联，镜像 staticMethods；实例项永不持有）；
 // fkinds 为字段种表，i32/str/arr/inst，句柄种 8 字节对齐；
-// fsub 为嵌套字段的子布局名（fkinds inst 时有效）。
+// fsub 为嵌套字段的子布局名（fkinds inst 时有效）；
+// tparams/fdefs 为泛型接口模板（具化前只存不用，单态实例另行派生）；
+// isMono 为单态派生布局（与用户声明名区分，防键碰撞静默复用）。
 type saClassDef struct {
 	name          string
 	fields        []saClassField
 	offsets       map[string]int
 	fkinds        map[string]string
 	fsub          map[string]string
+	tparams       []string
+	fdefs         map[string]*ast.TypeNode
 	size          int
 	methods       map[string]*ast.Node
 	staticMethods map[string]*ast.Node
@@ -62,6 +66,7 @@ type saClassDef struct {
 	parent        string
 	isIface       bool
 	isAbstract    bool
+	isMono        bool
 }
 
 // saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst 句柄 8/8；
@@ -996,6 +1001,17 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		return false
 	}
 	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true}
+	// 泛型形参模板直存（具化前只存不用；封存 recordTypeAlias tparams 同形）。
+	if decl.TypeParameters != nil {
+		for _, tp := range decl.TypeParameters.Nodes {
+			if tp == nil || tp.Kind != ast.KindTypeParameter {
+				continue
+			}
+			if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				def.tparams = append(def.tparams, nm.Text())
+			}
+		}
+	}
 	off := 0
 	ownIface := map[string]bool{}
 	// 接口 extends 基展平（类型级；未知基尽力跳过，checker 拥有类型错；
@@ -1117,6 +1133,13 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		// 字段类型节点直存（具化期代入用；只存不用，零行为变）。
+		if pd.Type != nil {
+			if def.fdefs == nil {
+				def.fdefs = map[string]*ast.TypeNode{}
+			}
+			def.fdefs[fn.Text()] = pd.Type
+		}
 		sz, _ := saFieldWidth(fkind)
 		off += sz
 	}
@@ -1249,6 +1272,197 @@ func saAliasReady(st *ast.Node, classes map[string]*saClassDef) bool {
 		}
 	}
 	return true
+}
+
+// saMonoKey 渲染具化键（`Box<i32>`；裸名直返；封存 monoKey 同形）。
+func saMonoKey(t *ast.TypeNode) string {
+	if t == nil {
+		return "i32"
+	}
+	if t.Kind != ast.KindTypeReference {
+		if k, ok := saAnnotKind(t); ok {
+			switch k {
+			case "bool":
+				return "i32"
+			case "i32", "str", "arr":
+				return k
+			}
+		}
+		if t.Kind == ast.KindStringKeyword {
+			return "string"
+		}
+		return "unknown"
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "unknown"
+	}
+	name := ref.TypeName.Text()
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0 {
+		return name
+	}
+	parts := make([]string, 0, len(ref.TypeArguments.Nodes))
+	for _, a := range ref.TypeArguments.Nodes {
+		parts = append(parts, saMonoKey(a))
+	}
+	return name + "<" + strings.Join(parts, ",") + ">"
+}
+
+// saMonoName 渲染 SA 安全的单态布局名（`Box<i32>` → `Box_i32`；尖括号逗号
+// 非 SA 标识符，投影下划线；封存 instantiateLayout cacheKey 的本仓投影）。
+func saMonoName(key string) string {
+	var b strings.Builder
+	for _, r := range key {
+		if r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// saSubstArg 代入单实参（持参泛型引用非闭合；封存 substFieldType 闭合门同形）。
+func saSubstArg(a *ast.TypeNode, pmap map[string]*ast.TypeNode) (*ast.TypeNode, bool) {
+	if a != nil && a.Kind == ast.KindTypeReference {
+		ref := a.AsTypeReferenceNode()
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if parg, ok := pmap[ref.TypeName.Text()]; ok {
+				if parg == nil {
+					return nil, false
+				}
+				if parg.Kind == ast.KindTypeReference {
+					pr := parg.AsTypeReferenceNode()
+					if pr != nil && pr.TypeArguments != nil && len(pr.TypeArguments.Nodes) > 0 {
+						return nil, false
+					}
+				}
+				return parg, true
+			}
+		}
+	}
+	return a, true
+}
+
+// saSubstFieldKind 代入求字段种（形参名经 pmap 取实参；闭引用递归具化；
+// 参数化嵌套未闭合沿旧门 arr；封存 substFieldType 同形，唯本仓句柄种为 arr）。
+func saSubstFieldKind(ftn *ast.TypeNode, pmap map[string]*ast.TypeNode, classes map[string]*saClassDef) (fkind, sub string) {
+	if ftn != nil && ftn.Kind == ast.KindTypeReference {
+		ref := ftn.AsTypeReferenceNode()
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			name := ref.TypeName.Text()
+			if arg, ok := pmap[name]; ok && arg != nil {
+				if k, ok := saAnnotKind(arg); ok {
+					switch k {
+					case "i32", "bool":
+						return "i32", ""
+					case "str":
+						return "str", ""
+					case "arr":
+						return "arr", ""
+					}
+				}
+				if arg.Kind == ast.KindTypeReference {
+					aref := arg.AsTypeReferenceNode()
+					if aref != nil && aref.TypeName != nil && aref.TypeName.Kind == ast.KindIdentifier {
+						var args []*ast.TypeNode
+						if aref.TypeArguments != nil {
+							args = aref.TypeArguments.Nodes
+						}
+						if lname, ok := saInstantiateIface(aref.TypeName.Text(), args, classes); ok {
+							return "inst", lname
+						}
+					}
+				}
+				return "arr", ""
+			}
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+				sub := make([]*ast.TypeNode, 0, len(ref.TypeArguments.Nodes))
+				for _, a := range ref.TypeArguments.Nodes {
+					sa, closed := saSubstArg(a, pmap)
+					if !closed {
+						return "arr", ""
+					}
+					sub = append(sub, sa)
+				}
+				if lname, ok := saInstantiateIface(name, sub, classes); ok {
+					return "inst", lname
+				}
+				return "arr", ""
+			}
+		}
+	}
+	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+		if k == "str" {
+			return "str", ""
+		}
+		if k == "arr" {
+			return "arr", ""
+		}
+		return "i32", ""
+	}
+	if ftn != nil && ftn.Kind == ast.KindTypeReference {
+		if ref := ftn.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if sub, ok := classes[ref.TypeName.Text()]; ok {
+				return "inst", sub.name
+			}
+		}
+	}
+	return "arr", ""
+}
+
+// saInstantiateIface 单态具化泛型接口（模板 tparams/args 等长；字段代入重算
+// 种与偏移；shell 先行保递归终止；结果缓存布局表；未知模板/元数错/键碰撞
+// 沿旧门 false。封存 instantiateLayout 全形）。
+func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	tmpl, ok := classes[name]
+	if !ok || tmpl == nil {
+		return "", false
+	}
+	if len(tmpl.tparams) == 0 {
+		if len(args) != 0 {
+			return "", false
+		}
+		return tmpl.name, true
+	}
+	if len(args) != len(tmpl.tparams) {
+		return "", false
+	}
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		parts = append(parts, saMonoKey(a))
+	}
+	mangled := saMonoName(name + "<" + strings.Join(parts, ",") + ">")
+	if def, ok := classes[mangled]; ok {
+		if def.isMono {
+			return def.name, true
+		}
+		return "", false
+	}
+	pmap := map[string]*ast.TypeNode{}
+	for i, p := range tmpl.tparams {
+		pmap[p] = args[i]
+	}
+	def := &saClassDef{name: mangled, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isMono: true}
+	classes[mangled] = def
+	off := 0
+	for _, f := range tmpl.fields {
+		fkind, sub := saSubstFieldKind(tmpl.fdefs[f.name], pmap, classes)
+		off = saAlignOff(off, fkind)
+		def.fields = append(def.fields, saClassField{name: f.name, offset: off})
+		def.offsets[f.name] = off
+		def.fkinds[f.name] = fkind
+		if sub != "" {
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[f.name] = sub
+		}
+		sz, _ := saFieldWidth(fkind)
+		off += sz
+	}
+	def.size = off
+	return def.name, true
 }
 
 // saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
