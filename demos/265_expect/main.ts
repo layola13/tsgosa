@@ -23,5 +23,13 @@ describe("more", () => {
     expect(1).not.toBeNull();
     expect(0).not.toBeTruthy();
   });
+  test("compare", () => {
+    expect(add(1, 2)).toBeGreaterThan(2);
+    expect(add(1, 2)).toBeGreaterThanOrEqual(3);
+    expect(add(1, 2)).toBeLessThan(4);
+    expect(add(1, 2)).toBeLessThanOrEqual(3);
+    expect(add(1, 2)).not.toBeGreaterThan(3);
+    expect(add(1, 2)).not.toBeLessThan(3);
+  });
 });
 console.log(42);

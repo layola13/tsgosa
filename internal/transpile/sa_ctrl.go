@@ -627,8 +627,19 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	}
 	isZero := matcher == "toBeNull" || matcher == "toBeUndefined" ||
 		matcher == "toBeTruthy" || matcher == "toBeFalsy"
-	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy)")
+	cmpName := ""
+	switch matcher {
+	case "toBeGreaterThan":
+		cmpName = "sgt"
+	case "toBeGreaterThanOrEqual":
+		cmpName = "sge"
+	case "toBeLessThan":
+		cmpName = "slt"
+	case "toBeLessThanOrEqual":
+		cmpName = "sle"
+	}
+	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy/toBeGreaterThan/toBeLessThan)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -691,6 +702,22 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	cmp := "ne"
 	if neg {
 		cmp = "eq"
+	}
+	if cmpName != "" {
+		// 大小比较（i32 有符号直比；`.not` 取逆命题，恒满足排中律）。
+		cmp = cmpName
+		if neg {
+			switch cmpName {
+			case "sgt":
+				cmp = "sle"
+			case "sge":
+				cmp = "slt"
+			case "slt":
+				cmp = "sge"
+			case "sle":
+				cmp = "sgt"
+			}
+		}
 	}
 	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, cmp, aop, bop))
 	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
