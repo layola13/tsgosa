@@ -560,6 +560,11 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				def.setters[an.Text()] = m
 			}
 		case ast.KindSemicolonClassElement:
+			continue
+		case ast.KindClassStaticBlockDeclaration:
+			ln, col := pos(m.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class static blocks are not lowerable"})
+			return false
 		default:
 			ln, col := pos(m.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class member is not lowerable (indexers refused)"})
