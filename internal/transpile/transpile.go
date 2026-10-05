@@ -2686,6 +2686,11 @@ type saScope struct {
 	mapVals      map[string]string
 	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)
 	importRemote map[string]string // import alias remote names (local -> remote; cf importedRemote)
+	// 测试 hook pending 表（同域顺序语义：beforeEach/afterEach 注册体按序贴到
+	// 后续 test/describe 内联前/后；describe 进出按栈存取防外泄；testSeen 置后
+	// 注册拒（套件提升不支持）；用户 mandate 全量测试框架 track 2）。
+	testBefore []*ast.Node
+	testAfter  []*ast.Node
 	// Program-link environment (nil-equivalent when empty; single-file lowering
 	// leaves all three zero; shape evidence: upstream LowerProgram prefixOf +
 	// links[p].resolved + seeded funcSigs).

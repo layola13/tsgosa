@@ -415,6 +415,21 @@ func saIsTestRegistrationName(scope *saScope, name string) bool {
 	if name != "test" && name != "describe" && name != "it" {
 		return false
 	}
+	return saIsUnresolvedTestName(scope, name)
+}
+
+// saIsTestHookName 报告未解析的测试钩子名（beforeEach/afterEach/beforeAll
+// 直做；afterAll 需整域缓冲未做，见主流程拒因；劫持规则同注册名）。
+func saIsTestHookName(scope *saScope, name string) bool {
+	if name != "beforeEach" && name != "afterEach" && name != "beforeAll" && name != "afterAll" {
+		return false
+	}
+	return saIsUnresolvedTestName(scope, name)
+}
+
+// saIsUnresolvedTestName 报告名未被任何已解析绑定占用（函数/箭头别名/
+// math 别名/链接/导入；命中任一即沿旧路，禁劫持用户定义）。
+func saIsUnresolvedTestName(scope *saScope, name string) bool {
 	if scope == nil {
 		return true
 	}
@@ -436,40 +451,14 @@ func saIsTestRegistrationName(scope *saScope, name string) bool {
 	return true
 }
 
-// saLowerTestRegistration lowering 测试注册调用（`test/describe/it("name", () => {...})`
-// 箭头体就地内联顺序执行；fail-fast，无隔离；用户 mandate 全量测试框架 track 2）。
-// 形状：未解析名 + 双参（静态串名 + 零参箭头/函数表达式块体/表达式体）；体禁 return
-// （内联后逃出外层）；describe 嵌套经语句分发递归。返回（接管，成功）。
-func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
-	fail := func(msg string) (bool, bool) {
+// saCheckTestCallback 校验测试回调（零参箭头/函数表达式；体非空、无 return；
+// 返回回调体或定位拒因）。
+func saCheckTestCallback(fn *ast.Node, name string, s *ast.Node, pos func(int) (int, int), refusals *[]SARefusal) (*ast.Node, bool) {
+	fail := func(msg string) (*ast.Node, bool) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-		return true, false
+		return nil, false
 	}
-	e := s.AsExpressionStatement().Expression
-	if e == nil || e.Kind != ast.KindCallExpression {
-		return false, false
-	}
-	ce := e.AsCallExpression()
-	callee := ce.Expression
-	if callee == nil || callee.Kind != ast.KindIdentifier {
-		return false, false
-	}
-	name := callee.Text()
-	if !saIsTestRegistrationName(scope, name) {
-		return false, false
-	}
-	var argNodes []*ast.Node
-	if ce.Arguments != nil {
-		argNodes = ce.Arguments.Nodes
-	}
-	if len(argNodes) != 2 {
-		return fail(name + " takes a name and a callback (2 arguments)")
-	}
-	if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
-		return fail(name + " name must be a string literal")
-	}
-	fn := argNodes[1]
 	if fn == nil || (fn.Kind != ast.KindArrowFunction && fn.Kind != ast.KindFunctionExpression) {
 		return fail(name + " callback must be an arrow or function expression")
 	}
@@ -483,21 +472,23 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	if saContainsReturn(body) {
 		return fail(name + " body must not return (use assertions)")
 	}
+	return body, true
+}
+
+// saInlineTestUnit 内联一个测试单元体（块体直驱语句循环，自带块域，出口扫尾；
+// 表达式体求值丢弃；与注册主流程共用）。
+func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	if body.Kind != ast.KindBlock {
 		if body.Kind == ast.KindCallExpression {
-			if _, _, msg := saEvalCall(w, body.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
-				return fail(msg)
-			}
-			return true, true
+			_, _, msg := saEvalCall(w, body.AsCallExpression(), scope, pos, refusals, nextTemp)
+			return msg == ""
 		}
-		if _, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp); msg != "" {
-			return fail(msg)
-		}
-		return true, true
+		_, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp)
+		return msg == ""
 	}
 	stmts, ok := saBlockStmts(body)
 	if !ok {
-		return fail("unsupported " + name + " body")
+		return false
 	}
 	// 回调体自带块域（箭头内局部名不外泄；直驱语句循环以保本域记账可见，
 	// saLowerArm 内置 exit 会提前裁掉记账致出口扫尾看不见；出口扫尾释本域归属，
@@ -520,8 +511,94 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	}
 	saReleaseDeeperThan(w, scope, saved.owned)
 	saScopeExit(scope, saved)
-	if !armOK {
+	return armOK
+}
+
+// saLowerTestRegistration lowering 测试注册调用（`test/describe/it("name", () => {...})`
+// 箭头体就地内联顺序执行；fail-fast，无隔离；用户 mandate 全量测试框架 track 2）。
+// 钩子：beforeEach/afterEach 注册体按序贴到后续 test 内联前/后（同域顺序语义，
+// 无套件提升——vitest 会提升，此处以文本序为准）；beforeAll 就地跑一次；afterAll
+// 需整域缓冲未做，大声拒。describe 自身透明（只分组），其内 hook 进出按栈存取
+// 防外泄。返回（接管，成功）。
+func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return true, false
+	}
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindIdentifier {
+		return false, false
+	}
+	name := callee.Text()
+	isHook := saIsTestHookName(scope, name)
+	if !saIsTestRegistrationName(scope, name) && !isHook {
+		return false, false
+	}
+	if name == "afterAll" {
+		return fail("afterAll needs whole-scope buffering (not yet)")
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	// 钩子一参（回调）或双参（静态串名 + 回调，名忽略）；注册固定双参。
+	fnIdx := 1
+	if isHook && len(argNodes) == 1 {
+		fnIdx = 0
+	} else {
+		if len(argNodes) != 2 {
+			return fail(name + " takes a name and a callback (2 arguments)")
+		}
+		if argNodes[0] == nil || (argNodes[0].Kind != ast.KindStringLiteral && argNodes[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return fail(name + " name must be a string literal")
+		}
+	}
+	body, ok := saCheckTestCallback(argNodes[fnIdx], name, s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	if isHook {
+		if name == "beforeAll" {
+			if !saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+				return true, false
+			}
+			return true, true
+		}
+		if name == "beforeEach" {
+			scope.testBefore = append(scope.testBefore, body)
+		} else {
+			scope.testAfter = append(scope.testAfter, body)
+		}
+		return true, true
+	}
+	if name == "describe" {
+		// 分组透明：hook 进出按栈存取，体内 test 递归经语句分发。
+		savedBefore, savedAfter := scope.testBefore, scope.testAfter
+		ok := saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.testBefore, scope.testAfter = savedBefore, savedAfter
+		if !ok {
+			return true, false
+		}
+		return true, true
+	}
+	for _, hb := range scope.testBefore {
+		if !saInlineTestUnit(w, hb, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return true, false
+		}
+	}
+	if !saInlineTestUnit(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return true, false
+	}
+	for _, hb := range scope.testAfter {
+		if !saInlineTestUnit(w, hb, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return true, false
+		}
 	}
 	return true, true
 }
