@@ -3,6 +3,5 @@
 # 上游同向拒收（顶层变量门），零 panic。
 step2 refuses kind 244 (only top-level functions)
 unsupported initializer: only direct function calls lowerable
-throw inside try is not lowerable (catch cannot resume after panic)
 is not resolvable (bare third-party imports are Phase 3
 refused: resolve subset-report.txt before running sh build.sh

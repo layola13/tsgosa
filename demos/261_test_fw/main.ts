@@ -12,6 +12,25 @@ export function verifyMul(): void {
 export function verifyGreet(): void {
   assertStrEq(greet("sa"), "hi sa");
 }
+export function verifyCatchRecovery(): void {
+  let y = 0;
+  try {
+    y = 5;
+    throw 42;
+  } catch (e) {
+    y = e;
+  }
+  assertEq(y, 42);
+}
+export function verifyCatchSkipped(): void {
+  let y = 0;
+  try {
+    y = 1;
+  } catch (e) {
+    throw e;
+  }
+  assertEq(y, 1);
+}
 function main(): number {
   let passed = 0;
   verifyAddition();
@@ -19,6 +38,10 @@ function main(): number {
   verifyMul();
   passed = passed + 1;
   verifyGreet();
+  passed = passed + 1;
+  verifyCatchRecovery();
+  passed = passed + 1;
+  verifyCatchSkipped();
   passed = passed + 1;
   return passed;
 }

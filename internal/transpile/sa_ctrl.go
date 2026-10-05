@@ -1627,7 +1627,7 @@ func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 			return saLowerThrowingTry(w, s, ts, ts.TryBlock.AsBlock().Statements.Nodes, idx, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		}
 	}
-	if saContainsThrow(s) {
+	if ts.TryBlock != nil && saContainsThrow(ts.TryBlock) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw inside try is not lowerable (catch cannot resume after panic)"})
 		return false, true
