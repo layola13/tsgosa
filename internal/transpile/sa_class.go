@@ -1573,6 +1573,24 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
 				}
 				sh, sdef = h, d
+			case se.Kind == ast.KindCallExpression:
+				// 工厂调用展开（`{...mk()}` 经签名返回种得布局；封存
+				// checker_layout s1 + layoutOfNode 调用位同形；非 inst
+				// 返回/未知被调沿旧门大声拒）。
+				ce := se.AsCallExpression()
+				got, ok := saCallRetKind(ce, scope)
+				if !ok || len(got) <= 5 || got[:5] != "inst:" {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				d, ok := scope.classes[got[5:]]
+				if !ok {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+				if msg != "" || voidCall {
+					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+				}
+				sh, sdef = op, d
 			default:
 				return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
 			}
