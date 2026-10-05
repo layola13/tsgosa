@@ -625,8 +625,10 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	if !saIsUnresolvedTestName(scope, "expect") {
 		return false, false
 	}
-	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual)")
+	isZero := matcher == "toBeNull" || matcher == "toBeUndefined" ||
+		matcher == "toBeTruthy" || matcher == "toBeFalsy"
+	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero {
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeTruthy/toBeFalsy)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
@@ -638,6 +640,40 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, scope *saScop
 	var margs []*ast.Node
 	if ce.Arguments != nil {
 		margs = ce.Arguments.Nodes
+	}
+	if isZero {
+		// 零元匹配器（`toBeNull/toBeUndefined` 即柄零判，`toBeTruthy` 即
+		// 非零判，`toBeFalsy` 即零判；i32/bool 通道恒 0/1，空吸收同门）。
+		if len(margs) != 0 {
+			return fail("expect()." + matcher + " takes no arguments")
+		}
+		aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return fail(msg)
+		}
+		cmp := "eq"
+		if matcher == "toBeTruthy" {
+			cmp = "ne"
+		}
+		if neg {
+			if cmp == "eq" {
+				cmp = "ne"
+			} else {
+				cmp = "eq"
+			}
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, cmp, aop))
+		failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
+		*nextLabel++
+		okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+		w.Write(failL + ":\n")
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		w.Write(okL + ":\n")
+		return true, true
 	}
 	if len(margs) != 1 {
 		return fail("expect()." + matcher + " takes one expected value")

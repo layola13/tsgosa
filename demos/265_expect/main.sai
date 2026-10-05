@@ -42,26 +42,56 @@ L_exp_fail_9:
 L_exp_ok_10:
   !t_9
   !t_7
-  t_11 = sext 42 as i64
-  t_12 = alloc 64
-  t_13 = alloc 8
-  t_14 = call @sa_fmt_i64_into(t_11, 10, t_12, 64, &t_13)
-  t_15 = load t_13 + 0 as u64
-  t_16 = alloc 16
-  store t_16 + 0, t_12 as ptr
-  store t_16 + 8, t_15 as u64
-  !t_14
-  t_17 = load t_16 + 0 as ptr
-  t_18 = load t_16 + 8 as u64
-  call @sa_print_bytes(&t_17, t_18)
-  !t_16
-  t_19 = alloc 16
-  store t_19 + 0, &str_const_0 as ptr
-  store t_19 + 8, 1 as u64
-  t_20 = load t_19 + 0 as ptr
-  t_21 = load t_19 + 8 as u64
-  call @sa_print_bytes(&t_20, t_21)
+  t_11 = eq 0, 0
+  br t_11 -> L_exp_fail_11, L_exp_ok_12
+L_exp_fail_11:
+  panic(2501)
+L_exp_ok_12:
+  t_12 = eq 0, 0
+  br t_12 -> L_exp_fail_13, L_exp_ok_14
+L_exp_fail_13:
+  panic(2501)
+L_exp_ok_14:
+  t_13 = ne 1, 0
+  br t_13 -> L_exp_fail_15, L_exp_ok_16
+L_exp_fail_15:
+  panic(2501)
+L_exp_ok_16:
+  t_14 = eq 0, 0
+  br t_14 -> L_exp_fail_17, L_exp_ok_18
+L_exp_fail_17:
+  panic(2501)
+L_exp_ok_18:
+  t_15 = ne 1, 0
+  br t_15 -> L_exp_fail_19, L_exp_ok_20
+L_exp_fail_19:
+  panic(2501)
+L_exp_ok_20:
+  t_16 = eq 0, 0
+  br t_16 -> L_exp_fail_21, L_exp_ok_22
+L_exp_fail_21:
+  panic(2501)
+L_exp_ok_22:
+  t_17 = sext 42 as i64
+  t_18 = alloc 64
+  t_19 = alloc 8
+  t_20 = call @sa_fmt_i64_into(t_17, 10, t_18, 64, &t_19)
+  t_21 = load t_19 + 0 as u64
+  t_22 = alloc 16
+  store t_22 + 0, t_18 as ptr
+  store t_22 + 8, t_21 as u64
+  !t_20
+  t_23 = load t_22 + 0 as ptr
+  t_24 = load t_22 + 8 as u64
+  call @sa_print_bytes(&t_23, t_24)
+  !t_22
+  t_25 = alloc 16
+  store t_25 + 0, &str_const_0 as ptr
+  store t_25 + 8, 1 as u64
+  t_26 = load t_25 + 0 as ptr
+  t_27 = load t_25 + 8 as u64
+  call @sa_print_bytes(&t_26, t_27)
+  !t_25
   !t_19
-  !t_13
-  !t_12
+  !t_18
   ret 0

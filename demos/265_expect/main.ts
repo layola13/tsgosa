@@ -15,5 +15,13 @@ describe("more", () => {
     expect(add(1, 2)).not.toBe(4);
     expect(add(2, 3)).not.toEqual(6);
   });
+  test("zero-arity", () => {
+    expect(0).toBeNull();
+    expect(0).toBeUndefined();
+    expect(1).toBeTruthy();
+    expect(0).toBeFalsy();
+    expect(1).not.toBeNull();
+    expect(0).not.toBeTruthy();
+  });
 });
 console.log(42);
