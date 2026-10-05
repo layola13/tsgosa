@@ -2824,7 +2824,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return saLowerInFold(w, be, scope, pos, refusals, nextTemp)
 		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
-			// `??` 空合槽须先于串门（i32 位，右惰性）。
+			// `??` 空合槽须先于串门（i32 位，右惰性；串臂走串槽，i32 位大声拒，
+			// 禁串句柄误作整数，铁律 4 高于同形）。
+			if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
+				return "", "string value in i32 expression"
+			}
 			return saLowerNullish(w, be, scope, pos, refusals, nextTemp)
 		}
 		if be.OperatorToken != nil && saIsLogicAssignOp(be.OperatorToken.Kind) {

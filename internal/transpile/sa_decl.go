@@ -657,6 +657,24 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		return true
 	}
+	if init.Kind == ast.KindBinaryExpression {
+		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindQuestionQuestionToken &&
+			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
+			// 无注解空合推断（串臂即串；与三元分支同形）。
+			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "str"
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			return true
+		}
+	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(init.Pos())
