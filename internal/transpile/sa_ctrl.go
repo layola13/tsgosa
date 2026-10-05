@@ -854,8 +854,12 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 		return true, true
 	}
 	// 任一臂串值即串相等（先语法分流零发射；与 `==` 内容相等同形；
-	// 混种沿串门大声拒，禁静默强转）。
+	// 混种沿串门大声拒，禁静默强转；比较系匹配器无字典序底座，
+	// 串臂到此一律大声拒，禁误走相等断言）。
 	if saIsStrValue(iargs[0], scope) || saIsStrValue(margs[0], scope) {
+		if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" {
+			return fail("expect()." + matcher + " does not support string values (only toBe/toEqual/toStrictEqual lower string equality)")
+		}
 		return saLowerExpectStrEq(w, s, neg, iargs[0], margs[0], scope, pos, refusals, nextLabel, nextTemp)
 	}
 	aop, msg := saEvalI32(w, iargs[0], scope, pos, refusals, nextTemp)
