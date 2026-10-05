@@ -677,6 +677,115 @@ func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos f
 	return saConcatSlices(w, lh, rh, scope, nextTemp), ""
 }
 
+// saLowerParseInt `parseInt(s)` 十进制扫描（空/符号/前导数字串；停读首个非数字；
+// 空即 0；形状证据：封存 satsgo lowerParseIntCall 全形逐行镜像；基数仅收缺省/10，余下大声拒）。
+func saLowerParseInt(w printer.EmitTextWriter, s string, scope *saScope, nextTemp *int) string {
+	nt := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	nl := func(p string) string {
+		l := fmt.Sprintf("L_pi_%s_%d", p, *scope.nextLabel)
+		*scope.nextLabel++
+		return l
+	}
+	ln := nt()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, s))
+	data := nt()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, s))
+	acc := nt()
+	w.Write(fmt.Sprintf("  %s = 0\n", acc))
+	i := nt()
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	neg := nt()
+	w.Write(fmt.Sprintf("  %s = 0\n", neg))
+	signL, topL, bodyL := nl("sign"), nl("top"), nl("body")
+	digL, nextL, endL := nl("digit"), nl("next"), nl("end")
+	negL, doneL := nl("neg"), nl("done")
+	nonempty := nt()
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonempty, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonempty, signL, topL))
+	w.Write(fmt.Sprintf("%s:\n", signL))
+	b0a := nt()
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", b0a, data))
+	b0 := nt()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", b0, b0a))
+	ism := nt()
+	w.Write(fmt.Sprintf("  %s = eq %s, 45\n", ism, b0))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ism, negL, topL))
+	w.Write(fmt.Sprintf("%s:\n", negL))
+	w.Write(fmt.Sprintf("  %s = 1\n", neg))
+	i1 := nt()
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", i1, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, i1))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := nt()
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	off := nt()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", off, data, i))
+	b := nt()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", b, off))
+	d := nt()
+	w.Write(fmt.Sprintf("  %s = sub %s, 48\n", d, b))
+	ok := nt()
+	w.Write(fmt.Sprintf("  %s = sle %s, 9\n", ok, d))
+	// d 在 [0,9] 当且仅当字节为数字（sle 有符号，负数不过）。
+	nn := nt()
+	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", nn, d))
+	both := nt()
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, ok, nn))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", both, digL, endL))
+	w.Write(fmt.Sprintf("%s:\n", digL))
+	mul := nt()
+	w.Write(fmt.Sprintf("  %s = mul %s, 10\n", mul, acc))
+	nacc := nt()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nacc, mul, d))
+	w.Write(fmt.Sprintf("  %s = %s\n", acc, nacc))
+	w.Write(fmt.Sprintf("  jmp %s\n", nextL))
+	w.Write(fmt.Sprintf("%s:\n", nextL))
+	inext := nt()
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	isn := nt()
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", isn, neg))
+	negB, doneB := nl("negb"), nl("doneb")
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isn, negB, doneL))
+	w.Write(fmt.Sprintf("%s:\n", negB))
+	nv := nt()
+	w.Write(fmt.Sprintf("  %s = sub 0, %s\n", nv, acc))
+	w.Write(fmt.Sprintf("  %s = %s\n", acc, nv))
+	w.Write(fmt.Sprintf("  jmp %s\n", doneL))
+	w.Write(fmt.Sprintf("%s:\n", doneB))
+	w.Write(fmt.Sprintf("  jmp %s\n", doneL))
+	w.Write(fmt.Sprintf("%s:\n", doneL))
+	return acc
+}
+
+// saLowerParseIntArgs parseInt/Number.parseInt 实参（串求值 + 基数门；缺省/字面量
+// 10 即十进制扫描，余下大声拒；形状证据：封存 lowerParseIntCall 单参口径）。
+func saLowerParseIntArgs(w printer.EmitTextWriter, argNodes []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if len(argNodes) < 1 || len(argNodes) > 2 {
+		return "", "parseInt takes 1 argument (plus optional radix 10)"
+	}
+	s, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if len(argNodes) == 2 {
+		r := argNodes[1]
+		if r == nil || r.Kind != ast.KindNumericLiteral || r.Text() != "10" {
+			return "", "parseInt radix must be 10 (hex and other radixes are not lowerable)"
+		}
+	}
+	return saLowerParseInt(w, s, scope, nextTemp), ""
+}
+
 // saLowerNullishStr `??` 空合串槽（左非零句柄直通，否则右惰性求值；子集 null 即 0 句柄；
 // 串位；形状证据：封存 lowerBinary:3182-3206 + 本仓 saLowerNullish i32 槽同形，槽宽同 8，值宽按 ptr）。
 func saLowerNullishStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {

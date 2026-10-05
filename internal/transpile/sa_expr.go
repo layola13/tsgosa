@@ -560,9 +560,20 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return "1", false, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Number" {
-			// parseFloat 回 f64（薄口无 f64 种）；其余 Number.* 未知。
+			// parseFloat 回 f64（薄口无 f64 种）；parseInt 走十进制扫描；其余 Number.* 未知。
 			if pa.Name() != nil && pa.Name().Text() == "parseFloat" {
 				return "", false, "Number.parseFloat needs f64 (beyond i32 subset)"
+			}
+			if pa.Name() != nil && pa.Name().Text() == "parseInt" {
+				var argNodes []*ast.Node
+				if ce.Arguments != nil {
+					argNodes = ce.Arguments.Nodes
+				}
+				op, msg := saLowerParseIntArgs(w, argNodes, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
 			}
 			return "", false, "unknown Number member"
 		}
@@ -1801,6 +1812,18 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		// structuredClone builtin fallback (locals, math aliases and user functions win above).
 		if name == "structuredClone" {
 			return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)
+		}
+		// parseInt 裸全局（十进制扫描；基数门内收；形状证据：封存 lowerParseIntCall）。
+		if name == "parseInt" {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			op, msg := saLowerParseIntArgs(w, argNodes, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, false, ""
 		}
 		// btoa/atob bare globals lower through deno.sai without import
 		// (Web globals; strings only; shape evidence: upstream stdlib
