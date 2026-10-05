@@ -505,6 +505,10 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	if saIsStrValue(e, scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
+	if saCouldBeInst(e, scope) {
+		// 实例句柄禁文本化（指针误作十进制打印；模板/console/String() 共用此口；铁律 4）。
+		return "", "instance value in string position"
+	}
 	// date 串方法直通串位（toISOString/toString 系）。
 	if e != nil && e.Kind == ast.KindCallExpression && saIsDateStrCall(e.AsCallExpression(), scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
