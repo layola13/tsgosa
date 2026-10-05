@@ -3099,6 +3099,26 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			done()
 			return "", "callback parameter shape is not lowerable"
 		}
+		// 形参名禁影存活归属（`name = arg` 直写同名寄存器：调用方同名绑定若有
+		// 未释放归属（堆句柄），即被冲掉（`e = add 1, 0` 冲实例柄，下游
+		// verifier 报重定义甚或静默错码）；捕获回放等 stale 记种（无归属）
+		// 重绑无害，放行。标量沿旧口径不动。
+		// 形状证据：方法内联快照绑定同形（上游同位静默错译，本仓大声拒）。
+		{
+			pname := nm.Text()
+			if _, ok := scope.types[pname]; ok {
+				liveOwn := false
+				if oo, ook := scope.ownState[pname]; ook && oo != nil && oo.heap && !oo.consumed && !oo.released {
+					liveOwn = true
+				}
+				if liveOwn {
+					ln, col := pos(p.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "callback parameter " + pname + " shadows a live binding (rename it)"})
+					done()
+					return "", "callback parameter " + pname + " shadows a live binding (rename it)"
+				}
+			}
+		}
 		// 标量快照拷贝（形状证据：封存 bindCallbackParam:5289-5294）。
 		// 实例句柄直传绑定（方法实例形参经变参 kinds 表）。
 		name := nm.Text()
