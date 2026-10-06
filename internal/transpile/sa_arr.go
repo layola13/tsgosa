@@ -1400,6 +1400,12 @@ func saIsArrValue(e *ast.Node, scope *saScope) bool {
 				}
 			}
 		}
+		// 嵌套变量基（`arrNest` 标记内层即句柄；与 for-of 行绑定/派生透传同源）。
+		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if scope.arrNest != nil && scope.arrNest[ea.Expression.Text()] {
+				return true
+			}
+		}
 		return false
 	case ast.KindPropertyAccessExpression:
 		// 实例/链 arr 字段（`c.a`/`q.r.a` 纯查表；私名/静态沿旧门）。

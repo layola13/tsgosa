@@ -488,6 +488,47 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				_ = kind
 				return op, false, ""
 			}
+			// Array.isArray(x) 种判定（数组即 1，串/i32 即 0；先判定后求值，
+			// 单次求值保副作用；未知种大声拒，禁指针误判）。
+			if m == "isArray" && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" {
+				var argNodes []*ast.Node
+				if ce.Arguments != nil {
+					argNodes = ce.Arguments.Nodes
+				}
+				if len(argNodes) != 1 {
+					return "", false, "Array.isArray takes one argument"
+				}
+				arg := argNodes[0]
+				if saIsArrValue(arg, scope) {
+					if _, msg := saArrValueOf(w, arg, scope, pos, refusals, nextTemp); msg != "" {
+						return "", false, msg
+					}
+					return "1", false, ""
+				}
+				if arg != nil && saIsStrExpr(arg, scope) {
+					if _, msg := saEvalStr(w, arg, scope, pos, refusals, nextTemp); msg != "" {
+						return "", false, msg
+					}
+					return "0", false, ""
+				}
+				if arg != nil && arg.Kind == ast.KindNumericLiteral {
+					return "0", false, ""
+				}
+				if arg != nil && arg.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[arg.Text()]; ok && (k == "i32" || k == "bool") {
+						if _, msg := saEvalI32(w, arg, scope, pos, refusals, nextTemp); msg != "" {
+							return "", false, msg
+						}
+						return "0", false, ""
+					}
+				}
+				// 余形试 i32 求值（成则恒非数组即 0；前序判定皆语法级零落字，
+				// 此为首次求值无双副作用；败则透拒因）。
+				if _, msg := saEvalI32(w, arg, scope, pos, refusals, nextTemp); msg != "" {
+					return "", false, msg
+				}
+				return "0", false, ""
+			}
 		}
 		// super.m() 内联基方法（同接收者；形状证据：封存 lowerSuperMethodCall:237-250）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
@@ -618,6 +659,32 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			// parseFloat 回 f64（薄口无 f64 种）；parseInt 走十进制扫描；其余 Number.* 未知。
 			if pa.Name() != nil && pa.Name().Text() == "parseFloat" {
 				return "", false, "Number.parseFloat needs f64 (beyond i32 subset)"
+			}
+			// Number.isNaN/isFinite 恒判定（i32 子集无 NaN/Inf：浮点字面量早拒，
+			// 除零走 verifier trap；串实参恒 false（JS 语义非 Number 即 false）；
+			// 先判定后求值，单次求值保副作用；与 isInteger 同形）。
+			if pa.Name() != nil && (pa.Name().Text() == "isNaN" || pa.Name().Text() == "isFinite") {
+				isNaN := pa.Name().Text() == "isNaN"
+				var argNodes []*ast.Node
+				if ce.Arguments != nil {
+					argNodes = ce.Arguments.Nodes
+				}
+				if len(argNodes) != 1 {
+					return "", false, "Number." + pa.Name().Text() + " takes one argument"
+				}
+				if argNodes[0] != nil && saIsStrExpr(argNodes[0], scope) {
+					if _, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+						return "", false, msg
+					}
+					return "0", false, ""
+				}
+				if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+					return "", false, msg
+				}
+				if isNaN {
+					return "0", false, ""
+				}
+				return "1", false, ""
 			}
 			if pa.Name() != nil && pa.Name().Text() == "parseInt" {
 				var argNodes []*ast.Node
