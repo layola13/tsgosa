@@ -2721,6 +2721,9 @@ type saScope struct {
 	expectCountSlot string
 	expectTarget    int
 	expectTargetSet bool
+	// 数组域元种表（构造期字面量直供逐元判定记 `Iface.field`→i32/str；
+	// 实例深相等按表分流，缺表/混合大声拒）。
+	arrFieldElem map[string]string
 	// 回调域内标记（`saInlineTestUnit` 进置 true；顶层/普通函数内调
 	// assertions 无尾声点，大声拒，禁静默无检查）。
 	expectInTest bool

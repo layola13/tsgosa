@@ -721,6 +721,101 @@ func saStrContentEq(w printer.EmitTextWriter, ah, bh string, scope *saScope, nex
 	return both
 }
 
+// saDeepArrEq 数组域深相等值式（等长 + 逐元；i32 元 ne/eq 链，str 元内容链；
+// 肯定形返失败条件（or 累），否定形返失败条件（and 累）；调用方 br 断言）。
+func saDeepArrEq(w printer.EmitTextWriter, ah, bh, elemKind string, neg bool, scope *saScope, nextTemp, nextLabel *int) string {
+	la := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", la, ah))
+	lb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lb, bh))
+	da := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", da, ah))
+	db := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", db, bh))
+	acc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if !neg {
+		w.Write(fmt.Sprintf("  %s = ne %s, %s\n", acc, la, lb))
+	} else {
+		w.Write(fmt.Sprintf("  %s = eq %s, %s\n", acc, la, lb))
+	}
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_deq_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_deq_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_deq_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, la))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	eoff := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", eoff, i))
+	eaddr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", eaddr, da, eoff))
+	faddr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", faddr, db, eoff))
+	var dd string
+	if elemKind == "str" {
+		ea := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", ea, eaddr))
+		eb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", eb, faddr))
+		both := saStrContentEq(w, ea, eb, scope, nextTemp)
+		dd = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if !neg {
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", dd, both))
+		} else {
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", dd, both))
+		}
+	} else {
+		ea := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", ea, eaddr))
+		eb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eb, faddr))
+		dd = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if !neg {
+			w.Write(fmt.Sprintf("  %s = ne %s, %s\n", dd, ea, eb))
+		} else {
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", dd, ea, eb))
+		}
+	}
+	cc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if !neg {
+		w.Write(fmt.Sprintf("  %s = or %s, %s\n", cc, acc, dd))
+	} else {
+		w.Write(fmt.Sprintf("  %s = and %s, %s\n", cc, acc, dd))
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", acc, cc))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return acc
+}
+
 // saLowerExpectInstEq 实例深相等（同布局双实例逐 i32 域 eq 链；含非 i32 域/
 // 布局不同大声拒；`.not` 翻转；任一臂非实例沿旧路，禁抢 i32/串门）。
 func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
@@ -759,17 +854,37 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	ifaceName := ka
+	if len(ifaceName) > 5 && ifaceName[:5] == "inst:" {
+		ifaceName = ifaceName[5:]
+	}
+	elemKinds := map[string]string{}
 	for _, k := range keys {
-		if fk, ok := defA.fkinds[k]; !ok || (fk != "i32" && fk != "str") {
-			ln, col := pos(iarg.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32/str fields yet"})
-			return true, false
+		if fk, ok := defA.fkinds[k]; ok && (fk == "i32" || fk == "str") {
+			continue
 		}
+		if fk, ok := defA.fkinds[k]; ok && fk == "arr" {
+			if ek, ok := scope.arrFieldElem[ifaceName+"."+k]; ok && (ek == "i32" || ek == "str") {
+				elemKinds[k] = ek
+				continue
+			}
+		}
+		ln, col := pos(iarg.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32/str fields yet"})
+		return true, false
 	}
 	acc := ""
 	for _, k := range keys {
 		var dd string
-		if fk, _ := defA.fkinds[k]; fk == "str" {
+		if fk, _ := defA.fkinds[k]; fk == "arr" {
+			ah := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, defA.offsets[k]))
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, defA.offsets[k]))
+			dd = saDeepArrEq(w, ah, bh, elemKinds[k], neg, scope, nextTemp, nextLabel)
+		} else if fk, _ := defA.fkinds[k]; fk == "str" {
 			ah := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, defA.offsets[k]))

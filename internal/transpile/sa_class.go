@@ -2206,6 +2206,31 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		if fk := def.fkinds[o.fname]; fk == "arr" {
 			// arr 域存句柄（字面量递归/绑定直传经句柄总线；泛型形参域等标量初值
 			// 按 i32 求值存入 ptr 槽；封存 lowerObjectLiteral:9105-9109 按域种无区分落字）。
+			// 字面量直供记元种（逐元 `saLitFieldKind`，全同才记，供实例深相等分流）。
+			if al := o.init; al != nil && al.Kind == ast.KindArrayLiteralExpression {
+				if lit := al.AsArrayLiteralExpression(); lit != nil && lit.Elements != nil {
+					ek := ""
+					for _, el := range lit.Elements.Nodes {
+						k := saLitFieldKind(el, scope)
+						if k != "i32" && k != "str" {
+							ek = ""
+							break
+						}
+						if ek == "" {
+							ek = k
+						} else if ek != k {
+							ek = ""
+							break
+						}
+					}
+					if ek != "" {
+						if scope.arrFieldElem == nil {
+							scope.arrFieldElem = map[string]string{}
+						}
+						scope.arrFieldElem[def.name+"."+o.fname] = ek
+					}
+				}
+			}
 			v, msg := saArrValueOf(w, o.init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				v, msg = saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
