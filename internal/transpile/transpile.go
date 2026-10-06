@@ -1733,6 +1733,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
 				continue
 			}
+			// `import defer` 异步模块无底座，定位拒收（禁警告放行后用点错位）。
+			if cl := imp.ImportClause; cl != nil && cl.AsImportClause().PhaseModifier == ast.KindDeferKeyword {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "import defer needs async modules (not lowerable)"})
+				continue
+			}
 			// Non-builtin imports warn and continue (usage-erased imports
 			// never reach resolution; use sites refuse naturally when the
 			// names are actually referenced; shape evidence: upstream
