@@ -442,7 +442,7 @@
 - [x] H10 声明/赋值位三元值 → step143 已落地（f64 门仅真浮臂进 + i32 臂记种 + 去 f64 臂双写；`const t`/`r=` 转正且真机值对）.
 - [x] H11 for-in 增量 UseAfterMove → 本轮复验双边同过且真机同值 60，闭环（201_for_in 常绿为证）。
 - [x] H15 绑定嵌套数组 for-of 行绑定 → step153 已修（202_nested_forof 真机 4），本轮复验双边同过同值闭环。
-- [ ] H13 串重绑释放（`s += /s = s+` 重绑缺先释，verifier 报 RegisterRedefinition；上游同例段错误，真上游 bug；另立）.
+- [x] H13 串重绑释放 → 本轮闭环（`sa_ctrl.go` 串 `+=` + 串赋值两处补 `saRebindRelease` 先释 + 新柄 consume/复位，与上游 `!s` 先释同构；具名柄直授（`s = t` 别名双释）改上游原句大声拒。探针 /tmp/h13 ×5 全过 `sa check`（此前全 RegisterRedefinition）；归一化差分：`!s` + 重绑与上游同位。新增 `demos/267_str_rebind`（`+=`/`s = s +` /循环累加，`sa check` 143 指令 ok，node 镜算 `ab/abc/abc!!`）。门禁：`--check` **267/267 SA-CLEAN** + `--corpus` **286 agree 零回退** + `testrunner` 绿；`go vet` + 新增区 `gofmt` 干净；`transpile.go`/`main.go` 未动；已推远端）。
 - [ ] H14 trim/repeat 指针算术段错误（trim 柄 `out` 已补 own 但运行错，上游 trim 连解析错；另立）.
 - [ ] H12 alloc 结果归属全覆盖审计（verifier 规则：alloc 出须 `!`；已修回调 slot/for-of 域/extern call/slice，余下具化点逐方法探针 build-exe 全覆盖）.
 - [x] H2 arrNest 方法派生传递 → step136 已闭环（slice/toReversed/with/toSpliced/concat/from/filter；map 天然 flat）。

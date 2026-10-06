@@ -181,7 +181,15 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 					return false
 				}
 				out := saConcatSlices(w, be.Left.Text(), h, scope, nextTemp)
+				// 串重绑先释旧柄（H13：与上游 `!s` 先释同形；saConcatSlices
+				// 已释输入 temps，具名旧值在此释；新柄 consume+复位防双释）。
+				saRebindRelease(w, scope, be.Left.Text())
 				w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), out))
+				saConsumeOwn(scope, out)
+				if b := saOwnOf(scope, be.Left.Text()); b != nil {
+					b.heap = true
+				}
+				saMarkRebound(scope, be.Left.Text())
 				return true
 			}
 		}
@@ -2375,7 +2383,20 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string assignment needs string value: " + msg})
 			return false
 		}
+		if _, named := scope.types[h]; named && !saIsTempOp(h) {
+			// 具名串柄直授即别名，上游同形大声拒（H13 同源；禁别名双释）。
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "handle copies need an explicit clone (pass the handle directly)"})
+			return false
+		}
+		// 串重绑先释旧柄（H13；新柄 consume+复位防双释）。
+		saRebindRelease(w, scope, name)
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		saConsumeOwn(scope, h)
+		if b := saOwnOf(scope, name); b != nil {
+			b.heap = true
+		}
+		saMarkRebound(scope, name)
 		return true
 	}
 	if k == "f64" {
