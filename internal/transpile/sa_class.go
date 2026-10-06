@@ -275,11 +275,12 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				base = q
 			}
 			if base == "" {
-				ln, col := pos(st.Pos())
+				ln, col := pos(el.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs a plain base class name (mixins are not lowerable)"})
 				return false
 			}
 			if def.parent != "" {
+				// 多基系整句问题（子句节点位错位，见多基探针；指类声明位）。
 				ln, col := pos(st.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class extends needs exactly one base class"})
 				return false
@@ -292,7 +293,8 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				}
 			}
 			if !ok || bdef.isIface {
-				ln, col := pos(st.Pos())
+				// 未知基拒因指 extends 子句基位（与 implements 未知接口子句位同形）。
+				ln, col := pos(el.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " extends unknown base " + base + " (declare the base class first)"})
 				return false
 			}
