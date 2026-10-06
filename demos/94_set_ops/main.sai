@@ -13,24 +13,32 @@
   store t_3 + 0, t_2 as ptr
   store t_3 + 8, 4 as u64
   call @sa_btree_set_insert(&s, &t_3)
+  !t_2
+  !t_3
   t_4 = alloc 8
   store t_4 + 0, 7 as i32
   t_5 = alloc 16
   store t_5 + 0, t_4 as ptr
   store t_5 + 8, 4 as u64
   call @sa_btree_set_insert(&s, &t_5)
+  !t_4
+  !t_5
   t_6 = alloc 8
   store t_6 + 0, 5 as i32
   t_7 = alloc 16
   store t_7 + 0, t_6 as ptr
   store t_7 + 8, 4 as u64
   t_8 = call @sa_btree_set_contains(&s, &t_7)
+  !t_6
+  !t_7
   t_9 = alloc 8
   store t_9 + 0, 6 as i32
   t_10 = alloc 16
   store t_10 + 0, t_9 as ptr
   store t_10 + 8, 4 as u64
   t_11 = call @sa_btree_set_contains(&s, &t_10)
+  !t_9
+  !t_10
   t_12 = add t_8, t_11
   !t_11
   !t_8

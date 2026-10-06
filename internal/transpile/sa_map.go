@@ -29,7 +29,7 @@ func saIsMapMethod(m string) bool {
 // saIsSetMethod Set 方法名集合。
 func saIsSetMethod(m string) bool {
 	switch m {
-	case "add", "has", "delete", "clear", "size":
+	case "add", "has", "delete", "clear", "size", "getSize":
 		return true
 	}
 	return false
@@ -76,13 +76,14 @@ func saMapCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 }
 
 // saMapKeySlice 键编码（串键直通；i32 键经单元切片；形状证据：mapKeySlice）。
-func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	if saIsStrExpr(a, scope) {
-		return saEvalStr(w, a, scope, pos, refusals, nextTemp)
+		ks, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+		return ks, "", msg
 	}
 	v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		return "", msg
+		return "", "", msg
 	}
 	cell := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -93,7 +94,21 @@ func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fu
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", slice))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slice, cell))
 	w.Write(fmt.Sprintf("  store %s + 8, 4 as u64\n", slice))
-	return slice, ""
+	return slice, cell, ""
+}
+
+// saReleaseKeySlice 释键槽（仅 i32 键分支的裸 alloc cell/slice；串键
+// cell 为空、串柄走既有归属口，禁双释；调用点 btree call 后、return 前调用）。
+func saReleaseKeySlice(w printer.EmitTextWriter, ks, cell string) {
+	if cell == "" {
+		return
+	}
+	if saIsTempOp(cell) {
+		w.Write(fmt.Sprintf("  !%s\n", cell))
+	}
+	if saIsTempOp(ks) {
+		w.Write(fmt.Sprintf("  !%s\n", ks))
+	}
 }
 
 // saLowerMapIndexLoad lowering `m[k]` 读（脱糖为 map-get；值种按建表记
@@ -101,13 +116,14 @@ func saMapKeySlice(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fu
 // `m[k]` 系数组地址错码，禁照抄，见铁律 4）。
 func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	scope.addImport("sa_std/btree_map.sa")
-	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
+	ks, kcell, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
+	saReleaseKeySlice(w, ks, kcell)
 	saOwnTemp(scope, t)
 	vkind := scope.mapVals[recv]
 	if vkind == "" {
@@ -122,7 +138,7 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 // 同布局绑定直传；与 `.set(k, v)` 同形同值；Set 无键值大声拒由调用方守卫）。
 func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
 	scope.addImport("sa_std/btree_map.sa")
-	ks, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
+	ks, kcell, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return msg
 	}
@@ -132,6 +148,7 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 			return msg
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+		saReleaseKeySlice(w, ks, kcell)
 		return ""
 	}
 	if vk := scope.mapVals[recv]; vk != "" && len(vk) > 5 && vk[:5] == "inst:" {
@@ -164,6 +181,7 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 			return "record value does not match interface " + want
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+		saReleaseKeySlice(w, ks, kcell)
 		return ""
 	}
 	v, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
@@ -175,6 +193,7 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 		return msg
 	}
 	w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+	saReleaseKeySlice(w, ks, kcell)
 	return ""
 }
 
@@ -373,7 +392,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			if len(argNodes) != 2 {
 				return "", "", "Map.set needs 2 arguments"
 			}
-			ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+			ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
@@ -383,6 +402,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 					return "", "", msg
 				}
 				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+				saReleaseKeySlice(w, ks, kcell)
 				return "0", "i32", ""
 			}
 			if vk := scope.mapVals[recv]; vk != "" && len(vk) > 5 && vk[:5] == "inst:" {
@@ -415,6 +435,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 					return "", "", "record value does not match interface " + want
 				}
 				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+				saReleaseKeySlice(w, ks, kcell)
 				return "0", "i32", ""
 			}
 			v, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
@@ -426,18 +447,20 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 				return "", "", msg
 			}
 			w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+			saReleaseKeySlice(w, ks, kcell)
 			return "0", "i32", ""
 		case "get":
 			if len(argNodes) != 1 {
 				return "", "", "Map.get needs 1 argument"
 			}
-			ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+			ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, ks))
+			saReleaseKeySlice(w, ks, kcell)
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
 			// 读回种按建表记临时量（与下标读 112-116 同形；否则下游把句柄当 i32 用）。
@@ -451,13 +474,14 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			if len(argNodes) != 1 {
 				return "", "", "Map.has needs 1 argument"
 			}
-			ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+			ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_contains_key(&%s, &%s)\n", t, recv, ks))
+			saReleaseKeySlice(w, ks, kcell)
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
 			return t, "i32", ""
@@ -465,7 +489,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			if len(argNodes) != 1 {
 				return "", "", "Map.delete needs 1 argument"
 			}
-			ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+			ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
@@ -477,6 +501,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			drop := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_remove(&%s, &%s)\n", drop, recv, ks))
+			saReleaseKeySlice(w, ks, kcell)
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, drop)
 			return t, "i32", ""
@@ -508,23 +533,25 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		if len(argNodes) != 1 {
 			return "", "", "Set.add needs 1 argument"
 		}
-		ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+		ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", recv, ks))
+		saReleaseKeySlice(w, ks, kcell)
 		return "0", "i32", ""
 	case "has":
 		if len(argNodes) != 1 {
 			return "", "", "Set.has needs 1 argument"
 		}
-		ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+		ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_contains(&%s, &%s)\n", t, recv, ks))
+		saReleaseKeySlice(w, ks, kcell)
 		// 调用结果归属(返前释放；上游 ownTemp 同形).
 		saOwnTemp(scope, t)
 		return t, "i32", ""
@@ -532,7 +559,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		if len(argNodes) != 1 {
 			return "", "", "Set.delete needs 1 argument"
 		}
-		ks, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
+		ks, kcell, msg := saMapKeySlice(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
@@ -544,6 +571,7 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		drop := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_remove(&%s, &%s)\n", drop, recv, ks))
+		saReleaseKeySlice(w, ks, kcell)
 		// 调用结果归属(返前释放；上游 ownTemp 同形).
 		saOwnTemp(scope, drop)
 		return t, "i32", ""
@@ -553,9 +581,9 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_set_clear(&%s)\n", recv))
 		return "0", "i32", ""
-	case "size":
+	case "size", "getSize":
 		if len(argNodes) != 0 {
-			return "", "", "Set.size needs 0 arguments"
+			return "", "", "Set." + method + " needs 0 arguments"
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
