@@ -3125,12 +3125,17 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		// 局部类型声明擦除（纯类型零运行时；顶层同律；别名引用另步大声拒）。
 		return false, false
 	case ast.KindEnumDeclaration, ast.KindModuleDeclaration:
-		// 函数内 `declare enum/namespace` 环境声明擦除（普通形沿旧门）。
+		// 函数内 `declare enum/namespace` 环境声明擦除（普通形沿旧 kind 门，拒因同文）。
 		if ast.HasModifier(s, ast.ModifierFlagsAmbient) {
 			return false, false
 		}
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		return false, true
+	case ast.KindWithStatement:
+		// `with` 须动态作用域，无底座，定位拒收（禁通用 kind 门文不对题）。
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "with statements are not lowerable (dynamic scope)"})
 		return false, true
 	case ast.KindFunctionDeclaration:
 		// 函数内 `declare function` 环境声明擦除（普通嵌套函数沿旧门）。
