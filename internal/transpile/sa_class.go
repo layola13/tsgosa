@@ -649,6 +649,13 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				return false
 			}
 		}
+		for mn := range idef.methods {
+			if _, ok := def.methods[mn]; !ok {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
+				return false
+			}
+		}
 	}
 	classes[name] = def
 	// 自身具名（`const D = class E`）记同体别名（值对；封存 inner 名泄漏 gap
@@ -1175,6 +1182,16 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	}
 	for _, m := range decl.Members.Nodes {
 		if m.Kind != ast.KindPropertySignature {
+			// 方法签名记名不占槽（供 implements 存在性校验；无发射位，
+			// 禁静默缺方法；形状证据：封存 recordLayout 方法跳过同形）。
+			if m.Kind == ast.KindMethodSignature {
+				if fn := m.Name(); fn != nil && fn.Kind == ast.KindIdentifier {
+					if def.methods == nil {
+						def.methods = map[string]*ast.Node{}
+					}
+					def.methods[fn.Text()] = m
+				}
+			}
 			// non-field members declare no layout slot (methods/indexers/signatures are type-only;
 			// cf recordLayout method-signature skip).
 			continue
