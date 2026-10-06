@@ -1,0 +1,9 @@
+@import "../demos/275_try_arms/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "275_try_arms"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 0, 27501)
+    !v
+    return

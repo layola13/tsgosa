@@ -1,0 +1,9 @@
+@import "../demos/270_date_main/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "270_date_main"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 0, 27001)
+    !v
+    return

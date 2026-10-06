@@ -1,0 +1,9 @@
+@import "../demos/273_pow_assign/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "273_pow_assign"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 0, 27301)
+    !v
+    return

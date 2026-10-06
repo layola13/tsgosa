@@ -1,0 +1,9 @@
+@import "../demos/267_str_rebind/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "267_str_rebind"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 0, 26701)
+    !v
+    return
