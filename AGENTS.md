@@ -24,6 +24,7 @@
 
 ## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
 
+- R1-9 sort 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_sort`（原地数值插入排序，无新柄，调用方保留原柄；`sa check` 595 指令 ok）；tsgosa `sort` 无比较器分支改单 `call @ts_arr_sort`（+ import；无新柄无归属；比较器形沿既有内联不动），并删除 `saLowerInsertionSort` 内联（约 95 行死代码消除）。3 demos 重生成（26_sort/178_obj_sum/200_finale，`sa check` 全 ok）+ node 镜算一致。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + 新增区 `gofmt` 干净（`sa_class/sa_decl` 告警系旧行）。
 - R1-8 toSorted 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_tosorted`（拷贝+数值插入排序返新数组，原不动；`sa check` 552 指令 ok）；tsgosa 新增 `saLowerToSorted` 单 call（+ own dest；透传保留；比较器形沿既有内联不动）。3 demos 重生成（84_to_sorted/26_sort/147_median，`sa check` 全 ok）+ node 镜算（`[3,1,2]->[1,2,3]/原数组不变`）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。
 - R1-7 toReversed 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_toreversed`（逆序拷返新数组；`sa check` 486 指令 ok；sci `d51bca25` 已推）；tsgosa `saLowerToReversed` 内联换单 call（+ own dest；透传保留）。1 demo 重生成（`sa check` ok）+ node 镜算（`[3,2,1]`/原数组不变）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。
 - step361（label 变量/表达式擦除一次过，落 `sa_ctrl.go` 约 10 行，零新 Go 文件；JEV choose 指路57%）：变量/表达式语句标签恒无用（break/continue 只能进循环/块/标号块），擦标签直降内句。实证：变量/表达式/重名标签通 + `sa check` ok。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净；`transpile.go`/`main.go` 未动。

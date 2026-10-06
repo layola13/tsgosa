@@ -1995,103 +1995,6 @@ func saLowerArrayPush(w printer.EmitTextWriter, arr, val string, scope *saScope,
 	return nlen
 }
 
-// saLowerInsertionSort 原地数值插入排序（形状证据：封存 lowerInsertionSort:6057-6123）。
-func saLowerInsertionSort(w printer.EmitTextWriter, arr string, scope *saScope, nextTemp *int) {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, arr))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, arr))
-	topL := fmt.Sprintf("L_sort_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_sort_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_sort_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 1\n", i))
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	ioff := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", ioff, i))
-	iaddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", iaddr, data, ioff))
-	key := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", key, iaddr))
-	j := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", j, i))
-	inTop := fmt.Sprintf("L_sort_in_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	inChk := fmt.Sprintf("L_sort_in_chk_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	inBody := fmt.Sprintf("L_sort_in_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	inEnd := fmt.Sprintf("L_sort_in_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", inTop))
-	c1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c1, j))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c1, inChk, inEnd))
-	w.Write(fmt.Sprintf("%s:\n", inChk))
-	joff := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", joff, j))
-	jaddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", jaddr, data, joff))
-	aj := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", aj, jaddr))
-	c2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", c2, aj, key))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c2, inBody, inEnd))
-	w.Write(fmt.Sprintf("%s:\n", inBody))
-	j1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", j1, j))
-	j1off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", j1off, j1))
-	j1addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", j1addr, data, j1off))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", j1addr, aj))
-	jm := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", jm, j))
-	w.Write(fmt.Sprintf("  %s = %s\n", j, jm))
-	w.Write(fmt.Sprintf("  jmp %s\n", inTop))
-	w.Write(fmt.Sprintf("%s:\n", inEnd))
-	k1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", k1, j))
-	k1off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", k1off, k1))
-	k1addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", k1addr, data, k1off))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", k1addr, key))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-}
-
 // saLowerArrayScan 相等扫描（index 系回位/-1，includes 回 1/0；
 // 形状证据：封存 lowerArrayScan:6444-6513）。
 func saLowerArrayScan(w printer.EmitTextWriter, recv, want, from string, reverse, wantIndex bool, scope *saScope, nextTemp *int) string {
@@ -3917,7 +3820,10 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return "", "", method + " without a comparator takes 0 arguments"
 		}
 		if method == "sort" {
-			saLowerInsertionSort(w, recv, scope, nextTemp)
+			// R1 回迁映射：原地数值插入排序语义由 `sci/sa_std/ts_array.sa`
+			// `@ts_arr_sort` 实现，本侧只做 import + 直接调用（无新柄）。
+			scope.addImport("sa_std/ts_array.sa")
+			w.Write(fmt.Sprintf("  call @ts_arr_sort(%s)\n", recv))
 			return recv, "arr", ""
 		}
 		return saLowerToSorted(w, recv, scope, nextTemp), "arr", ""
