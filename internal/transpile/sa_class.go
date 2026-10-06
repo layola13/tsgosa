@@ -196,6 +196,9 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}, staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{}}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
+	// implements 接口名收集（尾部布局校验；单继承 extends 同循环，余形
+	// implements 子句在此只收名；形状证据：封存 parseHeritage:42-83）。
+	var implIfaces []string
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
 	// implements 擦除；多 extends/动态基/未知基/环一律拒。
 	// 形状证据：封存 parseHeritage:42-83 + inheritClass:88-215。
@@ -205,6 +208,32 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				continue
 			}
 			if h.AsHeritageClause().Token != ast.KindExtendsKeyword {
+				if h.AsHeritageClause().Token == ast.KindImplementsKeyword {
+					if types := h.AsHeritageClause().Types; types != nil {
+						for _, el := range types.Nodes {
+							if el == nil {
+								continue
+							}
+							if el.Kind == ast.KindIdentifier {
+								implIfaces = append(implIfaces, el.Text())
+							} else if el.Kind == ast.KindExpressionWithTypeArguments {
+								if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
+									implIfaces = append(implIfaces, ex.Text())
+								} else {
+									implIfaces = append(implIfaces, "?")
+								}
+							} else if el.Kind == ast.KindTypeReference {
+								if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil && tn.TypeName.Kind == ast.KindIdentifier {
+									implIfaces = append(implIfaces, tn.TypeName.Text())
+								} else {
+									implIfaces = append(implIfaces, "?")
+								}
+							} else {
+								implIfaces = append(implIfaces, "?")
+							}
+						}
+					}
+				}
 				continue
 			}
 			types := h.AsHeritageClause().Types
@@ -599,6 +628,28 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		}
 	}
 	def.size = off
+	// implements 布局校验（类须含接口全部字段；未知接口/限定泛型名/缺字段
+	// 大声拒，禁静默擦除；接口方法签名记录期本就跳过，不在此校验）。
+	for _, iname := range implIfaces {
+		if iname == "?" {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
+			return false
+		}
+		idef, ok := classes[iname]
+		if !ok || idef == nil || !idef.isIface {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
+			return false
+		}
+		for _, f := range idef.fields {
+			if _, ok := def.offsets[f.name]; !ok {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
+				return false
+			}
+		}
+	}
 	classes[name] = def
 	// 自身具名（`const D = class E`）记同体别名（值对；封存 inner 名泄漏 gap
 	// 即此语义；别名冲突诚实拒）。命名空间成员（aliasOwn 假）不记外层别名。
@@ -1295,8 +1346,8 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 			sz, _ := saFieldWidth(fkind)
 			off += sz
 		}
-		def.size = off
-		classes[name] = def
+	def.size = off
+	classes[name] = def
 		return def.name, true
 	}
 }
