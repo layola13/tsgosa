@@ -2611,10 +2611,22 @@ func saLowerForInit(w printer.EmitTextWriter, init *ast.Node, scope *saScope, po
 		if _, ok := scope.types[name]; !ok {
 			// 初始化位允许首次绑定（`for (i = 0;;)`），视同 let 隐式声明。
 			scope.types[name] = "i32"
-		} else if scope.types[name] != "i32" {
+		} else if scope.types[name] != "i32" && scope.types[name] != "f64" {
 			ln, col := pos(init.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "assignment to non-i32 variable " + name})
 			return false
+		}
+		if scope.types[name] == "f64" {
+			// f64 计数器初值直写（语句位 f64 分支同形；整数字面量文本直绑，
+			// 上游 `i = 0` 同形；plain 永不归属，无释放）。
+			op, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			return true
 		}
 		op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -2699,6 +2711,21 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		be := incr.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
 			// `x = <i32>` 赋值形增量（与语句位同门）。
+			// f64 计数器增量直写（语句位 f64 分支同形；`i = i + 1.0` 经
+			// saEvalF64 得 fadd，整/小数量化皆 f64 世界自洽，条件位既有
+			// fcmp 通路配套；plain 永不归属，无释放）。
+			if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[be.Left.Text()]; ok && k == "f64" {
+					r, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(incr.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), r))
+					return true
+				}
+			}
 			target, okT := saBoundI32(scope, be.Left)
 			if !okT {
 				// 槽赋值形增量（直存槽；与初始化位同形）。
