@@ -1,0 +1,9 @@
+@import "../demos/280_keyof/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "280_keyof"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1, 28001)
+    !v
+    return

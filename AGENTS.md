@@ -491,6 +491,7 @@
 - D7 T2 定案（JEV 100%）：`const x: i32 = 7.5` 维持拒收（上游忽略注解按 f64 发射系静默错译；截断语义需 JS ToInt32 另立项）。
 - D8 f64 整循环发射定案（JEV 90%）：维持 f64 世界（`fcmp/fadd`，与本仓条件位同构；混合字面量强制以后端契约为准，上游自身同样依赖；小数形双边逐行同形）。
 - D9 symbol 注解定案（JEV 90%）：`const s: symbol = 1` 维持拒收（symbol 无 i32 语义，与 T2 同政策）。
+- [x] B-basic6 基础语法普查三轮 60 形 + `keyof`/构造重载双转正（`transpile.go` 注解核 + `sa_class.go` 记录期各约 10 行，零新 Go 文件）：60 探针（声明/函数/类/类型/控制/模块/async/命名空间）结论——既有全通（箭头/闭包/缺省/泛型/解构/spread/`??`/模板/枚举/元组/标号/do-while/try/async形/import-type/ns/export-ва形/空块/getter/重载签名）；双边同拒 parity（枚举串/可选属性/嵌套函数/spread-对象/解构改名/`?.`调用/逗号/promise-then/生成器/import-eq/with/debugger除外皆拒；`debugger` 系本仓先行擦除领先）；真缺口 6 项：`keyof`（`k: keyof P` 上游擦除 i32 传柄位，本仓记 `str` 更忠实且值流一致，step117 同例有意分歧；`k.length` 端到端通）+ 构造重载签名（无体构造跳过，实现体唯一定义；方法重载 554-569 同例；双实现体仍拒）各探针改前拒改后过且 `check ok`。余 4 项另步：`typeof` 查询/条件类型注解（类型求解域）、多 case 标签堆叠（switch 分析域）、`for await`（async 迭代脱糖域）。新增 `demos/280_keyof`（`k.length`，`check ok`，node `1`）+ `demos/281_ctor_overload`（重载+字段，`check ok`，node `5`）+ `sa_tests/t280/t281`（有意义断言 1/5，`--list` 发现 23/23）。门禁：`--check` **281/281 SA-CLEAN** + `--corpus` **286 agree** 零回退；`go build` + `go vet` 绿；新增区 `gofmt` 干净（`sa_class.go` 文件级告警 stash 实证皆旧行）；`main.go` 未动。
 
 - 报告：`subset-report.txt` 逐行 `file:line:col: msg`，有拒绝则 exit 1。
 

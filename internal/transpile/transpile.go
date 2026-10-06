@@ -2497,6 +2497,11 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		if to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
 			return saAnnotKind(to.Type)
 		}
+		// `keyof T` 即键串（恒 string；上游擦除为 i32 传柄位，本仓记 str
+		// 更忠实且值流一致，step117 别名消解同例有意分歧）。
+		if to != nil && to.Operator == ast.KindKeyOfKeyword {
+			return "str", true
+		}
 		return "", false
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {

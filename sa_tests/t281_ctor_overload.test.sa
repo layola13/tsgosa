@@ -1,0 +1,9 @@
+@import "../demos/281_ctor_overload/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "281_ctor_overload"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 5, 28101)
+    !v
+    return

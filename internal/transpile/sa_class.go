@@ -538,6 +538,11 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			sz, _ := saFieldWidth(fkind)
 			off += sz
 		case ast.KindConstructor:
+			// 重载签名擦除：无体构造声明不注册（实现体唯一定义；方法重载
+			// 554-569 同例；双实现体仍沿旧门拒）。
+			if m.BodyData() == nil || m.BodyData().Body == nil {
+				continue
+			}
 			if def.ctor != nil {
 				ln, col := pos(m.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate constructor"})
