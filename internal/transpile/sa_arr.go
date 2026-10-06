@@ -1995,88 +1995,6 @@ func saLowerArrayPush(w printer.EmitTextWriter, arr, val string, scope *saScope,
 	return nlen
 }
 
-// saLowerArrayScan 相等扫描（index 系回位/-1，includes 回 1/0；
-// 形状证据：封存 lowerArrayScan:6444-6513）。
-func saLowerArrayScan(w printer.EmitTextWriter, recv, want, from string, reverse, wantIndex bool, scope *saScope, nextTemp *int) string {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-	start := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if reverse && from == "" {
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", start, ln))
-	} else if from == "" {
-		w.Write(fmt.Sprintf("  %s = 0\n", start))
-	} else {
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", start, saArrayClampLen(w, from, ln, scope, nextTemp)))
-	}
-	res := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if wantIndex {
-		w.Write(fmt.Sprintf("  %s = -1\n", res))
-	} else {
-		w.Write(fmt.Sprintf("  %s = 0\n", res))
-	}
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, start))
-	topL := fmt.Sprintf("L_sc_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_sc_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	nextL := fmt.Sprintf("L_sc_next_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_sc_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	hitL := fmt.Sprintf("L_sc_hit_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if !reverse {
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	} else {
-		w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c, i))
-	}
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-	cur := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cur, addr))
-	eq := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", eq, cur, want))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, hitL, nextL))
-	w.Write(fmt.Sprintf("%s:\n", hitL))
-	if wantIndex {
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", res, i))
-	} else {
-		w.Write(fmt.Sprintf("  %s = 1\n", res))
-	}
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", nextL))
-	step := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if !reverse {
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", step, i))
-	} else {
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", step, i))
-	}
-	w.Write(fmt.Sprintf("  %s = %s\n", i, step))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	return res
-}
-
 // saLowerArraySlice 拷贝 [start, end) 到新数组（钳位；空域单路径分配；
 // 形状证据：封存 lowerArraySlice:6559-6638）。
 func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope *saScope, nextTemp *int) string {
@@ -3760,12 +3678,28 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			if msg := saCheckIntIndex(scope, from); msg != "" {
 				return "", "", msg
 			}
-		} else if method != "lastIndexOf" {
-			from = "0"
 		}
 		reverse := method == "lastIndexOf"
 		wantIndex := method != "includes"
-		return saLowerArrayScan(w, recv, want, from, reverse, wantIndex, scope, nextTemp), "i32", ""
+		// R1 回迁映射：相等扫描语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_scan` 实现（缺省起位/钳位内聚符号内；记种门禁留调用点）。
+		fromVal, hasfrom := "0", "0"
+		if from != "" {
+			fromVal, hasfrom = from, "1"
+		}
+		rev, wi := "0", "1"
+		if reverse {
+			rev = "1"
+		}
+		if !wantIndex {
+			wi = "0"
+		}
+		scope.addImport("sa_std/ts_array.sa")
+		dest := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_scan(%s, %s, %s, %s, %s, %s)\n", dest, recv, want, fromVal, hasfrom, rev, wi))
+		saOwnTemp(scope, dest)
+		return dest, "i32", ""
 	case "reverse":
 		if len(argNodes) != 0 {
 			return "", "", "reverse needs 0 arguments"
