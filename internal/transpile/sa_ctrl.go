@@ -2366,9 +2366,21 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return true
 	}
 	if k == "arr" {
-		// 数组句柄拷贝（绑定直传；数组返回调用亦直传）。
+		// 数组句柄重绑（H16：直行/循环重绑缺先释皆陷 RegisterRedefinition；
+		// 与串分支同律：temp 源先释+consume/复位，具名源上游原句拒）。
 		if src, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp); msg == "" {
+			if _, named := scope.types[src]; named && !saIsTempOp(src) {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "handle copies need an explicit clone (pass the handle directly)"})
+				return false
+			}
+			saRebindRelease(w, scope, name)
 			w.Write(fmt.Sprintf("  %s = %s\n", name, src))
+			saConsumeOwn(scope, src)
+			if b := saOwnOf(scope, name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, name)
 			return true
 		}
 		ln, col := pos(s.Pos())
