@@ -491,6 +491,7 @@
 - D7 T2 定案（JEV 100%）：`const x: i32 = 7.5` 维持拒收（上游忽略注解按 f64 发射系静默错译；截断语义需 JS ToInt32 另立项）。
 - D8 f64 整循环发射定案（JEV 90%）：维持 f64 世界（`fcmp/fadd`，与本仓条件位同构；混合字面量强制以后端契约为准，上游自身同样依赖；小数形双边逐行同形）。
 - D9 symbol 注解定案（JEV 90%）：`const s: symbol = 1` 维持拒收（symbol 无 i32 语义，与 T2 同政策）。
+- [x] V-sai-audit 进仓 sai 有效性全扫（门禁只比 verdict/字节，不验产物有效；零新 Go 文件）：`demos/*/main.sai` 247 件逐个 `sa check`——**241 通过** + 6 例 `ImportResolutionFailed`（203–208 node/deno 系 `require_plugin` 后端解析，`sa.mod` 明示，单文件查无 vendor 上下文系预期，链接态同错，待 LLVM 后端复验；非腐坏）。结论：进仓产物零静默无效（exit 0 + InvalidSyntax 类在仓内为零）。门禁沿既有全绿；本步只记台账，不改码。
 - [x] X-radix `(255).toString(16)` 定案（上游无效输出，薄口拒收正确，不移植）：UP 过但产物非法（`s = add , 0` 缺操作数 + NUL 污染，`sa check` 抓 `ForbiddenSyntax` 实锤；exit 0 + 无效 SAI 最坏类），薄口“toString takes 0 arguments”大声拒正确，按 pp-mixed/T2 故意分歧维持。另核：正则 `.test()` 薄口领先系既有 `demos/223_regex_test` 覆盖（`sa_std/text/regex.sa` 编译+匹配+释放，`check ok`），非缺口。本轮 15 探针（类纵深/泛型/Math/串高级/正则）零真缺口。
 - [x] T-satest3 单测第三批 9 件（27→36，零新 Go 文件）：267–275 全为 `@main` 直入形（与 262–266 同形，无 `@main__user`；首版错调即 `UnknownRegister`，沿第二批教训先查入口名一次过）。断言皆返回 0（弱断言，价值在发现+前端+返回通路锁定；有意义断言仍止于 276/278/279/282–285）。验证：`sa test --list` 36/36 发现。门禁：`--check` **285/285** + `--corpus` **286 agree** 零影响；`transpile.go`/`main.go` 零改动。
 - [x] M-zod464 复测之二（f64/switch/typeof/cond/forawait 落地后，JEV 指派 89%，零新 Go 文件）：zod@4.6.5 双二进制现编重跑——**31 通过一致 / 393 拒绝一致 / 36 上游 panic→本仓诚实拒收 / 4 上游拒→本仓过（小型 vitest 件既有领先）/ 零 UP过/TN拒**，与上轮逐数一致，六步零漂移、零新增分歧。门禁沿既有（`--check` **285/285** + `--corpus` **286 agree** 全绿）；本步只记台账，不改码。
