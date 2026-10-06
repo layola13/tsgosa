@@ -2583,6 +2583,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 			return "str", true
 		}
 		return "", false
+	case ast.KindTemplateLiteralType:
+		// 模板字面量类型即串（形参/字段/返回主用形态；声明位另经擦除按初值定种）。
+		return "str", true
 	case ast.KindTypeReference:
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 			if ref.TypeName.Kind != ast.KindIdentifier {
@@ -2693,6 +2696,9 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	case ast.KindBooleanKeyword:
 		return "boolean", true
 	case ast.KindStringKeyword:
+		return "string", true
+	case ast.KindTemplateLiteralType:
+		// 模板字面量返回即串（上游实发 `-> ptr` 同形）。
 		return "string", true
 	case ast.KindAnyKeyword, ast.KindUnknownKeyword:
 		// `any` renders as number (cf tUnknown signature default).

@@ -340,7 +340,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saCopyInstFn(scope, h, name)
 			continue
 		}
-		if vd.Type == nil || saIsEraseAnnotation(vd.Type) {
+		if vd.Type == nil || saIsEraseAnnotation(vd.Type) || saAliasErasesToTemplate(vd.Type, scope.aliasOf) {
 			// 无注解推断（形状证据：封存 lowerVarDeclList:1415-1418/1463-1464
 			// 未知注解缺省 i32 + 按初值类型绑定）：数组字面量/数组句柄走 arr 通道，
 			// true/false 走 bool，其余 i32 求值；缺 init 绑 i32 零值（const 缺 init 拒）。
@@ -1120,12 +1120,30 @@ func saGenericHandleKind(t *ast.TypeNode, scope *saScope) (string, bool) {
 }
 
 // saIsEraseAnnotation reports an erased annotation (`any`/`unknown`/`never`: binds by
-// initializer kind).
+// initializer kind; template literal types likewise erase to the initializer).
 func saIsEraseAnnotation(t *ast.TypeNode) bool {
 	if t == nil {
 		return false
 	}
-	return t.Kind == ast.KindAnyKeyword || t.Kind == ast.KindUnknownKeyword || t.Kind == ast.KindNeverKeyword
+	return t.Kind == ast.KindAnyKeyword || t.Kind == ast.KindUnknownKeyword || t.Kind == ast.KindNeverKeyword ||
+		t.Kind == ast.KindTemplateLiteralType
+}
+
+// saAliasErasesToTemplate reports aliases whose underlying type is a template
+// literal (narrow: other aliases keep existing resolution; declaration site only).
+func saAliasErasesToTemplate(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) bool {
+	for i := 0; i < 8 && t != nil && t.Kind == ast.KindTypeReference; i++ {
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return false
+		}
+		next, ok := aliasOf[ref.TypeName.Text()]
+		if !ok || next == nil {
+			return false
+		}
+		t = next
+	}
+	return t != nil && t.Kind == ast.KindTemplateLiteralType
 }
 
 // saAnnotInstKind 消解具名接口/类注解为 `inst:Name`（单标识符、无泛型实参、
