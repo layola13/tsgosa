@@ -199,58 +199,16 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}, staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{}}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
-	// implements 接口名收集（尾部布局校验；单继承 extends 同循环，余形
-	// implements 子句在此只收名；形状证据：封存 parseHeritage:42-83 + inheritClass:88-215）。
-	var implIfaces []string
-	// implements 子句节点位（未知接口/`?` 拒因指子句位；名→el.Pos()）。
-	implPos := map[string]int{}
-	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
-	// implements 擦除；多 extends/动态基/未知基/环一律拒。
-	// 形状证据：封存 parseHeritage:42-83 + inheritClass:88-215。
+	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写）；
+	// implements 子句整体擦除（纯类型零运行时，永不拒因；形状证据：封存
+	// parseHeritage:42-83 + inheritClass:88-215 + class_heritage.go:16）。
 	if hc := heritage; hc != nil {
 		for _, h := range hc.Nodes {
 			if h.Kind != ast.KindHeritageClause {
 				continue
 			}
 			if h.AsHeritageClause().Token != ast.KindExtendsKeyword {
-				if h.AsHeritageClause().Token == ast.KindImplementsKeyword {
-					if types := h.AsHeritageClause().Types; types != nil {
-						for _, el := range types.Nodes {
-							if el == nil {
-								continue
-							}
-							if el.Kind == ast.KindIdentifier {
-								implIfaces = append(implIfaces, el.Text())
-								implPos[el.Text()] = el.Pos()
-							} else if el.Kind == ast.KindExpressionWithTypeArguments {
-								if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
-									implIfaces = append(implIfaces, ex.Text())
-									implPos[ex.Text()] = el.Pos()
-								} else {
-									implIfaces = append(implIfaces, "?")
-									if _, ok := implPos["?"]; !ok {
-										implPos["?"] = el.Pos()
-									}
-								}
-							} else if el.Kind == ast.KindTypeReference {
-								if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil && tn.TypeName.Kind == ast.KindIdentifier {
-									implIfaces = append(implIfaces, tn.TypeName.Text())
-									implPos[tn.TypeName.Text()] = el.Pos()
-								} else {
-									implIfaces = append(implIfaces, "?")
-									if _, ok := implPos["?"]; !ok {
-										implPos["?"] = el.Pos()
-									}
-								}
-							} else {
-								implIfaces = append(implIfaces, "?")
-								if _, ok := implPos["?"]; !ok {
-									implPos["?"] = el.Pos()
-								}
-							}
-						}
-					}
-				}
+				// implements 子句擦除（上游同形，见上）。
 				continue
 			}
 			types := h.AsHeritageClause().Types
@@ -717,59 +675,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		}
 	}
 	def.size = off
-	// implements 布局校验（类须含接口全部字段；未知接口/限定泛型名/缺字段
-	// 大声拒，禁静默擦除；接口方法签名记录期本就跳过，不在此校验）。
-	for _, iname := range implIfaces {
-		if iname == "?" {
-			// 非标识名拒因指 implements 子句位（无位存档回退类声明位）。
-			if pp, ok := implPos["?"]; ok {
-				ln, col := pos(pp)
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
-			} else {
-				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
-			}
-			return false
-		}
-		idef, ok := classes[iname]
-		if !ok || idef == nil || !idef.isIface {
-			// 未知接口拒因指 implements 子句位（罪魁在子句；无位存档回退类声明位）。
-			if pp, ok := implPos[iname]; ok {
-				ln, col := pos(pp)
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
-			} else {
-				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
-			}
-			return false
-		}
-		for _, f := range idef.fields {
-			if _, ok := def.offsets[f.name]; !ok {
-				// 缺字段拒因指接口字段声明位（罪魁在接口定义侧；无位存档回退类声明位）。
-				if fp, ok := idef.fpos[f.name]; ok {
-					ln, col := pos(fp)
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
-				} else {
-					ln, col := pos(st.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
-				}
-				return false
-			}
-		}
-		for mn := range idef.methods {
-			if _, ok := def.methods[mn]; !ok {
-				// 缺方法拒因指接口方法声明位（无位存档回退类声明位）。
-				if fp, ok := idef.fpos[mn]; ok {
-					ln, col := pos(fp)
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
-				} else {
-					ln, col := pos(st.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
-				}
-				return false
-			}
-		}
-	}
+	// implements 子句整体擦除（纯类型零运行时，永不拒因；未知/后置/限定名/缺成员一律放行，使用位拒词；封存 class_heritage.go:16 + saemit.go:9537/9670）。
 	// 抽象方法实现校验（非抽象派生类须实现祖先链全部抽象方法；自身抽象跳过；
 	// 拒因指抽象声明位；继承展平已含中间实现，只查自身 methods）。
 	if !def.isAbstract {

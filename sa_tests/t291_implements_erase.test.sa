@@ -1,0 +1,9 @@
+@import "../demos/291_implements_erase/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "291_implements_erase"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 3, 29101)
+    !v
+    return
