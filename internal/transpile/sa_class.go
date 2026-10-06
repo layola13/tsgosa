@@ -198,8 +198,10 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
 	// implements 接口名收集（尾部布局校验；单继承 extends 同循环，余形
-	// implements 子句在此只收名；形状证据：封存 parseHeritage:42-83）。
+	// implements 子句在此只收名；形状证据：封存 parseHeritage:42-83 + inheritClass:88-215）。
 	var implIfaces []string
+	// implements 子句节点位（未知接口/`?` 拒因指子句位；名→el.Pos()）。
+	implPos := map[string]int{}
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写），
 	// implements 擦除；多 extends/动态基/未知基/环一律拒。
 	// 形状证据：封存 parseHeritage:42-83 + inheritClass:88-215。
@@ -217,20 +219,32 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 							}
 							if el.Kind == ast.KindIdentifier {
 								implIfaces = append(implIfaces, el.Text())
+								implPos[el.Text()] = el.Pos()
 							} else if el.Kind == ast.KindExpressionWithTypeArguments {
 								if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil && ex.Kind == ast.KindIdentifier {
 									implIfaces = append(implIfaces, ex.Text())
+									implPos[ex.Text()] = el.Pos()
 								} else {
 									implIfaces = append(implIfaces, "?")
+									if _, ok := implPos["?"]; !ok {
+										implPos["?"] = el.Pos()
+									}
 								}
 							} else if el.Kind == ast.KindTypeReference {
 								if tn := el.AsTypeReferenceNode(); tn != nil && tn.TypeName != nil && tn.TypeName.Kind == ast.KindIdentifier {
 									implIfaces = append(implIfaces, tn.TypeName.Text())
+									implPos[tn.TypeName.Text()] = el.Pos()
 								} else {
 									implIfaces = append(implIfaces, "?")
+									if _, ok := implPos["?"]; !ok {
+										implPos["?"] = el.Pos()
+									}
 								}
 							} else {
 								implIfaces = append(implIfaces, "?")
+								if _, ok := implPos["?"]; !ok {
+									implPos["?"] = el.Pos()
+								}
 							}
 						}
 					}
@@ -633,14 +647,26 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 	// 大声拒，禁静默擦除；接口方法签名记录期本就跳过，不在此校验）。
 	for _, iname := range implIfaces {
 		if iname == "?" {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
+			// 非标识名拒因指 implements 子句位（无位存档回退类声明位）。
+			if pp, ok := implPos["?"]; ok {
+				ln, col := pos(pp)
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
+			} else {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements names must be plain identifiers"})
+			}
 			return false
 		}
 		idef, ok := classes[iname]
 		if !ok || idef == nil || !idef.isIface {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
+			// 未知接口拒因指 implements 子句位（罪魁在子句；无位存档回退类声明位）。
+			if pp, ok := implPos[iname]; ok {
+				ln, col := pos(pp)
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
+			} else {
+				ln, col := pos(st.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " implements unknown interface " + iname + " (declare the interface first)"})
+			}
 			return false
 		}
 		for _, f := range idef.fields {
@@ -658,8 +684,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		}
 		for mn := range idef.methods {
 			if _, ok := def.methods[mn]; !ok {
-				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
+				// 缺方法拒因指接口方法声明位（无位存档回退类声明位）。
+				if fp, ok := idef.fpos[mn]; ok {
+					ln, col := pos(fp)
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
+				} else {
+					ln, col := pos(st.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
+				}
 				return false
 			}
 		}
@@ -1197,6 +1229,11 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 						def.methods = map[string]*ast.Node{}
 					}
 					def.methods[fn.Text()] = m
+					// 方法签名声明位直存（缺方法拒因指接口方法位；只存不用）。
+					if def.fpos == nil {
+						def.fpos = map[string]int{}
+					}
+					def.fpos[fn.Text()] = m.Pos()
 				}
 			}
 			// non-field members declare no layout slot (methods/indexers/signatures are type-only;
