@@ -2654,34 +2654,6 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 	return dest, ""
 }
 
-// saSpliceDeleted 具化删除段[s,s+d)为新柄（alloc 与 saLowerToSpliced 同形；
-// 原柄后事由调用方自定；返回删除段句柄）。
-func saSpliceDeleted(w printer.EmitTextWriter, sdata, s, d string, scope *saScope, nextTemp *int) string {
-	d1p := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", d1p, d))
-	nby := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, d1p))
-	ddata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
-	dest := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, d))
-	w.Write(fmt.Sprintf("  !%s\n", ddata))
-	dloop := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
-	s2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", s2, s, d))
-	saCopyRange(w, sdata, dloop, s, s2, "0", scope, nextTemp)
-	return dest
-}
-
 // saLowerArrayFlat 一层拍扁（depth 0/缺省 1；depth 0 与非嵌套走浅拷贝；
 // 嵌套路两遍：遍 1 外槽累内长，遍 2 新柄逐内拷片；元静态全 arr 才展
 // （arrNest 标记），混合/未知大声拒；结果不再记嵌套（保守，另步传标记）。
@@ -2828,29 +2800,32 @@ func saLowerArrayFlat(w printer.EmitTextWriter, recv string, depth int, scope *s
 // 钳位段与 saLowerToSpliced 同形，删除段 alloc 同形；无插入走原地前移，
 // 有插入走新缓冲三段拷后换柄；插入项 plain i32（与 toSpliced 同门）；
 // 形状证据：封存 lowerToSpliced:6923-6975）。
+// saLowerArraySplice 原地删段返删除段（R1 回迁映射：语义由
+// `sci/sa_std/ts_array.sa` `@ts_arr_splice` 实现，本侧只做种门禁
+// （start/del 求值 + 插入项 plain 门）+ del 缺省物化 + items 临时数组 +
+// import + 归属/标记透传；形状证据：封存 lowerSplice 全形）。
 func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if len(args) < 1 {
 		return "", "splice takes a start and an optional delete count"
 	}
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	sdata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, recv))
+	scope.addImport("sa_std/ts_array.sa")
 	start, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
-	del := ln
+	var delOp string
 	if len(args) > 1 {
 		v, msg := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
 		}
-		del = v
+		delOp = v
+	} else {
+		delOp = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", delOp, recv))
 	}
-	var itemOps []string
+	items := saNewEmptyArray(w, nextTemp)
 	if len(args) > 2 {
 		for _, it := range args[2:] {
 			if it == nil {
@@ -2866,102 +2841,16 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			if msg != "" {
 				return "", msg
 			}
-			itemOps = append(itemOps, v)
+			saLowerArrayPush(w, items, v, scope, nextTemp)
 		}
 	}
-	s := saArrayClampLen(w, start, ln, scope, nextTemp)
-	maxdel := fmt.Sprintf("t_%d", *nextTemp)
+	dest := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", maxdel, ln, s))
-	d := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", d, del))
-	neg := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, d))
-	keepNeg := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub 1, %s\n", keepNeg, neg))
-	d0 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", d0, d, keepNeg))
-	over := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", over, d0, maxdel))
-	gap := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", gap, maxdel, d0))
-	fix := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", fix, gap, over))
-	d1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", d1, d0, fix))
-	d = d1
-	dest := saSpliceDeleted(w, sdata, s, d, scope, nextTemp)
-	if len(itemOps) == 0 {
-		s2 := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", s2, s, d))
-		saCopyRange(w, sdata, sdata, s2, ln, s, scope, nextTemp)
-		nlen := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen, ln, d))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, nlen))
-		saPropArrNest(scope, recv, dest)
-		saPropArrStr(scope, recv, dest)
-		return dest, ""
-	}
-	ni := fmt.Sprintf("%d", len(itemOps))
-	nlen0 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen0, ln, d))
-	nlen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nlen, nlen0, ni))
-	n1p := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", n1p, nlen))
-	nby := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, n1p))
-	nbuf := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc %s\n", nbuf, nby))
-	nh := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", nh))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", nh, nbuf))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", nh, nlen))
-	nloop := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", nloop, nh))
-	saCopyRange(w, sdata, nloop, "0", s, "0", scope, nextTemp)
-	for k, it := range itemOps {
-		di := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %d\n", di, s, k))
-		dof := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", dof, di))
-		da := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", da, nloop, dof))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", da, it))
-	}
-	sd := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", sd, s, d))
-	dst := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", dst, s, ni))
-	saCopyRange(w, sdata, nloop, sd, ln, dst, scope, nextTemp)
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", recv, nbuf))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, nlen))
-	w.Write(fmt.Sprintf("  !%s\n", nbuf))
-	w.Write(fmt.Sprintf("  !%s\n", nh))
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_splice(%s, %s, %s, %s)\n", dest, recv, start, delOp, items))
+	w.Write(fmt.Sprintf("  !%s\n", items))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saOwnTemp(scope, dest)
 	return dest, ""
 }
 
