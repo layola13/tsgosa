@@ -1797,6 +1797,132 @@ func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, s
 	return hits[0], ""
 }
 
+// saMappedAliasLayout 消解同构映射别名布局（`Partial/Required/Readonly<B>`
+// 及用户同构 `{[K in keyof Y]: Y[K]}`；布局恒等于基接口 B，槽位不变；
+// 别名链跟随（`P<T> = Partial<T>` 经占位实参透传，上限 4 跳防环）；
+// 键过滤形（Pick/Omit/非常值 `as`）沿旧门；Y 须为实参名或未记录泛型占位）。
+func saMappedAliasLayout(ref *ast.TypeReferenceNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 || ref.TypeArguments.Nodes[0] == nil {
+		return "", false
+	}
+	arg := ref.TypeArguments.Nodes[0]
+	if arg.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	an := arg.AsTypeReferenceNode()
+	if an == nil || an.TypeName == nil || an.TypeName.Kind != ast.KindIdentifier || an.TypeArguments != nil {
+		return "", false
+	}
+	base := an.TypeName.Text()
+	bdef, ok := classes[base]
+	if !ok || !bdef.isIface {
+		return "", false
+	}
+	name := ref.TypeName.Text()
+	for i := 0; i < 4; i++ {
+		if name == "Partial" || name == "Required" || name == "Readonly" {
+			return base, true
+		}
+		rhs, ok := aliasOf[name]
+		if !ok || rhs == nil {
+			return "", false
+		}
+		if rhs.Kind == ast.KindMappedType {
+			if saHomomorphicMapped(rhs, base, classes) {
+				return base, true
+			}
+			return "", false
+		}
+		// 别名链：`P<T> = Partial<T>` 占位透传（实参须为裸标识符，
+		// 具象不透传防错位）。
+		if rhs.Kind != ast.KindTypeReference {
+			return "", false
+		}
+		rn := rhs.AsTypeReferenceNode()
+		if rn == nil || rn.TypeName == nil || rn.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		if rn.TypeArguments == nil || len(rn.TypeArguments.Nodes) != 1 || rn.TypeArguments.Nodes[0] == nil {
+			return "", false
+		}
+		inner := rn.TypeArguments.Nodes[0]
+		if inner.Kind != ast.KindTypeReference {
+			return "", false
+		}
+		in := inner.AsTypeReferenceNode()
+		if in == nil || in.TypeName == nil || in.TypeName.Kind != ast.KindIdentifier || in.TypeArguments != nil {
+			return "", false
+		}
+		if _, recorded := classes[in.TypeName.Text()]; recorded {
+			return "", false
+		}
+		name = rn.TypeName.Text()
+	}
+	return "", false
+}
+
+// saHomomorphicMapped 验证用户同构映射（`{[K in keyof Y]: Y[K]}`；`?`/只读
+// 饰词容忍（槽位不变）；`as` 仅容无子句与 `as string`；Y 须为实参名或
+// 未记录泛型占位，定目标异名拒）。
+func saHomomorphicMapped(rhs *ast.TypeNode, base string, classes map[string]*saClassDef) bool {
+	m := rhs.AsMappedTypeNode()
+	if m == nil || m.TypeParameter == nil || m.Type == nil {
+		return false
+	}
+	kn := m.TypeParameter.Name()
+	if kn == nil || kn.Kind != ast.KindIdentifier {
+		return false
+	}
+	kname := kn.Text()
+	tpd := m.TypeParameter.AsTypeParameterDeclaration()
+	if tpd == nil || tpd.Constraint == nil || tpd.Constraint.Kind != ast.KindTypeOperator {
+		return false
+	}
+	top := tpd.Constraint.AsTypeOperatorNode()
+	if top == nil || top.Operator != ast.KindKeyOfKeyword || top.Type == nil ||
+		top.Type.Kind != ast.KindTypeReference {
+		return false
+	}
+	kt := top.Type.AsTypeReferenceNode()
+	if kt == nil || kt.TypeName == nil || kt.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	yname := kt.TypeName.Text()
+	if yname != base {
+		// 泛型占位（未记录名，视为别名自身形参；已记录异名系定目标映射，拒）。
+		if _, recorded := classes[yname]; recorded {
+			return false
+		}
+	}
+	vt := m.Type
+	if vt == nil || vt.Kind != ast.KindIndexedAccessType {
+		return false
+	}
+	ia := vt.AsIndexedAccessTypeNode()
+	if ia == nil || ia.ObjectType == nil || ia.ObjectType.Kind != ast.KindTypeReference ||
+		ia.IndexType == nil || ia.IndexType.Kind != ast.KindTypeReference {
+		return false
+	}
+	obj := ia.ObjectType.AsTypeReferenceNode()
+	idx := ia.IndexType.AsTypeReferenceNode()
+	if obj == nil || obj.TypeName == nil || obj.TypeName.Kind != ast.KindIdentifier ||
+		obj.TypeName.Text() != yname ||
+		idx == nil || idx.TypeName == nil || idx.TypeName.Kind != ast.KindIdentifier ||
+		idx.TypeName.Text() != kname {
+		return false
+	}
+	// `as` 重映射仅容无子句与 `as string`（键集不变；余形拒）。
+	if m.NameType != nil {
+		if m.NameType.Kind != ast.KindStringKeyword {
+			return false
+		}
+	}
+	return true
+}
+
 // saMatchIfaceList 列出键集全命中的接口布局（saMatchIface 的无拒因版，
 // 供值种决胜复用；拒因文案由调用方沿既有用语）。
 func saMatchIfaceList(keys []string, classes map[string]*saClassDef) []*saClassDef {

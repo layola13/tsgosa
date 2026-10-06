@@ -1,0 +1,9 @@
+@import "../demos/300_mapped_alias/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "300_mapped_alias"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 6, 30001)
+    !v
+    return

@@ -120,6 +120,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 						want = lname
 					}
 				}
+				// 同构映射别名（`Partial<B>`/用户同构；布局恒等；见上）。
+				if _, ok := scope.classes[want]; !ok {
+					if lname, ok := saMappedAliasLayout(ref, scope.classes, scope.aliasOf); ok {
+						want = lname
+					}
+				}
 				if def, ok := scope.classes[want]; !ok || !def.isIface {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
