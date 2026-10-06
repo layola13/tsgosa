@@ -1250,7 +1250,7 @@ func saIsArrMethod(m string) bool {
 	switch m {
 	case "push", "pop", "shift", "unshift", "fill", "sort", "indexOf", "lastIndexOf",
 		"includes", "reverse", "slice", "at", "join", "copyWithin", "toReversed",
-		"toSorted", "with", "toSpliced", "splice", "concat",
+		"toSorted", "with", "toSpliced", "splice", "flat", "concat",
 		"forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
 		"some", "every", "reduce", "reduceRight":
 		return true
@@ -2828,7 +2828,149 @@ func saSpliceDeleted(w printer.EmitTextWriter, sdata, s, d string, scope *saScop
 	return dest
 }
 
-// saLowerArraySplice 原地删段返删除段（1 参删到尾，2 参纯删，3+ 参删后插入；
+// saLowerArrayFlat 一层拍扁（depth 0/缺省 1；depth 0 与非嵌套走浅拷贝；
+// 嵌套路两遍：遍 1 外槽累内长，遍 2 新柄逐内拷片；元静态全 arr 才展
+// （arrNest 标记），混合/未知大声拒；结果不再记嵌套（保守，另步传标记）。
+func saLowerArrayFlat(w printer.EmitTextWriter, recv string, depth int, scope *saScope, nextTemp *int) string {
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	sdata := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, recv))
+	mkCopy := func(nlen string) (string, string) {
+		n1p := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", n1p, nlen))
+		nby := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, n1p))
+		ddata := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
+		dest := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, nlen))
+		w.Write(fmt.Sprintf("  !%s\n", ddata))
+		saOwnTemp(scope, dest)
+		dloop := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
+		return dest, dloop
+	}
+	if depth == 0 || scope.arrNest == nil || !scope.arrNest[recv] {
+		dest, dloop := mkCopy(ln)
+		saCopyRange(w, sdata, dloop, "0", ln, "0", scope, nextTemp)
+		if depth == 0 {
+			saPropArrNest(scope, recv, dest)
+		}
+		return dest
+	}
+	total := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", total))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", total))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_flat_sum_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_flat_sum_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_flat_sum_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	eoff := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", eoff, i))
+	eaddr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", eaddr, sdata, eoff))
+	eh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eh, eaddr))
+	elen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", elen, eh))
+	tn := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tn, total))
+	tn2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", tn2, tn, elen))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", total, tn2))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	tlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tlen, total))
+	w.Write(fmt.Sprintf("  !%s\n", total))
+	dest, dloop := mkCopy(tlen)
+	pos := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", pos))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", pos))
+	j := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", j))
+	top2 := fmt.Sprintf("L_flat_cp_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	body2 := fmt.Sprintf("L_flat_cp_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	end2 := fmt.Sprintf("L_flat_cp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  jmp %s\n", top2))
+	w.Write(fmt.Sprintf("%s:\n", top2))
+	c2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c2, j, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c2, body2, end2))
+	w.Write(fmt.Sprintf("%s:\n", body2))
+	f2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", f2, j))
+	g2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", g2, sdata, f2))
+	h2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", h2, g2))
+	hd := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hd, h2))
+	hl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hl, h2))
+	pv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", pv, pos))
+	saCopyRange(w, hd, dloop, "0", hl, pv, scope, nextTemp)
+	pv2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pv2, pv, hl))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", pos, pv2))
+	jnext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", jnext, j))
+	w.Write(fmt.Sprintf("  %s = %s\n", j, jnext))
+	w.Write(fmt.Sprintf("  jmp %s\n", top2))
+	w.Write(fmt.Sprintf("%s:\n", end2))
+	w.Write(fmt.Sprintf("  !%s\n", pos))
+	return dest
+}
+
 // 钳位段与 saLowerToSpliced 同形，删除段 alloc 同形；无插入走原地前移，
 // 有插入走新缓冲三段拷后换柄；插入项 plain i32（与 toSpliced 同门）；
 // 形状证据：封存 lowerToSpliced:6923-6975）。
@@ -4173,6 +4315,23 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return "", "", "slice takes at most 2 arguments"
 		}
 		return saLowerArraySlice(w, recv, start, end, scope, nextTemp), "arr", ""
+	case "flat":
+		if len(argNodes) > 1 {
+			return "", "", "flat takes at most 1 argument"
+		}
+		depth := 1
+		if len(argNodes) == 1 {
+			dn := argNodes[0]
+			if dn == nil || dn.Kind != ast.KindNumericLiteral {
+				return "", "", "flat depth must be a literal 0 or 1"
+			}
+			var dv int
+			if _, err := fmt.Sscanf(dn.Text(), "%d", &dv); err != nil || (dv != 0 && dv != 1) {
+				return "", "", "flat depth must be a literal 0 or 1"
+			}
+			depth = dv
+		}
+		return saLowerArrayFlat(w, recv, depth, scope, nextTemp), "arr", ""
 	case "at":
 		if len(argNodes) != 1 {
 			return "", "", "at needs 1 argument"
