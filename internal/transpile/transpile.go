@@ -1791,6 +1791,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if handledTop[st] {
 				continue
 			}
+			// `import x = require()` 无模块解析底座，定位拒收（禁通用 kind 门）。
+			if st.Kind == ast.KindImportEqualsDeclaration {
+				ln, col := pos(st.Pos())
+				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "import = require() needs module resolution (not lowerable)"})
+				continue
+			}
 			ln, col := pos(st.Pos())
 			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("step2 refuses kind %d (only top-level functions)", int(st.Kind))})
 			continue
