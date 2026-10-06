@@ -2625,6 +2625,11 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		if k, ok := saAnnotKind(t); ok && k == "f64" {
 			return "f64", true
 		}
+		// `Array<T>` 返回即句柄（声明位泛型句柄同形；元种擦除）。
+		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+			ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Array" {
+			return "arr", true
+		}
 		return "", false
 	case ast.KindUnionType:
 		if k, ok := saUnionScalarKind(t.AsNode()); ok {
@@ -2646,6 +2651,15 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 			return "void", true
 		}
 		return "boolean", true
+	case ast.KindArrayType, ast.KindTupleType:
+		// 数组/元组返回即句柄（上游实发 `-> ptr`；调用点按 arr 绑定）。
+		return "arr", true
+	case ast.KindTypeOperator:
+		// `readonly T[]` 返回解包（可变拷贝语义；注解核同形）。
+		if to := t.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saReturnKind(to.Type)
+		}
+		return "", false
 	default:
 		return "", false
 	}

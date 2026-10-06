@@ -1541,6 +1541,17 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 			}
 			return op, ""
 		}
+		// 同文件数组函数返回句柄直传（`const a = get()`；签名预扫记 arr）。
+		if k, ok := saCallRetKind(ce, scope); ok && k == "arr" {
+			op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if voidCall {
+				return "", "void call in array position"
+			}
+			return op, ""
+		}
 		if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "alloc" {
 			// alloc 原语即新鲜句柄（`const b: Box<i32> = alloc(4)` 经声明 arr 位；
 			// 与求值核共用 helper；用户遮蔽沿旧门；形状证据：封存 lowerCall:3861-3868）。

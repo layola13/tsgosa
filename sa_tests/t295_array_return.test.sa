@@ -1,0 +1,9 @@
+@import "../demos/295_array_return/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "295_array_return"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 22, 29501)
+    !v
+    return

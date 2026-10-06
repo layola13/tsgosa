@@ -191,6 +191,10 @@ func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
+			// 数组绑定直传（`return a`；非数组函数沿旧门）。
+			if retKind == "arr" {
+				return e.Text(), ""
+			}
 			return "", "array return not supported"
 		}
 		if k, ok := scope.types[e.Text()]; ok && k == "str" && retKind != "string" {
@@ -211,6 +215,24 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			}
 			return "", "map return needs matching map value"
 		}
+	}
+	// 数组返回：同种句柄直传（`return a` 见上；字面量/数组调用经句柄通道；
+	// 注解擦除位：串值具化柄、i32 值直通（上游 `return 5`/`return t_2` 同形）；
+	// map/inst 返回同律）。
+	if retKind == "arr" {
+		if e != nil && e.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[e.Text()]; ok && k == "arr" {
+				return e.Text(), ""
+			}
+			return "", "array return needs matching array value"
+		}
+		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
+			return h, ""
+		}
+		if saIsStrValue(e, scope) {
+			return saEvalStr(w, e, scope, pos, refusals, nextTemp)
+		}
+		return saEvalI32(w, e, scope, pos, refusals, nextTemp)
 	}
 	// 返回位字面量具化（`return {...}` 配注解接口布局；封存 checker_layout l1）。
 	if e != nil && e.Kind == ast.KindObjectLiteralExpression && strings.HasPrefix(retKind, "inst:") {
@@ -3547,6 +3569,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if !saStrCallIsI32(e.AsCallExpression(), scope) {
 				return "", "string value in i32 expression"
 			}
+		}
+		// 数组函数返回句柄禁入 i32 位（与数组方法同门）。
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "arr" {
+			return "", "array value in i32 expression"
 		}
 		// Hash.update 无值返回（语句位专用；值位大声拒，禁句柄误作 i32）。
 		if saHashUpdateCall(e.AsCallExpression(), scope) {
