@@ -54,6 +54,7 @@ type saClassDef struct {
 	fsub          map[string]string
 	fpos          map[string]int
 	abstracts     map[string]int
+	abstractKinds map[string]string
 	tparams       []string
 	fdefs         map[string]*ast.TypeNode
 	size          int
@@ -421,6 +422,17 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			if fn.Kind == ast.KindPrivateIdentifier {
 				fkey = saPrivKey(name, fn.Text())
 			}
+			// 抽象属性记名（派生须声明同名域；占槽照常，基不实例化无害）。
+			if ast.HasModifier(m, ast.ModifierFlagsAbstract) {
+				if def.abstracts == nil {
+					def.abstracts = map[string]int{}
+				}
+				if def.abstractKinds == nil {
+					def.abstractKinds = map[string]string{}
+				}
+				def.abstracts[fkey] = m.Pos()
+				def.abstractKinds[fkey] = "field"
+			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 静态字面量折叠记表（不占实例槽；封存 recordClassNamed:9703-9711）；
 				// 非字面静态走 legacy 实例槽（封存 s2 形；i32 恒 4 字节，见 step48）。
@@ -494,6 +506,8 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate field " + fkey})
 					return false
 				}
+				// 继承字段重声明即实现意图（抽象属性实现判定用）。
+				ownFields[fkey] = true
 				continue
 			}
 			ownFields[fkey] = true
@@ -525,7 +539,11 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					if def.abstracts == nil {
 						def.abstracts = map[string]int{}
 					}
+					if def.abstractKinds == nil {
+						def.abstractKinds = map[string]string{}
+					}
 					def.abstracts[mn.Text()] = m.Pos()
+					def.abstractKinds[mn.Text()] = "method"
 				}
 				continue
 			}
@@ -562,6 +580,27 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				ln, col := pos(m.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed/private accessor names are not lowerable"})
 				return false
+			}
+			// 抽象存取器记名不占实现（派生须同形实现；static+abstract 非法直接拒）。
+			if ast.HasModifier(m, ast.ModifierFlagsAbstract) {
+				if ast.HasModifier(m, ast.ModifierFlagsStatic) {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "abstract static accessors are not lowerable"})
+					return false
+				}
+				if def.abstracts == nil {
+					def.abstracts = map[string]int{}
+				}
+				if def.abstractKinds == nil {
+					def.abstractKinds = map[string]string{}
+				}
+				def.abstracts[an.Text()] = m.Pos()
+				if m.Kind == ast.KindGetAccessor {
+					def.abstractKinds[an.Text()] = "get"
+				} else {
+					def.abstractKinds[an.Text()] = "set"
+				}
+				continue
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 静态存取器另表记录，`C.g`/`C.s = v` 类名分发内联（实例项永不持有，
@@ -710,6 +749,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 	// 拒因指抽象声明位；继承展平已含中间实现，只查自身 methods）。
 	if !def.isAbstract {
 		need := map[string]int{}
+		needKind := map[string]string{}
 		for p := def.parent; p != ""; {
 			pb := classes[p]
 			if pb == nil {
@@ -718,12 +758,30 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			for n, pp := range pb.abstracts {
 				if _, ok := need[n]; !ok {
 					need[n] = pp
+					if kk, ok := pb.abstractKinds[n]; ok {
+						needKind[n] = kk
+					} else {
+						needKind[n] = "method"
+					}
 				}
 			}
 			p = pb.parent
 		}
 		for n, pp := range need {
-			if _, ok := def.methods[n]; !ok {
+			kk := needKind[n]
+			satisfied := false
+			switch kk {
+			case "get":
+				_, satisfied = def.getters[n]
+			case "set":
+				_, satisfied = def.setters[n]
+			case "field":
+				// 抽象属性须自有声明（继承展平使 offsets 恒真，查 ownFields）。
+				_, satisfied = ownFields[n]
+			default:
+				_, satisfied = def.methods[n]
+			}
+			if !satisfied {
 				ln, col := pos(pp)
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " must implement abstract " + n + "()"})
 				return false
