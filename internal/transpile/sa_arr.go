@@ -2077,66 +2077,6 @@ func saLowerArrayScan(w printer.EmitTextWriter, recv, want, from string, reverse
 	return res
 }
 
-// saLowerArrayReverse 原地对称交换（形状证据：封存 lowerArrayReverse:6516-6556）。
-func saLowerArrayReverse(w printer.EmitTextWriter, recv string, scope *saScope, nextTemp *int) {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-	half := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = div %s, 2\n", half, ln))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_rv_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_rv_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_rv_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, half))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	j := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", j, ln))
-	j2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", j2, j, i))
-	ao := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", ao, i))
-	aa := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", aa, data, ao))
-	bo := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", bo, j2))
-	ba := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", ba, data, bo))
-	a := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", a, aa))
-	b := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", b, ba))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", aa, b))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", ba, a))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-}
-
 // saLowerArraySlice 拷贝 [start, end) 到新数组（钳位；空域单路径分配；
 // 形状证据：封存 lowerArraySlice:6559-6638）。
 func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope *saScope, nextTemp *int) string {
@@ -3860,7 +3800,10 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", "reverse needs 0 arguments"
 		}
-		saLowerArrayReverse(w, recv, scope, nextTemp)
+		// R1 回迁映射：原地对称交换语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_reverse` 实现，本侧只做 import + 直接调用（无新柄）。
+		scope.addImport("sa_std/ts_array.sa")
+		w.Write(fmt.Sprintf("  call @ts_arr_reverse(%s)\n", recv))
 		return recv, "arr", ""
 	case "slice":
 		start, end := "0", ""
