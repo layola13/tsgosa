@@ -408,6 +408,20 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "member decorators are not lowerable"})
 			return false
 		}
+		if m.Kind == ast.KindConstructor {
+			// 参数装饰器在定义时执行任意代码，静默丢弃即改行为，大声拒
+			//（封存 saemit.go:9616-9629 全形；拒因逐字对齐上游）。
+			for _, p := range m.Parameters() {
+				if p == nil || p.AsNode() == nil {
+					continue
+				}
+				if len(p.AsNode().Decorators()) > 0 {
+					ln, col := pos(p.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter decorators are not lowerable (definition-time effects have no SA-ASM form)"})
+					return false
+				}
+			}
+		}
 		switch m.Kind {
 		case ast.KindPropertyDeclaration:
 			pd := m.AsPropertyDeclaration()
