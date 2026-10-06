@@ -3198,6 +3198,7 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	testLabels[len(parts)] = fmt.Sprintf("L_case_default_%d", *nextLabel)
 	*nextLabel++
 	lowered := true
+	dispatch := saSwitchDispatch(s, parts, bodyLabels, testLabels[len(parts)], endL)
 	for i, p := range parts {
 		w.Write(fmt.Sprintf("%s:\n", testLabels[i]))
 		val, vmsg := saEvalSwitchVal(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
@@ -3211,16 +3212,22 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = eq %s, %s\n", cmp, disc, val))
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, bodyLabels[i], testLabels[i+1]))
+		stmts := p.node.AsCaseOrDefaultClause().Statements.Nodes
 		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
+		if len(stmts) == 0 {
+			// 空臂直通源码序下子句（dispatch 预解链目标；宏路同形）。
+			w.Write(fmt.Sprintf("  jmp %s\n", dispatch[i]))
+			continue
+		}
 		savedArmRelease := scope.armRelease
 		scope.armRelease = true
-		armOK := saLowerArm(w, p.node.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		armOK := saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		scope.armRelease = savedArmRelease
 		if !armOK {
 			lowered = false
 			break
 		}
-		if !saArmTerminates(p.node.AsCaseOrDefaultClause().Statements.Nodes) {
+		if !saArmTerminates(stmts) {
 			w.Write(fmt.Sprintf("  jmp %s\n", endL))
 		}
 	}
@@ -3247,6 +3254,50 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	return true
+}
+
+// saSwitchDispatch 解空臂源码序链目标（堆叠 case 标签 JS fallthrough：
+// 空臂→紧随下子句体标（default 即 defaultL），末空臂无 default 即 endL；
+// 非空臂恒自体标。调用方空体发 `jmp` 链（宏按标号展开，标复用即重定义，
+// 故须独立标号+jmp）；上游空臂落 endswitch 致 f(1)=0 错译，本仓正确优先。
+func saSwitchDispatch(s *ast.Node, parts []saCasePart, bodyLabels []string, defaultL, endL string) []string {
+	dispatch := make([]string, len(parts))
+	for i := range parts {
+		dispatch[i] = bodyLabels[i]
+	}
+	if s == nil {
+		return dispatch
+	}
+	sw := s.AsSwitchStatement()
+	if sw == nil || sw.CaseBlock == nil {
+		return dispatch
+	}
+	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
+	partIndex := make(map[*ast.Node]int, len(parts))
+	for i, p := range parts {
+		partIndex[p.node] = i
+	}
+	next := endL
+	for k := len(clauses) - 1; k >= 0; k-- {
+		cl := clauses[k]
+		if cl == nil {
+			continue
+		}
+		if cl.Kind == ast.KindDefaultClause {
+			next = defaultL
+			continue
+		}
+		j, ok := partIndex[cl]
+		if !ok {
+			continue
+		}
+		if len(cl.AsCaseOrDefaultClause().Statements.Nodes) == 0 {
+			dispatch[j] = next
+		} else {
+			next = bodyLabels[j]
+		}
+	}
+	return dispatch
 }
 
 // saLowerSwitchMacro lowering 2/3 臂 switch（上游 SWITCH_2/3 分发宏；
@@ -3277,6 +3328,7 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	scope.loops = append(scope.loops, saLoop{end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, true)
 	needImport("sa_std/control.sal")
+	dispatch := saSwitchDispatch(s, parts, bodyLabels, defaultL, endL)
 	if len(parts) == 2 {
 		w.Write(fmt.Sprintf("  EXPAND SWITCH_2 %s, %s, %s, %s, %s, %s\n", disc, vals[0], bodyLabels[0], vals[1], bodyLabels[1], defaultL))
 	} else {
@@ -3297,8 +3349,16 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	}
 	lowered := true
 	for i, p := range parts {
+		stmts := p.node.AsCaseOrDefaultClause().Statements.Nodes
 		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
-		if !lowerBody(p.node.AsCaseOrDefaultClause().Statements.Nodes) {
+		if len(stmts) == 0 {
+			// 空臂直通源码序下子句（dispatch 预解链目标；宏按标号展
+			// 开故须独立标号，复用即重定义；上游空臂落 endswitch 致
+			// f(1)=0 错译，本仓正确优先）。
+			w.Write(fmt.Sprintf("  jmp %s\n", dispatch[i]))
+			continue
+		}
+		if !lowerBody(stmts) {
 			lowered = false
 			break
 		}
@@ -3966,28 +4026,50 @@ func saStmtTerminates(s *ast.Node) bool {
 		return saArmTerminates(thenStmts) && saArmTerminates(elseStmts)
 	case ast.KindSwitchStatement:
 		// 穷尽 switch（有 default 且每臂终结）即终结：必有一臂跑，
-		// 臂皆终结则整体终结；无 default 可落空。
+		// 臂皆终结则整体终结；无 default 可落空。空臂（堆叠 case 标签）
+		// 直通源码序下子句，其终结态即链目标终结态（发射侧
+		// saSwitchDispatch 同形）；末空臂无 default 即落空 end。
 		sw := s.AsSwitchStatement()
 		if sw.CaseBlock == nil {
 			return false
 		}
+		clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
 		hasDefault := false
-		for _, cl := range sw.CaseBlock.AsCaseBlock().Clauses.Nodes {
-			switch cl.Kind {
-			case ast.KindDefaultClause:
+		for _, cl := range clauses {
+			if cl.Kind == ast.KindDefaultClause {
 				hasDefault = true
-				if !saArmTerminates(cl.AsCaseOrDefaultClause().Statements.Nodes) {
-					return false
-				}
-			case ast.KindCaseClause:
-				if !saArmTerminates(cl.AsCaseOrDefaultClause().Statements.Nodes) {
-					return false
-				}
-			default:
+			} else if cl.Kind != ast.KindCaseClause {
 				return false
 			}
 		}
-		return hasDefault
+		if !hasDefault {
+			return false
+		}
+		// 自后向前源码序链：空臂终结态 = 紧随下子句终结态；末空臂无
+		// default 即落空 end（nextTerms 初 false）；default 体须自终结。
+		nextTerms := false
+		for i := len(clauses) - 1; i >= 0; i-- {
+			cl := clauses[i]
+			if cl.Kind == ast.KindDefaultClause {
+				nextTerms = saArmTerminates(cl.AsCaseOrDefaultClause().Statements.Nodes)
+				if !nextTerms {
+					return false
+				}
+				continue
+			}
+			stmts := cl.AsCaseOrDefaultClause().Statements.Nodes
+			if len(stmts) == 0 {
+				if !nextTerms {
+					return false
+				}
+				continue
+			}
+			nextTerms = saArmTerminates(stmts)
+			if !nextTerms {
+				return false
+			}
+		}
+		return true
 	case ast.KindBlock:
 		// 裸块终结态同其末句（switch 臂 `{ … break; }` 由此免去多余落空跳；
 		// 与 KindBlock 语句位 saLowerStmt 的回传同形）。
