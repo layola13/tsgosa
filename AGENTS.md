@@ -20,6 +20,16 @@
 4. **禁止原创逻辑**：语义以三处上游为准——`binder`（控制流/绑定）→ `checker`（类型/窄化）→ `printer`（JS 发射形状即语义基准），注释必须写明 `internal/` 文件行；`sci` 侧以 `sala/content/03_sa_asm` + `sci/sa_std` 契约 + `sa_plugin_ts` 279 demos 为准；`@import` 只指向 `sci/sa_std`（或 node/deno/bun 插件 `.sai` 白名单），`StdProjectionTable` 式逐字核对，无符号一律定位拒绝，永不静默错码、永不自造 helper/调用惯例。
 5. **禁止在 MAIN.GO 里堆逻辑**：`cmd/tsgo/main.go` 只留 `runMain` 薄分发（flag 解析 + 调已有 internal 入口）。分析（`compiler.Program`）、中转（`tstransforms TypeEraser/RuntimeSyntax + jsxtransforms`）、发射（`printer.EmitTextWriter` 后端 + `sci` 宏）一律进已有 `internal/*` 文件；`main.go` 新增超 20 行即违规。
 6. **禁止在 transpile.go 写巨无霸**（用户立项 2026-10-03）：`internal/transpile/transpile.go` 只留 `saLowerSourceFile` 编排（预扫/发射分发 wiring，单次增量约 30 行内）+ 函数签名核；领域 lowering 按归属落已有 `sa_*.go`（声明→`sa_decl.go`、类→`sa_class.go`、表达式→`sa_expr.go`、语句/控制流→`sa_ctrl.go`、串→`sa_str.go`、数组→`sa_arr.go`）。step43b 箭头 lowering 已迁 `sa_decl.go`（transpile.go 1721→1513 行）。
+7. **std 实现归 `sci/sa_std`，tsgosa 只做映射**（用户立项 2026-10-06）：新增标准库语义一律先在 `sci/sa_std` 落实现，tsgosa 以 `@import` + 符号调用映射（复 `sa_string_concat`/`btree`/`time` 现货纪律）；禁止在 tsgosa 内手写 std lowering 新域。既有内联 lowering 回迁用户已决（question 2026-10-06：既有也回迁），见 §6 回迁 track。`flatMap` 手写 lowering 已按本条回滚未提交。
+
+## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
+
+- R0 盘点（本轮）：tsgosa 内联全家——`sa_arr.go`（字面量/push/pop/shift/unshift/fill/sort/scan/reverse/slice/at/join/copyWithin/toReversed/toSorted/with/toSpliced/splice/flat/concat/from/map/filter/forEach/reduce/find 系/some/every + 高阶回调骨架 + clamp/copyRange/appendSlice helpers）、`sa_str.go`（拼接/大小写/判含/slice/trim/replace/pad/charCodeAt/模板/parseInt 扫描器）、`sa_math.go`（abs/pow/rounding/minmax/sqrt/log10/random/sign/imul/isNaN/isFinite/isArray）、`sa_date.go`（getters/setters/parse）、`sa_map.go`（btree 直调已是映射，键槽/释放为薄口归属不搬）。
+- 模型差（决定性约束）：薄口数组为 16 字节堆句柄 `{ptr,len}`，`sci/sa_std/vec.sa` 为 `Vec_{ptr,len,cap}` 寄存器组宏体系——**不同构，不可直调**。回迁须在 `sa_std` 新增薄口模型句柄数组 API（新文件，sci 侧），tsgosa 改调；回调骨架（map/filter 高阶内联）系语法展开，永驻 tsgosa，不搬。
+- R1 数组纯运行时 ops（slice/splice/flat/concat/copyRange 等循环拷）→ `sa_std` 新句柄数组模块 + tsgosa 改调，逐方法独立 commit。
+- R2 串 ops（判含/大小写/slice/trim/replace/pad/扫描器）→ `sa_std` 串模块（`string.sa` 现货对照，有则调，无则加）。
+- R3 Math/Date 纯函数（sign/imul/round/getters）→ `sa_std` 对照（`math.sai` f64 另道，i32 另立）。
+- 纪律：每步先 sci 落实现（sci 侧改动另记），tsgosa 侧只改调用；门禁沿既有（`--check` + `--corpus` + `sa check`）；回调内联/归属释放/种判定永驻 tsgosa（语法域，非 std）。
 
 ## 2. 管线（与 satsgo/SA_TS_TO_SA_DESIGN.md 一致，路径已换成本仓）
 
