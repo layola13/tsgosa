@@ -3444,7 +3444,11 @@ func saLowerThrowingTry(w printer.EmitTextWriter, s *ast.Node, ts *ast.TryStatem
 	}
 	if ts.CatchClause == nil {
 		if ts.FinallyBlock != nil {
-			if !saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			savedArmRelease := scope.armRelease
+			scope.armRelease = true
+			armOK := saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			scope.armRelease = savedArmRelease
+			if !armOK {
 				return false, true
 			}
 		}
@@ -3471,13 +3475,21 @@ func saLowerThrowingTry(w printer.EmitTextWriter, s *ast.Node, ts *ast.TryStatem
 		return legacy()
 	}
 	catchStmts := cc.Block.AsBlock().Statements.Nodes
-	if !saLowerArm(w, catchStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+	savedArmRelease := scope.armRelease
+	scope.armRelease = true
+	catchOK := saLowerArm(w, catchStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armRelease = savedArmRelease
+	if !catchOK {
 		return false, true
 	}
 	catchTerm := saArmTerminates(catchStmts)
 	if ts.FinallyBlock != nil {
 		finStmts := ts.FinallyBlock.AsBlock().Statements.Nodes
-		if !saLowerArm(w, finStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedFinArmRelease := scope.armRelease
+		scope.armRelease = true
+		finOK := saLowerArm(w, finStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedFinArmRelease
+		if !finOK {
 			return false, true
 		}
 		return catchTerm || saArmTerminates(finStmts), false
@@ -3565,13 +3577,21 @@ func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 		return false, true
 	}
 	if ts.TryBlock != nil {
-		if !saLowerArm(w, ts.TryBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedArmRelease := scope.armRelease
+		scope.armRelease = true
+		tryOK := saLowerArm(w, ts.TryBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedArmRelease
+		if !tryOK {
 			return false, true
 		}
 	}
 	// catch 永不可达（无 throw）：整块跳过，不绑定。
 	if ts.FinallyBlock != nil {
-		if !saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedFinArmRelease := scope.armRelease
+		scope.armRelease = true
+		finOK := saLowerArm(w, ts.FinallyBlock.AsBlock().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedFinArmRelease
+		if !finOK {
 			return false, true
 		}
 	}
