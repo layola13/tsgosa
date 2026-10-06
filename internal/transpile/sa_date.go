@@ -151,6 +151,7 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			w.Write(fmt.Sprintf("%s:\n", badL))
 			w.Write(fmt.Sprintf("  panic(%d)\n", 2503))
 			w.Write(fmt.Sprintf("%s:\n", okL))
+			w.Write(fmt.Sprintf("  !%s\n", st))
 			out := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", out, ms))
@@ -238,6 +239,22 @@ func saDateBaseKind(e *ast.Node, scope *saScope) bool {
 		}
 	}
 	return false
+}
+
+// saIsDateSetterCall 判定是否为变异重绑 setter 调用（返回柄经 `d = t`
+// move 给绑定，语句位禁释，禁双释）。
+func saIsDateSetterCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Name() == nil {
+		return false
+	}
+	if _, ok := saDateSetterField(pa.Name().Text()); !ok {
+		return false
+	}
+	return saDateBaseKind(pa.Expression, scope)
 }
 
 // saDateCallKind Date 调用的返回种（语法级判定，不落字；供各求值位门禁）。
