@@ -696,6 +696,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return op, false, ""
 			}
 		}
+		// crypto Hash 累加器调用（`h.update/digest`；声明收养外一律 loud 拒；
+		// 块出残留以 types==str 守卫；形状证据：封存调用点 :4466）。
+		if pa.Name() != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && k == "str" {
+				if st, ok := scope.hashAcc[pa.Expression.Text()]; ok {
+					op, msg := saLowerHashCall(w, pa.Expression.Text(), st, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, false, ""
+				}
+			}
+		}
 		// RegExp.test(串)→i32（POSIX-ERE 投影，见 sa_date.go；.exec 另步）。
 		if pa.Name() != nil {
 			if _, ok := saRegexCallKind(ce, scope); ok {
@@ -1162,6 +1175,12 @@ func saProjTable(remote string) (symbol, module, extra string, strArgs []int, un
 }
 
 func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	// crypto Hash 累加器暂存（命名导入裸调用 `createHash("sha256")`；
+	// 空串缓冲直至 digest 经 node crypto_hash 一次性路由；声明式收养，
+	// 其余用法在方法位大声拒；形状证据：封存 lowerCreateHash:4626-4644）。
+	if mod == "crypto" && remote == "createHash" {
+		return saStageHash(w, remote, ce, scope, pos, refusals, nextTemp)
+	}
 	// node.sai-backed surfaces reuse the sa_plugin_node wheel (no new builtins).
 	switch mod {
 	case "os", "process", "path", "crypto", "querystring", "url", "util", "punycode":
@@ -1452,6 +1471,186 @@ func saNodeStrArgRaw(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos 
 // saLowerNodeProjCall lowers one node.sai-backed call (mod already stripped,
 // e.g. mod=os remote=platform). Returns (operand, voidCall, msg); string
 // results are str-handle temps (saCallIsStr gates downstream).
+// saHashState is one crypto Hash accumulator: acc buffers fed bytes,
+// algo holds the lowered algorithm operand; done latches digest()
+// (ERR_CRYPTO_HASH_FINALIZED). Shape evidence: upstream hashState:522-526.
+type saHashState struct {
+	kind string
+	acc  string
+	algo string
+	done bool
+}
+
+// saStageHash stages a crypto Hash accumulator (empty string slice until
+// digest routes algo+buffer through the node crypto_hash one-shot wheel;
+// declaration-form adoption tracks it, other uses refuse loudly at the
+// method site via the missing hashAcc entry).
+// Shape evidence: upstream lowerCreateHash:4626-4644 (createHash half).
+func saStageHash(w printer.EmitTextWriter, fname string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, fname + " takes exactly 1 argument(s)"
+	}
+	algo, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	acc := saLowerStringLiteral(w, "", scope, nextTemp)
+	scope.lastHash = &saHashState{kind: "Hash", acc: acc, algo: algo}
+	return acc, false, ""
+}
+
+// saAdoptHash adopts a staged crypto Hash accumulator onto a freshly bound
+// declaration name (callee may be an import alias, resolved through the
+// remote export name like the call site; staged handle re-points at the
+// binding the value moved into).
+// Shape evidence: upstream lowerVarDeclList adoption:1472-1491.
+func saAdoptHash(scope *saScope, name string, init *ast.Node) {
+	st := scope.lastHash
+	scope.lastHash = nil
+	if st == nil {
+		return
+	}
+	if init == nil || init.Kind != ast.KindCallExpression {
+		return
+	}
+	ce := init.AsCallExpression()
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return
+	}
+	callee := ce.Expression.Text()
+	if r, ok := scope.importRemote[callee]; ok {
+		callee = r
+	}
+	if callee != "createHash" {
+		return
+	}
+	if scope.hashAcc == nil {
+		scope.hashAcc = map[string]*saHashState{}
+	}
+	st.acc = name
+	scope.hashAcc[name] = st
+}
+
+// saHashUpdateCall reports `h.update(..)` over a tracked Hash binding
+// (value-position uses refuse loudly; statement form is the only sound one).
+func saHashUpdateCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Name() == nil || pa.Name().Text() != "update" {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "str" {
+		return false
+	}
+	_, ok := scope.hashAcc[pa.Expression.Text()]
+	return ok
+}
+
+// saLowerHashCall routes Hash.update/digest over a staged accumulator.
+// update folds one string chunk via sa_string_concat and rebinds the receiver
+// (串 `+=` 重绑同形：先释旧柄，新柄 consume+复位）；digest emits the node
+// crypto_hash one-shot wheel call (hex natively) and latches finalized.
+// Non-literal/non-hex encodings, post-finalize use and unknown methods refuse.
+// Shape evidence: upstream lowerHashMethod:4651-4714 (Hash half).
+func saLowerHashCall(w printer.EmitTextWriter, recv string, st *saHashState, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if st.done {
+		return "", "Hash is already digested (ERR_CRYPTO_HASH_FINALIZED)"
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	switch method {
+	case "update":
+		if len(argNodes) != 1 {
+			return "", "Hash.update takes exactly 1 argument"
+		}
+		if argNodes[0] == nil || !saIsStrValue(argNodes[0], scope) {
+			return "", "Hash.update takes a string chunk"
+		}
+		chunk, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		out := saConcatSlices(w, st.acc, chunk, scope, nextTemp)
+		saRebindRelease(w, scope, recv)
+		w.Write(fmt.Sprintf("  %s = %s\n", recv, out))
+		saConsumeOwn(scope, out)
+		if b := saOwnOf(scope, recv); b != nil {
+			b.heap = true
+		}
+		saMarkRebound(scope, recv)
+		st.acc = recv
+		return recv, ""
+	case "digest":
+		if len(argNodes) > 1 {
+			return "", "Hash.digest takes at most 1 argument (encoding)"
+		}
+		enc := "hex"
+		if len(argNodes) == 1 {
+			lit, ok := saDigestEncoding(argNodes[0])
+			if !ok {
+				return "", "Hash.digest encoding must be a string literal"
+			}
+			enc = lit
+		}
+		if enc != "hex" {
+			return "", fmt.Sprintf("Hash.digest(%q) is not lowerable (only hex digests are projected)", enc)
+		}
+		return saLowerHashDigest(w, st, scope, nextTemp)
+	default:
+		return "", "Hash." + method + " is not a projected surface"
+	}
+}
+
+// saLowerHashDigest emits the one-shot node crypto_hash wheel call over the
+// staged (algo, buffer) slices (hex natively; status-checked, hex digest
+// wrapped to a str handle; finalized latched by the caller).
+// Shape evidence: upstream digest arm:4693-4709 + string2 emission,
+// wheel: sa_plugin_node/node.sai sa_node_plugin_crypto_hash.
+func saLowerHashDigest(w printer.EmitTextWriter, st *saHashState, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("node.sai")
+	ap, al := saExpandStr(w, st.algo, nextTemp)
+	dp, dl := saExpandStr(w, st.acc, nextTemp)
+	ps := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+	saOwnTemp(scope, ps)
+	ls := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+	saOwnTemp(scope, ls)
+	stt := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_node_plugin_crypto_hash(&%s, %s, &%s, %s, &%s, &%s)\n", stt, ap, al, dp, dl, ps, ls))
+	saOwnTemp(scope, stt)
+	saNodeStatusCheck(w, stt, scope, nextTemp)
+	st.done = true
+	return saNodeWrapStr(w, ps, ls, scope, nextTemp), ""
+}
+
+// saDigestEncoding reads a literal digest encoding from the call's argument
+// (lowered operands lose literal text; non-literals refuse).
+// Shape evidence: upstream digestEncoding:4716-4723.
+func saDigestEncoding(a *ast.Node) (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	if a.Kind != ast.KindStringLiteral && a.Kind != ast.KindNoSubstitutionTemplateLiteral {
+		return "", false
+	}
+	return a.Text(), true
+}
+
 func saLowerNodeProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	key := mod + "." + remote
 	if mod == "" {
@@ -3348,6 +3547,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if !saStrCallIsI32(e.AsCallExpression(), scope) {
 				return "", "string value in i32 expression"
 			}
+		}
+		// Hash.update 无值返回（语句位专用；值位大声拒，禁句柄误作 i32）。
+		if saHashUpdateCall(e.AsCallExpression(), scope) {
+			return "", "Hash.update does not return a value (use it as a statement)"
 		}
 		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k != "i32" {
 			return "", "array value in i32 expression"

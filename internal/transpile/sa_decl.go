@@ -58,6 +58,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 	isConst := dl.AsNode().Flags&ast.NodeFlagsConst != 0
 	for _, d := range dl.Declarations.Nodes {
 		vd := d.AsVariableDeclaration()
+		// crypto Hash 暂存逐声明清零（非声明式 createHash 不得污染后继声明；
+		// 形状证据：封存 lowerVarDeclList:1404）。
+		scope.lastHash = nil
 		nm := vd.Name()
 		if nm == nil {
 			ln, col := pos(d.Pos())
@@ -597,6 +600,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			scope.types[name] = "str"
 			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
+			saAdoptHash(scope, name, init)
 			return true
 		}
 		if k, ok := saDateCallKind(init.AsCallExpression(), scope); ok && k == "date" {

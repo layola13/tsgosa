@@ -2773,6 +2773,12 @@ type saScope struct {
 	// armRelease 置位时 saLowerArm 在截断前释本臂新生归属（多臂合并收敛；
 	// 调用点按臂置位并复位，循环体等默认关闭）。
 	armRelease bool
+	// crypto Hash 累加器（`createHash/update/digest` 链；命名导入裸调用
+	// 处暂存，声明式收养，非声明式在方法位大声拒；跨块共享表，
+	// 分发以 types==str 守卫防块出残留；形状证据：封存 hashAcc:442/
+	// hashState:522-526 + lowerCreateHash:4626-4644 + lowerHashMethod:4651-4714）。
+	hashAcc  map[string]*saHashState
+	lastHash *saHashState
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：

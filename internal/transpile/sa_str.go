@@ -195,6 +195,10 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 			if saNodeIsStr(mod + "." + remote) {
 				return true
 			}
+			// crypto Hash 暂存即串缓冲（声明收养为 str 柄；方法位另行分发）。
+			if mod == "crypto" && remote == "createHash" {
+				return true
+			}
 		}
 		return false
 	}
@@ -236,6 +240,16 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
+		// crypto Hash 终结即串值（`h.digest()` hex 串柄；update 值位另行拒）。
+		if pa.Name() != nil && pa.Name().Text() == "digest" {
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[pa.Expression.Text()]; ok && k == "str" {
+					if _, ok := scope.hashAcc[pa.Expression.Text()]; ok {
+						return true
+					}
+				}
+			}
+		}
 		// Map 串值读即串值（`M.get(k)`；值种按建表记，与下标读同形）。
 		if pa.Name() != nil && pa.Name().Text() == "get" {
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
@@ -1176,6 +1190,7 @@ func saLowerStrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	scope.types[name] = "str"
 	saConsumeOwn(scope, h)
 	saDeclareOwned(scope, name)
+	saAdoptHash(scope, name, vd.Initializer)
 	return true
 }
 

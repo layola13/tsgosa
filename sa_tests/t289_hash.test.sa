@@ -1,0 +1,9 @@
+@import "../demos/289_hash/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "289_hash"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 128, 28901)
+    !v
+    return
