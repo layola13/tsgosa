@@ -4,6 +4,15 @@ export function add(a: number, b: number): number {
 test("adds", () => {
   expect(add(1, 2)).toBe(3);
 });
+test("assert-count", () => {
+  expect.assertions(2);
+  expect(1).toBe(1);
+  expect(1).not.toBe(2);
+});
+test("has-assert", () => {
+  expect.hasAssertions();
+  expect(1).toBeTruthy();
+});
 describe("more", () => {
   test("equal alias", () => {
     expect(add(2, 3)).toEqual(5);

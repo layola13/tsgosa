@@ -2710,6 +2710,14 @@ type saScope struct {
 	// 注册拒（套件提升不支持）；用户 mandate 全量测试框架 track 2）。
 	testBefore []*ast.Node
 	testAfter  []*ast.Node
+	// 断言计数（`expect.assertions(n)`/`hasAssertions` 回调尾检查；具名槽
+	// 首次 expect 落字时建；targetSet 置位才查，-2 即 has 模式）。
+	expectCountSlot string
+	expectTarget    int
+	expectTargetSet bool
+	// 回调域内标记（`saInlineTestUnit` 进置 true；顶层/普通函数内调
+	// assertions 无尾声点，大声拒，禁静默无检查）。
+	expectInTest bool
 	// Program-link environment (nil-equivalent when empty; single-file lowering
 	// leaves all three zero; shape evidence: upstream LowerProgram prefixOf +
 	// links[p].resolved + seeded funcSigs).

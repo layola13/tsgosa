@@ -554,6 +554,13 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 	saved := saScopeEnter(scope)
 	terminated := false
 	armOK := true
+	savedTarget := scope.expectTarget
+	savedTargetSet := scope.expectTargetSet
+	savedSlot := scope.expectCountSlot
+	savedInTest := scope.expectInTest
+	scope.expectTargetSet = false
+	scope.expectCountSlot = ""
+	scope.expectInTest = true
 	for _, st := range stmts {
 		if terminated {
 			continue
@@ -567,6 +574,35 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 			terminated = true
 		}
 	}
+	if armOK && scope.expectTargetSet {
+		// 回调尾断言计数检查（assertions 须等，has 须 >0；fail-fast
+		// panic(2501) 同形；无 expect 落字则计数视 0）。
+		c := "0"
+		if scope.expectCountSlot != "" {
+			c = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", c, scope.expectCountSlot))
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if scope.expectTarget == -2 {
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, c))
+		} else {
+			w.Write(fmt.Sprintf("  %s = ne %s, %d\n", t, c, scope.expectTarget))
+		}
+		failL := fmt.Sprintf("L_expassert_fail_%d", *nextLabel)
+		*nextLabel++
+		okL := fmt.Sprintf("L_expassert_ok_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+		w.Write(fmt.Sprintf("%s:\n", failL))
+		w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+		w.Write(fmt.Sprintf("%s:\n", okL))
+	}
+	scope.expectTarget = savedTarget
+	scope.expectTargetSet = savedTargetSet
+	scope.expectCountSlot = savedSlot
+	scope.expectInTest = savedInTest
 	saReleaseDeeperThan(w, scope, saved.owned)
 	saScopeExit(scope, saved)
 	return armOK
@@ -577,6 +613,90 @@ func saInlineTestUnit(w printer.EmitTextWriter, body *ast.Node, isVoid bool, sco
 // 钩子：beforeEach/afterEach 注册体按序贴到后续 test 内联前/后（同域顺序语义，
 // 无套件提升——vitest 会提升，此处以文本序为准）；beforeAll 就地跑一次；afterAll
 // 需整域缓冲未做，大声拒。describe 自身透明（只分组），其内 hook 进出按栈存取
+// saEmitExpectCount 断言计数+1（槽回调域内建，归属登记随 `saReleaseDeeperThan`
+// 自动收；assertions 语义本即当前 test，跨回调不累计）。
+func saEmitExpectCount(w printer.EmitTextWriter, scope *saScope, nextTemp *int) {
+	if scope.expectCountSlot == "" {
+		slot := fmt.Sprintf("__expect_count_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", slot))
+		saDeclareOwned(scope, slot)
+		scope.expectCountSlot = slot
+	}
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", c, scope.expectCountSlot))
+	n := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", n, c))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", scope.expectCountSlot, n))
+}
+
+// saLowerExpectCount `expect.assertions(n)`/`expect.hasAssertions()` 登记
+// （只记 target 不落字；n 须非负字面量；expect 基劫持沿旧路，禁静默错位）。
+func saLowerExpectCount(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	_ = isVoid
+	e := s.AsExpressionStatement().Expression
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	ce := e.AsCallExpression()
+	callee := ce.Expression
+	if callee == nil || callee.Kind != ast.KindPropertyAccessExpression {
+		return false, false
+	}
+	pa := callee.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Name() == nil {
+		return false, false
+	}
+	m := pa.Name().Text()
+	if m != "assertions" && m != "hasAssertions" {
+		return false, false
+	}
+	base := pa.Expression
+	if base == nil || base.Kind != ast.KindIdentifier || base.Text() != "expect" {
+		return false, false
+	}
+	if !saIsUnresolvedTestName(scope, "expect") {
+		return false, false
+	}
+	if !scope.expectInTest {
+		return fail("expect.assertions needs a test callback")
+	}
+	var margs []*ast.Node
+	if ce.Arguments != nil {
+		margs = ce.Arguments.Nodes
+	}
+	if m == "hasAssertions" {
+		if len(margs) != 0 {
+			return fail("expect.hasAssertions takes no arguments")
+		}
+		scope.expectTarget = -2
+		scope.expectTargetSet = true
+		return true, true
+	}
+	if len(margs) != 1 {
+		return fail("expect.assertions takes one argument")
+	}
+	a := margs[0]
+	if a == nil || a.Kind != ast.KindNumericLiteral {
+		return fail("expect.assertions needs a literal count")
+	}
+	var n int
+	if _, err := fmt.Sscanf(a.Text(), "%d", &n); err != nil || n < 0 {
+		return fail("expect.assertions needs a literal count")
+	}
+	scope.expectTarget = n
+	scope.expectTargetSet = true
+	return true, true
+}
+
 // saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言
 // （i32 两侧既有求值 + `ne` + 不等即 `panic(2501)`，与 `throw` 终结同形，
 // 测试 fail-fast 口径一致；`expect` 被用户绑定时沿旧路，禁劫持）。
@@ -1311,8 +1431,16 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 	if callee == nil {
 		return false, false
 	}
+	// `expect.assertions(n)`/`expect.hasAssertions()` 计数登记（回调尾检查；
+	// 未命中沿旧路）。
+	if handled, ok := saLowerExpectCount(w, s, isVoid, scope, pos, refusals, nextTemp); handled {
+		return handled, ok
+	}
 	// `expect(actual).toBe(expected)` 语句断言就地内联（测试域分发；未命中沿旧路）。
 	if handled, ok := saLowerExpectAssertion(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
+		if ok {
+			saEmitExpectCount(w, scope, nextTemp)
+		}
 		return handled, ok
 	}
 	// `test.each(table)(title, fn)` 行展开（`it.each` 同；劫持规则同注册名；
