@@ -554,8 +554,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
 	if init.Kind == ast.KindStringLiteral || init.Kind == ast.KindNoSubstitutionTemplateLiteral ||
-		init.Kind == ast.KindTemplateExpression || init.Kind == ast.KindTaggedTemplateExpression {
-		// 无注解串推断（字面量/模板/tagged 皆串位；tag 门在求值内）。
+		init.Kind == ast.KindTemplateExpression || init.Kind == ast.KindTaggedTemplateExpression ||
+		init.Kind == ast.KindTypeOfExpression {
+		// 无注解串推断（字面量/模板/tagged/typeof 皆串位；tag 门在求值内）。
 		h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(init.Pos())

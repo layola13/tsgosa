@@ -121,6 +121,9 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		return false
 	case ast.KindParenthesizedExpression:
 		return saIsStrExpr(e.AsParenthesizedExpression().Expression, scope)
+	case ast.KindTypeOfExpression:
+		// typeof 恒为种类串（值位具化见 saEvalStr；未知名沿求值门拒）。
+		return true
 	case ast.KindAsExpression:
 		return saIsStrExpr(e.AsAsExpression().Expression, scope)
 	case ast.KindPropertyAccessExpression:

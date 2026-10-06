@@ -1,0 +1,9 @@
+@import "../demos/294_export_mix/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "294_export_mix"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1, 29401)
+    !v
+    return

@@ -1171,6 +1171,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindClassDeclaration {
+			// 默认导出匿名类整件擦除（无绑定可记；上游零发射同形；
+			// 具名默认形沿旧路）。
+			if nm := st.Name(); (nm == nil || nm.Kind != ast.KindIdentifier) &&
+				ast.HasModifier(st, ast.ModifierFlagsDefault) {
+				continue
+			}
 			// 类定义预扫成表（布局记录、无码；方法随调用内联）。
 			saRecordClass(st, classes, pos, &refusals)
 			continue
@@ -2873,9 +2879,14 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
-		ln, col := pos(st.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous function refused"})
-		return
+		// 默认导出匿名函数具名 `<anon>` 发射（不可调用；上游实发 `@<anon>`
+		// 同形；其余匿名形沿旧门）。
+		if !ast.HasModifier(st, ast.ModifierFlagsDefault) {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous function refused"})
+			return
+		}
+		name, ok = "<anon>", true
 	}
 	params, ok := saParamNames(fn)
 	if !ok {
