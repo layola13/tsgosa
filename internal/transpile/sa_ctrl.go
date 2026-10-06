@@ -1791,6 +1791,9 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		if saCallIsStr(e.AsCallExpression(), scope) && !saStrCallIsI32(e.AsCallExpression(), scope) {
 			saReleaseStmtTemp(w, scope, op)
 		}
+		if saIsDateStrCall(e.AsCallExpression(), scope) {
+			saReleaseStmtTemp(w, scope, op)
+		}
 		return true
 	}
 	if e.Kind != ast.KindBinaryExpression {
