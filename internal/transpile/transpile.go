@@ -3067,6 +3067,24 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		}
 		return done, false
 	case ast.KindVariableStatement:
+		// 函数内 `declare` 环境声明擦除（无初始化器；有初值沿旧路按普通声明）。
+		if vs := s.AsVariableStatement(); vs != nil && ast.HasModifier(s, ast.ModifierFlagsAmbient) {
+			noInit := true
+			if dl := vs.DeclarationList; dl != nil && dl.AsVariableDeclarationList() != nil {
+				for _, d := range dl.AsVariableDeclarationList().Declarations.Nodes {
+					if d == nil {
+						continue
+					}
+					if dd := d.AsVariableDeclaration(); dd != nil && dd.Initializer != nil {
+						noInit = false
+						break
+					}
+				}
+			}
+			if noInit {
+				return false, false
+			}
+		}
 		if !saLowerVarDecl(w, s, scope, pos, refusals, nextTemp) {
 			return false, true
 		}
@@ -3106,6 +3124,14 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	case ast.KindTypeAliasDeclaration, ast.KindInterfaceDeclaration:
 		// 局部类型声明擦除（纯类型零运行时；顶层同律；别名引用另步大声拒）。
 		return false, false
+	case ast.KindFunctionDeclaration:
+		// 函数内 `declare function` 环境声明擦除（普通嵌套函数沿旧门）。
+		if ast.HasModifier(s, ast.ModifierFlagsAmbient) {
+			return false, false
+		}
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		return false, true
 	case ast.KindBlock:
 		// 裸块作语句（switch 臂 `{...}` / 独立 `{...}`）：块域 + 共享语句
 		// 全集；终结态经 saLowerArm 回传（封存 :847-852 pushScope + 逐语句
