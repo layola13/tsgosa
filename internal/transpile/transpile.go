@@ -3133,6 +3133,9 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	case ast.KindEmptyStatement:
 		// 空语句 no-op（形状证据：封存 :886-887）。
 		return false, false
+	case ast.KindDebuggerStatement:
+		// `debugger` 无运行时语义，擦除（空语句同形；禁通用 kind 门）。
+		return false, false
 	case ast.KindTypeAliasDeclaration, ast.KindInterfaceDeclaration:
 		// 局部类型声明擦除（纯类型零运行时；顶层同律；别名引用另步大声拒）。
 		return false, false
