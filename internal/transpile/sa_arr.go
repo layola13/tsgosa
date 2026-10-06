@@ -3365,6 +3365,12 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", method + " without a comparator takes 0 arguments"
 		}
+		// 串元数组无字典序底座（sci string.sai 无 lexicographic 现货，串比较
+		// step324 同例拒收；数值插入会按指针数序错排，大声拒）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			scope.arrStr != nil && scope.arrStr[pa.Expression.Text()] {
+			return "", "", method + " on string arrays needs lexicographic order (no backend)"
+		}
 		if method == "sort" {
 			// R1 回迁映射：原地数值插入排序语义由 `sci/sa_std/ts_array.sa`
 			// `@ts_arr_sort` 实现，本侧只做 import + 直接调用（无新柄）。
