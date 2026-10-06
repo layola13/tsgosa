@@ -2,6 +2,7 @@ export function add(a: number, b: number): number {
   return a + b;
 }
 interface Pt { a: i32; b: i32; }
+interface Nt { s: str; a: i32; }
 test("adds", () => {
   expect(add(1, 2)).toBe(3);
 });
@@ -82,6 +83,11 @@ describe("more", () => {
     expect(p).toEqual(q);
     expect(p).not.toEqual(r);
     expect(p).toBe(p);
+  });
+  test("inst-streq", () => {
+    const m: Nt = { s: "hi", a: 1 };
+    const n: Nt = { s: "hi", a: 1 };
+    expect(m).toEqual(n);
   });
 });
 console.log(42);

@@ -698,6 +698,29 @@ func saLowerExpectCount(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scop
 	return true, true
 }
 
+// saStrContentEq 串内容相等值式（both=内容等且等长；idx 自清洁；ah/bh
+// 调用方自理；与 `saLowerExpectStrEq` 同指令同序，禁另立口径）。
+func saStrContentEq(w printer.EmitTextWriter, ah, bh string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/string.sai")
+	ap, al := saExpandStr(w, ah, nextTemp)
+	bp, bl := saExpandStr(w, bh, nextTemp)
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, bp, bl))
+	saOwnTemp(scope, idx)
+	at0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
+	samelen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, al, bl))
+	both := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
+	saReleaseOwnedTemp(w, scope, idx)
+	return both
+}
+
 // saLowerExpectInstEq 实例深相等（同布局双实例逐 i32 域 eq 链；含非 i32 域/
 // 布局不同大声拒；`.not` 翻转；任一臂非实例沿旧路，禁抢 i32/串门）。
 func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
@@ -737,27 +760,44 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if fk, ok := defA.fkinds[k]; !ok || fk != "i32" {
+		if fk, ok := defA.fkinds[k]; !ok || (fk != "i32" && fk != "str") {
 			ln, col := pos(iarg.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32 fields yet"})
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32/str fields yet"})
 			return true, false
 		}
 	}
 	acc := ""
 	for _, k := range keys {
-		off := defA.offsets[k]
-		aa := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", aa, ha, off))
-		bb := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", bb, hb, off))
-		dd := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		if !neg {
-			w.Write(fmt.Sprintf("  %s = ne %s, %s\n", dd, aa, bb))
+		var dd string
+		if fk, _ := defA.fkinds[k]; fk == "str" {
+			ah := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, defA.offsets[k]))
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, defA.offsets[k]))
+			both := saStrContentEq(w, ah, bh, scope, nextTemp)
+			dd = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if !neg {
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", dd, both))
+			} else {
+				w.Write(fmt.Sprintf("  %s = add %s, 0\n", dd, both))
+			}
 		} else {
-			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", dd, aa, bb))
+			aa := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", aa, ha, defA.offsets[k]))
+			bb := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", bb, hb, defA.offsets[k]))
+			dd = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if !neg {
+				w.Write(fmt.Sprintf("  %s = ne %s, %s\n", dd, aa, bb))
+			} else {
+				w.Write(fmt.Sprintf("  %s = eq %s, %s\n", dd, aa, bb))
+			}
 		}
 		if acc == "" {
 			acc = dd

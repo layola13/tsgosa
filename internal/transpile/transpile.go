@@ -2483,6 +2483,12 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 				return "i32", true
 			case "boolean":
 				return "bool", true
+			case "str":
+				// 方言串注解（与 `string` 关键字同种；形参/字段既有方言通道，
+				// 注解核此处漏认致串域落 arr 槽，补齐）。
+				return "str", true
+			case "arr":
+				return "arr", true
 			case "f64", "f32":
 				// f64 values lower directly (integer/float literal text, fadd/fcmp temps).
 				return "f64", true
