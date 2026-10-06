@@ -4,6 +4,7 @@ package transpile
 import (
 	"fmt"
 	"github.com/microsoft/typescript-go/internal/ast"
+	"github.com/microsoft/typescript-go/internal/checker"
 	"github.com/microsoft/typescript-go/internal/printer"
 	"sort"
 	"strings"
@@ -865,6 +866,23 @@ func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
 		defer func() { _ = recover() }()
 		if sym := tcx.check.GetSymbolAtLocation(n); sym != nil {
 			found = true
+		}
+	}()
+	return found
+}
+
+// saIsAnyOrUnknown 报告 checker 下该节点是否为 any/unknown（封存
+// typeofKindSingle:58-59 全形；无 ctx/异常/nil 一律 false，调用方回退既有
+// scope 种逻辑，零行为变）。
+func saIsAnyOrUnknown(tcx *saTypeCtx, n *ast.Node) bool {
+	if tcx == nil || tcx.check == nil || n == nil {
+		return false
+	}
+	found := false
+	func() {
+		defer func() { _ = recover() }()
+		if ty := tcx.check.GetTypeAtLocation(n); ty != nil {
+			found = ty.Flags()&checker.TypeFlagsAnyOrUnknown != 0
 		}
 	}()
 	return found
@@ -3551,6 +3569,11 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 	if op.Kind == ast.KindIdentifier {
 		name := op.Text()
 		if k, ok := scope.types[name]; ok {
+			// checker 权威：`any`/`unknown` 擦除为 i32 后 typeof 不可折叠
+			//（封存 typeofKind:58-59；上游同位拒收；无 tcx 回退既有种逻辑）。
+			if saIsAnyOrUnknown(scope.tcx, op) {
+				return "", "typeof " + name + " is not statically known"
+			}
 			switch {
 			case k == "i32":
 				return "number", ""
