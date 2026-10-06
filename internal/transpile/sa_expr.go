@@ -437,6 +437,31 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", t, a, b))
 			return t, false, ""
 		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
+			pa.Name() != nil && pa.Name().Text() == "hasOwn" {
+			// `Object.hasOwn(o, k)` 与 `in` 同门（字面量键 + 已知布局即静态折叠；
+			// 变量键/未知布局大声拒，禁运行时臆测）。
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 2 {
+				return "", false, "Object.hasOwn takes two arguments"
+			}
+			obj := argNodes[0]
+			key := argNodes[1]
+			if obj == nil || obj.Kind != ast.KindIdentifier || key == nil || key.Kind != ast.KindStringLiteral {
+				return "", false, "Object.hasOwn needs a known-layout object and a literal key"
+			}
+			verdict, ok := saLayoutHasKey(key.Text(), obj.Text(), scope)
+			if !ok {
+				return "", false, "Object.hasOwn needs a known-layout object and a literal key"
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
+			return t, false, ""
+		}
 	}
 	if saIsConsoleLog(ce) {
 		ok, msg := saLowerConsoleLog(w, ce, scope, pos, refusals, nextTemp)
@@ -3348,19 +3373,11 @@ func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *sa
 	}
 	if be.Left != nil && be.Left.Kind == ast.KindStringLiteral {
 		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
-			if k, ok := scope.types[be.Right.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-				if def, ok := scope.classes[k[5:]]; ok {
-					// 存取器无槽但有名（`in` 判存在；形状证据同上）。
-					if _, ok := def.offsets[be.Left.Text()]; ok {
-						verdict = "1"
-					} else if _, ok := def.getters[be.Left.Text()]; ok {
-						verdict = "1"
-					} else if _, ok := def.setters[be.Left.Text()]; ok {
-						verdict = "1"
-					} else {
-						verdict = "0"
-					}
-				}
+			if verdict, ok := saLayoutHasKey(be.Left.Text(), be.Right.Text(), scope); ok {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
+				return t, ""
 			}
 		}
 	}
@@ -3371,6 +3388,28 @@ func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *sa
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
 	return t, ""
+}
+
+// saLayoutHasKey 查已知布局有无键（存取器无槽但有名亦算存在；
+// `in` 与 `Object.hasOwn` 共用，禁另立口径）。
+func saLayoutHasKey(key, objName string, scope *saScope) (string, bool) {
+	k, ok := scope.types[objName]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return "", false
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok {
+		return "", false
+	}
+	// 存取器无槽但有名（`in` 判存在；形状证据同上）。
+	if _, ok := def.offsets[key]; ok {
+		return "1", true
+	} else if _, ok := def.getters[key]; ok {
+		return "1", true
+	} else if _, ok := def.setters[key]; ok {
+		return "1", true
+	}
+	return "0", true
 }
 
 // saLowerNullish `??` 空合槽（左非零直通，否则右惰性求值；子集 null 即 0；
