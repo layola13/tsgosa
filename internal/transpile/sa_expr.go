@@ -939,9 +939,12 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 		fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
 		if msgA != "" || msgB != "" {
-			ln, col := pos(where.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be string operands"})
-			return "", false, "ternary arms must be string operands"
+			// H1c 去重：返首个内层失败（调用方包一层即唯一拒因；
+			// 旧门文案与包装复报 2 vs 上游 1）。
+			if msgA != "" {
+				return "", false, msgA
+			}
+			return "", false, msgB
 		}
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -976,9 +979,12 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 	b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
 	if msgA != "" || msgB != "" {
-		ln, col := pos(where.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms must be i32 operands"})
-		return "", false, "ternary arms must be i32 operands"
+		// H1c 去重：返首个内层失败（调用方包一层即唯一拒因；
+		// 旧门文案与包装复报 2 vs 上游 1）。
+		if msgA != "" {
+			return "", false, msgA
+		}
+		return "", false, msgB
 	}
 	needImport("sa_std/control.sal")
 	t := fmt.Sprintf("t_%d", *nextTemp)
