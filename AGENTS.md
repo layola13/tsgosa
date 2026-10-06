@@ -452,7 +452,7 @@
 - [ ] H4 对象模式回调 `({x}) =>`：沿旧门（需布局匹配，另立项）。
 - [ ] H5 `delete`/`using`/`bigint`/正则/生成器/`**=`/rest 解构/date 有参构造：双方同拒，UP 放行再跟。
 - [ ] H6 `keyof`/条件/映射类型：keyof 已探双方拒；其余未探针，先探针。
-- [ ] H7 f64 边角：`for (a = 8.5;;)` 初始化位、位运算浮点：未探针，先探针。
+- [ ] H7 f64 边角已探针（本轮，探针 /tmp/h7a、/tmp/h7b）：`for (a = 8.5;;)` 上游发射 `a = 8.5`（浮点进 i32 槽）、`8.5 | 0` 上游发射 `or 8.5, 0`，皆静默错译类（T2 同类），本仓大声拒（`unsupported for initializer: float literal 8.5 not in i32 subset` / `float operator is not lowerable`）。真修需 JS ToInt32 截断语义（上游自己都没做，属原创语义设计，非移植），按铁律 4 维持拒收，待裁决（截断 vs 维持）。
 ### P2 通道（跨仓，前置在外）
 - [ ] C1 npm/program-link 多文件：阻塞于 satsgo todo/01 + sci node.sai（见 step75）。
 - [ ] C2 tsx/DOM：独立轨道（路二）。
