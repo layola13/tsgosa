@@ -2769,6 +2769,9 @@ type saScope struct {
 	// advisories (read-only; driver fills progressively in dependency order,
 	// so reverse-order uses keep the old message — both still refuse).
 	linkHarvests map[string]map[string]saProgFunc
+	// armRelease 置位时 saLowerArm 在截断前释本臂新生归属（多臂合并收敛；
+	// 调用点按臂置位并复位，循环体等默认关闭）。
+	armRelease bool
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -3254,7 +3257,16 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 	}
 	saved := saScopeEnter(scope)
 	defer saScopeExit(scope, saved)
+	// 臂尾收敛释放（H-multiarm）：置位且臂未终结时，在截断前释本臂新生归属，
+	// 使合并点各入边状态一致；defer 逆序保证先于 saScopeExit 执行。
+	armDepth := len(scope.ownOrder)
+	wantArmRelease := scope.armRelease
 	terminated := false
+	defer func() {
+		if wantArmRelease && !terminated {
+			saReleaseDeeperThan(w, scope, armDepth)
+		}
+	}()
 	for _, s := range stmts {
 		if terminated {
 			// 死码静默抑制（封存 lowerBlockStatement:820-823 同形；见函数体

@@ -3113,7 +3113,11 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		w.Write(fmt.Sprintf("  %s = eq %s, %s\n", cmp, disc, val))
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, bodyLabels[i], testLabels[i+1]))
 		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
-		if !saLowerArm(w, p.node.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedArmRelease := scope.armRelease
+		scope.armRelease = true
+		armOK := saLowerArm(w, p.node.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedArmRelease
+		if !armOK {
 			lowered = false
 			break
 		}
@@ -3127,7 +3131,11 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	w.Write(fmt.Sprintf("%s:\n", testLabels[len(parts)]))
 	if defaultNode != nil {
-		if !saLowerArm(w, defaultNode.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedArmRelease := scope.armRelease
+		scope.armRelease = true
+		armOK := saLowerArm(w, defaultNode.AsCaseOrDefaultClause().Statements.Nodes, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedArmRelease
+		if !armOK {
 			scope.loops = scope.loops[:len(scope.loops)-1]
 			return false
 		}
@@ -3176,7 +3184,11 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 		w.Write(fmt.Sprintf("  EXPAND SWITCH_3 %s, %s, %s, %s, %s, %s, %s, %s\n", disc, vals[0], bodyLabels[0], vals[1], bodyLabels[1], vals[2], bodyLabels[2], defaultL))
 	}
 	lowerBody := func(stmts []*ast.Node) bool {
-		if !saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedArmRelease := scope.armRelease
+		scope.armRelease = true
+		armOK := saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedArmRelease
+		if !armOK {
 			return false
 		}
 		if !saArmTerminates(stmts) {
@@ -3734,7 +3746,11 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 		*nextLabel++
 		w.Write(fmt.Sprintf("  EXPAND IF_ELSE %s, %s, %s\n", condOp, thenLabel, elseLabel))
 		w.Write(thenLabel + ":\n")
-		if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedArmRelease := scope.armRelease
+		scope.armRelease = true
+		thenOK := saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedArmRelease
+		if !thenOK {
 			return false
 		}
 		// then 臂落空直入 else 即错臂执行（fizzbuzz 5,3,1 实证）；非终结臂须跳 end（上游同形）。
@@ -3747,7 +3763,11 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 			w.Write(fmt.Sprintf("  jmp %s\n", endifLabel))
 		}
 		w.Write(elseLabel + ":\n")
-		if !saLowerArm(w, elseStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		savedElseArmRelease := scope.armRelease
+		scope.armRelease = true
+		elseOK := saLowerArm(w, elseStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		scope.armRelease = savedElseArmRelease
+		if !elseOK {
 			return false
 		}
 		if needEnd {
@@ -3762,7 +3782,11 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 	*nextLabel++
 	w.Write(fmt.Sprintf("  EXPAND IF_TRUE %s, %s, %s\n", condOp, thenLabel, endifLabel))
 	w.Write(thenLabel + ":\n")
-	if !saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+	savedArmRelease := scope.armRelease
+	scope.armRelease = true
+	thenOK := saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armRelease = savedArmRelease
+	if !thenOK {
 		return false
 	}
 	// 臂终结（return/jmp 收尾）则免 join 跳转——落在终结符后即不可达陷阱，

@@ -115,6 +115,7 @@ L_idx_end_19:
   t_50 = mul t_48, 4
   t_51 = add t_49, t_50
   store t_51 + 0, t as i32
+  !t
 L_endif_15:
   t_52 = add j, 1
   !j
