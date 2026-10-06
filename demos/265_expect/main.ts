@@ -4,6 +4,8 @@ export function add(a: number, b: number): number {
 interface Pt { a: i32; b: i32; }
 interface Nt { s: str; a: i32; }
 interface At { xs: arr; n: i32; }
+interface It { x: i32; }
+interface Ot { inner: It; n: i32; }
 test("adds", () => {
   expect(add(1, 2)).toBe(3);
 });
@@ -94,6 +96,11 @@ describe("more", () => {
     const u: At = { xs: [1, 2], n: 3 };
     const v: At = { xs: [1, 2], n: 3 };
     expect(u).toEqual(v);
+  });
+  test("inst-nest", () => {
+    const m: Ot = { inner: { x: 1 }, n: 2 };
+    const n: Ot = { inner: { x: 1 }, n: 2 };
+    expect(m).toEqual(n);
   });
 });
 console.log(42);

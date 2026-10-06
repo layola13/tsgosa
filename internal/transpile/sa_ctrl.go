@@ -849,48 +849,96 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "cannot compare instances of different layouts"})
 		return true, false
 	}
-	keys := make([]string, 0, len(defA.offsets))
-	for k := range defA.offsets {
+	visited := map[string]bool{defA.name: true}
+	acc, ok := saDeepInstEq(w, ha, hb, defA, neg, scope, pos, refusals, nextLabel, nextTemp, visited, iarg.Pos())
+	if !ok {
+		return true, false
+	}
+	failL := fmt.Sprintf("L_expinst_fail_%d", *nextLabel)
+	*nextLabel++
+	okL := fmt.Sprintf("L_expinst_ok_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", acc, failL, okL))
+	w.Write(failL + ":\n")
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+	w.Write(okL + ":\n")
+	return true, true
+}
+
+// saDeepInstEq 递归深相等值式（返失败条件 bool；同布局逐域：
+// i32 eq/str 内容/arr 按元种表/inst 递归子布局；布局不同/未知域/混合元种/
+// 递归环大声拒；空布局恒等；调用方 br 断言）。
+func saDeepInstEq(w printer.EmitTextWriter, ha, hb string, def *saClassDef, neg bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int, visited map[string]bool, atPos int) (string, bool) {
+	refuse := func(msg string) (string, bool) {
+		ln, col := pos(atPos)
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return "", false
+	}
+	keys := make([]string, 0, len(def.offsets))
+	for k := range def.offsets {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	ifaceName := ka
-	if len(ifaceName) > 5 && ifaceName[:5] == "inst:" {
-		ifaceName = ifaceName[5:]
-	}
 	elemKinds := map[string]string{}
 	for _, k := range keys {
-		if fk, ok := defA.fkinds[k]; ok && (fk == "i32" || fk == "str") {
+		if fk, ok := def.fkinds[k]; ok && (fk == "i32" || fk == "str") {
 			continue
 		}
-		if fk, ok := defA.fkinds[k]; ok && fk == "arr" {
-			if ek, ok := scope.arrFieldElem[ifaceName+"."+k]; ok && (ek == "i32" || ek == "str") {
+		if fk, ok := def.fkinds[k]; ok && fk == "arr" {
+			if ek, ok := scope.arrFieldElem[def.name+"."+k]; ok && (ek == "i32" || ek == "str") {
 				elemKinds[k] = ek
 				continue
 			}
 		}
-		ln, col := pos(iarg.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32/str fields yet"})
-		return true, false
+		if fk, ok := def.fkinds[k]; ok && fk == "inst" {
+			sub, ok := def.fsub[k]
+			if !ok {
+				return refuse("deep equality needs a recorded sub layout")
+			}
+			if visited[sub] {
+				return refuse("deep equality does not support recursive layouts yet")
+			}
+			if _, ok := scope.classes[sub]; !ok {
+				return refuse("deep equality needs a recorded sub layout")
+			}
+			continue
+		}
+		return refuse("deep equality only supports i32/str fields yet")
 	}
 	acc := ""
 	for _, k := range keys {
 		var dd string
-		if fk, _ := defA.fkinds[k]; fk == "arr" {
+		if fk, _ := def.fkinds[k]; fk == "inst" {
 			ah := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, def.offsets[k]))
 			bh := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, def.offsets[k]))
+			sub := def.fsub[k]
+			subDef := scope.classes[sub]
+			visited[sub] = true
+			subAcc, ok := saDeepInstEq(w, ah, bh, subDef, neg, scope, pos, refusals, nextLabel, nextTemp, visited, atPos)
+			delete(visited, sub)
+			if !ok {
+				return "", false
+			}
+			dd = subAcc
+		} else if fk, _ := def.fkinds[k]; fk == "arr" {
+			ah := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, def.offsets[k]))
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, def.offsets[k]))
 			dd = saDeepArrEq(w, ah, bh, elemKinds[k], neg, scope, nextTemp, nextLabel)
-		} else if fk, _ := defA.fkinds[k]; fk == "str" {
+		} else if fk, _ := def.fkinds[k]; fk == "str" {
 			ah := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ah, ha, def.offsets[k]))
 			bh := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", bh, hb, def.offsets[k]))
 			both := saStrContentEq(w, ah, bh, scope, nextTemp)
 			dd = fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
@@ -902,10 +950,10 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 		} else {
 			aa := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", aa, ha, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", aa, ha, def.offsets[k]))
 			bb := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", bb, hb, defA.offsets[k]))
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", bb, hb, def.offsets[k]))
 			dd = fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			if !neg {
@@ -930,15 +978,7 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 	if acc == "" {
 		acc = "0"
 	}
-	failL := fmt.Sprintf("L_expinst_fail_%d", *nextLabel)
-	*nextLabel++
-	okL := fmt.Sprintf("L_expinst_ok_%d", *nextLabel)
-	*nextLabel++
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", acc, failL, okL))
-	w.Write(failL + ":\n")
-	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
-	w.Write(okL + ":\n")
-	return true, true
+	return acc, true
 }
 
 // saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言

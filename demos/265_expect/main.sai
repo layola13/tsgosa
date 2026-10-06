@@ -875,26 +875,64 @@ L_expinst_ok_95:
   !t_359
   !u
   !t_354
-  t_389 = sext 42 as i64
-  t_390 = alloc 64
-  t_391 = alloc 8
-  t_392 = call @sa_fmt_i64_into(t_389, 10, t_390, 64, &t_391)
-  t_393 = load t_391 + 0 as u64
-  t_394 = alloc 16
-  store t_394 + 0, t_390 as ptr
-  store t_394 + 8, t_393 as u64
+  t_389 = alloc 12
+  t_390 = alloc 4
+  store t_390 + 0, 1 as i32
+  store t_389 + 0, t_390 as ptr
+  store t_389 + 8, 2 as i32
+  m = t_389
+  t_391 = alloc 12
+  t_392 = alloc 4
+  store t_392 + 0, 1 as i32
+  store t_391 + 0, t_392 as ptr
+  store t_391 + 8, 2 as i32
+  n = t_391
+  t_393 = load m + 0 as ptr
+  t_394 = load n + 0 as ptr
+  t_395 = load t_393 + 0 as i32
+  t_396 = load t_394 + 0 as i32
+  t_397 = ne t_395, t_396
+  t_398 = load m + 8 as i32
+  t_399 = load n + 8 as i32
+  t_400 = ne t_398, t_399
+  t_401 = or t_397, t_400
+  br t_401 -> L_expinst_fail_96, L_expinst_ok_97
+L_expinst_fail_96:
+  panic(2501)
+L_expinst_ok_97:
+  __expect_count_402 = alloc 8
+  store __expect_count_402 + 0, 0 as i32
+  t_403 = load __expect_count_402 + 0 as i32
+  t_404 = add t_403, 1
+  store __expect_count_402 + 0, t_404 as i32
+  t_405 = load __expect_count_402 + 0 as i32
+  t_406 = add t_405, 1
+  store __expect_count_402 + 0, t_406 as i32
+  !__expect_count_402
+  !n
   !t_392
-  t_395 = load t_394 + 0 as ptr
-  t_396 = load t_394 + 8 as u64
-  call @sa_print_bytes(&t_395, t_396)
-  !t_394
-  t_397 = alloc 16
-  store t_397 + 0, &str_const_11 as ptr
-  store t_397 + 8, 1 as u64
-  t_398 = load t_397 + 0 as ptr
-  t_399 = load t_397 + 8 as u64
-  call @sa_print_bytes(&t_398, t_399)
-  !t_397
-  !t_391
+  !m
   !t_390
+  t_407 = sext 42 as i64
+  t_408 = alloc 64
+  t_409 = alloc 8
+  t_410 = call @sa_fmt_i64_into(t_407, 10, t_408, 64, &t_409)
+  t_411 = load t_409 + 0 as u64
+  t_412 = alloc 16
+  store t_412 + 0, t_408 as ptr
+  store t_412 + 8, t_411 as u64
+  !t_410
+  t_413 = load t_412 + 0 as ptr
+  t_414 = load t_412 + 8 as u64
+  call @sa_print_bytes(&t_413, t_414)
+  !t_412
+  t_415 = alloc 16
+  store t_415 + 0, &str_const_11 as ptr
+  store t_415 + 8, 1 as u64
+  t_416 = load t_415 + 0 as ptr
+  t_417 = load t_415 + 8 as u64
+  call @sa_print_bytes(&t_416, t_417)
+  !t_415
+  !t_409
+  !t_408
   ret 0
