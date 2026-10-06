@@ -2234,6 +2234,16 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 	if name == "Number" {
 		// Number(x) 数值转换（串经轮子 f64，整数/布尔 sitofp f64；
 		// i32 位整数直通见求值核；形状证据：上游 sa_parse_float 实发）。
+		// Number() 空参 ≡ Number(0)（ECMA-262 回 +0；i32 子集零即零，
+		// 与整数支同形 sitofp 进 f64，无实参故无副作用求值；上游拒收，
+		// 本仓 thin-lead，见 step374）。
+		if ce.Arguments == nil || len(ce.Arguments.Nodes) == 0 {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sitofp 0\n", t))
+			scope.types[t] = "f64"
+			return t, false, ""
+		}
 		op, msg := saLowerFloatConvert(w, name, ce, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", false, msg
@@ -3615,11 +3625,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", "string value in i32 expression"
 			}
 		}
-		// Number(整数) i32 位直通（值与 node 一致；串形走 f64 轮子，见调用核）。
+		// Number(整数) i32 位直通（值与 node 一致；串形走 f64 轮子，见调用核；
+		// 空参与 Number(0) 同值 0，见 step374）。
 		if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier &&
-			ce.Expression.Text() == "Number" && ce.Arguments != nil && len(ce.Arguments.Nodes) == 1 &&
-			saIsIntWord(ce.Arguments.Nodes[0], scope) {
-			return saEvalI32(w, ce.Arguments.Nodes[0], scope, pos, refusals, nextTemp)
+			ce.Expression.Text() == "Number" && ce.Arguments != nil {
+			if len(ce.Arguments.Nodes) == 0 {
+				return "0", ""
+			}
+			if len(ce.Arguments.Nodes) == 1 && saIsIntWord(ce.Arguments.Nodes[0], scope) {
+				return saEvalI32(w, ce.Arguments.Nodes[0], scope, pos, refusals, nextTemp)
+			}
 		}
 		// 数组函数返回句柄禁入 i32 位（与数组方法同门）。
 		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "arr" {
