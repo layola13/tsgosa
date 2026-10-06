@@ -71,6 +71,19 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported index: " + msg})
 		return false
 	}
+	// 串元数组存串柄（arrStr 标记标识符基；槽存柄值与上游同形；右值载荷
+	// 不登记，随数组归属；`?.` 沿旧门）。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier && ea.QuestionDotToken == nil &&
+		scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
+		rhs, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported element rhs: " + msg})
+			return false
+		}
+		saLowerElementStore(w, base, idx, rhs, nextTemp)
+		return true
+	}
 	rhs, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(where.Pos())

@@ -686,6 +686,23 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindPlusToken &&
+			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
+			// 无注解拼接推断（任一臂串值即串；与空合分支同形；上游初值种
+			// 绑定同形，纯字面量 `"a"+"b"` 亦经此路）。
+			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "str"
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			return true
+		}
+		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
 			be.OperatorToken.Kind == ast.KindQuestionQuestionToken &&
 			saIsInstOperandSyntax(be.Left, scope) &&
 			(saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
