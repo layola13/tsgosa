@@ -128,6 +128,30 @@ func saEvalMathSign(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	return out, false, ""
 }
 
+// saEvalMathImul 求 `Math.imul(a, b)`（SA mul 即 i32 wrap，与 imul 低 32 位
+// 语义一致；双操作数经既有 i32 门）。
+func saEvalMathImul(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 2 {
+		return "", false, "Math.imul needs 2 arguments"
+	}
+	a, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	b, msg := saMathI32Arg(w, args[1], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", t, a, b))
+	return t, false, ""
+}
+
 func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {
@@ -577,7 +601,7 @@ func saMathMethodName(n *ast.Node) (string, bool) {
 		return "", false
 	}
 	switch pa.Name().Text() {
-	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random", "sign":
+	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random", "sign", "imul":
 		return pa.Name().Text(), true
 	}
 	return "", false
@@ -603,6 +627,8 @@ func saEvalMathMethod(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 		return saEvalMathRandom(w, ce, scope, pos, refusals, nextTemp)
 	case "sign":
 		return saEvalMathSign(w, ce, scope, pos, refusals, nextTemp)
+	case "imul":
+		return saEvalMathImul(w, ce, scope, pos, refusals, nextTemp)
 	}
 	return "", false, "unsupported Math method " + method
 }

@@ -412,6 +412,32 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
 	}
+	// Object.is(a, b) i32 恒等（子集无 NaN/±0 区分；双求值保副作用）。
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
+			pa.Name() != nil && pa.Name().Text() == "is" {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 2 {
+				return "", false, "Object.is takes two arguments"
+			}
+			a, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			b, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", t, a, b))
+			return t, false, ""
+		}
+	}
 	if saIsConsoleLog(ce) {
 		ok, msg := saLowerConsoleLog(w, ce, scope, pos, refusals, nextTemp)
 		if !ok {
