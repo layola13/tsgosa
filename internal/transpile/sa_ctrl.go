@@ -1777,10 +1777,16 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return false
 	}
 	if e.Kind == ast.KindCallExpression {
-		if _, _, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
+		op, _, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported call statement: " + msg})
 			return false
+		}
+		// 语句位丢弃数组新柄即释（返柄调用 `a.toSpliced/concat/splice` 等；
+		// i32/str 返回沿既有口径不动）。
+		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k == "arr" && saIsTempOp(op) {
+			w.Write(fmt.Sprintf("  !%s\n", op))
 		}
 		return true
 	}
