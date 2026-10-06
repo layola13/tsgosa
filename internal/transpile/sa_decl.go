@@ -791,7 +791,7 @@ func saSynthArrowParams(arrow *ast.Node, classes map[string]*saClassDef, aliasOf
 	if pl := arrow.ParameterList(); pl != nil {
 		nodes = pl.Nodes
 	}
-	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(saNodeTypeParams(arrow)))
+	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(saNodeTypeParams(arrow)), saTypeParamConstraints(saNodeTypeParams(arrow)))
 }
 
 // saArrowParamNames 合成箭头形参名表（标识符直通；模式取隐藏名，与 saParamNames 同序）。
@@ -1906,11 +1906,13 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 			return refuse(arrow, "unsupported body")
 		}
 		if len(stmts) == 0 {
-			if !isVoid {
-				return refuse(arrow, "missing return")
-			}
+			// 空体落空即返（值函数补 `ret 0`；上游同形，见函数发射位）。
 			saReleaseAllOwnedExcept(w, scope, "")
-			w.Write("  ret\n")
+			if isVoid {
+				w.Write("  ret\n")
+			} else {
+				w.Write("  ret 0\n")
+			}
 			return true
 		}
 		terminated := false
@@ -1925,11 +1927,13 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 			}
 		}
 		if !terminated {
-			if !isVoid {
-				return refuse(arrow, "missing return")
-			}
+			// 落空即返（值函数补 `ret 0`；上游同形，见函数发射位）。
 			saReleaseAllOwnedExcept(w, scope, "")
-			w.Write("  ret\n")
+			if isVoid {
+				w.Write("  ret\n")
+			} else {
+				w.Write("  ret 0\n")
+			}
 		} else if saEndsWithBareSwitchLabel(stmts) {
 			saReleaseAllOwnedExcept(w, scope, "")
 			if isVoid {

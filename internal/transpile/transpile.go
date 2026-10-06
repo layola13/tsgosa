@@ -1904,7 +1904,7 @@ func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, 
 	if fn.Parameters != nil {
 		nodes = fn.Parameters.Nodes
 	}
-	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(fn.TypeParameters))
+	return saSynthParamNodes(nodes, classes, aliasOf, enums, saTypeParamSet(fn.TypeParameters), saTypeParamConstraints(fn.TypeParameters))
 }
 
 // saTypeParamSet collects own unconstrained type parameter names (generic erasure
@@ -1959,7 +1959,30 @@ func saTypeParamSet(list *ast.TypeParameterList) map[string]bool {
 	return out
 }
 
-func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64, tparams map[string]bool) ([]string, map[string]string, []saDestructurePending, bool) {
+// saTypeParamConstraints maps own erased type parameter names to their
+// declared constraints (nil/absent when unconstrained; mirrors
+// saTypeParamSet walk; `const`/variance modifiers ignored).
+func saTypeParamConstraints(list *ast.TypeParameterList) map[string]*ast.TypeNode {
+	out := map[string]*ast.TypeNode{}
+	if list == nil {
+		return out
+	}
+	for _, tp := range list.Nodes {
+		if tp == nil || tp.Kind != ast.KindTypeParameter {
+			continue
+		}
+		pd := tp.AsTypeParameterDeclaration()
+		if pd == nil || pd.Constraint == nil {
+			continue
+		}
+		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			out[nm.Text()] = pd.Constraint
+		}
+	}
+	return out
+}
+
+func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64, tparams map[string]bool, tconstraints map[string]*ast.TypeNode) ([]string, map[string]string, []saDestructurePending, bool) {
 	kinds := map[string]string{}
 	var pendings []saDestructurePending
 	taken := map[string]bool{}
@@ -2014,6 +2037,14 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 			}
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
+				// 擦除泛型元数组形参（`arr: T[]` 即 arr 柄；裸 `T` 见下；
+				// 上游 annotationType ArrayType 无条件 tArray 同形）。
+				if pd.Type.Kind == ast.KindArrayType {
+					if el := pd.Type.AsArrayTypeNode().ElementType; el != nil && saIsBareTypeParam(el, tparams) {
+						kinds[name] = "arr"
+						continue
+					}
+				}
 				if pd.Type.Kind == ast.KindTypeReference {
 					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 						// 泛型具化优先（`b: Box<i32>` 记 `inst:Box_i32`，宽表精确；
@@ -2039,8 +2070,15 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 							kinds[name] = "arr"
 							continue
 						}
-						// erased own type parameters default to i32 (cf unannotated params).
+						// erased own type parameters default to i32 (cf unannotated params),
+						// except array-constrained ones which take arr handles
+						// (4.0 `T extends Arr` patterns; constraint is declared).
 						if tparams[ref.TypeName.Text()] {
+							if ct, ok := tconstraints[ref.TypeName.Text()]; ok && ct != nil &&
+								(ct.Kind == ast.KindArrayType || ct.Kind == ast.KindTupleType) {
+								kinds[name] = "arr"
+								continue
+							}
 							kinds[name] = "i32"
 							continue
 						}
@@ -2474,6 +2512,13 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 	switch t.Kind {
 	case ast.KindNumberKeyword:
 		return "i32", true
+	case ast.KindBigIntKeyword:
+		// bigint 擦除为 i32（字面量 `10n` 另行拒；上游绑定 `b = 10` 同形）。
+		return "i32", true
+	case ast.KindVoidKeyword:
+		// void 局部/字段/形参擦除为 i32 零槽（`= undefined` 即 0；
+		// 返回位 void 另由 saReturnKind 守）。
+		return "i32", true
 	case ast.KindBooleanKeyword:
 		return "bool", true
 	case ast.KindStringKeyword:
@@ -2608,6 +2653,10 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	switch t.Kind {
 	case ast.KindVoidKeyword:
 		return "void", true
+	case ast.KindNeverKeyword:
+		// never 返回按值函数 i32 签名（上游实发 `-> i32` + 终结 panic；
+		// 调用点值丢弃，禁 void 门）。
+		return "number", true
 	case ast.KindNumberKeyword:
 		return "number", true
 	case ast.KindBooleanKeyword:
@@ -2644,11 +2693,11 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		}
 		return "", false
 	case ast.KindTypePredicate:
-		// 类型谓词/断言签名擦除（`x is T` 即 boolean，`asserts x [is T]`
-		// 即 void；运行时皆无值语义：谓词返 0/1 走既有 bool 通道，断言
-		// 正常落空/抛错走 void；封存上游实发谓词 `-> i32` 同通道）。
+		// 类型谓词即 boolean（`x is T`）；断言签名一律值函数 number
+		//（`asserts x [is T]` 注解擦除，上游 prescanRet tUnknown→tI32 同形；
+		// 裸 return 走既有值函数门拒）。
 		if pn := t.AsTypePredicateNode(); pn != nil && pn.AssertsModifier != nil {
-			return "void", true
+			return "number", true
 		}
 		return "boolean", true
 	case ast.KindArrayType, ast.KindTupleType:
@@ -2986,15 +3035,14 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		}
 	}
 	if len(stmts) == 0 {
-		if !isVoid {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-			return
-		}
-		// 空体亦释归属（含形参/drain 句柄；与落空尾同律；无 @main 库形 verifier
-		// 要求有释；封存上游空体实发 `!x; return`）。
+		// 空体落空即返（值函数补 `ret 0`；上游 lowerFunction:991-998
+		// 未终结恒补 return 同形）。
 		saReleaseAllOwnedExcept(w, scope, "")
-		w.Write("  ret\n")
+		if isVoid {
+			w.Write("  ret\n")
+		} else {
+			w.Write("  ret 0\n")
+		}
 		return
 	}
 	terminated := false
@@ -3014,13 +3062,14 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		}
 	}
 	if !terminated {
-		if !isVoid {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "missing return"})
-			return
-		}
+		// 落空即返（值函数补 `ret 0`；上游 lowerFunction:991-998 同形；
+		// 种错配调用方按签名错位，禁静默补值外其它语义）。
 		saReleaseAllOwnedExcept(w, scope, "")
-		w.Write("  ret\n")
+		if isVoid {
+			w.Write("  ret\n")
+		} else {
+			w.Write("  ret 0\n")
+		}
 	} else if saEndsWithBareSwitchLabel(stmts) {
 		// 穷尽 switch 收尾：endswitch 标号悬空，补死结构终结（不可达，
 		// 缺 return 判定不受影响；封存上游函数尾恒补 return 同形）。

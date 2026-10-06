@@ -1,0 +1,9 @@
+@import "../demos/296_scalar_generic/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "296_scalar_generic"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 17, 29601)
+    !v
+    return
