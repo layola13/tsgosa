@@ -3140,7 +3140,7 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, false
 		}
 		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("statement %s is not in the SA-lowerable subset", s.Kind.String())})
 		return false, true
 	case ast.KindWithStatement:
 		// `with` 须动态作用域，无底座，定位拒收（禁通用 kind 门文不对题）。
@@ -3153,7 +3153,7 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 			return false, false
 		}
 		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("statement %s is not in the SA-lowerable subset", s.Kind.String())})
 		return false, true
 	case ast.KindBlock:
 		// 裸块作语句（switch 臂 `{...}` / 独立 `{...}`）：块域 + 共享语句
@@ -3169,7 +3169,7 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 		return saArmTerminates(bd.Statements.Nodes), false
 	default:
 		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("statement %s is not in the SA-lowerable subset", s.Kind.String())})
 		return false, true
 	}
 }

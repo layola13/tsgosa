@@ -3340,7 +3340,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindObjectLiteralExpression:
 		return "", "object literal needs a declaration binding (const p: Iface = {...})"
 	default:
-		return "", fmt.Sprintf("unsupported expression kind %d", int(e.Kind))
+		return "", fmt.Sprintf("expression %s is not in the SA-lowerable subset", e.Kind.String())
 	}
 }
 
