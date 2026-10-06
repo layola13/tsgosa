@@ -1,0 +1,9 @@
+@import "../demos/276_split/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "276_split"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 13, 27601)
+    !v
+    return

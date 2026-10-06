@@ -1,0 +1,9 @@
+@import "../demos/265_expect/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "265_expect"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 0, 26501)
+    !v
+    return
