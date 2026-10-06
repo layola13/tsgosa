@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -697,6 +698,94 @@ func saLowerExpectCount(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scop
 	return true, true
 }
 
+// saLowerExpectInstEq 实例深相等（同布局双实例逐 i32 域 eq 链；含非 i32 域/
+// 布局不同大声拒；`.not` 翻转；任一臂非实例沿旧路，禁抢 i32/串门）。
+func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
+	var margs []*ast.Node
+	if ce.Arguments != nil {
+		margs = ce.Arguments.Nodes
+	}
+	if len(margs) != 1 {
+		return false, false
+	}
+	if iarg == nil || margs[0] == nil {
+		return false, false
+	}
+	iarg = saUnwrapTransparent(iarg)
+	marg := saUnwrapTransparent(margs[0])
+	if iarg.Kind != ast.KindIdentifier || marg.Kind != ast.KindIdentifier {
+		return false, false
+	}
+	ha, defA, msgA := saInstBase(iarg, scope)
+	hb, _, msgB := saInstBase(marg, scope)
+	if msgA != "" || msgB != "" {
+		return false, false
+	}
+	if ha == "" || hb == "" {
+		return false, false
+	}
+	ka, oka := scope.types[iarg.Text()]
+	kb, okb := scope.types[marg.Text()]
+	if !oka || !okb || ka != kb {
+		ln, col := pos(iarg.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "cannot compare instances of different layouts"})
+		return true, false
+	}
+	keys := make([]string, 0, len(defA.offsets))
+	for k := range defA.offsets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if fk, ok := defA.fkinds[k]; !ok || fk != "i32" {
+			ln, col := pos(iarg.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "deep equality only supports i32 fields yet"})
+			return true, false
+		}
+	}
+	acc := ""
+	for _, k := range keys {
+		off := defA.offsets[k]
+		aa := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", aa, ha, off))
+		bb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", bb, hb, off))
+		dd := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if !neg {
+			w.Write(fmt.Sprintf("  %s = ne %s, %s\n", dd, aa, bb))
+		} else {
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", dd, aa, bb))
+		}
+		if acc == "" {
+			acc = dd
+		} else {
+			cc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if !neg {
+				w.Write(fmt.Sprintf("  %s = or %s, %s\n", cc, acc, dd))
+			} else {
+				w.Write(fmt.Sprintf("  %s = and %s, %s\n", cc, acc, dd))
+			}
+			acc = cc
+		}
+	}
+	if acc == "" {
+		acc = "0"
+	}
+	failL := fmt.Sprintf("L_expinst_fail_%d", *nextLabel)
+	*nextLabel++
+	okL := fmt.Sprintf("L_expinst_ok_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", acc, failL, okL))
+	w.Write(failL + ":\n")
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+	w.Write(okL + ":\n")
+	return true, true
+}
+
 // saLowerExpectAssertion lowering `expect(actual).toBe(expected)` 语句断言
 // （i32 两侧既有求值 + `ne` + 不等即 `panic(2501)`，与 `throw` 终结同形，
 // 测试 fail-fast 口径一致；`expect` 被用户绑定时沿旧路，禁劫持）。
@@ -789,6 +878,15 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 			w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
 		}
 		return true, true
+	}
+	if matcher == "toBe" || matcher == "toEqual" || matcher == "toStrictEqual" {
+		// 实例深相等（同布局双实例逐 i32 域 eq 链；与 `in` 布局门同源）。
+		if handled, ok := saLowerExpectInstEq(w, neg, iargs[0], ce, scope, pos, refusals, nextLabel, nextTemp); handled {
+			if ok {
+				saEmitExpectCount(w, scope, nextTemp)
+			}
+			return handled, ok
+		}
 	}
 	if isZero {
 		// 零元匹配器（`toBeNull/toBeUndefined` 即柄零判，`toBeDefined`/`toBeTruthy` 即
