@@ -1981,6 +1981,7 @@ func saLowerArrayAt(w printer.EmitTextWriter, recv, idx string, scope *saScope, 
 
 // saLowerArrayJoin 元素经 interp 折叠拼接（分隔符除首元外；形状证据：
 // 封存 lowerArrayJoin:6658-6712；本薄口元恒 i32，直走 interp）。
+// 注：当前 dispatch 门大声拒（分支合并归属无正确形，见 H-join），本函数留档待搬。
 func saLowerArrayJoin(w printer.EmitTextWriter, recv, sep string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	scope.addImport("sa_std/string.sai")
 	scope.addImport("sa_std/fmt.sai")
@@ -3486,22 +3487,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		return saLowerArrayAt(w, recv, v, scope, nextTemp), "i32", ""
 	case "join":
-		var sep string
-		if len(argNodes) > 0 {
-			h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", "", msg
-			}
-			sep = h
-		}
+		// join 大声拒（H-join：分隔符分支合并需 move 感知归属，
+		// 单归属 SSA 下无正确形；旧 lowering 任何用例皆 PhiStateConflict
+		// 陷阱（exit 0 + 非法 .sai，最坏）；上游同形亦拒。lowering 留档待搬）。
 		if len(argNodes) > 1 {
 			return "", "", "join takes at most 1 argument"
 		}
-		h, msg := saLowerArrayJoin(w, recv, sep, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return "", "", msg
-		}
-		return h, "str", ""
+		return "", "", "join needs branch-merged string accumulator (beyond single-owner SSA)"
 	case "copyWithin":
 		if len(argNodes) < 1 {
 			return "", "", "copyWithin needs 1 argument"
