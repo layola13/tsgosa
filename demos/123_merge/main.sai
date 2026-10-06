@@ -132,6 +132,7 @@ L_push_end_20:
   store c + 0, t_47 as ptr
   store c + 8, t_45 as u64
   !t_47
+  !t_45
   t_58 = add i, 1
   !i
   i = t_58
@@ -186,6 +187,7 @@ L_push_end_30:
   store c + 0, t_71 as ptr
   store c + 8, t_69 as u64
   !t_71
+  !t_69
   t_82 = add j, 1
   !j
   j = t_82
@@ -246,6 +248,7 @@ L_push_end_42:
   store c + 0, t_97 as ptr
   store c + 8, t_95 as u64
   !t_97
+  !t_95
   t_108 = add i, 1
   !i
   i = t_108
@@ -305,6 +308,7 @@ L_push_end_54:
   store c + 0, t_123 as ptr
   store c + 8, t_121 as u64
   !t_123
+  !t_121
   t_134 = add j, 1
   !j
   j = t_134

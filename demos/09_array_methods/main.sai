@@ -49,6 +49,7 @@ L_push_end_6:
   store a + 0, t_10 as ptr
   store a + 8, t_8 as u64
   !t_10
+  !t_8
   t_21 = load a + 8 as u64
   t_22 = sext t_21 as i64
   t_23 = alloc 64

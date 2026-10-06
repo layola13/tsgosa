@@ -73,6 +73,7 @@
   store t_32 + 8, 1 as u64
   t_33 = call @sa_btree_map_contains_key(&m, &t_32)
   t_34 = call @sa_btree_map_remove(&m, &t_32)
+  !t_33
   t_35 = alloc 16
   store t_35 + 0, &str_const_0 as ptr
   store t_35 + 8, 1 as u64
@@ -126,7 +127,6 @@
   !t_36
   !t_35
   !t_34
-  !t_33
   !t_32
   !t_23
   !t_22

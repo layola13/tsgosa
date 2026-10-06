@@ -76,6 +76,7 @@ L_push_end_12:
   store seen + 0, t_23 as ptr
   store seen + 8, t_21 as u64
   !t_23
+  !t_21
 L_endif_6:
   !x
   t_34 = add t_10, 1

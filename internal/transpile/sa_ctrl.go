@@ -2220,22 +2220,10 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported call statement: " + msg})
 			return false
 		}
-		// 语句位丢弃新柄即释（数组返柄与串返柄调用；记名走归属口，
-		// 未记名 temp 直释；其余沿既有口径不动）。
-		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k == "arr" {
-			saReleaseStmtTemp(w, scope, op)
-		}
-		if saCallIsStr(e.AsCallExpression(), scope) && !saStrCallIsI32(e.AsCallExpression(), scope) {
-			saReleaseStmtTemp(w, scope, op)
-		}
-		if saIsDateStrCall(e.AsCallExpression(), scope) {
-			saReleaseStmtTemp(w, scope, op)
-		}
-		if k, ok := saDateCallKind(e.AsCallExpression(), scope); ok && (k == "i32" || k == "date") {
-			if !saIsDateSetterCall(e.AsCallExpression(), scope) {
-				saReleaseStmtTemp(w, scope, op)
-			}
-		}
+		// 语句位丢弃结果即释（H-try：try 体调用结果此前漏释，@main 尾 MemoryLeak；
+		// 上游语句位统一 `!t` 同形。数组/串/date 沿既有三门，余下 i32/用户调用
+		// 收归一口；saReleaseStmtTemp 记名走归属口、已释/已耗跳过，未记名直释）。
+		saReleaseStmtTemp(w, scope, op)
 		return true
 	}
 	if e.Kind != ast.KindBinaryExpression {
@@ -3993,6 +3981,28 @@ func saMarkRebound(scope *saScope, dst string) {
 	}
 }
 
+// saConsumeTemp 记录 temp 源 move（H-try 深修：裸 `dst = t` 即 move，
+// 未登记 temp 的 move 在 Go 侧本无记录，致语句位释放误释已 move 值
+// （168 `d = t_2` 后 `!t_2` 陷 UseAfterMove）。已登记走归属口；未登记
+// 记 consumed（heap 置 false：纯标量 move，无堆可释；drain/释放口径
+// 全跳过，与 verifier 一致）。temps 永不复用，无复登记冲掉之虞。
+func saConsumeTemp(scope *saScope, name string) {
+	if !saIsTempOp(name) {
+		return
+	}
+	if b := saOwnOf(scope, name); b != nil {
+		if b.heap && !b.released {
+			b.consumed = true
+		}
+		return
+	}
+	if scope.ownState == nil {
+		scope.ownState = map[string]*saOwn{}
+	}
+	scope.ownState[name] = &saOwn{consumed: true}
+	scope.ownOrder = append(scope.ownOrder, name)
+}
+
 // saStoreLocal 按赋值纪律落标量 `dst = src`（封存 assignLocal:11108-11171）：
 // fresh+temp 直搬+归属；fresh+named 快照+普通；fresh+imm 直赋+普通；
 // live 先 rebindRelease，再 named 双 temp 快照、temp/imm 直赋，并置堆位
@@ -4005,7 +4015,7 @@ func saStoreLocal(w printer.EmitTextWriter, dst, src string, scope *saScope, nex
 	if fresh {
 		if srcIsTemp {
 			w.Write(fmt.Sprintf("  %s = %s\n", dst, src))
-			saConsumeOwn(scope, src)
+			saConsumeTemp(scope, src)
 			saDeclareOwned(scope, dst)
 			return
 		}
@@ -4033,7 +4043,7 @@ func saStoreLocal(w printer.EmitTextWriter, dst, src string, scope *saScope, nex
 	}
 	w.Write(fmt.Sprintf("  %s = %s\n", dst, src))
 	if srcIsTemp {
-		saConsumeOwn(scope, src)
+		saConsumeTemp(scope, src)
 		b.heap = true
 		saMarkRebound(scope, dst)
 		return

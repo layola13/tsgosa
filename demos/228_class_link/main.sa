@@ -16,6 +16,7 @@
 L_cb_end_1:
   t_4 = load t_3 + 0 as i32
   !t_3
+  !t_4
   t_5 = load b + 0 as i32
   !t_2
   !b

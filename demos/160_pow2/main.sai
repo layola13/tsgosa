@@ -61,6 +61,7 @@ L_push_end_12:
   store a + 0, t_12 as ptr
   store a + 8, t_10 as u64
   !t_12
+  !t_10
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:
   t_23 = load a + 8 as u64

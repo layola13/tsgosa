@@ -50,6 +50,7 @@ L_push_end_9:
   store isP + 0, t_8 as ptr
   store isP + 8, t_6 as u64
   !t_8
+  !t_6
   t_19 = add i, 1
   !i
   i = t_19

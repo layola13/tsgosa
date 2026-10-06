@@ -23,14 +23,14 @@
   ret
 @main() -> i32:
   t_18 = call @__arrow_1()
+  !t_18
   t_24 = alloc 16
   store t_24 + 0, &str_const_2 as ptr
   store t_24 + 8, 3 as u64
   t_25 = call @__arrow_2(t_24)
-  call @greet()
   !t_25
+  call @greet()
   !t_24
-  !t_18
   ret 0
 @__arrow_1() -> i32:
   t_7 = sext 1 as i64

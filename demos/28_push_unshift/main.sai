@@ -49,6 +49,7 @@ L_push_end_6:
   store a + 0, t_8 as ptr
   store a + 8, t_6 as u64
   !t_8
+  !t_6
   t_19 = alloc 16
   store t_19 + 0, &str_const_1 as ptr
   store t_19 + 8, 2 as u64
@@ -84,6 +85,7 @@ L_push_end_12:
   store a + 0, t_24 as ptr
   store a + 8, t_22 as u64
   !t_24
+  !t_22
   t_35 = load a + 8 as u64
   t_36 = sext t_35 as i64
   t_37 = alloc 64
@@ -143,6 +145,7 @@ L_push_end_18:
   call @ts_arr_rotr1(a)
   t_63 = load a + 0 as ptr
   store t_63 + 0, t_47 as i32
+  !t_50
   t_64 = load a + 8 as u64
   t_65 = sext t_64 as i64
   t_66 = alloc 64
