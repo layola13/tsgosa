@@ -2237,96 +2237,24 @@ func saLowerArrayReverse(w printer.EmitTextWriter, recv string, scope *saScope, 
 // saLowerArraySlice 拷贝 [start, end) 到新数组（钳位；空域单路径分配；
 // 形状证据：封存 lowerArraySlice:6559-6638）。
 func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope *saScope, nextTemp *int) string {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	sdata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, recv))
-	s := saArrayClampLen(w, start, ln, scope, nextTemp)
-	f := ln
-	if end != "" {
-		f = saArrayClampLen(w, end, ln, scope, nextTemp)
+	// R1 回迁映射：切片语义（负起/双端钳位/空段）由 `sci/sa_std/ts_array.sa`
+	// `@ts_arr_slice_copy` 实现，本侧只做种门禁（调用点 saCheckIntIndex）+
+	// import + 归属/标记透传；形状证据见 ts_array.sa 头注。
+	scope.addImport("sa_std/ts_array.sa")
+	f := end
+	if f == "" {
+		f = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", f, recv))
 	}
-	n := fmt.Sprintf("t_%d", *nextTemp)
+	dest := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", n, f, s))
-	nneg := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", nneg, n))
-	one := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 1\n", one))
-	keep := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", keep, one, nneg))
-	nn := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", nn, n, keep))
-	n = nn
-	n1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", n1, n))
-	nby := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, n1))
-	ddata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
-	dh := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", dh))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dh, ddata))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dh, n))
-	w.Write(fmt.Sprintf("  !%s\n", ddata))
-	dloop := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dh))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_sl_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_sl_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	cendL := fmt.Sprintf("L_sl_cend_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, n))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, cendL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	si := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", si, s, i))
-	so := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", so, si))
-	sa := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", sa, sdata, so))
-	cv := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cv, sa))
-	do := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", do, i))
-	da := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", da, dloop, do))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", da, cv))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", cendL))
-	saPropArrNest(scope, recv, dh)
-	saPropArrStr(scope, recv, dh)
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_slice_copy(%s, %s, %s)\n", dest, recv, start, f))
+	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
 	// 切片柄归属(返前释放；上游同形).
-	saOwnTemp(scope, dh)
-	return dh
+	saOwnTemp(scope, dest)
+	return dest
 }
 
 // saLowerArrayAt 负下标归一后走越界归零 join（形状证据：封存 lowerArrayAt:6643-6654）。
