@@ -3500,59 +3500,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", "shift needs 0 arguments"
 		}
-		ln := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-		data := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		// R1 回迁映射：首端取值前移语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_shift` 实现（i32 结果须 saOwnTemp 登记，R1-12 同例）。
+		scope.addImport("sa_std/ts_array.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, data))
-		nlen := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nlen, ln))
-		topL := fmt.Sprintf("L_sh_top_%d", *nextLabel)
-		*nextLabel++
-		bodyL := fmt.Sprintf("L_sh_body_%d", *nextLabel)
-		*nextLabel++
-		endL := fmt.Sprintf("L_sh_end_%d", *nextLabel)
-		*nextLabel++
-		i := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = 0\n", i))
-		w.Write(fmt.Sprintf("%s:\n", topL))
-		c := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, nlen))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-		w.Write(fmt.Sprintf("%s:\n", bodyL))
-		src := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", src, i))
-		soff := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", soff, src))
-		saddr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, data, soff))
-		tmp := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tmp, saddr))
-		doff := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", doff, i))
-		daddr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, data, doff))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, tmp))
-		inext := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-		w.Write(fmt.Sprintf("  jmp %s\n", topL))
-		w.Write(fmt.Sprintf("%s:\n", endL))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, nlen))
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_shift(%s)\n", out, recv))
+		saOwnTemp(scope, out)
 		return out, "i32", ""
 	case "unshift":
 		if len(argNodes) != 1 {
