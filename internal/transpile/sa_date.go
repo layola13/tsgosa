@@ -183,6 +183,8 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		} else {
 			w.Write(fmt.Sprintf("  %s = call @%s(%s, %s)\n", t, sym, ms, extra))
 		}
+		// 外部调用结果登记归属（P0-4：@main 尾泄漏；R1-12 同律，drain 释）。
+		saOwnTemp(scope, t)
 		return t, "str", ""
 	}
 	if method == "getTimezoneOffset" && len(argNodes) == 0 {
@@ -201,6 +203,8 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, sym, ms))
+		// 外部调用结果登记归属（P0-4：@main 尾泄漏；R1-12 同律，drain 释）。
+		saOwnTemp(scope, t)
 		return t, "i32", ""
 	}
 	if fid, ok := saDateSetterField(method); ok {

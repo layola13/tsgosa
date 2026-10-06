@@ -9,6 +9,7 @@
   d = t_1
   t_2 = call @sa_time_get_full_year(d)
   t_3 = sgt t_2, 2000
+  !t_2
   !d
   ret t_3
 @main() -> i32:
