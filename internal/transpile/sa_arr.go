@@ -3707,40 +3707,10 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if msg != "" {
 			return "", "", msg
 		}
-		ln := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-		data := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-		topL := fmt.Sprintf("L_fill_top_%d", *nextLabel)
-		*nextLabel++
-		bodyL := fmt.Sprintf("L_fill_body_%d", *nextLabel)
-		*nextLabel++
-		endL := fmt.Sprintf("L_fill_end_%d", *nextLabel)
-		*nextLabel++
-		i := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = 0\n", i))
-		w.Write(fmt.Sprintf("%s:\n", topL))
-		c := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-		w.Write(fmt.Sprintf("%s:\n", bodyL))
-		off := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-		addr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
-		inext := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-		w.Write(fmt.Sprintf("  jmp %s\n", topL))
-		w.Write(fmt.Sprintf("%s:\n", endL))
+		// R1 回迁映射：全域值填充语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_fill` 实现，本侧只做实参门 + import + 直接调用（无新柄）。
+		scope.addImport("sa_std/ts_array.sa")
+		w.Write(fmt.Sprintf("  call @ts_arr_fill(%s, %s)\n", recv, v))
 		return recv, "arr", ""
 	case "sort", "toSorted":
 		if cb, _, msg := saArrCallbackNode(argNodes); msg != "" {
