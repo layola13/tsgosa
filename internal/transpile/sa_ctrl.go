@@ -2723,6 +2723,28 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			saStoreLocal(w, target, r, scope, nextTemp)
 			return true
 		}
+		if saBinaryOpKind(be) == ast.KindAsteriskAsteriskEqualsToken {
+			// 增量位 `x **= e`（P-ppow 增量位：目标限本地 i32 绑定，
+			// 经 pow 核 + saStoreLocal 纪律；余下沿旧门）。
+			target, okT := saBoundI32(scope, be.Left)
+			if !okT {
+				break
+			}
+			r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(incr.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+				return false
+			}
+			if msg := saCheckI32Value(scope, r); msg != "" {
+				ln, col := pos(incr.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
+				return false
+			}
+			res := saLowerPowOps(w, target, r, scope.nextLabel, nextTemp)
+			saStoreLocal(w, target, res, scope, nextTemp)
+			return true
+		}
 		op, ok := saCompoundOp(saBinaryOpKind(be))
 		if !ok {
 			break
