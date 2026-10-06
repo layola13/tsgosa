@@ -24,6 +24,7 @@
 
 ## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
 
+- R1-16 unshift 右旋映射（本轮，双仓已推；JEV 94%）：sci `ts_array.sa` 加 `@ts_arr_rotr1(src)`（右旋一步，调用方保留原柄；`sa check` 942 指令 ok）；tsgosa `unshift` 分支保留共享 `saLowerArrayPush` 扩展 + 实参门，约 30 行右旋循环换单 `call`（首元回填留调用点，零重复）。归一化差分实证：唯一语义变化即循环→1 行调用。1 demo 重生成（28_push_unshift，`sa check` 1261 指令 ok）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `testrunner` + 新增区 `gofmt` 干净。
 - R1-15 copyWithin 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_copywithin(src,target,start,end,hasend)`（交叠安全方向拷贝，无新柄；三份钳位内联与 slice 系列同形；`sa check` 920 指令 ok）；tsgosa `copyWithin` 分支改单 `call`（实参门禁留调用点，缺省 end 以 `hasend=0` 进符号），并删除 `saLowerCopyWithin` + `saLowerCopyWithinStep`（约 130 行）及因此 orphan 的共享 `saArrayClampLen`（约 50 行，唯一调用方即 copyWithin，stash 实证）。1 demo 重生成（83_copy_within，`sa check` 1134 指令 ok）+ node 镜算一致（前向 `[3,4,3,4]`/交叠后向同值）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `testrunner` + 新增区 `gofmt` 干净。
 
 - R1-14 shift 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_shift(src)->i32`（首端取值并前移缩长，调用方保留原柄；`sa check` 775 指令 ok；上游 `saemit.go:6178` 同形）；tsgosa `shift` 分支内联（约 53 行）换单 `call`（+ import；i32 结果 `saOwnTemp` 登记，R1-12 同例）。归一化差分实证：唯一语义变化即 21 行内联→1 行调用 + 1 行归属释放。1 demo 重生成（43_pop_shift，`sa check` 936 指令 ok）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `testrunner` + 新增区 `gofmt` 干净。

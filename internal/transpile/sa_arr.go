@@ -3326,46 +3326,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return "", "", msg
 		}
 		nlen := saLowerArrayPush(w, recv, v, scope, nextTemp)
+		// R1 回迁映射：右旋一步由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_rotr1` 实现（扩展仍走共享 push；首元回填留调用点）。
+		scope.addImport("sa_std/ts_array.sa")
+		w.Write(fmt.Sprintf("  call @ts_arr_rotr1(%s)\n", recv))
 		data := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-		topL := fmt.Sprintf("L_unsh_top_%d", *nextLabel)
-		*nextLabel++
-		bodyL := fmt.Sprintf("L_unsh_body_%d", *nextLabel)
-		*nextLabel++
-		endL := fmt.Sprintf("L_unsh_end_%d", *nextLabel)
-		*nextLabel++
-		i := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", i, nlen))
-		w.Write(fmt.Sprintf("%s:\n", topL))
-		c := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", c, i))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-		w.Write(fmt.Sprintf("%s:\n", bodyL))
-		prev := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", prev, i))
-		soff := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", soff, prev))
-		saddr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, data, soff))
-		tmp := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tmp, saddr))
-		doff := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", doff, i))
-		daddr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, data, doff))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, tmp))
-		w.Write(fmt.Sprintf("  %s = %s\n", i, prev))
-		w.Write(fmt.Sprintf("  jmp %s\n", topL))
-		w.Write(fmt.Sprintf("%s:\n", endL))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", data, v))
 		return nlen, "i32", ""
 	case "fill":
