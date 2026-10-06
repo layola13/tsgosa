@@ -397,8 +397,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
 			vkind, ok = saGenericHandleKind(vd.Type, scope)
 		}
-		// 非折叠联合与 typeof 声明按初值种绑定（cf any 擦除；可折叠已由 saAnnotKind 办）。
-		if vd.Type != nil && (vd.Type.Kind == ast.KindUnionType || vd.Type.Kind == ast.KindTypeQuery) {
+		// 非折叠联合、typeof 声明及 typeof 别名按初值种绑定（cf any 擦除；
+		// 可折叠已由 saAnnotKind 办；别名链终点 typeof 经上 helper 判定）。
+		if vd.Type != nil && (vd.Type.Kind == ast.KindUnionType || vd.Type.Kind == ast.KindTypeQuery ||
+			saAliasResolvesToTypeQuery(vd.Type, scope.aliasOf)) {
 			return saLowerInferredDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && vkind != "f64" && !strings.HasPrefix(vkind, "inst:")) {
@@ -894,6 +896,46 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 		cur = nr.TypeName.Text()
 	}
 	return "", false
+}
+
+// saAliasResolvesToTypeQuery 别名链终点是否为 typeof 查询（链式跟随、防环；
+// 直接 typeof 注解走初值推断既有回退，间接别名同形并入）。
+func saAliasResolvesToTypeQuery(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference || len(aliasOf) == 0 {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeArguments != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	cur := ref.TypeName.Text()
+	for i := 0; i < len(aliasOf)+1; i++ {
+		if seen[cur] {
+			return false
+		}
+		seen[cur] = true
+		tgt, ok := aliasOf[cur]
+		if !ok || tgt == nil {
+			return false
+		}
+		if tgt.Kind == ast.KindTypeQuery {
+			return true
+		}
+		if tgt.Kind != ast.KindTypeReference {
+			return false
+		}
+		nr := tgt.AsTypeReferenceNode()
+		if nr == nil || nr.TypeName == nil ||
+			nr.TypeName.Kind != ast.KindIdentifier || nr.TypeArguments != nil {
+			return false
+		}
+		cur = nr.TypeName.Text()
+	}
+	return false
 }
 
 // saReturnKindRef 消解返回注解（saReturnKind 标量集之外）：单标识符别名经
