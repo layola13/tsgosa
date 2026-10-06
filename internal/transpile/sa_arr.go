@@ -751,11 +751,8 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 			return false
 		}
-		if be.Initializer != nil {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable"})
-			return false
-		}
+		// 缺省值直接丢弃（P1-2：记录布局字段恒在，缺省永不触发；
+		// 上游同形忽略，连未定义名亦吞）。
 		nm := be.Name()
 		if nm == nil || nm.Kind != ast.KindIdentifier {
 			ln, col := pos(el.Pos())
