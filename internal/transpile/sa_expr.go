@@ -3357,6 +3357,18 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if k == "str" || saIsDateStrCall(e.AsCallExpression(), scope) {
 				return "", "string value in i32 expression"
 			}
+			// date millis（i64）i32 位收窄：调用求值直传（低 32 位截断，
+			// 与 i32 算术回绕同类子集语义；上游逐字节同形，零发明；JEV narrow）。
+			if k == "date" {
+				op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if voidCall {
+					return "", "void function call in value position"
+				}
+				return op, ""
+			}
 			if k != "" {
 				return "", "date millis needs i64 (beyond i32 subset)"
 			}
