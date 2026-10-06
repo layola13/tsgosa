@@ -24,6 +24,7 @@
 
 ## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
 
+- R1-1 sci 首符号（本轮，sci 工作区未提交）：`sci/sa_std/ts_array.sa` 新建（薄口 16 字节堆句柄 `{ptr,len}` 专用，与 `vec.sa` Vec 寄存器组不同构故另立），首符号 `@ts_arr_slice_copy(src: ptr, start, end) -> ptr`（双端钳位 + end<start 即空 + 新柄调用方持有）。`sa check` 65 指令 ok（修 2：`x = y` 系 move 须外槽 join；引用传参系 move，句柄改值参）。值语义实证：去释 harness 跑到 ret 全对；interp 双释互斥（`!nh` 与 `!h` 必挂其一，最小复现全过，系 interp 环境问题，LLVM 真机口径）记环境口径；tsgosa 改调时走具名绑定 + 返前释放既有范式，无手写双释。
 - R0 盘点（本轮）：tsgosa 内联全家——`sa_arr.go`（字面量/push/pop/shift/unshift/fill/sort/scan/reverse/slice/at/join/copyWithin/toReversed/toSorted/with/toSpliced/splice/flat/concat/from/map/filter/forEach/reduce/find 系/some/every + 高阶回调骨架 + clamp/copyRange/appendSlice helpers）、`sa_str.go`（拼接/大小写/判含/slice/trim/replace/pad/charCodeAt/模板/parseInt 扫描器）、`sa_math.go`（abs/pow/rounding/minmax/sqrt/log10/random/sign/imul/isNaN/isFinite/isArray）、`sa_date.go`（getters/setters/parse）、`sa_map.go`（btree 直调已是映射，键槽/释放为薄口归属不搬）。
 - 模型差（决定性约束）：薄口数组为 16 字节堆句柄 `{ptr,len}`，`sci/sa_std/vec.sa` 为 `Vec_{ptr,len,cap}` 寄存器组宏体系——**不同构，不可直调**。回迁须在 `sa_std` 新增薄口模型句柄数组 API（新文件，sci 侧），tsgosa 改调；回调骨架（map/filter 高阶内联）系语法展开，永驻 tsgosa，不搬。
 - R1 数组纯运行时 ops（slice/splice/flat/concat/copyRange 等循环拷）→ `sa_std` 新句柄数组模块 + tsgosa 改调，逐方法独立 commit。
