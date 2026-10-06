@@ -757,9 +757,15 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return "1", false, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Number" {
-			// parseFloat 回 f64（薄口无 f64 种）；parseInt 走十进制扫描；其余 Number.* 未知。
+			// Number.parseFloat 与裸 parseFloat 同形（lib.es5.d.ts 别名；sa_std/string.sai
+			// sa_parse_float 回 f64，投影表 stdlib.go:106 在册；上游发射器未路由，
+			// 本仓 thin-lead，见 step373）。
 			if pa.Name() != nil && pa.Name().Text() == "parseFloat" {
-				return "", false, "Number.parseFloat needs f64 (beyond i32 subset)"
+				op, msg := saLowerFloatConvert(w, "Number.parseFloat", ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
 			}
 			// Number.isNaN/isFinite 恒判定（i32 子集无 NaN/Inf：浮点字面量早拒，
 			// 除零走 verifier trap；串实参恒 false（JS 语义非 Number 即 false）；
@@ -1133,6 +1139,15 @@ func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, arg
 // 局部箭头别名 `fn:<gen>` 透到被调；方法调用/未知被调 false。实例声明与
 // 实例赋值核对被调返回用，封存 lowerCall 签名分发同源 funcs 表）。
 func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	// Number.parseFloat 与裸 parseFloat 同种（成员形；sa_std/string.sai
+	// sa_parse_float 回 f64，见 step373）。
+	if ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			pa.Expression.Text() == "Number" && pa.Name() != nil && pa.Name().Text() == "parseFloat" {
+			return "f64", true
+		}
+	}
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		return "", false
 	}

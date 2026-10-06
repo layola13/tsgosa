@@ -23,7 +23,7 @@ import (
 // index_of/last_index_of/starts_with/ends_with/to_lower-upper_ascii/repeat/
 // pad_start-end/replace/code_point_at + i64_into/buffer_data-len。
 // 本薄口只调以上现货；split（串元数组超 i32 槽模型）、tagged模板、
-// Number.parseFloat（f64）、console.error（node 插件后端）一律大声拒。
+// console.error（node 插件后端）一律大声拒（Number.parseFloat 见 step373 已映射）。
 
 // saStrIntern 字符串常量池录入（同文本去重；转义镜像封存）。
 func saStrIntern(pool *saStrPool, text string) string {
