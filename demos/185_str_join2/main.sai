@@ -20,6 +20,7 @@
   t_7 = eq t_6, 0
   t_8 = eq t_3, t_5
   t_9 = and t_7, t_8
+  !t_6
   t_10 = add t_9, 0
   EXPAND IF_TRUE t_10, L_then_1, L_endif_3
 L_then_1:

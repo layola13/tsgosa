@@ -36,6 +36,7 @@ L_endif_9:
   t_9 = eq t_8, 0
   t_10 = eq t_5, t_7
   t_11 = and t_9, t_10
+  !t_8
   t_12 = eq t_11, 0
   EXPAND IF_TRUE t_12, L_then_10, L_endif_12
 L_then_10:

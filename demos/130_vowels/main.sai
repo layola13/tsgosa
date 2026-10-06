@@ -21,6 +21,7 @@
   t_7 = eq t_6, 0
   t_8 = eq t_3, t_5
   t_9 = and t_7, t_8
+  !t_6
   t_10 = add t_9, 0
   t_11 = alloc 16
   store t_11 + 0, &str_const_1 as ptr
@@ -33,6 +34,7 @@
   t_17 = eq t_16, 0
   t_18 = eq t_13, t_15
   t_19 = and t_17, t_18
+  !t_16
   t_20 = add t_19, 0
   t_21 = or t_10, t_20
   t_22 = alloc 16
@@ -46,6 +48,7 @@
   t_28 = eq t_27, 0
   t_29 = eq t_24, t_26
   t_30 = and t_28, t_29
+  !t_27
   t_31 = add t_30, 0
   t_32 = or t_21, t_31
   t_33 = alloc 16
@@ -59,6 +62,7 @@
   t_39 = eq t_38, 0
   t_40 = eq t_35, t_37
   t_41 = and t_39, t_40
+  !t_38
   t_42 = add t_41, 0
   t_43 = or t_32, t_42
   t_44 = alloc 16
@@ -72,6 +76,7 @@
   t_50 = eq t_49, 0
   t_51 = eq t_46, t_48
   t_52 = and t_50, t_51
+  !t_49
   t_53 = add t_52, 0
   t_54 = or t_43, t_53
   !t_44

@@ -1058,6 +1058,7 @@ func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope
 	idx := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, lp, ll, rp, rl))
+	saOwnTemp(scope, idx)
 	at0 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
@@ -1067,6 +1068,7 @@ func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope
 	both := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
+	saReleaseOwnedTemp(w, scope, idx)
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	if negate {

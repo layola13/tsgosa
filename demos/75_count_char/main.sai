@@ -35,6 +35,7 @@ L_for_body_2:
   t_14 = eq t_13, 0
   t_15 = eq t_10, t_12
   t_16 = and t_14, t_15
+  !t_13
   t_17 = add t_16, 0
   EXPAND IF_TRUE t_17, L_then_4, L_endif_6
 L_then_4:

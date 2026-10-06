@@ -271,6 +271,7 @@ L_endif_37:
   t_90 = eq t_89, 0
   t_91 = eq t_86, t_88
   t_92 = and t_90, t_91
+  !t_89
   t_93 = add t_92, 0
   EXPAND IF_TRUE t_93, L_then_39, L_endif_41
 L_then_39:
@@ -325,6 +326,7 @@ L_cb_end_42:
   t_116 = eq t_115, 0
   t_117 = eq t_112, t_114
   t_118 = and t_116, t_117
+  !t_115
   t_119 = add t_118, 0
   EXPAND IF_TRUE t_119, L_then_43, L_endif_45
 L_then_43:
