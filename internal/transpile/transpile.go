@@ -3124,6 +3124,14 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	case ast.KindTypeAliasDeclaration, ast.KindInterfaceDeclaration:
 		// 局部类型声明擦除（纯类型零运行时；顶层同律；别名引用另步大声拒）。
 		return false, false
+	case ast.KindEnumDeclaration, ast.KindModuleDeclaration:
+		// 函数内 `declare enum/namespace` 环境声明擦除（普通形沿旧门）。
+		if ast.HasModifier(s, ast.ModifierFlagsAmbient) {
+			return false, false
+		}
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported statement kind %d", int(s.Kind))})
+		return false, true
 	case ast.KindFunctionDeclaration:
 		// 函数内 `declare function` 环境声明擦除（普通嵌套函数沿旧门）。
 		if ast.HasModifier(s, ast.ModifierFlagsAmbient) {
