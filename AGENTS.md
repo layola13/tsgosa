@@ -25,6 +25,7 @@
 ## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
 
 - R1-7 toReversed 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_toreversed`（逆序拷返新数组；`sa check` 486 指令 ok；sci `d51bca25` 已推）；tsgosa `saLowerToReversed` 内联换单 call（+ own dest；透传保留）。1 demo 重生成（`sa check` ok）+ node 镜算（`[3,2,1]`/原数组不变）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。
+- step361（label 变量/表达式擦除一次过，落 `sa_ctrl.go` 约 10 行，零新 Go 文件；JEV choose 指路57%）：变量/表达式语句标签恒无用（break/continue 只能进循环/块/标号块），擦标签直降内句。实证：变量/表达式/重名标签通 + `sa check` ok。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净；`transpile.go`/`main.go` 未动。
 - step360（`debugger` 擦除一次过，落 `transpile.go` 语句集约 3 行，零新 Go 文件）：无运行时语义，空语句同形擦除（禁通用 kind 门）。实证：通 + `sa check` ok。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净；`main.go` 未动。
 - step359（`with` 越界 panic 一次过，落 `sci/sa_std/ts_array.sa` 2 行，tsgosa 零改动；JEV 诊断指路）：node 镜算抓获真语义差——JS 越界抛 RangeError，既有原样返回；符号 bad 臂改 `panic(2501)`（demos 无越界用例，零漂移）。实证：node `with(1,9)=[1,9,3]/with(-1,9)=[1,2,9]/原数组不变` + `sa check` 455 指令 ok；sci `78681437` 已推。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`main.go` 未动。
 - R1-6 with 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_with`（负规范/越界原样/新柄持有；`sa check` 453 指令 ok；sci `92a89127` 已推）；tsgosa `saLowerArrayWith` 内联换单 call（+ own dest；透传保留）。2 with demos 重生成（`sa check` 全 ok）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。

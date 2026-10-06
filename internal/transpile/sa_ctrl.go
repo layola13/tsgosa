@@ -3593,6 +3593,15 @@ func saLowerLabeled(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 		}
 		return done, false
 	default:
+		// 变量/表达式语句标签恒无用（break/continue 只能进循环/块/标号块，
+		// 此处标签不可被引用）：擦标签直降内句。
+		if inner.Kind == ast.KindVariableStatement || inner.Kind == ast.KindExpressionStatement {
+			done, failed := saLowerStmt(w, inner, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if failed {
+				return false, true
+			}
+			return done, false
+		}
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("labeled %s is not lowerable (loops, switch and blocks only)", inner.Kind.String())})
 		return false, true
