@@ -438,7 +438,7 @@
 - [x] H1 拒因行列偏移 → step138 已落地首刀（初值 wrapper 13 位移到初值根；单节点初值位 14 处与上游逐位一致）.
 - [ ] H1b 深层罪魁节点定位（`1+nosuchfn()`/`String(nosuchfn())`/`Array(nosuchfn())`/`Date.parse(nosuchfn())`/三元臂内调用：上游指内层调用，本仓止于初值根；需求值链透传失败节点位置，大项另立）.
 - [ ] H1c 双报去重（三元/str 推断臂内层直报+wrapper 复报 2 vs 上游 1；step138 已对齐位置，计数对齐另立）.
-- [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.H9a datenew " binds" 尾已落（本轮，`sa_decl.go:239` + `sa_expr.go:2659` 去尾，探针 /tmp/h9date：双边同位 `2:12` 同拒，文案逐字节一致；无 demo/测试依赖旧文案；门禁 266/266 + 286 agree 全绿，已推远端）.H9b unknown-fn 体已落（本轮，`sa_expr.go` 两处 inner 改上游原句 `call to unknown function %s (declare it before use)`，探针 /tmp/h9unk：双边同拒，体含上游原句；wrapper 与位置不动（H1b 另立）；218 指纹同步钉新句；门禁 266/266 + 286 agree 全绿，已推远端）.
+- [ ] H9 探针文案逐字对齐（kind 名 vs kind 号：yield/`**=`/bigint/regex；arrc 整形门；symbol 核查序先注解后初值；均通/拒一致，仅文案差）.H9a datenew " binds" 尾已落（本轮，`sa_decl.go:239` + `sa_expr.go:2659` 去尾，探针 /tmp/h9date：双边同位 `2:12` 同拒，文案逐字节一致；无 demo/测试依赖旧文案；门禁 266/266 + 286 agree 全绿，已推远端）.H9b unknown-fn 体已落（本轮，`sa_expr.go` 两处 inner 改上游原句 `call to unknown function %s (declare it before use)`，探针 /tmp/h9unk：双边同拒，体含上游原句；wrapper 与位置不动（H1b 另立）；218 指纹同步钉新句；门禁 266/266 + 286 agree 全绿，已推远端）.H9c arrc 形门已落（本轮，`sa_arr.go:1618` 值位 + `sa_decl.go:179` 声明位改上游通用句，探针 /tmp/h9c：双边同位 `2:12` 逐字节一致；值位作实参/取长时双边先报外层门（排序差，H1b 类，不属文案）。kind 名/号（`step2 refuses kind %d` 等 4 处，模板结构差，上游对应句式需稀有构造复现，未锁定）、symbol 序（探针证实系真通拒分歧：`const s: symbol = 1` 上游按 `s = 1` 放行，T2 同类上游宽松，改文案不够，需另裁决）延期，证据见本条；门禁 266/266 + 286 agree 全绿，已推远端）.
 - [x] H10 声明/赋值位三元值 → step143 已落地（f64 门仅真浮臂进 + i32 臂记种 + 去 f64 臂双写；`const t`/`r=` 转正且真机值对）.
 - [x] H11 for-in 增量 UseAfterMove → 本轮复验双边同过且真机同值 60，闭环（201_for_in 常绿为证）。
 - [x] H15 绑定嵌套数组 for-of 行绑定 → step153 已修（202_nested_forof 真机 4），本轮复验双边同过同值闭环。

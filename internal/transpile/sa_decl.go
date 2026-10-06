@@ -176,7 +176,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				ne := vd.Initializer.AsNewExpression()
 				if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 {
 					ln, col := pos(vd.Initializer.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Array takes 1 length argument"})
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new expressions other than new Map() / new Array(n) / new Date() are not lowerable"})
 					return false
 				}
 				if vd.Type != nil {

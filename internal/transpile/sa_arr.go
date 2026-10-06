@@ -1615,7 +1615,7 @@ func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos
 		}
 	}
 	if isNew && len(argNodes) != 1 {
-		return "", "new Array takes 1 length argument"
+		return "", "new expressions other than new Map() / new Array(n) / new Date() are not lowerable"
 	}
 	if len(argNodes) == 1 {
 		// 单参恒为长（`Array(5)` 即长 5；元素式请用字面量；
