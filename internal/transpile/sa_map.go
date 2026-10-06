@@ -522,7 +522,22 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			saOwnTemp(scope, t)
 			return t, "i32", ""
 		case "keys", "values", "entries":
-			return "", "", "Map." + method + " needs vec/set models (beyond i32 slots)"
+			// lib.d.ts Map 迭代器具化（移植封存 lowerMapMethod:4785-4798；符号逐字核对 sci/sa_std/btree_map.sa:1027/1062/1138，本侧只做 @import + 符号调用，禁手写轮子）。
+			if len(argNodes) != 0 {
+				return "", "", "Map." + method + " needs 0 arguments"
+			}
+			sym := "sa_btree_map_keys_set"
+			if method == "values" {
+				sym = "sa_btree_map_values_vec"
+			} else if method == "entries" {
+				sym = "sa_btree_map_iter_vec"
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @%s(&%s)\n", t, sym, recv))
+			// 调用结果归属(返前释放；上游 declareOwned 同形).
+			saOwnTemp(scope, t)
+			return t, "arr", ""
 		default:
 			return "", "", "Map." + method + " is not a projected surface"
 		}

@@ -931,7 +931,7 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 		return base, true
 	}
 	// 链基（`pairs[0]`/`q.r.a` 经句柄总线；失败静默下探旧门）。
-	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression) {
+	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression || e.Kind == ast.KindCallExpression) {
 		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
 			return h, true
 		}
@@ -1451,6 +1451,14 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	if m == "split" && saIsStrExpr(pa.Expression, scope) {
 		// 串 `split` 回串元数组（`saLowerStringSplit`；串基纯语法判定零落字）。
 		return "arr", true
+	}
+	// Map.keys/values/entries 回 arr 句柄（移植封存 lowerMapMethod:4785-4798；
+	// 种判定 saMapCallKind:67-68 同 "arr"，数组位/for-of 凭此直传句柄）。
+	if k, ok := saMapBaseKind(pa.Expression, scope); ok && k == "map" {
+		switch m {
+		case "keys", "values", "entries":
+			return "arr", true
+		}
 	}
 	if !saIsArrMethod(m) {
 		return "", false

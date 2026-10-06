@@ -1,0 +1,9 @@
+@import "../demos/301_map_keys/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "301_map_keys"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 33, 30101)
+    !v
+    return
