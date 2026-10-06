@@ -2371,7 +2371,9 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 	}
 	old := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = %s\n", old, target))
+	// 后缀快照须非移动拷贝（H17：裸 `old = x` 即 move，后读陷阱；
+	// 上游 `add x, 0` 同形）。
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", old, target))
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
