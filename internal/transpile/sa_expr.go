@@ -1991,7 +1991,7 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 				return saEvalFuncCall(w, name, q, sig, ce, scope, pos, refusals, nextTemp)
 			}
 		}
-		return "", false, "unknown function " + name
+		return "", false, "call to unknown function " + name + " (declare it before use)"
 	}
 	if !ok {
 		// structuredClone builtin fallback (locals, math aliases and user functions win above).
@@ -2039,7 +2039,7 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		if msg := saImportFirstAdvisory(scope, name); msg != "" {
 			return "", false, msg
 		}
-		return "", false, "unknown function " + name
+		return "", false, "call to unknown function " + name + " (declare it before use)"
 	}
 	return saEvalFuncCall(w, name, callName, sig, ce, scope, pos, refusals, nextTemp)
 }

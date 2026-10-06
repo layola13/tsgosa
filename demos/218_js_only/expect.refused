@@ -3,5 +3,5 @@
 top-level executable statements are not lowerable in non-entry program files
 return value in void function refused
 add is not exported by jsonly-pkg
-unknown function add
+call to unknown function add (declare it before use)
 refused: resolve subset-report.txt before running sh build.sh
