@@ -2149,6 +2149,10 @@ func saSigRetSuffix(retKind string) string {
 	if retKind == "string" || retKind == "map" || strings.HasPrefix(retKind, "inst:") {
 		return " -> ptr"
 	}
+	// f64 直通（上游实发 `-> f64`；形参 `saSigParamType` 同形在先）。
+	if retKind == "f64" {
+		return " -> f64"
+	}
 	return " -> i32"
 }
 

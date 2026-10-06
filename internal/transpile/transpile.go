@@ -2643,6 +2643,10 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true
 		}
+		// f64 方言注解直通（上游实发 `-> f64`；形参 `saSigParamType` 同形在先）。
+		if k, ok := saAnnotKind(t); ok && k == "f64" {
+			return "f64", true
+		}
 		return "", false
 	case ast.KindUnionType:
 		if k, ok := saUnionScalarKind(t.AsNode()); ok {

@@ -237,6 +237,10 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	if retKind == "string" {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
+	// f64 返回位经严格求值（字面量/绑定/纯浮点算术；余形大声拒）。
+	if retKind == "f64" {
+		return saEvalF64(w, e, scope, pos, refusals, nextTemp)
+	}
 	// f64 bindings pass through (i32-annotated functions returning float bits; cf loose returns).
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "f64" {

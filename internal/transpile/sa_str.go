@@ -541,6 +541,20 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	if e != nil && e.Kind == ast.KindCallExpression && saIsArrJoinCall(e.AsCallExpression(), scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
+	// f64 函数调用结果经 @sa_fmt_f64_into 落文本切片（精度 6；与上游
+	// renderInterpValue f64 分支同形；非 f64 调用沿既有各门）。
+	if e != nil && e.Kind == ast.KindCallExpression {
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "f64" {
+			op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if voidCall {
+				return "", "void call in string position"
+			}
+			return saRenderInterpF64(w, op, scope, nextTemp), ""
+		}
+	}
 	// date millis 经 i64 直插值（无 sext；窄化不发生，millis 原样入 fmt）。
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "date" {
@@ -560,6 +574,16 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 	}
 	var op string
+	if saIsF64Operand(e, scope) {
+		// f64 经 @sa_fmt_f64_into 落文本切片（精度 6；上游 console.log(f64)
+		// 同形；i32/bool/串位不动）。
+		var msg string
+		op, msg = saEvalF64(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return saRenderInterpF64(w, op, scope, nextTemp), ""
+	}
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "bool" {
 			var msg string
@@ -634,6 +658,36 @@ func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp
 	rc := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_fmt_i64_into(%s, 10, %s, 64, &%s)\n", rc, wide, numbuf, numlen))
+	nlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
+	vslice := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", vslice))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", vslice, numbuf))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", vslice, nlen))
+	saOwnTemp(scope, numbuf)
+	saOwnTemp(scope, numlen)
+	saOwnTemp(scope, rc)
+	saOwnTemp(scope, vslice)
+	saReleaseOwnedTemp(w, scope, rc)
+	saReleaseOwnedTemp(w, scope, nlen)
+	return vslice
+}
+
+// saRenderInterpF64 f64 操作数经 @sa_fmt_f64_into（精度 6）落文本切片
+// （形状证据：封存 renderInterpValue:8852-8877 f64 分支逐行同形）。
+func saRenderInterpF64(w printer.EmitTextWriter, v string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/fmt.sai")
+	numbuf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 64\n", numbuf))
+	numlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", numlen))
+	rc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_f64_into(%s, 6, %s, 64, &%s)\n", rc, v, numbuf, numlen))
 	nlen := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
