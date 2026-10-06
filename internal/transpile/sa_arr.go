@@ -2548,55 +2548,18 @@ func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, ne
 
 // saLowerArrayWith 拷贝并定点替换（越界透传拷贝；形状证据：封存 lowerArrayWith:6883-6919）。
 func saLowerArrayWith(w printer.EmitTextWriter, recv, idx, val string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	_ = refusals
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	isneg := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", isneg, idx))
-	adj := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", adj, ln, isneg))
-	norm := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", norm, idx, adj))
-	cp := saLowerArraySlice(w, recv, "0", "", scope, nextTemp)
-	lo := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	hi := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", lo, norm))
-	w.Write(fmt.Sprintf("  %s = sge %s, %s\n", hi, norm, ln))
-	bad := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = or %s, %s\n", bad, lo, hi))
-	badL := fmt.Sprintf("L_w_bad_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	okL := fmt.Sprintf("L_w_ok_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	finL := fmt.Sprintf("L_w_fin_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bad, badL, okL))
-	w.Write(fmt.Sprintf("%s:\n", badL))
-	w.Write(fmt.Sprintf("  jmp %s\n", finL))
-	w.Write(fmt.Sprintf("%s:\n", okL))
-	cdata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", cdata, cp))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, norm))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, cdata, off))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, val))
-	w.Write(fmt.Sprintf("  jmp %s\n", finL))
-	w.Write(fmt.Sprintf("%s:\n", finL))
+	// R1 回迁映射：单点替换语义（负规范/越界原样）由 `sci/sa_std/ts_array.sa`
+	// `@ts_arr_with` 实现，本侧只做 import + 归属/标记透传。
 	_ = pos
-	saPropArrNest(scope, recv, cp)
-	saPropArrStr(scope, recv, cp)
-	return cp, ""
+	_ = refusals
+	scope.addImport("sa_std/ts_array.sa")
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_with(%s, %s, %s)\n", dest, recv, idx, val))
+	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
+	saOwnTemp(scope, dest)
+	return dest, ""
 }
 
 // saLowerToSpliced 新数组删段插项（R1 回迁映射：语义由
