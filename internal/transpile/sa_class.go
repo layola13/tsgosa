@@ -53,6 +53,7 @@ type saClassDef struct {
 	fkinds        map[string]string
 	fsub          map[string]string
 	fpos          map[string]int
+	abstracts     map[string]int
 	tparams       []string
 	fdefs         map[string]*ast.TypeNode
 	size          int
@@ -518,7 +519,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			}
 			// 重载签名擦除：无体声明不注册（实现体唯一定义；顶层同例见 step41；
 			// 形状证据：封存 recordClassNamed:9746-9771 无重复检查直接覆盖（签名被实现覆盖）+ saemit.go:983 无体拒止于调用点）。
+			// 抽象方法记名不占实现（派生非抽象类须实现；与重载擦除同位，abstract 优先）。
 			if m.BodyData() == nil || m.BodyData().Body == nil {
+				if ast.HasModifier(m, ast.ModifierFlagsAbstract) {
+					if def.abstracts == nil {
+						def.abstracts = map[string]int{}
+					}
+					def.abstracts[mn.Text()] = m.Pos()
+				}
 				continue
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
@@ -694,6 +702,30 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					ln, col := pos(st.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + mn + "()"})
 				}
+				return false
+			}
+		}
+	}
+	// 抽象方法实现校验（非抽象派生类须实现祖先链全部抽象方法；自身抽象跳过；
+	// 拒因指抽象声明位；继承展平已含中间实现，只查自身 methods）。
+	if !def.isAbstract {
+		need := map[string]int{}
+		for p := def.parent; p != ""; {
+			pb := classes[p]
+			if pb == nil {
+				break
+			}
+			for n, pp := range pb.abstracts {
+				if _, ok := need[n]; !ok {
+					need[n] = pp
+				}
+			}
+			p = pb.parent
+		}
+		for n, pp := range need {
+			if _, ok := def.methods[n]; !ok {
+				ln, col := pos(pp)
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " must implement abstract " + n + "()"})
 				return false
 			}
 		}
