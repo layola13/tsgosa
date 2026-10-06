@@ -3039,10 +3039,20 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node,
 	return dest, ""
 }
 
-// saLowerArrayConcat 首尾相接（数组逐元，标量 push；形状证据：封存 lowerArrayConcat:7061-7090）。
+// saLowerArrayConcat 首尾相接（R1 回迁映射：双片合并由
+// `sci/sa_std/ts_array.sa` `@ts_arr_concat2` 实现，本侧 fold 调度 +
+// 种门禁/标量 push/标记透传；形状证据：封存 lowerArrayConcat:7061-7090）。
 func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/ts_array.sa")
+	fold := func(cur, src string) string {
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_concat2(%s, %s)\n", out, cur, src))
+		w.Write(fmt.Sprintf("  !%s\n", cur))
+		return out
+	}
 	h := saNewEmptyArray(w, nextTemp)
-	saAppendSlice(w, h, recv, scope, nextTemp)
+	h = fold(h, recv)
 	saPropArrNest(scope, recv, h)
 	// strOK tracks all-string concatenation (recv marked and every
 	// array arg str-marked; scalar args are i32 and break it).
@@ -3054,7 +3064,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			if msg != "" {
 				return "", msg
 			}
-			saAppendSlice(w, h, src, scope, nextTemp)
+			h = fold(h, src)
 			saPropArrNest(scope, src, h)
 			strOK = strOK && scope.arrStr[src]
 			continue
@@ -3064,7 +3074,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			if msg != "" {
 				return "", msg
 			}
-			saAppendSlice(w, h, src, scope, nextTemp)
+			h = fold(h, src)
 			saPropArrNest(scope, src, h)
 			strOK = strOK && scope.arrStr[src]
 			continue
@@ -3082,6 +3092,7 @@ func saLowerArrayConcat(w printer.EmitTextWriter, recv string, args []*ast.Node,
 	if strOK {
 		saMarkArrStr(scope, h)
 	}
+	saOwnTemp(scope, h)
 	return h, ""
 }
 
