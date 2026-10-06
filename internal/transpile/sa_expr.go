@@ -511,6 +511,16 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 			}
 		}
+		if pa.Name() != nil && pa.Name().Text() == "split" && pa.QuestionDotToken == nil &&
+			saIsStrExpr(pa.Expression, scope) {
+			// 串 `split(sep)` 回串元数组（`saLowerStringSplit`；封存 lowerStringSplit
+			// 全形；split 不在 saIsStrMethod 集，沿旧门会落未知拒）。
+			op, msg := saLowerStringSplit(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, false, ""
+		}
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}

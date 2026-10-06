@@ -1435,6 +1435,10 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	m := pa.Name().Text()
+	if m == "split" && saIsStrExpr(pa.Expression, scope) {
+		// 串 `split` 回串元数组（`saLowerStringSplit`；串基纯语法判定零落字）。
+		return "arr", true
+	}
 	if !saIsArrMethod(m) {
 		return "", false
 	}

@@ -1284,6 +1284,89 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	return "", false, "not a string call"
 }
 
+// saLowerStringSplit lowering `s.split(sep)`（串元数组；封存 lowerStringSplit:7469-7527
+// 全形：indexOf 扫描 + 切片装配 + 逐段 push + 尾段；空头 16 字节零柄起，串元标记）。
+func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/string.sai")
+	pa := ce.Expression.AsPropertyAccessExpression()
+	recv, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) < 1 {
+		return "", "split needs 1 argument"
+	}
+	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	bp, bl := saExpandStr(w, recv, nextTemp)
+	sp, sl := saExpandStr(w, sep, nextTemp)
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", h))
+	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", h))
+	saOwnTemp(scope, h)
+	saMarkArrStr(scope, h)
+	start := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", start))
+	topL := fmt.Sprintf("L_sp_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_sp_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_sp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, %s)\n", idx, bp, bl, sp, sl, start))
+	// 循环内调用结果不登记不释放（dedup 体内 scan 同形； draining 只释直线头）。
+	found := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, -1\n", found, idx))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", found, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	pp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pp, bp, start))
+	pl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", pl, idx, start))
+	part := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", part))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", part, pp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", part, pl))
+	// 段柄入槽即数组载荷（字面量串元同形：只头登记，段不单独释放）。
+	saLowerArrayPush(w, h, part, scope, nextTemp)
+	nstart := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nstart, idx, sl))
+	w.Write(fmt.Sprintf("  %s = %s\n", start, nstart))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	pp2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pp2, bp, start))
+	pl2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", pl2, bl, start))
+	tail := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", tail))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", tail, pp2))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", tail, pl2))
+	saLowerArrayPush(w, h, tail, scope, nextTemp)
+	return h, ""
+}
+
 // saLowerStrMethod lowering 串方法全集（投影表 stdlib.go:95-105 + 封存
 // lowerStringMethod:7173-7386；split 需串元数组，超 i32 槽模型，大声拒）。
 // saLowerStrIndexChar 取单字柄（`charAt`/`s[i]` 同形；无界检查与既有
