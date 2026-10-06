@@ -2802,9 +2802,8 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	// 封存 lowerObjectLiteral 尾 declareOwned(h) 同形）。
 	saOwnTemp(scope, h)
 	if def.ctor == nil {
-		if len(argNodes) != 0 {
-			return "", "new " + name + " takes 0 arguments"
-		}
+		// 无显式构造：多余实参直接丢弃（P-newargs：上游同形忽略，
+		// 无求值无副作用；有参构造沿下 arity 门）。
 		return h, ""
 	}
 	params := def.ctor.Parameters()
