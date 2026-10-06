@@ -3488,25 +3488,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", "pop needs 0 arguments"
 		}
-		ln := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-		last := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", last, ln))
-		data := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-		off := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, last))
-		addr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+		// R1 回迁映射：末端取值缩长语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_pop` 实现（i32 结果须 saOwnTemp 登记，R1-12 同例）。
+		scope.addImport("sa_std/ts_array.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, addr))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", recv, last))
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_pop(%s)\n", out, recv))
+		saOwnTemp(scope, out)
 		return out, "i32", ""
 	case "shift":
 		if len(argNodes) != 0 {
