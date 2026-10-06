@@ -1923,6 +1923,9 @@ func saRunDescribe(w printer.EmitTextWriter, body *ast.Node, isVoid bool, scope 
 // saOnlyCallBody 解析成员式 `.only` 调用（`test|it|describe.only("name", cb)`；
 // 名静态 + 回调验形，不发射；畸形记拒因返 ok=false）。
 func saOnlyCallBody(st *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) (body *ast.Node, kind string, ok bool) {
+	if st == nil || st.Kind != ast.KindExpressionStatement {
+		return nil, "", true
+	}
 	fail := func(msg string) (*ast.Node, string, bool) {
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
@@ -1972,6 +1975,9 @@ func saOnlyCallBody(st *ast.Node, scope *saScope, pos func(int) (int, int), refu
 // saAfterAllBody 识别 afterAll 调用语句并取回调体（1 参回调 / 2 参静态名 +
 // 回调；非 afterAll 调用返 found=false；畸形记拒因返 found=true 体 nil）。
 func saAfterAllBody(s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) (body *ast.Node, found bool) {
+	if s == nil || s.Kind != ast.KindExpressionStatement {
+		return nil, false
+	}
 	e := s.AsExpressionStatement().Expression
 	if e == nil || e.Kind != ast.KindCallExpression {
 		return nil, false
@@ -2014,6 +2020,9 @@ func saAfterAllBody(s *ast.Node, scope *saScope, pos func(int) (int, int), refus
 // saSkipTestCall 仅验形不发射（only 模式下跳过普通 test/describe 注册：
 // 名静态 + 回调验形；体语句一律不降）。
 func saSkipTestCall(st *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	if st == nil || st.Kind != ast.KindExpressionStatement {
+		return true
+	}
 	e := st.AsExpressionStatement().Expression
 	if e == nil || e.Kind != ast.KindCallExpression {
 		return true
@@ -2067,6 +2076,9 @@ func saInlineDescribeBody(w printer.EmitTextWriter, body *ast.Node, isVoid bool,
 // 未解析；返回族名 test/describe，it 归 test；其余返空；畸形由 lowering 侧按
 // 同形大声拒，不在此判）。
 func saOnlyMark(st *ast.Node, scope *saScope) string {
+	if st == nil || st.Kind != ast.KindExpressionStatement {
+		return ""
+	}
 	e := st.AsExpressionStatement().Expression
 	if e == nil || e.Kind != ast.KindCallExpression {
 		return ""
@@ -2099,6 +2111,9 @@ func saOnlyMark(st *ast.Node, scope *saScope) string {
 // saIsAfterAllCall 纯判定直接子语句是否为未解析 afterAll 调用（无发射无记拒；
 // 畸形亦命中，交 lowering 侧同形大声拒）。
 func saIsAfterAllCall(st *ast.Node, scope *saScope) bool {
+	if st == nil || st.Kind != ast.KindExpressionStatement {
+		return false
+	}
 	e := st.AsExpressionStatement().Expression
 	if e == nil || e.Kind != ast.KindCallExpression {
 		return false
@@ -2170,13 +2185,15 @@ func saLowerBufferedScope(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bo
 				}
 				return
 			}
-			if e := st.AsExpressionStatement().Expression; e != nil && e.Kind == ast.KindCallExpression {
-				if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
-					if nm := ce.Expression.Text(); nm == "test" || nm == "it" || nm == "describe" {
-						if !saSkipTestCall(st, scope, pos, refusals) {
-							armOK = false
+			if st != nil && st.Kind == ast.KindExpressionStatement {
+				if e := st.AsExpressionStatement().Expression; e != nil && e.Kind == ast.KindCallExpression {
+					if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
+						if nm := ce.Expression.Text(); nm == "test" || nm == "it" || nm == "describe" {
+							if !saSkipTestCall(st, scope, pos, refusals) {
+								armOK = false
+							}
+							return
 						}
-						return
 					}
 				}
 			}
