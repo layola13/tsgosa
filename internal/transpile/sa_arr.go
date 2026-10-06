@@ -2486,6 +2486,20 @@ func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, ne
 	return dest
 }
 
+// saLowerToSorted 拷贝并数值插入排序返新数组（R1 回迁映射：语义由
+// `sci/sa_std/ts_array.sa` `@ts_arr_tosorted` 实现，本侧只做 import +
+// 归属/标记透传；比较器形沿既有内联不动）。
+func saLowerToSorted(w printer.EmitTextWriter, recv string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/ts_array.sa")
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_tosorted(%s)\n", dest, recv))
+	saPropArrNest(scope, recv, dest)
+	saPropArrStr(scope, recv, dest)
+	saOwnTemp(scope, dest)
+	return dest
+}
+
 // saLowerArrayWith 拷贝并定点替换（越界透传拷贝；形状证据：封存 lowerArrayWith:6883-6919）。
 func saLowerArrayWith(w printer.EmitTextWriter, recv, idx, val string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	// R1 回迁映射：单点替换语义（负规范/越界原样）由 `sci/sa_std/ts_array.sa`
@@ -3906,9 +3920,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			saLowerInsertionSort(w, recv, scope, nextTemp)
 			return recv, "arr", ""
 		}
-		cp := saLowerArraySlice(w, recv, "0", "", scope, nextTemp)
-		saLowerInsertionSort(w, cp, scope, nextTemp)
-		return cp, "arr", ""
+		return saLowerToSorted(w, recv, scope, nextTemp), "arr", ""
 	case "indexOf", "lastIndexOf", "includes":
 		if len(argNodes) < 1 {
 			return "", "", method + " needs 1 argument"
