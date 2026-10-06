@@ -2381,18 +2381,8 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 	return old, ""
 }
 
-// saLowerPow lowering 整数 `**`（形状证据：封存 lowerPowLoop:3326-3350：
-// r=1；ctr=expo；top: cc=sgt ctr,0；br body/end；body: r*=base, ctr--；jmp top）。
-func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	base, msgB := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
-	if msgB != "" {
-		return "", msgB
-	}
-	expo, msgE := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-	if msgE != "" {
-		return "", msgE
-	}
-	nextLabel := scope.nextLabel
+// saLowerPowOps 整数幂循环核（base**expo，非负指数；形状证据同 saLowerPow）。
+func saLowerPowOps(w printer.EmitTextWriter, base, expo string, nextLabel *int, nextTemp *int) string {
 	res := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = 1\n", res))
@@ -2421,7 +2411,21 @@ func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saSco
 	w.Write(fmt.Sprintf("  %s = %s\n", ctr, nc))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
-	return res, ""
+	return res
+}
+
+// saLowerPow lowering 整数 `**`（形状证据：封存 lowerPowLoop:3326-3350：
+// r=1；ctr=expo；top: cc=sgt ctr,0；br body/end；body: r*=base, ctr--；jmp top）。
+func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	base, msgB := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+	if msgB != "" {
+		return "", msgB
+	}
+	expo, msgE := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msgE != "" {
+		return "", msgE
+	}
+	return saLowerPowOps(w, base, expo, scope.nextLabel, nextTemp), ""
 }
 
 // saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324

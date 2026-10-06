@@ -281,6 +281,36 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 	return true
 }
 
+// saLowerPowAssign lowering 语句位 `x **= e`（P-ppow：目标限本地 i32 标识，
+// 经 pow 核 + saStoreLocal 纪律；元素/modvar/f64 目标沿旧门拒）。
+func saLowerPowAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
+	if be.Left == nil || be.Left.Kind != ast.KindIdentifier {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound **= needs a plain identifier target"})
+		return false
+	}
+	target, ok := saBoundI32(scope, be.Left)
+	if !ok {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound **= needs a plain identifier target"})
+		return false
+	}
+	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+		return false
+	}
+	if msg := saCheckI32Value(scope, r); msg != "" {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+		return false
+	}
+	res := saLowerPowOps(w, target, r, scope.nextLabel, nextTemp)
+	saStoreLocal(w, target, res, scope, nextTemp)
+	return true
+}
+
 // saIsLogicAssignOp 报告短路赋值（`&&=`/`||=`/`??=` 走 join 槽，真短路；
 // 与 eager 的 `and`/`or` 值运算不同；形状证据：封存 isLogicAssign:3569-3573）。
 func saIsLogicAssignOp(op ast.Kind) bool {
@@ -2261,6 +2291,9 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	}
 	if _, ok := saCompoundOp(saBinaryOpKind(be)); ok {
 		return saLowerCompound(w, be, scope, pos, refusals, nextTemp, s)
+	}
+	if saBinaryOpKind(be) == ast.KindAsteriskAsteriskEqualsToken {
+		return saLowerPowAssign(w, be, scope, pos, refusals, nextTemp, s)
 	}
 	if be.OperatorToken == nil || (be.OperatorToken.Kind != ast.KindEqualsToken && !saIsPureValueOp(saBinaryOpKind(be))) {
 		ln, col := pos(s.Pos())
