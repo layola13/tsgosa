@@ -801,10 +801,14 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		ln, col := pos(d.Pos())
 		if isConst {
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
-		} else {
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array declaration needs initializer"})
+			return false
 		}
-		return false
+		// 无初值数组/元组零柄（`let a: T[]`/`let t: [...]`；后继赋值重绑；
+		// 读未赋值即空错，上游 `a = 0` 同形）。
+		w.Write(fmt.Sprintf("  %s = 0\n", name))
+		scope.types[name] = "arr"
+		saDeclarePlain(scope, name)
+		return true
 	}
 	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, vd.Initializer, scope, pos, refusals, nextTemp)
