@@ -77,7 +77,8 @@ func saIsStringArrayAnnot(tn *ast.TypeNode) bool {
 	}
 	if tn.Kind == ast.KindTypeReference {
 		ref := tn.AsTypeReferenceNode()
-		if ref == nil || ref.TypeName == nil || ref.TypeName.Text() != "Array" {
+		// 限定名先守（`NS.Array<string>` TypeName.Text 会 panic，0 崩溃铁律；见 step376）。
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Array" {
 			return false
 		}
 		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {

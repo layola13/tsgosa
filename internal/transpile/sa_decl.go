@@ -107,7 +107,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					return false
 				}
 				ref := tn.AsTypeReferenceNode()
-				if ref == nil || ref.TypeName == nil {
+				// 限定名先守（`x: NS.Iface` TypeName.Text 会 panic，0 崩溃铁律；见 step376）。
+				if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
 					return false
@@ -356,7 +357,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Type.Kind == ast.KindTypeReference {
-			if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Text() == "Date" {
+			// 限定名先守（`x: A.B` TypeName.Text 会 panic，0 崩溃铁律；
+			// 见 step376，同族另见 sa_arr.go saIsStringArrayAnnot）。
+			if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Date" {
 				// `: Date` 注解须配 date 种初值（new/now/parse/getTime/setter 链）。
 				if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
 					if k, ok := saDateCallKind(vd.Initializer.AsCallExpression(), scope); ok && k == "date" {
