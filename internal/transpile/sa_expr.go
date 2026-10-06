@@ -2656,7 +2656,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		ne := e.AsNewExpression()
 		if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
 			if ne.Expression.Text() == "Date" {
-				return "", "new Date(x) is not lowerable (only arg-less now-shape binds)"
+				return "", "new Date(x) is not lowerable (only arg-less now-shape)"
 			}
 			if ne.Expression.Text() == "RegExp" {
 				return "", "regex value needs a regex binding (const re = /.../ or new RegExp)"
