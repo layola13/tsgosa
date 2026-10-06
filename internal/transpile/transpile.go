@@ -1746,9 +1746,30 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			continue
 		}
 		if st.Kind != ast.KindFunctionDeclaration {
-			// 顶层类表达式纯记录（布局表），无码；与 ClassDeclaration 同例。
+			// 顶层类表达式纯记录（布局表），无码；与 ClassDeclaration 同形。
 			if _, _, ok := saTopLevelClassExpr(st); ok {
 				continue
+			}
+			// `declare const/let/var` 无初始化器即环境声明，擦除无码
+			// （有初始化器沿旧路；`declare function/class` 既有擦除同形）。
+			if st.Kind == ast.KindVariableStatement {
+				if vs := st.AsVariableStatement(); vs != nil && ast.HasModifier(st, ast.ModifierFlagsAmbient) {
+					noInit := true
+					if dl := vs.DeclarationList; dl != nil && dl.AsVariableDeclarationList() != nil {
+						for _, d := range dl.AsVariableDeclarationList().Declarations.Nodes {
+							if d == nil {
+								continue
+							}
+							if dd := d.AsVariableDeclaration(); dd != nil && dd.Initializer != nil {
+								noInit = false
+								break
+							}
+						}
+					}
+					if noInit {
+						continue
+					}
+				}
 			}
 			// 顶层箭头 `const f = (...)=>...` 走函数同形发射（out-of-line；
 			// 封存 tryTopLevelArrow + lowerArrowBinding）。其余变量声明仍拒。
