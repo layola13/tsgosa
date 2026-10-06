@@ -1783,10 +1783,13 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported call statement: " + msg})
 			return false
 		}
-		// 语句位丢弃数组新柄即释（返柄调用 `a.toSpliced/concat/splice` 等；
-		// i32/str 返回沿既有口径不动）。
-		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k == "arr" && saIsTempOp(op) {
-			w.Write(fmt.Sprintf("  !%s\n", op))
+		// 语句位丢弃新柄即释（数组返柄与串返柄调用；记名走归属口，
+		// 未记名 temp 直释；其余沿既有口径不动）。
+		if k, ok := saArrCallRet(e.AsCallExpression(), scope); ok && k == "arr" {
+			saReleaseStmtTemp(w, scope, op)
+		}
+		if saCallIsStr(e.AsCallExpression(), scope) && !saStrCallIsI32(e.AsCallExpression(), scope) {
+			saReleaseStmtTemp(w, scope, op)
 		}
 		return true
 	}
@@ -3575,6 +3578,19 @@ func saReleaseOwnedTemp(w printer.EmitTextWriter, scope *saScope, t string) {
 		w.Write(fmt.Sprintf("  !%s\n", t))
 		b.released = true
 	}
+}
+
+// saReleaseStmtTemp 语句位丢弃新柄即释（记名走归属口，已释跳过防双释；
+// 未记名 temp 直释；具名不动）。
+func saReleaseStmtTemp(w printer.EmitTextWriter, scope *saScope, op string) {
+	if !saIsTempOp(op) {
+		return
+	}
+	if saOwnOf(scope, op) != nil {
+		saReleaseOwnedTemp(w, scope, op)
+		return
+	}
+	w.Write(fmt.Sprintf("  !%s\n", op))
 }
 
 // saReleaseDeeperThan 跳前释放：释下标深于 depth 的归属 live 绑定
