@@ -1,0 +1,9 @@
+@import "../demos/284_cond_alias/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "284_cond_alias"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1, 28401)
+    !v
+    return
