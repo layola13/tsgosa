@@ -943,11 +943,9 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	_ = needImport
 	fo := s.AsForInOrOfStatement()
-	if fo.AwaitModifier != nil {
-		ln, col := pos(s.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "for-await not lowerable"})
-		return false
-	}
+	// `for await...of` 脱糖为同步 for-of（上游同形：空数组直接索引巡回；
+	// 子集无 thenable（Promise 值双边同拒在先），await 元素恒等，脱糖可靠；
+	// 非数组源仍由既有数组门大声拒，体内 await 沿既有门拒）。
 	binding, pat, ok := saForBindingName(fo.Initializer)
 	if !ok {
 		ln, col := pos(s.Pos())
