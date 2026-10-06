@@ -52,6 +52,7 @@ type saClassDef struct {
 	offsets       map[string]int
 	fkinds        map[string]string
 	fsub          map[string]string
+	fpos          map[string]int
 	tparams       []string
 	fdefs         map[string]*ast.TypeNode
 	size          int
@@ -644,8 +645,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		}
 		for _, f := range idef.fields {
 			if _, ok := def.offsets[f.name]; !ok {
-				ln, col := pos(st.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
+				// 缺字段拒因指接口字段声明位（罪魁在接口定义侧；无位存档回退类声明位）。
+				if fp, ok := idef.fpos[f.name]; ok {
+					ln, col := pos(fp)
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
+				} else {
+					ln, col := pos(st.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class " + name + " does not implement " + iname + "." + f.name})
+				}
 				return false
 			}
 		}
@@ -1219,6 +1226,11 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		// 字段声明位直存（implements 缺字段拒因指接口字段位；只存不用，零行为变）。
+		if def.fpos == nil {
+			def.fpos = map[string]int{}
+		}
+		def.fpos[fn.Text()] = m.Pos()
 		// 字段类型节点直存（具化期代入用；只存不用，零行为变）。
 		if pd.Type != nil {
 			if def.fdefs == nil {
