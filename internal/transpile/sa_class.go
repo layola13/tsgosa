@@ -422,8 +422,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			if fn.Kind == ast.KindPrivateIdentifier {
 				fkey = saPrivKey(name, fn.Text())
 			}
-			// 抽象属性记名（派生须声明同名域；占槽照常，基不实例化无害）。
+			// 抽象属性记名（派生须声明同名域；占槽照常，基不实例化无害；
+			// static+abstract 非法直接拒，与抽象存取器同形）。
 			if ast.HasModifier(m, ast.ModifierFlagsAbstract) {
+				if ast.HasModifier(m, ast.ModifierFlagsStatic) {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "abstract static fields are not lowerable"})
+					return false
+				}
 				if def.abstracts == nil {
 					def.abstracts = map[string]int{}
 				}
