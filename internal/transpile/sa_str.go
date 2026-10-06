@@ -1057,6 +1057,72 @@ func saLowerParseInt(w printer.EmitTextWriter, s string, scope *saScope, nextTem
 	return acc
 }
 
+// saIsIntWord reports int-valued operands (integer literals, bools,
+// i32/bool bindings and module slots; float literals and handles stay out).
+func saIsIntWord(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		return !saIsFloatLit(e.Text())
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return true
+	case ast.KindIdentifier:
+		if k, ok := scope.types[e.Text()]; ok {
+			return k == "i32" || k == "bool"
+		}
+		if ms, ok := scope.modVars[e.Text()]; ok {
+			return ms.w == "i32"
+		}
+		if text, ok := scope.topConsts[e.Text()]; ok && !scope.topStr[e.Text()] {
+			return saIsIntLitText(text)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// saLowerFloatConvert lowers parseFloat(s)/Number(x) to f64 (string args via
+// the sa_parse_float wheel; integer/boolean args via sitofp; shape evidence:
+// upstream sa_parse_float call sites; empty/multi args and float literals refuse).
+func saLowerFloatConvert(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 || argNodes[0] == nil {
+		return "", name + " takes exactly 1 argument"
+	}
+	a := argNodes[0]
+	if name == "Number" && saIsIntWord(a, scope) {
+		dd, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sitofp %s\n", t, dd))
+		scope.types[t] = "f64"
+		return t, ""
+	}
+	if !saIsStrValue(a, scope) {
+		return "", name + " takes a string or integer argument"
+	}
+	h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	bp, bl := saExpandStr(w, h, nextTemp)
+	scope.addImport("sa_std/string.sai")
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_parse_float(&%s, %s)\n", t, bp, bl))
+	scope.types[t] = "f64"
+	return t, ""
+}
+
 // saLowerParseIntArgs parseInt/Number.parseInt 实参（串求值 + 基数门；缺省/
 // 字面量 10 即十进制扫描，字面量 2-36 即通用扫描（16 剥 0x 前缀），
 // 非法/变量基数大声拒；形状证据：封存 lowerParseIntCall 单参口径）。
@@ -1300,38 +1366,48 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 				if ce.Arguments != nil {
 					args = ce.Arguments.Nodes
 				}
-				if len(args) != 1 {
-					return "", false, "String." + pa.Name().Text() + " needs 1 argument"
-				}
-				v, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return "", false, msg
+				if len(args) < 1 {
+					// 零参即空串（上游同过；JS `""`）。
+					return saLowerStringLiteral(w, "", scope, nextTemp), false, ""
 				}
 				// 原语回 BUFFER 句柄（u64，现货签名 `-> u64`），经 data/len
 				// unwrap 成 16 字节串句柄；缓冲作头读（u64 作片读会段错；
 				// 形状证据：封存 lowerCall:3811-3836；现货 sa_std/string.sai
 				// from_char_code/from_code_point + sa_std/fmt.sai buffer_data/len）。
+				// 多参逐字具化后 concat（轮子一元，上游多参直调系静默截断，
+				// 本仓组装值正确；node 镜算）。
 				sym := "sa_string_from_char_code"
 				if pa.Name().Text() == "fromCodePoint" {
 					sym = "sa_string_from_code_point"
 				}
 				scope.addImport("sa_std/string.sai")
 				scope.addImport("sa_std/fmt.sai")
-				hbuf := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", hbuf, sym, v))
-				hptr := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", hptr, hbuf))
-				hlen := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", hlen, hbuf))
-				t := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = alloc 16\n", t))
-				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", t, hptr))
-				w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", t, hlen))
-				return t, false, ""
+				acc := ""
+				for _, an := range args {
+					if an == nil {
+						return "", false, "String." + pa.Name().Text() + " needs 1 argument"
+					}
+					v, msg := saEvalI32(w, an, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					hbuf := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", hbuf, sym, v))
+					hptr := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", hptr, hbuf))
+					hlen := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", hlen, hbuf))
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = alloc 16\n", t))
+					w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", t, hptr))
+					w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", t, hlen))
+					acc = saConcatSlicesOpt(w, acc, t, scope, nextTemp)
+				}
+				return acc, false, ""
 			}
 			return "", false, "unsupported String method " + pa.Name().Text()
 		}

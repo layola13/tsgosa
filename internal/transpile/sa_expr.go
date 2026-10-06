@@ -1137,6 +1137,10 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	name := ce.Expression.Text()
+	if name == "Number" || name == "parseFloat" {
+		// 数值转换恒回 f64（串经轮子，整数 sitofp；i32 位整数直通另见求值核）。
+		return "f64", true
+	}
 	if k, ok := scope.types[name]; ok && strings.HasPrefix(k, "fn:") {
 		gen := strings.TrimPrefix(k, "fn:")
 		if sig, ok := scope.funcs[gen]; ok && sig.retKind != "" {
@@ -2213,8 +2217,13 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		callName = "main__user"
 	}
 	if name == "Number" {
-		// Number(x) 回 f64（薄口无 f64 种，大声拒）。
-		return "", false, "Number(x) needs f64 (beyond i32 subset)"
+		// Number(x) 数值转换（串经轮子 f64，整数/布尔 sitofp f64；
+		// i32 位整数直通见求值核；形状证据：上游 sa_parse_float 实发）。
+		op, msg := saLowerFloatConvert(w, name, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		return op, false, ""
 	}
 	if name == "Array" {
 		// 数组构造式具化（调用式；`new Array` 另走声明位）。
@@ -2264,6 +2273,14 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 				argNodes = ce.Arguments.Nodes
 			}
 			op, msg := saLowerParseIntArgs(w, argNodes, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return op, false, ""
+		}
+		// parseFloat 裸全局（串经 sa_parse_float 轮子回 f64；上游同形）。
+		if name == "parseFloat" {
+			op, msg := saLowerFloatConvert(w, name, ce, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", false, msg
 			}
@@ -2749,6 +2766,19 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 			return e.Text(), ""
 		}
 		return "", "integer " + e.Text() + " in float expression"
+	case ast.KindCallExpression:
+		// f64 种调用直传（用户 f64 函数 + Number/parseFloat 转换经调用核）。
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "f64" {
+			op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if voidCall {
+				return "", "void function call in value position"
+			}
+			return op, ""
+		}
+		return "", "unsupported float expression"
 	case ast.KindIdentifier:
 		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
 			return e.Text(), ""
@@ -3569,6 +3599,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if !saStrCallIsI32(e.AsCallExpression(), scope) {
 				return "", "string value in i32 expression"
 			}
+		}
+		// Number(整数) i32 位直通（值与 node 一致；串形走 f64 轮子，见调用核）。
+		if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier &&
+			ce.Expression.Text() == "Number" && ce.Arguments != nil && len(ce.Arguments.Nodes) == 1 &&
+			saIsIntWord(ce.Arguments.Nodes[0], scope) {
+			return saEvalI32(w, ce.Arguments.Nodes[0], scope, pos, refusals, nextTemp)
 		}
 		// 数组函数返回句柄禁入 i32 位（与数组方法同门）。
 		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "arr" {

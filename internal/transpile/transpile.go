@@ -2045,6 +2045,32 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						continue
 					}
 				}
+				// `NoInfer<X>` 透明擦除（内层裸形参沿擦除口径，约束数组即 arr；
+				// 其余内层沿注解核）。
+				if pd.Type.Kind == ast.KindTypeReference {
+					if nref := pd.Type.AsTypeReferenceNode(); nref != nil && nref.TypeName != nil &&
+						nref.TypeName.Kind == ast.KindIdentifier && nref.TypeName.Text() == "NoInfer" &&
+						nref.TypeArguments != nil && len(nref.TypeArguments.Nodes) == 1 &&
+						nref.TypeArguments.Nodes[0] != nil {
+						inner := nref.TypeArguments.Nodes[0]
+						if saIsBareTypeParam(inner, tparams) {
+							if rn := inner.AsTypeReferenceNode(); rn != nil && rn.TypeName != nil && rn.TypeName.Kind == ast.KindIdentifier {
+								if ct, ok := tconstraints[rn.TypeName.Text()]; ok && ct != nil &&
+									(ct.Kind == ast.KindArrayType || ct.Kind == ast.KindTupleType) {
+									kinds[name] = "arr"
+									continue
+								}
+							}
+							kinds[name] = "i32"
+							continue
+						}
+						if k2, ok2 := saAnnotKind(inner); ok2 &&
+							(k2 == "i32" || k2 == "bool" || k2 == "str" || k2 == "arr" || k2 == "f64") {
+							kinds[name] = k2
+							continue
+						}
+					}
+				}
 				if pd.Type.Kind == ast.KindTypeReference {
 					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 						// 泛型具化优先（`b: Box<i32>` 记 `inst:Box_i32`，宽表精确；
@@ -2561,6 +2587,11 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 			if ref.TypeName.Kind != ast.KindIdentifier {
 				return "", false
+			}
+			// `NoInfer<T>` 透明擦除（5.4 位置标记，运行时无意义）。
+			if ref.TypeName.Text() == "NoInfer" && ref.TypeArguments != nil &&
+				len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+				return saAnnotKind(ref.TypeArguments.Nodes[0])
 			}
 			switch ref.TypeName.Text() {
 			case "i32":

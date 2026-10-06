@@ -620,6 +620,19 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareInitOwn(scope, name, op)
 			return true
 		}
+		// f64 返回调用按浮种建种（用户 f64 函数 + Number/parseFloat 转换）。
+		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && k == "f64" {
+			op, msg := saEvalF64Strict(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = "f64"
+			saDeclarePlain(scope, name)
+			return true
+		}
 	}
 	if init.Kind == ast.KindTrueKeyword || init.Kind == ast.KindFalseKeyword {
 		op, msg := saEvalBool(w, init, scope, pos, refusals, nextTemp)
