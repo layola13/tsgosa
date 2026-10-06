@@ -24,6 +24,7 @@
 
 ## 6. std 回迁 track（用户决策：既有内联 lowering 逐个搬进 `sci/sa_std`，tsgosa 改映射）
 
+- R1-4 toSpliced 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_tospliced(src,start,del,items柄)`（三段拷 + 全量钳位；`sa check` 263 指令 ok；`902479f9` 已推 sci）；tsgosa `saLowerToSpliced` 内联（约 130 行）换门禁 + items 临时数组 + 单 call（缺省 del 取 `load +8 as i32`；items 空柄直传；`!items` + own dest）。1 toSpliced demo 重生成（`sa check` ok）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。
 - R1-3 concat 映射（本轮，双仓已推）：sci `ts_array.sa` 加 `@ts_arr_concat2`（双片合并，新柄持有；`sa check` 141 指令 ok；`2c7e7384` 已推 sci）；tsgosa `saLowerArrayConcat` 改空柄起 fold 调度（种门禁/标量 push/标记透传保留；中间柄直释，最终柄 own）。4 concat demos 重生成（`sa check` 全 ok）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。
 - R1-2 tsgosa slice 改调（本轮）：`saLowerArraySlice` 内联整体（约 90 行）换单 `call @ts_arr_slice_copy` + import + 归属/标记透传（种门禁留调用点；缺省 end 取 `load +8 as i32`）；10 slice demos 重生成（`sa check` 全 ok）+ 符号负区间 harness 值实证（`slice(-2)` 长 2 首元 3，跑到 ret 全对；`!h` 双释墙规避，记环境口径）。门禁：全量 `--check` **266/266 SA-CLEAN** + `--corpus` **286 agree 零回退**；`go vet` + `gofmt` 干净。sci 侧 `08528b8c` 已推 `layola13/sci`（`sa_std/ts_array.sa` 103 行），双仓闭环。
 - R1-1 sci 首符号（本轮，sci 工作区未提交）：`sci/sa_std/ts_array.sa` 新建（薄口 16 字节堆句柄 `{ptr,len}` 专用，与 `vec.sa` Vec 寄存器组不同构故另立），首符号 `@ts_arr_slice_copy(src: ptr, start, end) -> ptr`（双端钳位 + end<start 即空 + 新柄调用方持有）。`sa check` 65 指令 ok（修 2：`x = y` 系 move 须外槽 join；引用传参系 move，句柄改值参）。值语义实证：去释 harness 跑到 ret 全对；interp 双释互斥（`!nh` 与 `!h` 必挂其一，最小复现全过，系 interp 环境问题，LLVM 真机口径）记环境口径；tsgosa 改调时走具名绑定 + 返前释放既有范式，无手写双释。
