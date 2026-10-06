@@ -1745,62 +1745,6 @@ func saCopyRange(w printer.EmitTextWriter, sdata, ddata, s0, s1, d0 string, scop
 	w.Write(fmt.Sprintf("%s:\n", endL))
 }
 
-// saArrayClampLen 下标相对 len 钳到 [0, len]（负值自末端起；形状证据：
-// 封存 arrayClampLen:6401-6440）。
-func saArrayClampLen(w printer.EmitTextWriter, v, ln string, scope *saScope, nextTemp *int) string {
-	adj := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	out := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	nL := fmt.Sprintf("L_cx_neg_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	nN := fmt.Sprintf("L_cx_nneg_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	nE := fmt.Sprintf("L_cx_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	neg := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, v))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", neg, nL, nN))
-	w.Write(fmt.Sprintf("%s:\n", nL))
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", adj, ln, v))
-	w.Write(fmt.Sprintf("  jmp %s\n", nE))
-	w.Write(fmt.Sprintf("%s:\n", nN))
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", adj, v))
-	w.Write(fmt.Sprintf("  jmp %s\n", nE))
-	w.Write(fmt.Sprintf("%s:\n", nE))
-	lo := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	loT := fmt.Sprintf("L_cx_lot_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	loF := fmt.Sprintf("L_cx_lof_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	loE := fmt.Sprintf("L_cx_loe_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", lo, adj))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lo, loT, loF))
-	w.Write(fmt.Sprintf("%s:\n", loT))
-	w.Write(fmt.Sprintf("  %s = 0\n", out))
-	w.Write(fmt.Sprintf("  jmp %s\n", loE))
-	w.Write(fmt.Sprintf("%s:\n", loF))
-	hi := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	hiT := fmt.Sprintf("L_cx_hit_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	hiF := fmt.Sprintf("L_cx_hif_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", hi, adj, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hi, hiT, hiF))
-	w.Write(fmt.Sprintf("%s:\n", hiT))
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, ln))
-	w.Write(fmt.Sprintf("  jmp %s\n", loE))
-	w.Write(fmt.Sprintf("%s:\n", hiF))
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, adj))
-	w.Write(fmt.Sprintf("  jmp %s\n", loE))
-	w.Write(fmt.Sprintf("%s:\n", loE))
-	return out
-}
-
 // saLowerArrayPush 扩容拷贝压栈（返回新长；形状证据：封存 lowerArrayPush:5999-6054）。
 // saLowerDeepClone lowers `structuredClone(v)` (element-wise deep copy for array handles,
 // recursing one level into nested slices; scalars snapshot; cf lowerDeepClone).
@@ -2096,141 +2040,6 @@ func saLowerArrayJoin(w printer.EmitTextWriter, recv, sep string, scope *saScope
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	return acc, ""
-}
-
-// saLowerCopyWithinStep 单步 src[s+k] 到 dst[t+k]（形状证据：封存 lowerCopyWithinStep:6801-6817）。
-func saLowerCopyWithinStep(w printer.EmitTextWriter, data, t, s, k string, nextTemp *int) {
-	si := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", si, s, k))
-	so := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", so, si))
-	sa := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", sa, data, so))
-	cur := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cur, sa))
-	di := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", di, t, k))
-	dof := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", dof, di))
-	da := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", da, data, dof))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", da, cur))
-}
-
-// saLowerCopyWithin 交叠安全方向拷贝（形状证据：封存 lowerCopyWithin:6717-6798）。
-func saLowerCopyWithin(w printer.EmitTextWriter, recv, target, start, end string, scope *saScope, nextTemp *int) {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-	t := saArrayClampLen(w, target, ln, scope, nextTemp)
-	s := saArrayClampLen(w, start, ln, scope, nextTemp)
-	f := ln
-	if end != "" {
-		f = saArrayClampLen(w, end, ln, scope, nextTemp)
-	}
-	span := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", span, f, s))
-	room := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", room, ln, t))
-	count := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	pick := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	minS := fmt.Sprintf("L_cw_minspan_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	minR := fmt.Sprintf("L_cw_minroom_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	cntL := fmt.Sprintf("L_cw_cnt_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", pick, span, room))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pick, minS, minR))
-	w.Write(fmt.Sprintf("%s:\n", minS))
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", count, span))
-	w.Write(fmt.Sprintf("  jmp %s\n", cntL))
-	w.Write(fmt.Sprintf("%s:\n", minR))
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", count, room))
-	w.Write(fmt.Sprintf("  jmp %s\n", cntL))
-	w.Write(fmt.Sprintf("%s:\n", cntL))
-	goT := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	runL := fmt.Sprintf("L_cw_run_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	skipL := fmt.Sprintf("L_cw_skip_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", goT, count))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", goT, runL, skipL))
-	w.Write(fmt.Sprintf("%s:\n", runL))
-	fwd := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	fInit := fmt.Sprintf("L_cw_finit_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bTop := fmt.Sprintf("L_cw_btop_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", fwd, t, s))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fwd, fInit, bTop))
-	w.Write(fmt.Sprintf("%s:\n", fInit))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	fTop := fmt.Sprintf("L_cw_ftop_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	fBody := fmt.Sprintf("L_cw_fbody_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	fEnd := fmt.Sprintf("L_cw_fend_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  jmp %s\n", fTop))
-	w.Write(fmt.Sprintf("%s:\n", fTop))
-	fc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", fc, i, count))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fc, fBody, fEnd))
-	w.Write(fmt.Sprintf("%s:\n", fBody))
-	saLowerCopyWithinStep(w, data, t, s, i, nextTemp)
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", fTop))
-	w.Write(fmt.Sprintf("%s:\n", fEnd))
-	w.Write(fmt.Sprintf("  jmp %s\n", skipL))
-	w.Write(fmt.Sprintf("%s:\n", bTop))
-	j := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", j, count))
-	bCond := fmt.Sprintf("L_cw_bcond_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bBody := fmt.Sprintf("L_cw_bbody_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bEnd := fmt.Sprintf("L_cw_bend_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  jmp %s\n", bCond))
-	w.Write(fmt.Sprintf("%s:\n", bCond))
-	bc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", bc, j))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bc, bBody, bEnd))
-	w.Write(fmt.Sprintf("%s:\n", bBody))
-	saLowerCopyWithinStep(w, data, t, s, j, nextTemp)
-	jnext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", jnext, j))
-	w.Write(fmt.Sprintf("  %s = %s\n", j, jnext))
-	w.Write(fmt.Sprintf("  jmp %s\n", bCond))
-	w.Write(fmt.Sprintf("%s:\n", bEnd))
-	w.Write(fmt.Sprintf("  jmp %s\n", skipL))
-	w.Write(fmt.Sprintf("%s:\n", skipL))
 }
 
 // saLowerToReversed 逆序拷贝到新数组（形状证据：封存 lowerToReversed:6820-6879）。
@@ -3752,7 +3561,14 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) > 3 {
 			return "", "", "copyWithin takes at most 3 arguments"
 		}
-		saLowerCopyWithin(w, recv, target, start, end, scope, nextTemp)
+		// R1 回迁映射：交叠安全方向拷贝语义由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_copywithin` 实现（钳位内聚符号内；实参门禁留调用点）。
+		scope.addImport("sa_std/ts_array.sa")
+		endVal, hasend := "0", "0"
+		if end != "" {
+			endVal, hasend = end, "1"
+		}
+		w.Write(fmt.Sprintf("  call @ts_arr_copywithin(%s, %s, %s, %s, %s)\n", recv, target, start, endVal, hasend))
 		return recv, "arr", ""
 	case "toReversed":
 		if len(argNodes) != 0 {
