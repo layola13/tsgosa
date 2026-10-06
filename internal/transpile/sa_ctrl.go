@@ -1469,6 +1469,14 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		if prop == "each" {
 			return fail(base + ".each(table) needs (title, callback)")
 		}
+		// 重试/预期失败须 panic 捕获（SA panic 不可恢复），并发须事件循环；
+		// 皆无底座，定位拒收禁静默忽略。
+		if prop == "retry" || prop == "fails" {
+			return fail(base + "." + prop + " needs failure capture (not lowerable)")
+		}
+		if prop == "concurrent" {
+			return fail(base + "." + prop + " needs an event loop (not lowerable)")
+		}
 		if prop != "only" && prop != "skip" && prop != "todo" {
 			return false, false
 		}
