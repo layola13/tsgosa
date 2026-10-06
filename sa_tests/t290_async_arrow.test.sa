@@ -1,0 +1,9 @@
+@import "../demos/290_async_arrow/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "290_async_arrow"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 6, 29001)
+    !v
+    return

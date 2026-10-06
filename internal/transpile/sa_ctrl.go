@@ -2273,6 +2273,16 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (calls and assignments only)"})
 		return false
 	}
+	// await 语句位同步解包（`await f();` 与 `f();` 同路；悬挂在内层调用门拒；
+	// 形状证据：封存 lowerExpr:2863-2871 + lowerExprStatement:2712-2715）。
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = e.AsAwaitExpression().Expression
+	}
+	if e == nil {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (calls and assignments only)"})
+		return false
+	}
 	if e.Kind == ast.KindCallExpression {
 		op, _, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {

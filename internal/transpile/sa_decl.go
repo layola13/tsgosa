@@ -1806,11 +1806,9 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 			return
 		}
 	}
-	if ast.HasModifier(arrow, ast.ModifierFlagsAsync) {
-		ln, col := pos(arrow.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "async functions are not lowerable"})
-		return
-	}
+	// async 修饰同步擦除（与函数声明 T1 同律；封存 lowerArrowBinding 全程
+	// 无 async 门；无参块体无注解值返回由 checker 恒判 void
+	//（saScalarReturnKind 不认 Promise 对象）走既有 void 门拒）。
 	params, ok := saArrowParamNames(arrow)
 	if !ok {
 		ln, col := pos(arrow.Pos())
@@ -2133,9 +2131,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 			return refuse(arrow, "generators are not lowerable")
 		}
 	}
-	if ast.HasModifier(arrow, ast.ModifierFlagsAsync) {
-		return refuse(arrow, "async functions are not lowerable")
-	}
+	// async 修饰同步擦除（与顶层 saLowerArrowConst 同门；T1 + 封存同源）。
 	body := arrow.Body()
 	if body == nil {
 		return refuse(arrow, "function value "+name+" has no body")

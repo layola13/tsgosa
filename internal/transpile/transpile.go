@@ -1331,7 +1331,17 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		nparams := len(nodes)
 		isVoid := false
 		retKind := ""
-		if k, v, ok := saPrescanRet(saArrowReturnNode(arrow), arrow, tcx, classes, aliasOf); ok {
+		if saArrowReturnNode(arrow) == nil {
+			if ab := arrow.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
+				// 无注解值函数 i32（表达式体或有形参；与发射位同规则；
+				// 封存 lowerArrowBinding value_fn:1099-1117；仅无参块体
+				// 走 checker（async 恒 void 缺省）。
+				retKind, isVoid = "i32", false
+			} else if k, v, ok := saPrescanRet(nil, arrow, tcx, classes, aliasOf); ok {
+				retKind = k
+				isVoid = v
+			}
+		} else if k, v, ok := saPrescanRet(saArrowReturnNode(arrow), arrow, tcx, classes, aliasOf); ok {
 			retKind = k
 			isVoid = v
 		}
