@@ -1789,51 +1789,12 @@ func saAppendSlice(w printer.EmitTextWriter, dst, src string, scope *saScope, ne
 	w.Write(fmt.Sprintf("  call @ts_arr_append_slice(%s, %s)\n", dst, src))
 }
 
-// saCopyRange 拷贝 src[s0,s1) 到 dst[d0,.]（形状证据：封存 copyRange:7026-7057）。
+// saCopyRange 拷贝 src[s0,s1) 到 dst[d0,.]（`sci/sa_std/ts_array.sa`
+// `@ts_arr_copy_range` 实现，调用方保证目标已分配；R3-6 回迁；形状证据：
+// 封存 copyRange:7026-7057）。
 func saCopyRange(w printer.EmitTextWriter, sdata, ddata, s0, s1, d0 string, scope *saScope, nextTemp *int) {
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, s0))
-	topL := fmt.Sprintf("L_cr_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_cr_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_cr_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, s1))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	rel := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", rel, i, s0))
-	so := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", so, i))
-	sa := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", sa, sdata, so))
-	cv := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cv, sa))
-	di := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", di, d0, rel))
-	dof := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", dof, di))
-	da := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", da, ddata, dof))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", da, cv))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	scope.addImport("sa_std/ts_array.sa")
+	w.Write(fmt.Sprintf("  call @ts_arr_copy_range(%s, %s, %s, %s, %s)\n", sdata, ddata, s0, s1, d0))
 }
 
 // saLowerArrayPush 扩容拷贝压栈（返回新长；形状证据：封存 lowerArrayPush:5999-6054）。
