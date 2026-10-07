@@ -2,6 +2,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/ts_string.sa"
 @const str_const_0 = utf8:"abcdef\0"
 @const str_const_1 = utf8:"cd\0"
 @const str_const_2 = utf8:" \0"
@@ -70,21 +71,18 @@
   !t_33
   t_36 = load s + 0 as ptr
   t_37 = load s + 8 as u64
-  t_38 = add t_36, 2
-  t_39 = alloc 16
-  store t_39 + 0, t_38 as ptr
-  store t_39 + 8, 1 as u64
-  t_40 = load t_39 + 0 as ptr
-  t_41 = load t_39 + 8 as u64
-  call @sa_print_bytes(&t_40, t_41)
-  !t_39
-  t_42 = alloc 16
-  store t_42 + 0, &str_const_4 as ptr
-  store t_42 + 8, 1 as u64
-  t_43 = load t_42 + 0 as ptr
-  t_44 = load t_42 + 8 as u64
-  call @sa_print_bytes(&t_43, t_44)
-  !t_42
+  t_38 = call @ts_str_char_at(t_36, 2)
+  t_39 = load t_38 + 0 as ptr
+  t_40 = load t_38 + 8 as u64
+  call @sa_print_bytes(&t_39, t_40)
+  !t_38
+  t_41 = alloc 16
+  store t_41 + 0, &str_const_4 as ptr
+  store t_41 + 8, 1 as u64
+  t_42 = load t_41 + 0 as ptr
+  t_43 = load t_41 + 8 as u64
+  call @sa_print_bytes(&t_42, t_43)
+  !t_41
   !t_27
   !t_26
   !t_24

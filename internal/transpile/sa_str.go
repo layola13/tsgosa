@@ -1337,15 +1337,14 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 // lowerStringMethod:7173-7386；split 需串元数组，超 i32 槽模型，大声拒）。
 // saLowerStrIndexChar 取单字柄（`charAt`/`s[i]` 同形；无界检查与既有
 // charAt 一字之差无：越界未定义，调用方禁另行加塞语义）。
+// R2-4 回迁映射：拼柄语义由 `sci/sa_std/ts_string.sa` `@ts_str_char_at`
+// 实现，本侧只做 import + 单 call + 归属登记；形状证据见 ts_string.sa 头注
+// + 封存 lowerStringCharAt（saemit.go:7270-7280）。
 func saLowerStrIndexChar(w printer.EmitTextWriter, bp, sel string, scope *saScope, nextTemp *int) string {
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, bp, sel))
+	scope.addImport("sa_std/ts_string.sa")
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, addr))
-	w.Write(fmt.Sprintf("  store %s + 8, 1 as u64\n", out))
+	w.Write(fmt.Sprintf("  %s = call @ts_str_char_at(%s, %s)\n", out, bp, sel))
 	// 取字柄归属(返前释放；上游同形).
 	saOwnTemp(scope, out)
 	return out
