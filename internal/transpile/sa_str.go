@@ -111,6 +111,12 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			saIsStrArrRvalue(ea.Expression, scope) {
 			return true
 		}
+		// 可选串元数组元素读即串值（具名 arrStr 基 `a?.[i]`；空基归零柄与 i32 位同形）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken != nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier &&
+			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
+			return true
+		}
 		return false
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
@@ -435,6 +441,20 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			out := saLowerCheckedIndex(w, h, idx, scope.nextLabel, nextTemp)
 			saReleaseOwnedTemp(w, scope, h)
 			return out, ""
+		}
+		// 可选串元数组元素读（具名 arrStr 基 `a?.[i]`；空基归零柄经既有可选位，
+		// 槽值即串柄直传；具名基常驻不释，与上分支同形）。
+		if ea.QuestionDotToken != nil && ea.Expression != nil &&
+			ea.Expression.Kind == ast.KindIdentifier && scope.arrStr != nil &&
+			scope.arrStr[ea.Expression.Text()] {
+			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if msg := saCheckIntIndex(scope, idx); msg != "" {
+				return "", msg
+			}
+			return saLowerOptionalIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
 		}
 		if ea.QuestionDotToken == nil && saIsStrExpr(ea.Expression, scope) {
 			h, msg := saEvalStr(w, ea.Expression, scope, pos, refusals, nextTemp)
