@@ -550,23 +550,30 @@ func saLinkHarvestsMap(link *saFileLink) map[string]map[string]saProgFunc {
 	return link.harvests
 }
 
-// saProgStarTarget 经 star 边找首个收割含名的目标文件（first-match；seen 防环；与
-// saProgChase star 分支同序；类/枚举/别名/纯量直链复用；重导出透传另步）。
+// saProgStarTarget 经 star 边找唯一收割含名的目标文件（唯一命中即返回；
+// 多目标同名即歧义（TS 2308 同理）返回失配，调用方沿旧门大声拒；seen 防环；
+// 与 saProgChase star 分支同序；类/枚举/别名/纯量直链复用；重导出透传另步；u1 实证）。
 func saProgStarTarget(link *saFileLink, tgt, remote string, seen map[string]bool, has func(t, r string) bool) (string, bool) {
-	if link == nil {
+	found := map[string]bool{}
+	var walk func(t string)
+	walk = func(t string) {
+		if link == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		for _, st := range link.stars[t] {
+			if has(st, remote) {
+				found[st] = true
+			}
+			walk(st)
+		}
+	}
+	walk(tgt)
+	if len(found) != 1 {
 		return "", false
 	}
-	if seen[tgt] {
-		return "", false
-	}
-	seen[tgt] = true
-	for _, st := range link.stars[tgt] {
-		if has(st, remote) {
-			return st, true
-		}
-		if nt, ok := saProgStarTarget(link, st, remote, seen, has); ok {
-			return nt, true
-		}
+	for st := range found {
+		return st, true
 	}
 	return "", false
 }
