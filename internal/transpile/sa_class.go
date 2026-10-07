@@ -872,6 +872,75 @@ func saProgFindClass(link *saFileLink, name string) *saClassDef {
 	return nil
 }
 
+// saPreseedImportedAliases 在类型预扫前把具名导入的类型别名播进本文件注解表
+// （普通与纯类型导入均播；类型无运行时，本地同名别名优先；未导出不播）。
+func saPreseedImportedAliases(sf *ast.SourceFile, aliasOf map[string]*ast.TypeNode, link *saFileLink) {
+	if sf == nil || link == nil || link.specOf == nil || link.aliasHarvests == nil {
+		return
+	}
+	local := map[string]bool{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st != nil && st.Kind == ast.KindTypeAliasDeclaration {
+			if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				local[nm.Text()] = true
+			}
+		}
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindImportDeclaration {
+			continue
+		}
+		imp := st.AsImportDeclaration()
+		if imp == nil || imp.ImportClause == nil {
+			continue
+		}
+		ms := imp.ModuleSpecifier
+		if ms == nil || ms.Kind != ast.KindStringLiteral {
+			continue
+		}
+		tgt, ok := link.specOf[ms.Text()]
+		if !ok || tgt == "" {
+			continue
+		}
+		clause := imp.ImportClause.AsImportClause()
+		if clause == nil {
+			continue
+		}
+		nb := clause.NamedBindings
+		if nb == nil || nb.Kind != ast.KindNamedImports {
+			continue
+		}
+		ni := nb.AsNamedImports()
+		if ni == nil || ni.Elements == nil {
+			continue
+		}
+		for _, n := range ni.Elements.Nodes {
+			if n == nil || n.Kind != ast.KindImportSpecifier {
+				continue
+			}
+			sp := n.AsImportSpecifier()
+			nm := n.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			name := nm.Text()
+			remote := name
+			if sp.PropertyName != nil {
+				remote = sp.PropertyName.Text()
+			}
+			if local[name] {
+				continue
+			}
+			if _, dup := aliasOf[name]; dup {
+				continue
+			}
+			if ah, ok := link.aliasHarvests[tgt][remote]; ok && ah.exported && ah.node != nil {
+				aliasOf[name] = ah.node
+			}
+		}
+	}
+}
+
 // saPreseedImportedClasses 在类型预扫前把具名导入的类布局播进本文件表
 // （跨文件 heritage 记录期须见基布局，祖先链传递播种；本地同名定义优先，
 // 调用方沿既有 duplicate 门；默认/命名空间成员类沿旧门后阶段）。

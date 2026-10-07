@@ -448,6 +448,9 @@ type saFileLink struct {
 	enumHarvest   map[string]saProgEnum             // out: own top-level enums for dependents
 	enumHarvests  map[string]map[string]saProgEnum  // all files: target -> name -> harvested enum (driver fills)
 	enumSeed      map[string]saProgEnum             // out/in: imported local enum name -> member maps
+	aliasHarvest  map[string]saProgAlias            // out: own top-level type aliases for dependents
+	aliasHarvests map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
+	aliasSeed     map[string]saProgAlias            // out/in: imported local alias name -> aliased node
 	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
 	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
 	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
@@ -485,6 +488,12 @@ type saProgClass struct {
 type saProgConst struct {
 	text  string
 	isStr bool
+}
+
+// saProgAlias 收割类型别名节点 + export 旗（与 classHarvest 同表；调用方本地 aliasOf 同键植入，共享节点只读）。
+type saProgAlias struct {
+	node     *ast.TypeNode
+	exported bool
 }
 
 // saProgEnum 收割枚举成员映射 + export 旗（与 classHarvest 同表不同域；调用方本地 enums/enumNonInt 同键植入）。
@@ -1110,6 +1119,19 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				link.enumSeed[local] = eh
 				continue
 			}
+			// 类型别名直链：具名导入别名命中定义文件收割即播种节点（纯类型无值绑定；本地同名别名优先由 hook 保障；未导出沿未导出门）。
+			if ah, ok := link.aliasHarvests[tgt][remote]; ok {
+				if !ah.exported || ah.node == nil {
+					ln, col := pos(n.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
+					continue
+				}
+				if link.aliasSeed == nil {
+					link.aliasSeed = map[string]saProgAlias{}
+				}
+				link.aliasSeed[local] = ah
+				continue
+			}
 			// 命名空间整件直链（`import { N }` + `N.f()` 经成员点键绑定；
 			// 零可链成员下探重导出透传/未导出门；上游 bindNSMembers 同形）。
 			if saBindProgNsMembers(link, tgt, remote, local) {
@@ -1184,6 +1206,27 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 纯类型擦除 + lowerVarDeclList:1462 注解丢弃/初值生效——本仓沿既有注解
 	// enforcement，仅对非泛型标量别名做等价消解，其余沿旧门大声拒）。
 	aliasOf := saCollectTypeAliases(sf)
+	// 类型别名收割（与类同表；未导出不收）。
+	if link != nil {
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindTypeAliasDeclaration {
+				continue
+			}
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			if node, ok := aliasOf[nm.Text()]; ok && node != nil {
+				if link.aliasHarvest == nil {
+					link.aliasHarvest = map[string]saProgAlias{}
+				}
+				link.aliasHarvest[nm.Text()] = saProgAlias{node: node, exported: true}
+			}
+		}
+	}
 	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
 	// 证据：封存 program.go:435/512 按定义收集 rets/arity）。
 	funcs := map[string]saFuncSig{}
@@ -1197,6 +1240,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 跨文件 heritage 预播种（导入类布局须在本地记录期前可见；单文件 link
 	// 空零行为变；形状证据见 saPreseedImportedClasses）。
 	saPreseedImportedClasses(sf, classes, link)
+	saPreseedImportedAliases(sf, aliasOf, link)
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindClassDeclaration {
@@ -1602,6 +1646,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if len(eh.nonInt) > 0 {
 					enumNonInt[local] = eh.nonInt
 				}
+			}
+		}
+		// Program hook C-alias: seed imported type alias nodes (local
+		// definitions win; nodes shared read-only).
+		for local, ah := range link.aliasSeed {
+			if ah.node == nil {
+				continue
+			}
+			if _, dup := aliasOf[local]; !dup {
+				aliasOf[local] = ah.node
 			}
 		}
 		// Program hook C-const: seed imported const folds (local folds win;
@@ -4062,6 +4116,15 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				continue
 			}
 			if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+				// 纯类型导入只建可达边（类型文件须进收割域供注解消解；值绑定仍擦除，下游 import 门/发射位沿旧律；k4 实证）。
+				if spec := saProgModuleSpec(st); spec != "" {
+					if tgt := addEdge(p, spec); tgt != "" {
+						if specOf[p] == nil {
+							specOf[p] = map[string]string{}
+						}
+						specOf[p][spec] = tgt
+					}
+				}
 				continue
 			}
 			spec := saProgModuleSpec(st)
@@ -4178,6 +4241,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	harvests := map[string]map[string]saProgFunc{}
 	classHarvests := map[string]map[string]saProgClass{}
 	enumHarvests := map[string]map[string]saProgEnum{}
+	aliasHarvests := map[string]map[string]saProgAlias{}
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
 	for _, p := range reachable {
@@ -4199,6 +4263,9 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			enumHarvest:   map[string]saProgEnum{},
 			enumHarvests:  enumHarvests,
 			enumSeed:      map[string]saProgEnum{},
+			aliasHarvest:  map[string]saProgAlias{},
+			aliasHarvests: aliasHarvests,
+			aliasSeed:     map[string]saProgAlias{},
 			constHarvest:  map[string]saProgConst{},
 			constHarvests: constHarvests,
 			constSeed:     map[string]saProgConst{},
@@ -4210,6 +4277,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		harvests[p] = lk.harvest
 		classHarvests[p] = lk.classHarvest
 		enumHarvests[p] = lk.enumHarvest
+		aliasHarvests[p] = lk.aliasHarvest
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
 		for _, r := range out.Refusals {
