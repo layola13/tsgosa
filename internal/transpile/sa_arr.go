@@ -2681,7 +2681,7 @@ func saNestedElemKinds(scope *saScope, recv string, idx, n int) []string {
 	return nil
 }
 
-func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, paramKinds ...[]string) (string, string) {
+func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, wantValue bool, wantKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, inLoop bool, paramKinds ...[]string) (string, string) {
 	params := cb.Parameters()
 	if len(params) > len(argVals) {
 		return "", "callback declares too many parameters"
@@ -2873,6 +2873,8 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		bind(name, saCallbackScalarKind(kinds, i))
 		saDeclarePlain(scope, name)
 	}
+	// 体归属基点（高阶循环体 arm 式出口截断用；直内联体由 drain 回收，不截）。
+	ownBase := len(scope.ownOrder)
 	body := cb.Body()
 	if body == nil {
 		done()
@@ -2892,6 +2894,10 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 					return "", "void callback value"
 				}
 				done()
+				// void 体亦截断（`forEach(print)` 即此路；与值路同纪律）。
+				if inLoop {
+					saTruncateBodyOwned(scope, ownBase)
+				}
 				return "0", ""
 			}
 			v = op
@@ -2924,8 +2930,15 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		}
 		done()
 		releaseInstAlias()
+		// 高阶循环体出口截断（for-of 体臂同纪律：体临时量落循环域内，
+		// 不可外泄至函数尾 drain，否则域外 `!` 判 UnknownRegister；
+		// 高阶回调恒 i32 位，结果非堆柄，无 except 必要）。
+		if inLoop {
+			saTruncateBodyOwned(scope, ownBase)
+		}
 		return v, ""
 	}
+
 	kind := "i32"
 	if wantKind == "str" || strings.HasPrefix(wantKind, "inst:") {
 		kind = wantKind
@@ -2953,6 +2966,10 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	done()
 	if !armOK {
 		return "", "unsupported callback body"
+	}
+	// 高阶循环体出口截断（slot 注册于基点前保留，结果 out 于截断后具化）。
+	if inLoop {
+		saTruncateBodyOwned(scope, ownBase)
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	releaseInstAlias()
@@ -2982,6 +2999,21 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	return out, ""
 }
 
+// saTruncateBodyOwned 截断基点后新增归属（无发射；for-of 体臂
+// saScopeExit 同形：块内新登记名出体即除名）。
+func saTruncateBodyOwned(scope *saScope, base int) {
+	if base < 0 {
+		base = 0
+	}
+	if base > len(scope.ownOrder) {
+		return
+	}
+	for _, name := range scope.ownOrder[base:] {
+		delete(scope.ownState, name)
+	}
+	scope.ownOrder = scope.ownOrder[:base]
+}
+
 // saHigherOrderMap `map` 内联（新数组逐元回调值压栈；形状证据：封存 lowerHigherOrder:4945-4965）。
 func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
@@ -3007,7 +3039,7 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
+	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 	if msg != "" {
 		return "", msg
 	}
@@ -3066,7 +3098,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2)); msg != "" {
+		if _, msg := saCallbackValue(w, cb, []string{el, i}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2)); msg != "" {
 			return "", "", msg
 		}
 		inext := fmt.Sprintf("t_%d", *nextTemp)
@@ -3100,7 +3132,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3150,7 +3182,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3209,7 +3241,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 		w.Write(fmt.Sprintf("%s:\n", bodyL))
 		el := emitElem(i)
-		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 0, 2))
+		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
 		}
@@ -3290,7 +3322,7 @@ func saHigherOrderReduce(w printer.EmitTextWriter, recv string, right bool, cb *
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saNestedElemKinds(scope, recv, 1, 3))
+	v, msg := saCallbackValue(w, cb, []string{acc, el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 1, 3))
 	if msg != "" {
 		return "", "", msg
 	}
@@ -3333,7 +3365,7 @@ func saLowerSortWithCmp(w printer.EmitTextWriter, recv string, cb *ast.Node, sco
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
 	}
 	cmpGt := func(x, y string) (string, string) {
-		v, msg := saCallbackValue(w, cb, []string{x, y}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, saSortElemKinds(scope, recv))
+		v, msg := saCallbackValue(w, cb, []string{x, y}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saSortElemKinds(scope, recv))
 		if msg != "" {
 			return "", msg
 		}

@@ -294,7 +294,6 @@ L_fe_body_34:
   t = t_142
 L_cb_end_36:
   t_143 = load t_141 + 0 as i32
-  !t_141
   t_144 = add t_136, 1
   t_136 = t_144
   jmp L_fe_top_33

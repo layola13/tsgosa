@@ -7,7 +7,7 @@ function main(): i32 {
   console.log(z[0]);
   console.log(xs.slice(-2)[0] + xs.slice(-2)[1]);
   console.log(xs.map((x: i32) => x * 2).some((x: i32) => x > 5));
-  xs.map((x: i32) => x + 1).forEach((x: i32) => x);
-  console.log(xs.length);
+  xs.map((x: i32) => x + 1).forEach((x: i32) => console.log(x));
+  console.log(xs.map((x: i32) => x * 10).find((x: i32) => x > 15));
   return 0;
 }

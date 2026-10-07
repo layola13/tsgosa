@@ -48,7 +48,6 @@ L_fe_body_2:
   total = t_18
 L_cb_end_4:
   t_19 = load t_16 + 0 as i32
-  !t_16
   t_20 = add t_11, 1
   t_11 = t_20
   jmp L_fe_top_1

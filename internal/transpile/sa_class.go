@@ -3838,7 +3838,7 @@ func saInlineInstanceCallback(w printer.EmitTextWriter, anode *ast.Node, ce *ast
 		argVals = append(argVals, v)
 		kinds = append(kinds, "")
 	}
-	v, msg := saCallbackValue(w, anode, argVals, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, kinds)
+	v, msg := saCallbackValue(w, anode, argVals, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
 	if msg != "" {
 		return "", msg
 	}
@@ -4001,7 +4001,7 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 	} else if ic := saMethodInstReturn(mn, className, scope); ic != "" {
 		wantKind = "inst:" + ic
 	}
-	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, kinds)
+	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg
@@ -4030,7 +4030,7 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
 		wantKind = "str"
 	}
-	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg
@@ -4060,7 +4060,7 @@ func saInlineStaticGetter(w printer.EmitTextWriter, className string, def *saCla
 	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
 		wantKind = "str"
 	}
-	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg
@@ -4082,7 +4082,7 @@ func saInlineSetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
-	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
 }
@@ -4101,7 +4101,7 @@ func saInlineStaticSetter(w printer.EmitTextWriter, className string, def *saCla
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = "", def.name
-	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp)
+	_, msg := saCallbackValue(w, sn, []string{val}, false, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
 }
