@@ -134,6 +134,42 @@ func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 	return saRecordClassNamed(st, "", false, "", classes, pos, refusals)
 }
 
+// saRecordStaticAssign 记录期执行静态块单句（`C.n = <declit>`；本类已声明
+// i32 字段折叠更新；他类/前向/非字面量/非赋值沿旧门大声拒）。
+func saRecordStaticAssign(def *saClassDef, owner string, s *ast.Node, pos func(int) (int, int), refusals *[]SARefusal) bool {
+	refuse := func(msg string) bool {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	if s == nil || s.Kind != ast.KindExpressionStatement {
+		return refuse("class static blocks lower only C.field = decimal integer literal assignments")
+	}
+	ex := s.AsExpressionStatement().Expression
+	if ex == nil || ex.Kind != ast.KindBinaryExpression {
+		return refuse("class static blocks lower only C.field = decimal integer literal assignments")
+	}
+	bin := ex.AsBinaryExpression()
+	if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
+		bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression ||
+		bin.Right == nil || bin.Right.Kind != ast.KindNumericLiteral || !saIsDecIntLit(bin.Right.Text()) {
+		return refuse("class static blocks lower only C.field = decimal integer literal assignments")
+	}
+	pa := bin.Left.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier ||
+		pa.Expression.Text() != owner || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return refuse("static block writes must target own class fields (C.f = ...)")
+	}
+	fname := pa.Name().Text()
+	sv, ok := def.statics[fname]
+	if !ok || sv.kind != "i32" {
+		return refuse("static block writes need a declared i32 static field above the block")
+	}
+	sv.text = bin.Right.Text()
+	def.statics[fname] = sv
+	return true
+}
+
 // saDottedBaseName 把 `N.C` / `A.B.C` 限定基展平为下划线路径（与 `N_C`
 // 布局键同形；非标识段一律 false）。
 // 形状证据：封存 dottedBaseName:76-92（段收集 + Join 下划线）。
@@ -660,9 +696,21 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		case ast.KindSemicolonClassElement:
 			continue
 		case ast.KindClassStaticBlockDeclaration:
-			ln, col := pos(m.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class static blocks are not lowerable"})
-			return false
+			// 静态块记录期执行（定义点顺序语义；记录先于一切 lowering，
+			// 后续读折叠即新值；仅收已声明本类 i32 字段十进制字面量写；
+			// 前向/他类/余形沿旧门大声拒）。
+			sb := m.AsClassStaticBlockDeclaration()
+			if sb == nil || sb.Body == nil {
+				ln, col := pos(m.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class static blocks lower only C.field = decimal integer literal assignments"})
+				return false
+			}
+			for _, s := range sb.Body.Statements() {
+				if !saRecordStaticAssign(def, name, s, pos, refusals) {
+					return false
+				}
+			}
+			continue
 		default:
 			ln, col := pos(m.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class member is not lowerable (indexers refused)"})
