@@ -1811,6 +1811,15 @@ func saLowerDeepClone(w printer.EmitTextWriter, src string, nested bool, scope *
 // saLowerDeepCloneInner ports lowerDeepCloneInner (kind snap/flat/deep; takeOwn marks only
 // the top result owned; loop-scoped inner headers move into the outer array).
 func saLowerDeepCloneInner(w printer.EmitTextWriter, src, kind string, takeOwn bool, scope *saScope, nextTemp *int) string {
+	if kind == "flat" {
+		// R3-7 回迁映射：单层拷贝语义由 `sci/sa_std/ts_array.sa` `@ts_arr_clone_flat`
+		// 实现；归属由外层统一登记（drain 去重同形）；deep/snap 形保留。
+		scope.addImport("sa_std/ts_array.sa")
+		dest := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", dest, src))
+		return dest
+	}
 	if kind == "snap" {
 		cp := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
