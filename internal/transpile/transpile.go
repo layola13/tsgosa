@@ -3325,7 +3325,12 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	op, msg := saEvalReturnOperand(w, rs.Expression, scope.retKind, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(s.Pos())
+		// H1b 首批：拒因指表达式位而非语句位（与上游 lowerReturn 内层节点同形；`return this.v` 由 1:20 收至 2:9；无表达式时沿旧门）。
+		npos := s.Pos()
+		if rs.Expression != nil {
+			npos = rs.Expression.Pos()
+		}
+		ln, col := pos(npos)
 		// 求值错误透传具体信息（调用核/一元/未知变量等定位关键）。
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return false, true

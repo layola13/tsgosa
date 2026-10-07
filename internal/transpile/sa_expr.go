@@ -1016,7 +1016,12 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	}
 	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(where.Pos())
+		// H1b 首批（return 同例）：条件位而非语句位。
+		cpos := where.Pos()
+		if ce.Condition != nil {
+			cpos = ce.Condition.Pos()
+		}
+		ln, col := pos(cpos)
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})
 		return "", false, "unsupported ternary condition: " + msg
 	}
