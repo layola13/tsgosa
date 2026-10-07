@@ -3,6 +3,7 @@
 @import "sa_std/control.sal"
 @import "sa_std/ts_string.sa"
 @import "sa_std/text/regex.sa"
+@import "sa_std/ts_math.sa"
 @import "sa_std/string.sai"
 @import "sa_std/fmt.sai"
 @const schemas__str_const_0 = utf8:"^[a-z]+$\0"
@@ -136,222 +137,212 @@ L_forof_body_20:
   t_25 = t_33
   jmp L_forof_top_19
 L_forof_end_21:
-  t_34 = slt extra, 10
-  t_35 = alloc 8
-  br t_34 -> L_mm_t_22, L_mm_f_23
-L_mm_t_22:
-  store t_35 + 0, extra as ptr
-  jmp L_mm_end_24
-L_mm_f_23:
-  store t_35 + 0, 10 as ptr
-  jmp L_mm_end_24
-L_mm_end_24:
-  t_36 = load t_35 + 0 as i32
-  !t_35
-  t_37 = add total, t_36
+  t_34 = call @ts_math_minmax(extra, 10, 0)
+  t_35 = add total, t_34
+  !total
+  total = t_35
+  t_36 = eq 1, 1
+  EXPAND IF_TRUE t_36, L_then_22, L_endif_24
+L_then_22:
+  t_37 = add total, 1
   !total
   total = t_37
-  t_38 = eq 1, 1
-  EXPAND IF_TRUE t_38, L_then_25, L_endif_27
-L_then_25:
-  t_39 = add total, 1
-  !total
-  total = t_39
-L_endif_27:
+L_endif_24:
+  !t_34
   !extra
   !vals
   ret total
 @schemas__computeZod() -> i32:
-  t_40 = call @schemas__makeSize(3, 4)
-  a = t_40
-  t_41 = call @schemas__makeSize(30, 40)
-  b = t_41
-  t_42 = call @sa_btree_map_new()
-  M = t_42
+  t_38 = call @schemas__makeSize(3, 4)
+  a = t_38
+  t_39 = call @schemas__makeSize(30, 40)
+  b = t_39
+  t_40 = call @sa_btree_map_new()
+  M = t_40
+  t_41 = alloc 16
+  store t_41 + 0, &schemas__str_const_1 as ptr
+  store t_41 + 8, 5 as u64
+  t_42 = alloc 8
+  store t_42 + 0, 5 as i32
+  store t_42 + 4, 6 as i32
+  call @sa_btree_map_insert(&M, &t_41, t_42)
   t_43 = alloc 16
   store t_43 + 0, &schemas__str_const_1 as ptr
   store t_43 + 8, 5 as u64
-  t_44 = alloc 8
-  store t_44 + 0, 5 as i32
-  store t_44 + 4, 6 as i32
-  call @sa_btree_map_insert(&M, &t_43, t_44)
+  t_44 = call @schemas__getOrNull(M, t_43)
+  hit = t_44
   t_45 = alloc 16
-  store t_45 + 0, &schemas__str_const_1 as ptr
-  store t_45 + 8, 5 as u64
+  store t_45 + 0, &schemas__str_const_2 as ptr
+  store t_45 + 8, 4 as u64
   t_46 = call @schemas__getOrNull(M, t_45)
-  hit = t_46
-  t_47 = alloc 16
-  store t_47 + 0, &schemas__str_const_2 as ptr
-  store t_47 + 8, 4 as u64
-  t_48 = call @schemas__getOrNull(M, t_47)
-  miss = t_48
+  miss = t_46
   acc = 0
-  t_49 = call @schemas__unitOf(hit)
-  t_50 = mul t_49, 1
-  t_51 = add acc, t_50
+  t_47 = call @schemas__unitOf(hit)
+  t_48 = mul t_47, 1
+  t_49 = add acc, t_48
   !acc
-  acc = t_51
-  t_52 = call @schemas__unitOf(miss)
-  t_53 = mul t_52, 2
-  t_54 = add acc, t_53
+  acc = t_49
+  t_50 = call @schemas__unitOf(miss)
+  t_51 = mul t_50, 2
+  t_52 = add acc, t_51
   !acc
-  acc = t_54
-  t_55 = call @schemas__pick(a, b)
-  p = t_55
-  t_56 = load p + 0 as i32
-  t_57 = mul t_56, 4
-  t_58 = add acc, t_57
+  acc = t_52
+  t_53 = call @schemas__pick(a, b)
+  p = t_53
+  t_54 = load p + 0 as i32
+  t_55 = mul t_54, 4
+  t_56 = add acc, t_55
   !acc
-  acc = t_58
-  t_59 = call @schemas__condPick(a, b)
-  t_60 = mul t_59, 8
-  t_61 = add acc, t_60
+  acc = t_56
+  t_57 = call @schemas__condPick(a, b)
+  t_58 = mul t_57, 8
+  t_59 = add acc, t_58
   !acc
-  acc = t_61
+  acc = t_59
+  t_60 = alloc 16
+  t_61 = alloc 16
+  store t_61 + 0, &schemas__str_const_3 as ptr
+  store t_61 + 8, 2 as u64
+  store t_60 + 0, 7 as i32
+  store t_60 + 8, t_61 as ptr
+  sc = t_60
   t_62 = alloc 16
-  t_63 = alloc 16
-  store t_63 + 0, &schemas__str_const_3 as ptr
-  store t_63 + 8, 2 as u64
-  store t_62 + 0, 7 as i32
-  store t_62 + 8, t_63 as ptr
-  sc = t_62
-  t_64 = alloc 16
-  store t_64 + 0, &schemas__str_const_3 as ptr
-  store t_64 + 8, 2 as u64
-  s = add t_64, 0
-  t_65 = alloc 8
-  store t_65 + 0, 0 as ptr
-  t_66 = load sc + 8 as ptr
-  t_67 = load t_66 + 0 as ptr
-  t_68 = load t_66 + 8 as u64
-  t_69 = load s + 0 as ptr
-  t_70 = load s + 8 as u64
-  t_71 = call @ts_str_equals(t_67, t_68, t_69, t_70)
-  t_72 = add t_71, 0
-  !t_71
-  EXPAND IF_TRUE t_72, L_then_29, L_endif_31
-L_then_29:
-  t_73 = load sc + 0 as i32
-  store t_65 + 0, t_73 as i32
-  jmp L_cb_end_28
-L_endif_31:
-  store t_65 + 0, 0 as i32
-  jmp L_cb_end_28
-L_cb_end_28:
-  t_74 = load t_65 + 0 as i32
-  !t_65
-  t_75 = mul t_74, 16
-  t_76 = add acc, t_75
+  store t_62 + 0, &schemas__str_const_3 as ptr
+  store t_62 + 8, 2 as u64
+  s = add t_62, 0
+  t_63 = alloc 8
+  store t_63 + 0, 0 as ptr
+  t_64 = load sc + 8 as ptr
+  t_65 = load t_64 + 0 as ptr
+  t_66 = load t_64 + 8 as u64
+  t_67 = load s + 0 as ptr
+  t_68 = load s + 8 as u64
+  t_69 = call @ts_str_equals(t_65, t_66, t_67, t_68)
+  t_70 = add t_69, 0
+  !t_69
+  EXPAND IF_TRUE t_70, L_then_26, L_endif_28
+L_then_26:
+  t_71 = load sc + 0 as i32
+  store t_63 + 0, t_71 as i32
+  jmp L_cb_end_25
+L_endif_28:
+  store t_63 + 0, 0 as i32
+  jmp L_cb_end_25
+L_cb_end_25:
+  t_72 = load t_63 + 0 as i32
+  !t_63
+  t_73 = mul t_72, 16
+  t_74 = add acc, t_73
   !acc
-  acc = t_76
-  t_77 = alloc 16
-  store t_77 + 0, &schemas__str_const_4 as ptr
-  store t_77 + 8, 2 as u64
-  prefix = add t_77, 0
-  t_78 = alloc 8
-  store t_78 + 0, 0 as ptr
-  t_79 = load sc + 8 as ptr
-  t_80 = load prefix + 0 as ptr
-  t_81 = load prefix + 8 as u64
-  t_82 = load t_79 + 0 as ptr
-  t_83 = load t_79 + 8 as u64
-  t_84 = call @sa_string_concat(t_80, t_81, t_82, t_83)
-  t_85 = call @sa_fmt_buffer_data(t_84)
-  t_86 = call @sa_fmt_buffer_len(t_84)
-  t_87 = alloc 16
-  store t_87 + 0, t_85 as ptr
-  store t_87 + 8, t_86 as u64
-  !t_85
-  !t_86
+  acc = t_74
+  t_75 = alloc 16
+  store t_75 + 0, &schemas__str_const_4 as ptr
+  store t_75 + 8, 2 as u64
+  prefix = add t_75, 0
+  t_76 = alloc 8
+  store t_76 + 0, 0 as ptr
+  t_77 = load sc + 8 as ptr
+  t_78 = load prefix + 0 as ptr
+  t_79 = load prefix + 8 as u64
+  t_80 = load t_77 + 0 as ptr
+  t_81 = load t_77 + 8 as u64
+  t_82 = call @sa_string_concat(t_78, t_79, t_80, t_81)
+  t_83 = call @sa_fmt_buffer_data(t_82)
+  t_84 = call @sa_fmt_buffer_len(t_82)
+  t_85 = alloc 16
+  store t_85 + 0, t_83 as ptr
+  store t_85 + 8, t_84 as u64
+  !t_83
   !t_84
-  store t_78 + 0, t_87 as ptr
-  !t_87
-  jmp L_cb_end_32
-L_cb_end_32:
-  t_88 = load t_78 + 0 as ptr
-  !t_78
-  label = t_88
-  t_89 = alloc 16
-  store t_89 + 0, &schemas__str_const_5 as ptr
-  store t_89 + 8, 4 as u64
-  t_90 = load label + 0 as ptr
-  t_91 = load label + 8 as u64
-  t_92 = load t_89 + 0 as ptr
-  t_93 = load t_89 + 8 as u64
-  t_94 = call @ts_str_equals(t_90, t_91, t_92, t_93)
-  t_95 = add t_94, 0
-  !t_94
-  EXPAND IF_TRUE t_95, L_then_33, L_endif_35
-L_then_33:
-  t_96 = add acc, 32
+  !t_82
+  store t_76 + 0, t_85 as ptr
+  !t_85
+  jmp L_cb_end_29
+L_cb_end_29:
+  t_86 = load t_76 + 0 as ptr
+  !t_76
+  label = t_86
+  t_87 = alloc 16
+  store t_87 + 0, &schemas__str_const_5 as ptr
+  store t_87 + 8, 4 as u64
+  t_88 = load label + 0 as ptr
+  t_89 = load label + 8 as u64
+  t_90 = load t_87 + 0 as ptr
+  t_91 = load t_87 + 8 as u64
+  t_92 = call @ts_str_equals(t_88, t_89, t_90, t_91)
+  t_93 = add t_92, 0
+  !t_92
+  EXPAND IF_TRUE t_93, L_then_30, L_endif_32
+L_then_30:
+  t_94 = add acc, 32
   !acc
-  acc = t_96
-L_endif_35:
-  t_97 = call @sa_btree_map_new()
-  P = t_97
+  acc = t_94
+L_endif_32:
+  t_95 = call @sa_btree_map_new()
+  P = t_95
+  t_96 = alloc 16
+  store t_96 + 0, &schemas__str_const_6 as ptr
+  store t_96 + 8, 4 as u64
+  t_97 = alloc 16
+  store t_97 + 0, &schemas__str_const_7 as ptr
+  store t_97 + 8, 4 as u64
+  call @sa_btree_map_insert(&P, &t_96, t_97)
   t_98 = alloc 16
   store t_98 + 0, &schemas__str_const_6 as ptr
   store t_98 + 8, 4 as u64
-  t_99 = alloc 16
-  store t_99 + 0, &schemas__str_const_7 as ptr
-  store t_99 + 8, 4 as u64
-  call @sa_btree_map_insert(&P, &t_98, t_99)
-  t_100 = alloc 16
-  store t_100 + 0, &schemas__str_const_6 as ptr
-  store t_100 + 8, 4 as u64
-  t_101 = call @schemas__parsePort(P, t_100)
-  t_102 = add acc, t_101
+  t_99 = call @schemas__parsePort(P, t_98)
+  t_100 = add acc, t_99
   !acc
-  acc = t_102
-  t_103 = alloc 16
-  store t_103 + 0, &schemas__str_const_8 as ptr
-  store t_103 + 8, 5 as u64
-  t_104 = call @schemas__isLower(t_103)
-  t_105 = mul t_104, 64
-  t_106 = add acc, t_105
+  acc = t_100
+  t_101 = alloc 16
+  store t_101 + 0, &schemas__str_const_8 as ptr
+  store t_101 + 8, 5 as u64
+  t_102 = call @schemas__isLower(t_101)
+  t_103 = mul t_102, 64
+  t_104 = add acc, t_103
   !acc
-  acc = t_106
-  t_107 = alloc 16
-  t_108 = alloc 12
-  t_109 = add t_108, 0
-  store t_109 + 0, 1 as i32
-  t_110 = add t_108, 4
-  store t_110 + 0, 2 as i32
-  t_111 = add t_108, 8
-  store t_111 + 0, 3 as i32
-  store t_107 + 0, t_108 as ptr
-  store t_107 + 8, 3 as u64
-  !t_108
-  t_112 = call @schemas__score(t_107, 5)
-  t_113 = mul t_112, 128
-  t_114 = add acc, t_113
+  acc = t_104
+  t_105 = alloc 16
+  t_106 = alloc 12
+  t_107 = add t_106, 0
+  store t_107 + 0, 1 as i32
+  t_108 = add t_106, 4
+  store t_108 + 0, 2 as i32
+  t_109 = add t_106, 8
+  store t_109 + 0, 3 as i32
+  store t_105 + 0, t_106 as ptr
+  store t_105 + 8, 3 as u64
+  !t_106
+  t_110 = call @schemas__score(t_105, 5)
+  t_111 = mul t_110, 128
+  t_112 = add acc, t_111
   !acc
-  acc = t_114
-  !t_112
-  !t_107
-  !t_104
-  !t_103
+  acc = t_112
+  !t_110
+  !t_105
+  !t_102
   !t_101
-  !t_100
   !t_99
   !t_98
+  !t_97
+  !t_96
   !P
-  !t_89
+  !t_87
   !label
-  !t_77
-  !t_64
+  !t_75
+  !t_62
   !sc
-  !t_63
-  !t_59
+  !t_61
+  !t_57
   !p
-  !t_52
-  !t_49
-  !miss
+  !t_50
   !t_47
-  !hit
+  !miss
   !t_45
-  !t_44
+  !hit
   !t_43
+  !t_42
+  !t_41
   !M
   !b
   !a

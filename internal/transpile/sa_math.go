@@ -272,34 +272,17 @@ func saEvalMathMinMax(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	if msg1 != "" {
 		return "", false, msg1
 	}
-	cmp := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
+	// R3-10 回迁映射：语义由 `sci/sa_std/ts_math.sa` `@ts_math_minmax` 实现
+	//（ismax 由调用点折叠；spread 归约走 spread_minmax）；本侧只做种门禁 + 调用 + 归属登记。
+	scope.addImport("sa_std/ts_math.sa")
+	ismax := "0"
 	if method == "max" {
-		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", cmp, a0, a1))
-	} else {
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cmp, a0, a1))
+		ismax = "1"
 	}
-	slot := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-	tL := fmt.Sprintf("L_mm_t_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	fL := fmt.Sprintf("L_mm_f_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_mm_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, tL, fL))
-	w.Write(fmt.Sprintf("%s:\n", tL))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, a0))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", fL))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, a1))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
-	w.Write(fmt.Sprintf("  !%s\n", slot))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_minmax(%s, %s, %s)\n", out, a0, a1, ismax))
+	saOwnTemp(scope, out)
 	return out, false, ""
 }
 
