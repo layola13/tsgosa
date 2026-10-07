@@ -73,33 +73,13 @@ func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	if msg != "" {
 		return "", false, msg
 	}
-	slot := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	tL := fmt.Sprintf("L_abs_t_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	fL := fmt.Sprintf("L_abs_f_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_abs_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c, v))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, fL))
-	w.Write(fmt.Sprintf("%s:\n", tL))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", fL))
-	nv := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub 0, %s\n", nv, v))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, nv))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	// R3-9 回迁映射：语义由 `sci/sa_std/ts_math.sa` `@ts_math_iabs` 实现；
+	// 本侧只做种门禁 + import + 调用 + 归属登记（call 结果登记，R3-1 同形）。
+	scope.addImport("sa_std/ts_math.sa")
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
-	w.Write(fmt.Sprintf("  !%s\n", slot))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_iabs(%s)\n", out, v))
+	saOwnTemp(scope, out)
 	return out, false, ""
 }
 
@@ -124,15 +104,12 @@ func saEvalMathSign(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	if msg != "" {
 		return "", false, msg
 	}
-	p := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", p, v))
-	n := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, 0\n", n, v))
+	// R3-9 回迁映射：语义由 `sci/sa_std/ts_math.sa` `@ts_math_isign` 实现。
+	scope.addImport("sa_std/ts_math.sa")
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", out, p, n))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_isign(%s)\n", out, v))
+	saOwnTemp(scope, out)
 	return out, false, ""
 }
 
@@ -154,9 +131,12 @@ func saEvalMathImul(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	if msg != "" {
 		return "", false, msg
 	}
+	// R3-9 回迁映射：语义由 `sci/sa_std/ts_math.sa` `@ts_math_imul` 实现。
+	scope.addImport("sa_std/ts_math.sa")
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", t, a, b))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_imul(%s, %s)\n", t, a, b))
+	saOwnTemp(scope, t)
 	return t, false, ""
 }
 
