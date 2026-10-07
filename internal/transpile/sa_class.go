@@ -43,6 +43,7 @@ type saStaticVal struct {
 // 空 this 内联，镜像 staticMethods；实例项永不持有）；
 // fkinds 为字段种表，i32/str/arr/inst，句柄种 8 字节对齐；
 // fsub 为嵌套字段的子布局名（fkinds inst 时有效）；
+// fopt 记可选字段（`b?: i32` 缺省零填位；必备缺省沿旧门）；
 // tparams/fdefs 为泛型接口模板（具化前只存不用，单态实例另行派生）；
 // isMono 为单态派生布局（与用户声明名区分，防键碰撞静默复用）；
 // isSynth 为字面量合成布局（不参与键集匹配，保多命中拒不变）。
@@ -52,6 +53,7 @@ type saClassDef struct {
 	offsets       map[string]int
 	fkinds        map[string]string
 	fsub          map[string]string
+	fopt          map[string]bool
 	fpos          map[string]int
 	abstracts     map[string]int
 	abstractKinds map[string]string
@@ -1481,6 +1483,13 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 						}
 						def.fsub[f.name] = sub
 					}
+					// 可选位随继承透传（缺省零填门凭基表放行）。
+					if base.fopt[f.name] {
+						if def.fopt == nil {
+							def.fopt = map[string]bool{}
+						}
+						def.fopt[f.name] = true
+					}
 					// 模板节点透传（单态基除外：其 fdefs 为代入前原形，
 					// 缺节点时具化回退模板已算种，见 saInstantiateIface）。
 					if !base.isMono && base.fdefs != nil {
@@ -1541,6 +1550,13 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		// 可选字段记位（缺省零填门凭此放行；必备缺省沿旧门）。
+		if m.QuestionToken() != nil {
+			if def.fopt == nil {
+				def.fopt = map[string]bool{}
+			}
+			def.fopt[fn.Text()] = true
+		}
 		// 字段声明位直存（implements 缺字段拒因指接口字段位；只存不用，零行为变）。
 		if def.fpos == nil {
 			def.fpos = map[string]int{}
@@ -2178,22 +2194,33 @@ func saHomomorphicMapped(rhs *ast.TypeNode, base string, classes map[string]*saC
 	return true
 }
 
+// saIfaceKeyMatch 报告字面量键集是否命中布局（全键在表 + 缺键全可选；
+// 余键/缺必备/合成布局沿旧门；多命中决胜由调用方既有门保障）。
+func saIfaceKeyMatch(def *saClassDef, keys []string) bool {
+	if def == nil || !def.isIface || def.isSynth {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if _, has := def.offsets[k]; !has {
+			return false
+		}
+		seen[k] = true
+	}
+	for _, f := range def.fields {
+		if !seen[f.name] && !def.fopt[f.name] {
+			return false
+		}
+	}
+	return true
+}
+
 // saMatchIfaceList 列出键集全命中的接口布局（saMatchIface 的无拒因版，
 // 供值种决胜复用；拒因文案由调用方沿既有用语）。
 func saMatchIfaceList(keys []string, classes map[string]*saClassDef) []*saClassDef {
 	var hits []*saClassDef
 	for _, def := range classes {
-		if !def.isIface || def.isSynth || len(def.fields) != len(keys) {
-			continue
-		}
-		ok := true
-		for _, k := range keys {
-			if _, has := def.offsets[k]; !has {
-				ok = false
-				break
-			}
-		}
-		if !ok {
+		if !saIfaceKeyMatch(def, keys) {
 			continue
 		}
 		hits = append(hits, def)
@@ -2222,20 +2249,15 @@ func saLitFieldKind(init *ast.Node, scope *saScope) string {
 	return ""
 }
 
-// saMatchWantIface 注解优先直命中（名在表、键集相等即用；其余一律nil
-// 交既有匹配门，拒因文案零变）。
+// saMatchWantIface 注解优先直命中（名在表、键集命中（缺键全可选）即用；
+// 其余一律nil 交既有匹配门，拒因文案零变）。
 func saMatchWantIface(want string, keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
 	if want == "" {
 		return nil, ""
 	}
 	def, ok := classes[want]
-	if !ok || def == nil || !def.isIface || len(def.fields) != len(keys) {
+	if !ok || def == nil || !def.isIface || !saIfaceKeyMatch(def, keys) {
 		return nil, ""
-	}
-	for _, k := range keys {
-		if _, has := def.offsets[k]; !has {
-			return nil, ""
-		}
 	}
 	return def, ""
 }
@@ -2804,6 +2826,28 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			return "", "", msg
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[o.fname], v))
+	}
+	// 缺省可选域零填（i32 域填 0；串/句柄缺省沿旧门大声拒，禁空柄静默错码；
+	// 匹配门已保缺键全可选，此处只分流零填种）。
+	filled := map[string]bool{}
+	for _, o := range ops {
+		if o.spread >= 0 {
+			for _, f := range spreads[o.spread].def.fields {
+				filled[f.name] = true
+			}
+			continue
+		}
+		filled[o.fname] = true
+	}
+	for _, f := range def.fields {
+		if filled[f.name] {
+			continue
+		}
+		if fk := def.fkinds[f.name]; fk == "i32" || fk == "" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+			continue
+		}
+		return "", "", "optional field " + f.name + " needs a value (only i32 optional fields default to zero)"
 	}
 	return h, def.name, ""
 }
