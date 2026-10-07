@@ -2393,6 +2393,29 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	if strings.HasPrefix(k, "inst:") {
 		// 实例重绑定（字面量现场构造 + 旧值先释；封存 lowerCompoundAssign
 		// 标识符分支读-改-写回同序；句柄对拷无显式 clone 语义，沿上游拒）。
+		// new 重绑定（`b = new D()` 进 B 注解变量：与声明位 step395/返回位 step397 同规，绑定跟初值，用点取决；封存无检查直重绑）。
+		if be.Right != nil && be.Right.Kind == ast.KindNewExpression {
+			ne := be.Right.AsNewExpression()
+			if ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+				if _, ok := scope.classes[ne.Expression.Text()]; ok {
+					h, msg := saLowerNewClass(w, ne.Expression.Text(), ne, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					saRebindRelease(w, scope, name)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					saConsumeOwn(scope, h)
+					if b := saOwnOf(scope, name); b != nil {
+						b.heap = true
+					}
+					saMarkRebound(scope, name)
+					scope.types[name] = "inst:" + ne.Expression.Text()
+					return true
+				}
+			}
+		}
 		if be.Right == nil || be.Right.Kind != ast.KindObjectLiteralExpression {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct reassignment needs an object literal"})
