@@ -510,9 +510,9 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		case ast.KindMethodDeclaration:
 			mn := m.Name()
 			if mn == nil || mn.Kind != ast.KindIdentifier {
-				ln, col := pos(m.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "computed/private method names are not lowerable"})
-				return false
+				// 计算/私有方法名跳过（类其余成员照常；调用点沿未知方法门
+				// 大声拒；形状证据：封存上游计算名擦除 + 私有方法跳过同形）。
+				continue
 			}
 			// 重载签名擦除：无体声明不注册（实现体唯一定义；顶层同例见 step41；
 			// 形状证据：封存 recordClassNamed:9746-9771 无重复检查直接覆盖（签名被实现覆盖）+ saemit.go:983 无体拒止于调用点）。
