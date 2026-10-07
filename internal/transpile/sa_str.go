@@ -303,7 +303,7 @@ func saIsStrMethod(m string) bool {
 	switch m {
 	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith",
 		"toLowerCase", "toUpperCase", "repeat", "padStart", "padEnd", "replace", "replaceAll",
-		"includes", "search", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
+		"includes", "search", "match", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
 		"slice", "substring", "substr", "toString":
 		return true
 	}
@@ -1608,6 +1608,91 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 		w.Write(fmt.Sprintf("  !%s\n", slot))
 		saOwnTemp(scope, out)
+		return out, false, ""
+	case "match":
+		// 无 g 全匹配整体单元素串数组；miss 即 null（0 柄）；/g 全局另步；
+		// 整体内容经 group0 ptr/len 具化新头后 push 入新串元数组。
+		if len(args) != 1 {
+			return "", false, "match takes 1 argument"
+		}
+		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		scope.addImport("sa_std/text/regex.sa")
+		m := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, bp, bl))
+		hit := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+		hitL := fmt.Sprintf("L_mt_hit_%d", *nextTemp)
+		*nextTemp++
+		missL := fmt.Sprintf("L_mt_miss_%d", *nextTemp)
+		*nextTemp++
+		endL := fmt.Sprintf("L_mt_end_%d", *nextTemp)
+		*nextTemp++
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", slot))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+		w.Write(fmt.Sprintf("%s:\n", missL))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", slot))
+		mfr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", mfr, m))
+		w.Write(fmt.Sprintf("  !%s\n", mfr))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", hitL))
+		gp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_ptr(%s, 0)\n", gp, m))
+		gl := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", gl, m))
+		fr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+		w.Write(fmt.Sprintf("  !%s\n", fr))
+		gh := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, gp))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, gl))
+		saOwnTemp(scope, gh)
+		h := saNewEmptyArray(w, nextTemp)
+		saOwnTemp(scope, h)
+		saLowerArrayPush(w, h, gh, scope, nextTemp)
+		// gh 分支内具化分支内释放（drain 不可见分支内 alloc）。
+		saReleaseOwnedTemp(w, scope, gh)
+		hp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, h))
+		hl := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hl, h))
+		saReleaseOwnedTemp(w, scope, h)
+		w.Write(fmt.Sprintf("  !%s\n", gp))
+		w.Write(fmt.Sprintf("  !%s\n", gl))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, hp))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", slot, hl))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		oh := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
+		ol := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ol, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, oh))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, ol))
+		saOwnTemp(scope, out)
+		saMarkArrStr(scope, out)
 		return out, false, ""
 	case "charAt", "at":
 		if len(args) != 1 {

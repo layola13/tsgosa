@@ -1540,6 +1540,10 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		// 串 `split` 回串元数组（`saLowerStringSplit`；串基纯语法判定零落字）。
 		return "arr", true
 	}
+	if m == "match" && saIsStrExpr(pa.Expression, scope) {
+		// 串 `match`（无 g）回串元数组/miss 即 null（`saLowerStrMatch`；种记 arr）。
+		return "arr", true
+	}
 	// Map.keys/values/entries 回 arr 句柄（移植封存 lowerMapMethod:4785-4798；
 	// 种判定 saMapCallKind:67-68 同 "arr"，数组位/for-of 凭此直传句柄）。
 	if k, ok := saMapBaseKind(pa.Expression, scope); ok && k == "map" {
