@@ -130,6 +130,13 @@
 - 运行时差异（非拒收，更值得记）：`H35` 整数除零 bun 得 `Infinity`，SA 直接 `SIGFPE`（rc=136）——后端任何 `x / y` 无守卫迁移即崩溃点。
 - 通过的基本功（含易被低估的）：多声明符/`var`/尾逗号/else-if/label/`do-while`/三元嵌套/逻辑赋值/复合赋值/前后缀自增（单用）/`void`/嵌套模板/数值字面量全家/float 循环/`new Array(n)`/简写属性/箭头块/函数表达式/构造器参数属性/`readonly`/`private`/super 传参+调父方法/接口继承/元组注解/字面量联合/`as const`/`satisfies`/`const enum`/`declare`/命名空间类/`export const`/`undefined`。
 
+## 循环迭代 6（2026-10-07 16:00 UTC）：解释器版 sci 自构建 + 真校验补证据
+
+- 本环境 `sci/zig-out` 缺失，前台 `zig build -Dllvm=false --summary all` 一次建成（`sa` + `sa_std`，约 2 分钟；LLVM 头缺失故无原生后端，但 `check/test --list` 不需 LLVM）。
+- 真校验（首轮非转译门禁证据）：`364_json/366_maparr/367_strelem/368_opt_strelem/369_fnstrarr/370_paramstrarr`（R3-34—R3-38 全部动机 demo）`sa check` 全 ok；D09a `Date.now()` 本工具链 `check ok`（84 指令，MemoryLeak 未复现，转译侧 R3-33 或 sci 侧已消；原生复验仍待 LLVM 环境）。
+- `sa test --list` 全仓 89/90：唯一失败 `t289_hash`（`PackageNotResolved`）根因为其 `demos/289_hash/main.sai` 含 `@import "node.sai"`，本环境 node 插件包未装（`sa plugin list` 空，无 `~/.sa` 缓存）——与 `console.error` 同族后端 wiring，转译产物自 landing 提交字节未变，非回归。
+- 解释器 `sa run` 口径：凡含 `sa_fmt_i64_into` 者报 `unsupported extern`（与第四批注记一致，需原生链接）；纯串 demo（367/368/369/370）在解释器下报 `InvalidAddress`（367 在 LLVM 原生下历史实证全对，故系解释器实现限制，非产物回归；原生复验待 LLVM 环境）。
+
 ## 待办（给后续轮）
 
 1. 归档探针：`/tmp/opencode/ts-sa-probe` 易失，建议收进本仓 `demos/`（fixture 例外）或另仓；生成器即文档。
