@@ -3297,6 +3297,7 @@ type saFuncSig struct {
 	arrowCaps    []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
 	arrowThis    bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
 	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
+	retFn        string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
@@ -3386,6 +3387,9 @@ type saScope struct {
 	// hashState:522-526 + lowerCreateHash:4626-4644 + lowerHashMethod:4651-4714）。
 	hashAcc  map[string]*saHashState
 	lastHash *saHashState
+	// curFunc 是当前发射函数在 funcs 表中的键（函数声明发射置位；
+	// 顶层/局部箭头体内为 ""；函数值返回登记 retFn 用）。
+	curFunc string
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：
@@ -3595,6 +3599,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		return
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope.curFunc = name
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = linkHarvests
@@ -3878,6 +3883,10 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		saReleaseExceptOp(w, scope, t)
 		w.Write(fmt.Sprintf("  ret %s\n", t))
 		return true, false
+	}
+	if scope.retKind == "fn" {
+		// 函数值返回域下沉 sa_decl.go（transpile.go 只做种分发，零领域逻辑）。
+		return saLowerFnReturn(w, s, rs.Expression, scope, pos, refusals, nextTemp)
 	}
 	op, msg := saEvalReturnOperand(w, rs.Expression, scope.retKind, scope, pos, refusals, nextTemp)
 	if msg != "" {
