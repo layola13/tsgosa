@@ -510,19 +510,101 @@ func saLowerRegexTest(w printer.EmitTextWriter, recv string, arg *ast.Node, scop
 	return hit, ""
 }
 
-// saLowerRegexCall 正则调用总线（仅 `.test`；`.exec` 另步）。
+// saLowerRegexMatchArray match 整体单元素串数组（miss 即 null 0 柄；
+// `String.match` 无 g 与 `RegExp.exec` 共享；整体经 group0 ptr/len 具化新头
+// push 入新串元数组；`saMarkArrStr` 记串元；分支内 alloc 分支内释放）。
+func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/text/regex.sa")
+	m := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, tp, tl))
+	hit := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+	hitL := fmt.Sprintf("L_mt_hit_%d", *nextTemp)
+	*nextTemp++
+	missL := fmt.Sprintf("L_mt_miss_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_mt_end_%d", *nextTemp)
+	*nextTemp++
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", slot))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", slot))
+	mfr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", mfr, m))
+	w.Write(fmt.Sprintf("  !%s\n", mfr))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", hitL))
+	gp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_ptr(%s, 0)\n", gp, m))
+	gl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", gl, m))
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	gh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, gp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, gl))
+	saOwnTemp(scope, gh)
+	h := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, h)
+	saLowerArrayPush(w, h, gh, scope, nextTemp)
+	// gh 分支内具化分支内释放（drain 不可见分支内 alloc）。
+	saReleaseOwnedTemp(w, scope, gh)
+	hp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, h))
+	hl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hl, h))
+	saReleaseOwnedTemp(w, scope, h)
+	w.Write(fmt.Sprintf("  !%s\n", gp))
+	w.Write(fmt.Sprintf("  !%s\n", gl))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, hp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", slot, hl))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	oh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
+	ol := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ol, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, oh))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, ol))
+	saOwnTemp(scope, out)
+	saMarkArrStr(scope, out)
+	return out
+}
+
+// saLowerRegexCall 正则调用总线（`.test`→i32；`.exec`→整体单元素串数组
+// （与 `String.match` 无 g 同形，共享 `saLowerRegexMatchArray`）；余下拒）。
 func saLowerRegexCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	pa := ce.Expression.AsPropertyAccessExpression()
 	method := pa.Name().Text()
-	if method != "test" {
-		return "", "", "RegExp." + method + " is not in the subset (only .test)"
+	if method != "test" && method != "exec" {
+		return "", "", "RegExp." + method + " is not in the subset (only .test/.exec)"
 	}
 	var args []*ast.Node
 	if ce.Arguments != nil {
 		args = ce.Arguments.Nodes
 	}
 	if len(args) != 1 {
-		return "", "", "RegExp.test takes 1 argument"
+		return "", "", "RegExp." + method + " takes 1 argument"
 	}
 	recv := ""
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
@@ -533,6 +615,14 @@ func saLowerRegexCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		if msg != "" {
 			return "", "", msg
 		}
+	}
+	if method == "exec" {
+		th, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		tp, tl := saExpandStr(w, th, nextTemp)
+		return saLowerRegexMatchArray(w, recv, tp, tl, scope, nextTemp), "arr", ""
 	}
 	op, msg := saLowerRegexTest(w, recv, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -565,7 +655,8 @@ func saLowerRegexInlineBase(w printer.EmitTextWriter, e *ast.Node, scope *saScop
 	return "", "not a regex call"
 }
 
-// saRegexCallKind 正则调用返回种（`.test`→i32；`.exec` 已知名声拒；余下非正则）。
+// saRegexCallKind 正则调用返回种（`.test`→i32；`.exec`→arr，整体单元素
+// 串数组，与 `String.match` 无 g 同形；余下非正则）。
 func saRegexCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return "", false
@@ -576,6 +667,9 @@ func saRegexCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	}
 	if pa.Name().Text() == "test" {
 		return "i32", true
+	}
+	if pa.Name().Text() == "exec" {
+		return "arr", true
 	}
 	return "", true
 }
