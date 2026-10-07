@@ -13,9 +13,9 @@ import (
 // 形状证据：封存 lowerMethodCall Date 段:4338-4407（now/parse/i64 恒等/
 // getTimezoneOffset 常 0/投影直调）+ 收敛证据 saemit_test.go:739-830 +
 // 投影表 stdlib.go:176-217（time.sai 现货直调）。
-// 本薄口无 i64 种：一切 i64 位（Date.now/parse/getTime/valueOf/getters/
-// setters）大声拒；仅支持 `new Date()` 无参绑定（millis 不透明存种 "date"）
-// 与纯串方法（toISOString/toString/toDateString/toTimeString/toUTCString）
+// 本薄口无 i64 种：i64 以 date 种不透明流转（Date.now/parse/getTime/
+// valueOf/getters/setters/setTime），永不截断；仅支持 `new Date()` 无参绑定
+// （millis 不透明存种 "date"，setTime 直换）与纯串方法（toISOString/toString/toDateString/toTimeString/toUTCString）
 // 及 getTimezoneOffset 常 0。
 // 正则（step183）：sci 底座 `sa_std/text/regex.sai` 现货直投（`@import
 // "sa_std/text/regex.sa"`，用法见 `sci/tests/unit_framework/support/json_regex.sa`
@@ -206,6 +206,46 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		// 外部调用结果登记归属（P0-4：@main 尾泄漏；R1-12 同律，drain 释）。
 		saOwnTemp(scope, t)
 		return t, "i32", ""
+	}
+	if method == "setTime" {
+		// millis 直换（JS 返新值；i64 不透明流转：date 种直传（绑定/日期调用），
+		// i32 小值 sext 提升；大 i64 字面量沿 i32 门拒，禁静默截断；零底座调用）。
+		if len(argNodes) != 1 {
+			return "", "", "Date.setTime takes 1 argument"
+		}
+		if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+			return "", "", "Date.setTime mutates a binding (no inline-new target)"
+		}
+		var v string
+		a0 := argNodes[0]
+		if a0 != nil && a0.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a0.Text()]; ok && k == "date" {
+				v = a0.Text()
+			}
+		}
+		if v == "" && a0 != nil && a0.Kind == ast.KindCallExpression {
+			if k, ok := saCallRetKind(a0.AsCallExpression(), scope); ok && k == "date" {
+				op, voidCall, msg := saEvalCall(w, a0.AsCallExpression(), scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				if voidCall {
+					return "", "", "void call in date position"
+				}
+				v = op
+			}
+		}
+		if v == "" {
+			i32v, msg := saEvalI32(w, a0, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			v = fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sext %s as i64\n", v, i32v))
+		}
+		saStoreLocal(w, pa.Expression.Text(), v, scope, nextTemp)
+		return v, "date", ""
 	}
 	if fid, ok := saDateSetterField(method); ok {
 		if len(argNodes) != 1 {
