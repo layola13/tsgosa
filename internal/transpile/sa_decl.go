@@ -324,10 +324,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
 					return false
 				}
-				// 限定注解 `N.C` 与 `new N.C()` 的 `N_C` 布局键同形（须一致；
-				// 非标识/非单层限定沿旧门；直接 .Text() 会 panic，禁碰）。
-				tname, ok := saQualifiedTypeName(tn)
-				if !ok || tname != cname {
+				// 限定注解 `N.C` 须可解析（与 `new N.C()` 的 `N_C` 布局键同形；非标识/非单层限定沿旧门；直接 .Text() 会 panic，禁碰）。
+				// 注解名与初值类名允许不一致（基类注解接派生实例多态：封存 lowerVarDeclList 取初值种绑定，注解显式丢弃，无一致性检查；绑定恒跟初值 inst:cname，用点经布局表大声拒）。
+				if _, ok := saQualifiedTypeName(tn); !ok {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance annotation must name its class"})
 					return false
