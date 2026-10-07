@@ -485,6 +485,95 @@ func saLowerIsNaNFinite(w printer.EmitTextWriter, label string, ce *ast.CallExpr
 	return "1", false, ""
 }
 
+// saLowerJSONStringify `JSON.stringify` 标量形（writer 直写后 buffer 拷出
+// 具化新串头；i32→i64、bool、串、null；数组/对象另步；status 码沿既有
+// extern 惯例忽略，见 test free 形）。
+func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if a == nil {
+		return "", false, "JSON.stringify takes one argument"
+	}
+	scope.addImport("sa_std/encoding/json.sai")
+	wh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", wh))
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_writer_new(0, 0, 0, 0, 0, &%s)\n", st, wh))
+	wr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", wr, wh))
+	w.Write(fmt.Sprintf("  !%s\n", wh))
+	w.Write(fmt.Sprintf("  !%s\n", st))
+	writeV := func(line string) string {
+		s := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call %s\n", s, line))
+		w.Write(fmt.Sprintf("  !%s\n", s))
+		return s
+	}
+	switch {
+	case a.Kind == ast.KindNullKeyword || a.Kind == ast.KindUndefinedKeyword:
+		writeV(fmt.Sprintf("@sa_json_writer_write_null(%s)", wr))
+	case a.Kind == ast.KindTrueKeyword:
+		writeV(fmt.Sprintf("@sa_json_writer_write_bool(%s, 1)", wr))
+	case a.Kind == ast.KindFalseKeyword:
+		writeV(fmt.Sprintf("@sa_json_writer_write_bool(%s, 0)", wr))
+	case saIsStrExpr(a, scope):
+		h, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		p, l := saExpandStr(w, h, nextTemp)
+		writeV(fmt.Sprintf("@sa_json_writer_write_string(%s, &%s, %s)", wr, p, l))
+	default:
+		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, "JSON.stringify takes an i32/string/bool/null value (arrays/objects are not lowerable yet)"
+		}
+		wide := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, v))
+		writeV(fmt.Sprintf("@sa_json_writer_write_i64(%s, %s)", wr, wide))
+	}
+	oh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", oh))
+	fs := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_writer_finish(%s, &%s)\n", fs, wr, oh))
+	w.Write(fmt.Sprintf("  !%s\n", fs))
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", buf, oh))
+	w.Write(fmt.Sprintf("  !%s\n", oh))
+	bd := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_buffer_data(%s)\n", bd, buf))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_buffer_len(%s)\n", bl, buf))
+	// buffer 内容拷出后释放（串头存悬垂指针永禁）。
+	empty := saLowerStringLiteral(w, "", scope, nextTemp)
+	bh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", bh))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", bh, bd))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", bh, bl))
+	w.Write(fmt.Sprintf("  !%s\n", bd))
+	w.Write(fmt.Sprintf("  !%s\n", bl))
+	saOwnTemp(scope, bh)
+	out := saConcatSlices(w, empty, bh, scope, nextTemp)
+	bfr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_buffer_free(^%s)\n", bfr, buf))
+	w.Write(fmt.Sprintf("  !%s\n", bfr))
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_writer_free(^%s)\n", fr, wr))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	return out, false, ""
+}
+
 // saLowerBooleanArg `Boolean(x)` 真值（字面量折叠 + 具名读；调用形返
 // done=false 由调用方拒；读无副作用形不落字直接折叠）。
 func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, nextTemp *int) (string, bool, string) {
@@ -907,6 +996,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if op, voidCall, msg, handled := saLowerNodeMethodCall(w, pa, ce, scope, pos, refusals, nextTemp); handled {
 				return op, voidCall, msg
 			}
+		}
+		// JSON.stringify 标量形（`sa_json_writer_*` 直写：i32→i64、bool、串、
+		// null；数组/对象另步；返新串柄）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "JSON" &&
+			pa.Name() != nil && pa.Name().Text() == "stringify" {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "JSON.stringify takes one argument"
+			}
+			return saLowerJSONStringify(w, argNodes[0], scope, pos, refusals, nextTemp)
 		}
 		// 已知命名空间的未知成员逐字拒因（`N.M.bogus is not exported...`）。
 		if msg := saNsUnknownMemberMsg(scope, pa); msg != "" {
