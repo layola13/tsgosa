@@ -1782,45 +1782,11 @@ func saNewEmptyArray(w printer.EmitTextWriter, nextTemp *int) string {
 	return h
 }
 
-// saAppendSlice 整片拷贝入目标（push 循环；形状证据：封存 appendSlice:7820-7847）。
+// saAppendSlice 整片拷贝入目标（`sci/sa_std/ts_array.sa` `@ts_arr_append_slice`
+// 实现，逐元 push；R3-5 回迁；形状证据：封存 appendSlice:7820-7847）。
 func saAppendSlice(w printer.EmitTextWriter, dst, src string, scope *saScope, nextTemp *int) {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, src))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, src))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_ap_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_ap_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_ap_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-	elem := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elem, addr))
-	saLowerArrayPush(w, dst, elem, scope, nextTemp)
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	scope.addImport("sa_std/ts_array.sa")
+	w.Write(fmt.Sprintf("  call @ts_arr_append_slice(%s, %s)\n", dst, src))
 }
 
 // saCopyRange 拷贝 src[s0,s1) 到 dst[d0,.]（形状证据：封存 copyRange:7026-7057）。

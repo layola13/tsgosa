@@ -18,64 +18,49 @@
   t_5 = alloc 16
   store t_5 + 0, 0 as ptr
   store t_5 + 8, 0 as u64
-  t_6 = load a + 8 as u64
-  t_7 = load a + 0 as ptr
-  t_8 = 0
-L_ap_top_1:
-  t_9 = slt t_8, t_6
-  br t_9 -> L_ap_body_2, L_ap_end_3
-L_ap_body_2:
-  t_10 = mul t_8, 4
-  t_11 = add t_7, t_10
-  t_12 = load t_11 + 0 as i32
-  call @ts_arr_push_word(t_5, t_12)
-  t_13 = load t_5 + 8 as u64
-  t_14 = add t_8, 1
-  t_8 = t_14
-  jmp L_ap_top_1
-L_ap_end_3:
+  call @ts_arr_append_slice(t_5, a)
   b = t_5
-  t_15 = load b + 8 as u64
-  t_16 = alloc 8
-  t_17 = load b + 8 as u64
-  t_18 = ult 1, t_17
-  br t_18 -> L_idx_ok_6, L_idx_oob_5
-L_idx_ok_6:
-  t_19 = load b + 0 as ptr
-  t_20 = mul 1, 4
-  t_21 = add t_19, t_20
-  t_22 = load t_21 + 0 as i32
-  store t_16 + 0, t_22 as ptr
-  jmp L_idx_end_4
-L_idx_oob_5:
-  store t_16 + 0, 0 as ptr
-  jmp L_idx_end_4
-L_idx_end_4:
-  t_23 = load t_16 + 0 as i32
-  !t_16
-  t_24 = add t_15, t_23
-  t_25 = sext t_24 as i64
-  t_26 = alloc 64
-  t_27 = alloc 8
-  t_28 = call @sa_fmt_i64_into(t_25, 10, t_26, 64, &t_27)
-  t_29 = load t_27 + 0 as u64
-  t_30 = alloc 16
-  store t_30 + 0, t_26 as ptr
-  store t_30 + 8, t_29 as u64
-  !t_28
-  t_31 = load t_30 + 0 as ptr
-  t_32 = load t_30 + 8 as u64
-  call @sa_print_bytes(&t_31, t_32)
-  !t_30
-  t_33 = alloc 16
-  store t_33 + 0, &str_const_0 as ptr
-  store t_33 + 8, 1 as u64
-  t_34 = load t_33 + 0 as ptr
-  t_35 = load t_33 + 8 as u64
-  call @sa_print_bytes(&t_34, t_35)
-  !t_33
-  !t_27
-  !t_26
+  t_6 = load b + 8 as u64
+  t_7 = alloc 8
+  t_8 = load b + 8 as u64
+  t_9 = ult 1, t_8
+  br t_9 -> L_idx_ok_3, L_idx_oob_2
+L_idx_ok_3:
+  t_10 = load b + 0 as ptr
+  t_11 = mul 1, 4
+  t_12 = add t_10, t_11
+  t_13 = load t_12 + 0 as i32
+  store t_7 + 0, t_13 as ptr
+  jmp L_idx_end_1
+L_idx_oob_2:
+  store t_7 + 0, 0 as ptr
+  jmp L_idx_end_1
+L_idx_end_1:
+  t_14 = load t_7 + 0 as i32
+  !t_7
+  t_15 = add t_6, t_14
+  t_16 = sext t_15 as i64
+  t_17 = alloc 64
+  t_18 = alloc 8
+  t_19 = call @sa_fmt_i64_into(t_16, 10, t_17, 64, &t_18)
+  t_20 = load t_18 + 0 as u64
+  t_21 = alloc 16
+  store t_21 + 0, t_17 as ptr
+  store t_21 + 8, t_20 as u64
+  !t_19
+  t_22 = load t_21 + 0 as ptr
+  t_23 = load t_21 + 8 as u64
+  call @sa_print_bytes(&t_22, t_23)
+  !t_21
+  t_24 = alloc 16
+  store t_24 + 0, &str_const_0 as ptr
+  store t_24 + 8, 1 as u64
+  t_25 = load t_24 + 0 as ptr
+  t_26 = load t_24 + 8 as u64
+  call @sa_print_bytes(&t_25, t_26)
+  !t_24
+  !t_18
+  !t_17
   !b
   !a
   ret 0
