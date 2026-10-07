@@ -1,0 +1,9 @@
+@import "../demos/310_split_limit/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "310_split_limit"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 3012, 31001)
+    !v
+    return

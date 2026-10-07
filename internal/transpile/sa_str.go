@@ -1199,8 +1199,10 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	return "", false, "not a string call"
 }
 
-// saLowerStringSplit lowering `s.split(sep)`（串元数组；封存 lowerStringSplit:7469-7527
+// saLowerStringSplit lowering `s.split(sep[, limit])`（串元数组；封存 lowerStringSplit:7469-7527
 // 全形：indexOf 扫描 + 切片装配 + 逐段 push + 尾段；空头 16 字节零柄起，串元标记）。
+// limit 按 lib.es5.d.ts `split(separator, limit?)` 截断（0 即空；负数经 ToUint32 视为不限，
+// 以 i32 上确界归一；封存上游忽略 limit 系静默错码，本仓正确优先，step109 同例有意分歧）。
 func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	scope.addImport("sa_std/string.sai")
 	pa := ce.Expression.AsPropertyAccessExpression()
@@ -1218,6 +1220,22 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
+	}
+	lim := ""
+	if len(args) >= 2 {
+		limRaw, msg := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		// 负 limit 经 ToUint32 即大数（node 实证 -1 不限长），归一为 i32 上确界；
+		// EXPAND SELECT 系 control.sal 宏（三元值核同形，用时方进口，单参零漂移）。
+		scope.addImport("sa_std/control.sal")
+		neg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, limRaw))
+		lim = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, 2147483647, %s\n", lim, neg, limRaw))
 	}
 	bp, bl := saExpandStr(w, recv, nextTemp)
 	sp, sl := saExpandStr(w, sep, nextTemp)
@@ -1237,8 +1255,28 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	*scope.nextLabel++
 	endL := fmt.Sprintf("L_sp_end_%d", *scope.nextLabel)
 	*scope.nextLabel++
+	// 有 limit 时循环顶按已收段数截断（满即弃尾直返），无 limit 保持原三标号零漂移。
+	workL, tailL, doneL := "", "", ""
+	if lim != "" {
+		workL = fmt.Sprintf("L_sp_work_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		tailL = fmt.Sprintf("L_sp_tail_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		doneL = fmt.Sprintf("L_sp_done_%d", *scope.nextLabel)
+		*scope.nextLabel++
+	}
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", topL))
+	if lim != "" {
+		cnt := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", cnt, h))
+		room := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", room, cnt, lim))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", room, workL, doneL))
+		w.Write(fmt.Sprintf("%s:\n", workL))
+	}
 	idx := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, %s)\n", idx, bp, bl, sp, sl, start))
@@ -1267,6 +1305,16 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	w.Write(fmt.Sprintf("  %s = %s\n", start, nstart))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	if lim != "" {
+		cnt2 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", cnt2, h))
+		room2 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", room2, cnt2, lim))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", room2, tailL, doneL))
+		w.Write(fmt.Sprintf("%s:\n", tailL))
+	}
 	pp2 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pp2, bp, start))
@@ -1279,6 +1327,9 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", tail, pp2))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", tail, pl2))
 	saLowerArrayPush(w, h, tail, scope, nextTemp)
+	if lim != "" {
+		w.Write(fmt.Sprintf("%s:\n", doneL))
+	}
 	return h, ""
 }
 
