@@ -4145,6 +4145,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if msgR != "" {
 			return "", msgR
 		}
+		// 字面量除零编译期拒（`1/0` 原生 SIGFPE，JS 得 Infinity；变量除数沿旧门，
+		// f64 除法 IEEE 无崩沿旧路；H35）。
+		if (op == "div" || op == "srem") && be.Right != nil &&
+			be.Right.Kind == ast.KindNumericLiteral && be.Right.Text() == "0" {
+			return "", "division by zero (literal zero divisor traps; JS yields Infinity)"
+		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
