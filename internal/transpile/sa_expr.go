@@ -2774,11 +2774,20 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 			return true
 		}
 	}
-	// 前缀取负透传（`-x` 种随操作数；`+x` 双边同拒不动；求值见严格位同形臂）。
+	// 前缀取负透传（`-x` 种随操作数：绑定/字面量/嵌套取负递归判定，f64
+	// 调用经返回种；`+x` 双边同拒不动；求值见严格位同形臂；消费位皆经
+	// 严格求值，无 `Text()` 直通风险）。
 	if e.Kind == ast.KindPrefixUnaryExpression {
 		un := e.AsPrefixUnaryExpression()
 		if un != nil && un.Operator == ast.KindMinusToken {
-			return saIsF64Operand(un.Operand, scope)
+			if saIsF64Operand(un.Operand, scope) {
+				return true
+			}
+			if un.Operand != nil && un.Operand.Kind == ast.KindCallExpression {
+				if k, ok := saCallRetKind(un.Operand.AsCallExpression(), scope); ok && k == "f64" {
+					return true
+				}
+			}
 		}
 	}
 	return false

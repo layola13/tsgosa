@@ -133,6 +133,15 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 		}
 		return h, ""
 	}
+	if saIsF64Operand(el, scope) {
+		// 浮元（字面量文本/f64 绑定名/`-x` 经严格求值落 `fneg`；`store X
+		// as i32` 与上游实发逐字同形；读位经既有 i32 门；`+` 形双边同拒）。
+		v, msg := saEvalF64Strict(w, el, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		return v, ""
+	}
 	v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
