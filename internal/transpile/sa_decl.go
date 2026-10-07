@@ -493,6 +493,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				return false
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			// 调用结果 temp 移交具名（返前释放跳过已 move 者；D07c 绑定臂同源）。
+			if saIsTempOp(op) {
+				saConsumeTemp(scope, op)
+			}
 			scope.types[name] = "f64"
 			saDeclareOwned(scope, name)
 			continue
@@ -700,7 +704,8 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareInitOwn(scope, name, op)
 			return true
 		}
-		// f64 返回调用按浮种建种（用户 f64 函数 + Number/parseFloat 转换）。
+		// f64 返回调用按浮种建种（用户 f64 函数 + Number/parseFloat 转换；
+		// 调用结果 temp 移交具名，串臂消费同形）。
 		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && k == "f64" {
 			op, msg := saEvalF64Strict(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -710,6 +715,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = "f64"
+			saConsumeOwn(scope, op)
 			saDeclareOwned(scope, name)
 			return true
 		}

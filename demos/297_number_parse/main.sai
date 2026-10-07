@@ -13,6 +13,7 @@
   t_2 = load t_1 + 0 as ptr
   t_3 = load t_1 + 8 as u64
   t_4 = call @sa_parse_float(&t_2, t_3)
+  !t_1
   a = t_4
   t_5 = alloc 16
   store t_5 + 0, &str_const_1 as ptr
@@ -20,6 +21,7 @@
   t_6 = load t_5 + 0 as ptr
   t_7 = load t_5 + 8 as u64
   t_8 = call @sa_parse_float(&t_6, t_7)
+  !t_5
   b = t_8
   c = 5
   s = 0
@@ -67,9 +69,7 @@ L_endif_9:
   !t_17
   !t_16
   !b
-  !t_5
   !a
-  !t_1
   ret s
 @main() -> i32:
   t_26 = call @main__user()

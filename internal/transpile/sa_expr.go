@@ -3308,6 +3308,8 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = fneg %s\n", t, v))
+			// 操作数柄用后即释（调用结果 temp 有归属；算术 temp/具名/字面量 no-op）。
+			saReleaseOwnedTemp(w, scope, v)
 			scope.types[t] = "f64"
 			return t, ""
 		}
@@ -3350,6 +3352,9 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, fop, l, r))
+		// 双侧柄用后即释（调用结果 temp 有归属；算术 temp/具名/字面量 no-op）。
+		saReleaseOwnedTemp(w, scope, l)
+		saReleaseOwnedTemp(w, scope, r)
 		if fop == "fadd" || fop == "fsub" || fop == "fmul" || fop == "fdiv" {
 			scope.types[t] = "f64"
 		}

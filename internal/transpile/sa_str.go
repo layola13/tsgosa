@@ -787,6 +787,9 @@ func saRenderInterpF64(w printer.EmitTextWriter, v string, scope *saScope, nextT
 	rc := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_fmt_f64_into(%s, 6, %s, 64, &%s)\n", rc, v, numbuf, numlen))
+	// f64 实参柄用后即释（调用结果 temp 有归属，算术 temp/具名/字面量 no-op；
+	// D07c `Number("7")` 直打 MemoryLeak 实证）。
+	saReleaseOwnedTemp(w, scope, v)
 	nlen := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
@@ -916,6 +919,10 @@ func saLowerFloatConvert(w printer.EmitTextWriter, name string, ce *ast.CallExpr
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_parse_float(&%s, %s)\n", t, bp, bl))
+	// 串实参柄用后即释（具名/借用 no-op；parseInt 臂同形）+ 调用结果柄登记
+	// 归属（Date.now 求值点同形；打印/绑定/比较消费位各归位；D07c 实证）。
+	saReleaseOwnedTemp(w, scope, h)
+	saOwnTemp(scope, t)
 	scope.types[t] = "f64"
 	return t, ""
 }
