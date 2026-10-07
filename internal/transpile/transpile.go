@@ -1676,6 +1676,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		fn := st.AsFunctionDeclaration()
 		nm := fn.Name()
 		if nm == nil || nm.Kind != ast.KindIdentifier {
+			// 匿名默认导出函数登记 `default` 键签名（发射名 step415 `@default`，
+			// program 下 `@prefix__default`；跨文件默认导入经 harvest 直链，n1 实证；
+			// 重默认由 saPrescanFuncSig `duplicate function default` 定位拒）。
+			if nm == nil && fn.Body != nil && ast.HasModifier(st, ast.ModifierFlagsDefault) {
+				saPrescanFuncSig(fn, st, "default", funcs, tcx, classes, aliasOf, enums, pos, &refusals)
+			}
 			continue
 		}
 		// 重载签名擦除：无体声明不注册签名，实现体唯一注册/发射；
@@ -1777,11 +1783,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if nm := fn.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 					if sig, ok := funcs[nm.Text()]; ok {
 						link.harvest[nm.Text()] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
-						// 默认导出另记 "default" 键（定义名守 qualified 后缀；
-						// 匿名默认无名可守，沿旧门）。
+						// 默认导出另记 "default" 键（定义名守 qualified 后缀）。
 						if ast.HasModifier(st, ast.ModifierFlagsDefault) {
 							link.harvest["default"] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), defLocal: nm.Text()}
 						}
+					}
+				} else if nm == nil && ast.HasModifier(st, ast.ModifierFlagsDefault) {
+					// 匿名默认：defLocal 即发射名 `default`（`@prefix__default`，
+					// step415 合法名；签名由预扫二 `funcs["default"]` 登记）。
+					if sig, ok := funcs["default"]; ok {
+						link.harvest["default"] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), defLocal: "default"}
 					}
 				}
 				continue
@@ -3437,23 +3448,21 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
-		// 默认导出匿名函数具名 `default` 发射（不可调用：预扫跳过无名函数，
-		// 无调用方可寻址；`default` 为保留字，永不与用户函数重名；命名空间
-		// 成员要求具名（saFlattenNsMembers），故只走顶层 forceName="" 路。
-		// 上游实发 `@<anon>` 含非法标识符字符，`sa check` 判 ForbiddenSyntax
-		//（上游有病类，见 X-radix/X-decoysweep 定案口径），本仓取合法名，
-		// 有意分歧；其余匿名形沿旧门；重默认按 tsc 口径大声拒）。
+		// 默认导出匿名函数具名 `default` 发射（`default` 为保留字，永不与用户
+		// 函数重名；命名空间成员要求具名（saFlattenNsMembers），故只走顶层
+		// forceName="" 路。上游实发 `@<anon>` 含非法标识符字符，`sa check` 判
+		// ForbiddenSyntax（上游有病类），本仓取合法名，有意分歧；其余匿名形沿
+		// 旧门。签名由预扫二登记 `funcs["default"]`（step422 起可调用：跨文件
+		// 默认导入经 harvest 直链）；重默认在预扫经 `duplicate function default`
+		// 定位拒，本处见拒因即不发射）。
 		if !ast.HasModifier(st, ast.ModifierFlagsDefault) {
 			ln, col := pos(st.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous function refused"})
 			return
 		}
-		if _, dup := funcs["default"]; dup {
-			ln, col := pos(st.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate default export"})
+		if _, ok := funcs["default"]; !ok {
 			return
 		}
-		funcs["default"] = saFuncSig{}
 		name, ok = "default", true
 	}
 	params, ok := saParamNames(fn)
