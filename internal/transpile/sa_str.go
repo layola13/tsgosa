@@ -1803,7 +1803,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		return acc, false, ""
 	case "slice", "substring", "substr":
-		// 钳位子切片（形状证据：封存 lowerStringMethod:7348-7369 + clampRange:7393-7465）。
+		// R2 回迁映射：钳位子切片语义由 `sci/sa_std/ts_string.sa`
+		// `@ts_str_slice` 实现（缺省 end/ substr 加长由调用点折叠），
+		// 本侧只做 import + 调用 + 归属。
 		if len(args) < 1 {
 			return "", false, method + " needs 1 argument"
 		}
@@ -1825,12 +1827,14 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			w.Write(fmt.Sprintf("  %s = add %s, %s\n", nend, a0, end))
 			end = nend
 		}
-		s, l := saClampRange(w, bp, bl, a0, end, method == "substring", scope, nextTemp)
+		sub := "0"
+		if method == "substring" {
+			sub = "1"
+		}
+		scope.addImport("sa_std/ts_string.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, s))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, l))
+		w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, %s)\n", out, bp, bl, a0, end, sub))
 		// 切片柄归属(返前释放；extern 结果同口径).
 		saOwnTemp(scope, out)
 		return out, false, ""
@@ -1840,99 +1844,6 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		return recv, false, ""
 	}
 	return "", false, "unsupported string method " + method
-}
-
-// saClampRange 钳位 [start, end) 到 [0, len]（负值自末端起钳；substring 另
-// 交换逆序界并将负值记 0。形状证据：封存 clampRange:7393-7465）。
-func saClampRange(w printer.EmitTextWriter, bp, bl, start, end string, substring bool, scope *saScope, nextTemp *int) (string, string) {
-	norm := func(v string) string {
-		neg := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		adj := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		out := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		nL := fmt.Sprintf("L_cl_neg_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		nN := fmt.Sprintf("L_cl_nneg_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		nE := fmt.Sprintf("L_cl_end_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, v))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", neg, nL, nN))
-		w.Write(fmt.Sprintf("%s:\n", nL))
-		if substring {
-			w.Write(fmt.Sprintf("  %s = 0\n", adj))
-		} else {
-			w.Write(fmt.Sprintf("  %s = add %s, %s\n", adj, bl, v))
-		}
-		w.Write(fmt.Sprintf("  jmp %s\n", nE))
-		w.Write(fmt.Sprintf("%s:\n", nN))
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", adj, v))
-		w.Write(fmt.Sprintf("  jmp %s\n", nE))
-		w.Write(fmt.Sprintf("%s:\n", nE))
-		lo := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		loT := fmt.Sprintf("L_cl_lot_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		loF := fmt.Sprintf("L_cl_lof_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		loE := fmt.Sprintf("L_cl_loe_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", lo, adj))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lo, loT, loF))
-		w.Write(fmt.Sprintf("%s:\n", loT))
-		w.Write(fmt.Sprintf("  %s = 0\n", out))
-		w.Write(fmt.Sprintf("  jmp %s\n", loE))
-		w.Write(fmt.Sprintf("%s:\n", loF))
-		hi := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		hiT := fmt.Sprintf("L_cl_hit_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		hiF := fmt.Sprintf("L_cl_hif_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", hi, adj, bl))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hi, hiT, hiF))
-		w.Write(fmt.Sprintf("%s:\n", hiT))
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, bl))
-		w.Write(fmt.Sprintf("  jmp %s\n", loE))
-		w.Write(fmt.Sprintf("%s:\n", hiF))
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, adj))
-		w.Write(fmt.Sprintf("  jmp %s\n", loE))
-		w.Write(fmt.Sprintf("%s:\n", loE))
-		return out
-	}
-	s := norm(start)
-	f := norm(end)
-	if substring {
-		sw := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		c := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		tL := fmt.Sprintf("L_cl_swap_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		kL := fmt.Sprintf("L_cl_keep_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		dL := fmt.Sprintf("L_cl_done_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", c, s, f))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, tL, kL))
-		w.Write(fmt.Sprintf("%s:\n", tL))
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", sw, s))
-		w.Write(fmt.Sprintf("  %s = %s\n", s, f))
-		w.Write(fmt.Sprintf("  %s = %s\n", f, sw))
-		w.Write(fmt.Sprintf("  jmp %s\n", dL))
-		w.Write(fmt.Sprintf("%s:\n", kL))
-		w.Write(fmt.Sprintf("  jmp %s\n", dL))
-		w.Write(fmt.Sprintf("%s:\n", dL))
-	}
-	nptr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nptr, bp, s))
-	nlen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", nlen, f, s))
-	return nptr, nlen
 }
 
 // saRawTemplateText 取模板片 raw 文本（转义不煮；NoSub 由源码切片，

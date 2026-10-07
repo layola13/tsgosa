@@ -2,6 +2,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/ts_string.sa"
 @const str_const_0 = utf8:"hello\0"
 @const str_const_1 = utf8:"\n\0"
 @const str_const_2 = utf8:" world\0"
@@ -124,70 +125,18 @@
   !t_60
   t_63 = load csv + 0 as ptr
   t_64 = load csv + 8 as u64
-  t_65 = slt 2, 0
-  br t_65 -> L_cl_neg_1, L_cl_nneg_2
-L_cl_neg_1:
-  t_66 = add t_64, 2
-  jmp L_cl_end_3
-L_cl_nneg_2:
-  t_66 = add 2, 0
-  jmp L_cl_end_3
-L_cl_end_3:
-  t_68 = slt t_66, 0
-  br t_68 -> L_cl_lot_4, L_cl_lof_5
-L_cl_lot_4:
-  t_67 = 0
-  jmp L_cl_loe_6
-L_cl_lof_5:
-  t_69 = sgt t_66, t_64
-  br t_69 -> L_cl_hit_7, L_cl_hif_8
-L_cl_hit_7:
-  t_67 = add t_64, 0
-  jmp L_cl_loe_6
-L_cl_hif_8:
-  t_67 = add t_66, 0
-  jmp L_cl_loe_6
-L_cl_loe_6:
-  t_70 = slt 5, 0
-  br t_70 -> L_cl_neg_9, L_cl_nneg_10
-L_cl_neg_9:
-  t_71 = add t_64, 5
-  jmp L_cl_end_11
-L_cl_nneg_10:
-  t_71 = add 5, 0
-  jmp L_cl_end_11
-L_cl_end_11:
-  t_73 = slt t_71, 0
-  br t_73 -> L_cl_lot_12, L_cl_lof_13
-L_cl_lot_12:
-  t_72 = 0
-  jmp L_cl_loe_14
-L_cl_lof_13:
-  t_74 = sgt t_71, t_64
-  br t_74 -> L_cl_hit_15, L_cl_hif_16
-L_cl_hit_15:
-  t_72 = add t_64, 0
-  jmp L_cl_loe_14
-L_cl_hif_16:
-  t_72 = add t_71, 0
-  jmp L_cl_loe_14
-L_cl_loe_14:
-  t_75 = add t_63, t_67
-  t_76 = sub t_72, t_67
-  t_77 = alloc 16
-  store t_77 + 0, t_75 as ptr
-  store t_77 + 8, t_76 as u64
-  t_78 = load t_77 + 0 as ptr
-  t_79 = load t_77 + 8 as u64
-  call @sa_print_bytes(&t_78, t_79)
-  !t_77
-  t_80 = alloc 16
-  store t_80 + 0, &str_const_1 as ptr
-  store t_80 + 8, 1 as u64
-  t_81 = load t_80 + 0 as ptr
-  t_82 = load t_80 + 8 as u64
-  call @sa_print_bytes(&t_81, t_82)
-  !t_80
+  t_65 = call @ts_str_slice(t_63, t_64, 2, 5, 0)
+  t_66 = load t_65 + 0 as ptr
+  t_67 = load t_65 + 8 as u64
+  call @sa_print_bytes(&t_66, t_67)
+  !t_65
+  t_68 = alloc 16
+  store t_68 + 0, &str_const_1 as ptr
+  store t_68 + 8, 1 as u64
+  t_69 = load t_68 + 0 as ptr
+  t_70 = load t_68 + 8 as u64
+  call @sa_print_bytes(&t_69, t_70)
+  !t_68
   !t_54
   !t_53
   !t_51
