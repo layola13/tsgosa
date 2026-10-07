@@ -451,6 +451,8 @@ type saFileLink struct {
 	aliasHarvest  map[string]saProgAlias            // out: own top-level type aliases for dependents
 	aliasHarvests map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
 	aliasSeed     map[string]saProgAlias            // out/in: imported local alias name -> aliased node
+	ambHarvest    map[string]bool                   // out: own exported ambient names for dependents
+	ambHarvests   map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
 	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
 	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
 	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
@@ -1366,6 +1368,10 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				link.seed[q] = sig
 				continue
 			}
+			// 环境声明直接收（无值绑定，用点经旧门；c3 实证）。
+			if link.ambHarvests[tgt][remote] {
+				continue
+			}
 			ln, col := pos(n.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 			continue
@@ -1448,6 +1454,53 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				}
 				link.aliasHarvest[nm.Text()] = saProgAlias{node: node, exported: true}
 			}
+		}
+	}
+	// 环境声明收割（export ambient 变量（无初值）/函数/类/枚举名；c3 实证；有初值沿旧路）。
+	if link != nil {
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || !ast.HasModifier(st, ast.ModifierFlagsAmbient) {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			if st.Kind == ast.KindVariableStatement {
+				vs := st.AsVariableStatement()
+				if vs == nil || vs.DeclarationList == nil {
+					continue
+				}
+				dl := vs.DeclarationList.AsVariableDeclarationList()
+				if dl == nil {
+					continue
+				}
+				for _, d := range dl.Declarations.Nodes {
+					vd := d.AsVariableDeclaration()
+					if vd == nil || vd.Initializer != nil {
+						continue
+					}
+					nm := vd.Name()
+					if nm == nil || nm.Kind != ast.KindIdentifier {
+						continue
+					}
+					if link.ambHarvest == nil {
+						link.ambHarvest = map[string]bool{}
+					}
+					link.ambHarvest[nm.Text()] = true
+				}
+				continue
+			}
+			if st.Kind != ast.KindFunctionDeclaration && st.Kind != ast.KindClassDeclaration && st.Kind != ast.KindEnumDeclaration {
+				continue
+			}
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if link.ambHarvest == nil {
+				link.ambHarvest = map[string]bool{}
+			}
+			link.ambHarvest[nm.Text()] = true
 		}
 	}
 	// 预扫顶层函数签名（调用核：被调函数须同文件定义，元数精确匹配；
@@ -4514,6 +4567,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	classHarvests := map[string]map[string]saProgClass{}
 	enumHarvests := map[string]map[string]saProgEnum{}
 	aliasHarvests := map[string]map[string]saProgAlias{}
+	ambHarvests := map[string]map[string]bool{}
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
 	for _, p := range reachable {
@@ -4536,6 +4590,8 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			enumHarvests:  enumHarvests,
 			enumSeed:      map[string]saProgEnum{},
 			aliasHarvest:  map[string]saProgAlias{},
+			ambHarvest:    map[string]bool{},
+			ambHarvests:   ambHarvests,
 			aliasHarvests: aliasHarvests,
 			aliasSeed:     map[string]saProgAlias{},
 			constHarvest:  map[string]saProgConst{},
@@ -4550,6 +4606,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		classHarvests[p] = lk.classHarvest
 		enumHarvests[p] = lk.enumHarvest
 		aliasHarvests[p] = lk.aliasHarvest
+		ambHarvests[p] = lk.ambHarvest
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
 		for _, r := range out.Refusals {

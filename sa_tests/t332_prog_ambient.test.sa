@@ -1,0 +1,9 @@
+@import "../demos/332_prog_ambient/main.sa"
+@import "sa_std/testing/assert.sai"
+
+@test "332_prog_ambient"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 1, 33201)
+    !v
+    return
