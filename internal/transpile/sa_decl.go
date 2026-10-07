@@ -2193,8 +2193,11 @@ func saArrowCaptures(body *ast.Node, name string, paramNames []string, scope *sa
 	return caps
 }
 
-// saArrowUsesThis 报告箭头体是否直用 `this`（嵌套箭头穿透：其 this 即外层
-// this；嵌套函数/类有自属接收者，不计入；本层 this 由调用方判定）。
+// saArrowUsesThis 报告箭头体是否直用 `this`/`super`（嵌套箭头穿透：其
+// this/super 即外层接收者；嵌套函数/类有自属接收者，不计入；本层 this 由
+// 调用方判定；super 恒需接收者：`saSuperBase` 以 thisSelf 锚定基布局，
+// 故 super 箭头同 `this` 补 `__this` 尾参；上游凭调用点接收者名硬编码全局
+// 直读（探针 /tmp/suparr 实发 `load d + 0`），禁照抄，沿 step392 口径）。
 func saArrowUsesThis(body *ast.Node) bool {
 	found := false
 	var walk func(x *ast.Node)
@@ -2202,7 +2205,7 @@ func saArrowUsesThis(body *ast.Node) bool {
 		if x == nil || found {
 			return
 		}
-		if x.Kind == ast.KindThisKeyword {
+		if x.Kind == ast.KindThisKeyword || x.Kind == ast.KindSuperKeyword {
 			found = true
 			return
 		}

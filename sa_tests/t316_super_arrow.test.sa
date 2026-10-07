@@ -1,0 +1,9 @@
+@import "../demos/316_super_arrow/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "316_super_arrow"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 4007, 31601)
+    !v
+    return
