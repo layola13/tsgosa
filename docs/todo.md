@@ -137,6 +137,12 @@
 - `sa test --list` 全仓 89/90：唯一失败 `t289_hash`（`PackageNotResolved`）根因为其 `demos/289_hash/main.sai` 含 `@import "node.sai"`，本环境 node 插件包未装（`sa plugin list` 空，无 `~/.sa` 缓存）——与 `console.error` 同族后端 wiring，转译产物自 landing 提交字节未变，非回归。
 - 解释器 `sa run` 口径：凡含 `sa_fmt_i64_into` 者报 `unsupported extern`（与第四批注记一致，需原生链接）；纯串 demo（367/368/369/370）在解释器下报 `InvalidAddress`（367 在 LLVM 原生下历史实证全对，故系解释器实现限制，非产物回归；原生复验待 LLVM 环境）。
 
+## 循环迭代 7（2026-10-07）：node 插件链打通 + `sa test --list` 90/90
+
+- 根因链（逐段隔离实证）：`t289`/`console.error` 的 `PackageNotResolved` 并非转译问题——① `sa_plugin_http_client` 构建脚本写死旧绝对路径 `/content/sci`（环境 symlink 绕过，零仓库改动）；② `sa_plugin_http_server/sap.json` 声明 `http://0.0.0.0`，而 sci 安装器只放行 loopback http（`isLoopbackPermissionHost`），逐条核对 manifest 后定位，删该条即装上（跨仓 1 行提交）；③ `sa check` 解析 `@import "node.sai"` 需要包身份，`demos/289_hash/sa.mod`（`require_plugin node`）即钥匙；④ `sa_tests` 缺 `sa.mod`，补后 `--list` 90/90。
+- `console.error("oops")` 产物在包身份下 `check ok`（307 指令）：转译侧 `@import "node.sai"` + 插件调用早对，剩余仅原生运行（待 LLVM）。
+- 真跑（非 `--list`）仍需 LLVM 后端（解释器墙既有注记），未变。
+
 ## 待办（给后续轮）
 
 1. 归档探针：`/tmp/opencode/ts-sa-probe` 易失，建议收进本仓 `demos/`（fixture 例外）或另仓；生成器即文档。
