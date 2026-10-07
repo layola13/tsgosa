@@ -648,7 +648,7 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 		}
 	}
-	return saRenderInterp(w, op, scope, nextTemp), ""
+	return saRenderInterp(w, op, scope, nextTemp, "10"), ""
 }
 
 // saRenderInterp64 i64 操作数经 @sa_fmt_i64_into 落文本切片（date millis
@@ -682,8 +682,12 @@ func saRenderInterp64(w printer.EmitTextWriter, v string, scope *saScope, nextTe
 }
 
 // saRenderInterp 整数操作数经 sext + @sa_fmt_i64_into 落文本切片
-// （形状证据：封存 renderInterpValue:8879-8900；bool 到此已是 0/1）。
-func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp *int) string {
+// （形状证据：封存 renderInterpValue:8879-8900；bool 到此已是 0/1；
+// radix 为 "10" 缺省或 "2"-"36" 字面量，与 `sa_fmt_i64_into` 现货进制位同形）。
+func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp *int, radix string) string {
+	if radix == "" {
+		radix = "10"
+	}
 	scope.addImport("sa_std/fmt.sai")
 	wide := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -696,7 +700,7 @@ func saRenderInterp(w printer.EmitTextWriter, v string, scope *saScope, nextTemp
 	w.Write(fmt.Sprintf("  %s = alloc 8\n", numlen))
 	rc := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_fmt_i64_into(%s, 10, %s, 64, &%s)\n", rc, wide, numbuf, numlen))
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_i64_into(%s, %s, %s, 64, &%s)\n", rc, wide, radix, numbuf, numlen))
 	nlen := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", nlen, numlen))
@@ -1170,8 +1174,22 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			if ce.Arguments != nil {
 				args = ce.Arguments.Nodes
 			}
-			if len(args) != 0 {
-				return "", false, "toString takes 0 arguments"
+			if len(args) > 1 {
+				return "", false, "toString takes at most 1 argument"
+			}
+			// 进制参（`parseInt` radix 门同形：字面量 2-36，缺省 10；
+			// 底座 `@sa_fmt_i64_into` 现货进制位直传）。
+			radix := "10"
+			if len(args) == 1 {
+				rn := args[0]
+				if rn == nil || rn.Kind != ast.KindNumericLiteral {
+					return "", false, "toString radix must be a literal 2-36"
+				}
+				var rv int
+				if _, err := fmt.Sscanf(rn.Text(), "%d", &rv); err != nil || rv < 2 || rv > 36 {
+					return "", false, "toString radix must be a literal 2-36"
+				}
+				radix = fmt.Sprintf("%d", rv)
 			}
 			if !saIsToStringableI32(pa.Expression, scope) {
 				return "", false, "toString receiver must be a number (booleans need true/false spelling)"
@@ -1183,7 +1201,7 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			if smsg := saCheckI32Value(scope, v); smsg != "" {
 				return "", false, smsg
 			}
-			return saRenderInterp(w, v, scope, nextTemp), false, ""
+			return saRenderInterp(w, v, scope, nextTemp, radix), false, ""
 		}
 		recv, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {
