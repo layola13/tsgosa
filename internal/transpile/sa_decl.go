@@ -443,13 +443,15 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
 			vkind, ok = saGenericHandleKind(vd.Type, scope)
 		}
-		// 非折叠联合、typeof 声明、typeof 别名及泛型别名按初值种绑定
+		// 非折叠联合、typeof 声明、typeof 别名、泛型别名及函数类型注解按初值种绑定
 		//（cf any 擦除；可折叠已由 saAnnotKind 办；别名链终点 typeof 经上
 		// helper 判定；泛型别名基（如条件类型实例化）上游初值种绑定
-		// 同形，错配初值亦然，句柄门显式跳过别名基故落此处）。
+		// 同形，错配初值亦然，句柄门显式跳过别名基故落此处；
+		// 函数类型注解擦除（H57：字段侧早已落句柄槽，声明侧跟初值形）。
 		if vd.Type != nil && (vd.Type.Kind == ast.KindUnionType || vd.Type.Kind == ast.KindTypeQuery ||
 			saAliasResolvesToTypeQuery(vd.Type, scope.aliasOf) ||
-			saIsGenericAlias(vd.Type, scope.aliasOf)) {
+			saIsGenericAlias(vd.Type, scope.aliasOf) ||
+			saIsFunctionAnnotation(vd.Type, scope.aliasOf)) {
 			return saLowerInferredDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
 		// 裸 `null` 注解按 i32 零槽建种（`let x: null = null`；注解直写或字面量
@@ -1109,6 +1111,54 @@ func saAliasResolvesToTypeQuery(t *ast.TypeNode, aliasOf map[string]*ast.TypeNod
 			return false
 		}
 		if tgt.Kind == ast.KindTypeQuery {
+			return true
+		}
+		if tgt.Kind != ast.KindTypeReference {
+			return false
+		}
+		nr := tgt.AsTypeReferenceNode()
+		if nr == nil || nr.TypeName == nil ||
+			nr.TypeName.Kind != ast.KindIdentifier || nr.TypeArguments != nil {
+			return false
+		}
+		cur = nr.TypeName.Text()
+	}
+	return false
+}
+
+// saIsFunctionAnnotation 报告注解是否为函数类型（直接 `(x: i32) => i32` /
+// 构造签名，或无实参单标识符别名链终点为函数类型；命中即擦除走初值推断
+// （与联合/typeof/泛型别名回退同形；H57。字段侧函数类型早已落句柄槽，
+// 见 sa_class.go；不可绑形状由推断门大声拒，禁静默错码）。
+func saIsFunctionAnnotation(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind == ast.KindFunctionType || t.Kind == ast.KindConstructorType {
+		return true
+	}
+	if t.Kind != ast.KindTypeReference || len(aliasOf) == 0 {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeArguments != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	cur := ref.TypeName.Text()
+	for i := 0; i < len(aliasOf)+1; i++ {
+		if seen[cur] {
+			return false
+		}
+		seen[cur] = true
+		tgt, ok := aliasOf[cur]
+		if !ok || tgt == nil {
+			return false
+		}
+		if tgt.Kind == ast.KindFunctionType || tgt.Kind == ast.KindConstructorType {
 			return true
 		}
 		if tgt.Kind != ast.KindTypeReference {
