@@ -122,6 +122,7 @@ L_fi_skip_14:
   t_34 = t_55
   jmp L_fi_top_10
 L_fi_end_12:
+  !t_6
   b = t_33
   t_56 = load b + 8 as u64
   t_57 = alloc 8

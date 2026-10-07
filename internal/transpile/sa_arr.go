@@ -364,9 +364,14 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	}
 	if isOpt {
 		// `a?.[i]` (null base reads 0, otherwise checked-index join).
-		return saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp), ""
+		out := saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
+		saReleaseOwnedTemp(w, scope, base)
+		return out, ""
 	}
-	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
+	out := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+	// 下标读后链式基即释（具名/借用基 no-op；值已物化为 i32）。
+	saReleaseOwnedTemp(w, scope, base)
+	return out, ""
 }
 
 // saJoinAccumulatorMsg 为 join 精确拒因（求值核与 `.length` 调用基共用一文；
@@ -434,6 +439,8 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+			// 调用新柄读后即释（具名/借用基 no-op）。
+			saReleaseOwnedTemp(w, scope, h)
 			return t, ""
 		}
 		// join 调用基报精确拒因（saArrValueOf 只回笼统 `not an array expression`；
@@ -2094,7 +2101,9 @@ func saLowerArrayAt(w printer.EmitTextWriter, recv, idx string, scope *saScope, 
 	sel := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", sel, idx, adj))
-	return saLowerCheckedIndex(w, recv, sel, scope.nextLabel, nextTemp)
+	out := saLowerCheckedIndex(w, recv, sel, scope.nextLabel, nextTemp)
+	saReleaseOwnedTemp(w, scope, recv)
+	return out
 }
 
 // saLowerArrayJoin 元素经 interp 折叠拼接（分隔符除首元外；形状证据：
@@ -3009,6 +3018,9 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	// 新柄归属 + 链式接收者回收（R1 slice/concat 同纪律；具名/借用基 no-op）。
+	saOwnTemp(scope, h)
+	saReleaseOwnedTemp(w, scope, recv)
 	return h, ""
 }
 
@@ -3063,6 +3075,8 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 		w.Write(fmt.Sprintf("%s:\n", endL))
+		// 链式接收者回收（具名/借用基 no-op；标量返回不带柄）。
+		saReleaseOwnedTemp(w, scope, recv)
 		return "0", "i32", ""
 	case "filter":
 		h := saNewEmptyArray(w, nextTemp)
@@ -3101,6 +3115,9 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 		w.Write(fmt.Sprintf("%s:\n", endL))
+		// 新柄归属 + 链式接收者回收（与 map 臂同纪律）。
+		saOwnTemp(scope, h)
+		saReleaseOwnedTemp(w, scope, recv)
 		return h, "arr", ""
 	case "find", "findIndex", "findLast", "findLastIndex":
 		last := method == "findLast" || method == "findLastIndex"
@@ -3160,6 +3177,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 		saReleaseOwnedTemp(w, scope, slot)
+		saReleaseOwnedTemp(w, scope, recv)
 		return out, "i32", ""
 	case "some", "every":
 		slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -3217,6 +3235,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 		saReleaseOwnedTemp(w, scope, slot)
+		saReleaseOwnedTemp(w, scope, recv)
 		return out, "i32", ""
 	}
 	return "", "", "unreachable"
@@ -3286,6 +3305,7 @@ func saHigherOrderReduce(w printer.EmitTextWriter, recv string, right bool, cb *
 	w.Write(fmt.Sprintf("  %s = %s\n", i, step))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	saReleaseOwnedTemp(w, scope, recv)
 	return acc, "i32", ""
 }
 
