@@ -485,9 +485,138 @@ func saLowerIsNaNFinite(w printer.EmitTextWriter, label string, ce *ast.CallExpr
 	return "1", false, ""
 }
 
+// saLowerJSONInstObject 接口/类实例对象直写（`begin_object`＋字段序直写；
+// i32（含 bool 经 fdefs 辨别写 bool）、str、i32/str 元数组、inst 递归；
+// getters/方法跳过（非 offsets）；递归环拒；键字面量具化）。
+// 返 msg（""=ok）。
+func saLowerJSONInstObject(w printer.EmitTextWriter, base string, def *saClassDef, scope *saScope, nextTemp *int, wr string, visited map[string]bool) string {
+	writeV := func(line string) string {
+		s := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call %s\n", s, line))
+		w.Write(fmt.Sprintf("  !%s\n", s))
+		return s
+	}
+	writeV(fmt.Sprintf("@sa_json_writer_begin_object(%s)", wr))
+	for _, f := range def.fields {
+		fk := def.fkinds[f.name]
+		off := def.offsets[f.name]
+		kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+		kp, kl := saExpandStr(w, kh, nextTemp)
+		switch {
+		case fk == "i32":
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, base, off))
+			isBool := false
+			if fdefs := def.fdefs; fdefs != nil {
+				if tn, ok := fdefs[f.name]; ok {
+					if k, ok := saAnnotKind(tn); ok && k == "bool" {
+						isBool = true
+					}
+				}
+			}
+			if isBool {
+				writeV(fmt.Sprintf("@sa_json_writer_field_bool(%s, &%s, %s, %s)", wr, kp, kl, v))
+			} else {
+				wide := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, v))
+				writeV(fmt.Sprintf("@sa_json_writer_field_i64(%s, &%s, %s, %s)", wr, kp, kl, wide))
+			}
+		case fk == "str":
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", h, base, off))
+			p, l := saExpandStr(w, h, nextTemp)
+			writeV(fmt.Sprintf("@sa_json_writer_field_string(%s, &%s, %s, &%s, %s)", wr, kp, kl, p, l))
+		case fk == "arr":
+			ek, ok := scope.arrFieldElem[def.name+"."+f.name]
+			if !ok || (ek != "i32" && ek != "str") {
+				return "JSON.stringify takes i32/string element arrays (field " + f.name + " is not lowerable yet)"
+			}
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", h, base, off))
+			writeV(fmt.Sprintf("@sa_json_writer_object_field(%s, &%s, %s)", wr, kp, kl))
+			writeV(fmt.Sprintf("@sa_json_writer_begin_array(%s)", wr))
+			ln := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+			data := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, h))
+			i := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+			topL := fmt.Sprintf("L_jo_top_%d", *nextTemp)
+			*nextTemp++
+			bodyL := fmt.Sprintf("L_jo_body_%d", *nextTemp)
+			*nextTemp++
+			endL := fmt.Sprintf("L_jo_end_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("%s:\n", topL))
+			iu := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+			c := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iu, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+			w.Write(fmt.Sprintf("%s:\n", bodyL))
+			el := saArrElemAt(w, data, i, nextTemp)
+			if ek == "str" {
+				ep, elen := saExpandStr(w, el, nextTemp)
+				writeV(fmt.Sprintf("@sa_json_writer_write_string(%s, &%s, %s)", wr, ep, elen))
+			} else {
+				wide := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, el))
+				writeV(fmt.Sprintf("@sa_json_writer_write_i64(%s, %s)", wr, wide))
+			}
+			inext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, inext))
+			w.Write(fmt.Sprintf("  jmp %s\n", topL))
+			w.Write(fmt.Sprintf("  %s:\n", endL))
+			writeV(fmt.Sprintf("@sa_json_writer_end_array(%s)", wr))
+		case fk == "inst":
+			sub, ok := def.fsub[f.name]
+			if !ok {
+				return "JSON.stringify needs a recorded sub layout (field " + f.name + ")"
+			}
+			if visited[sub] {
+				return "JSON.stringify does not support recursive layouts yet"
+			}
+			subDef, ok := scope.classes[sub]
+			if !ok {
+				return "JSON.stringify needs a recorded sub layout (field " + f.name + ")"
+			}
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", h, base, off))
+			writeV(fmt.Sprintf("@sa_json_writer_object_field(%s, &%s, %s)", wr, kp, kl))
+			visited[sub] = true
+			msg := saLowerJSONInstObject(w, h, subDef, scope, nextTemp, wr, visited)
+			delete(visited, sub)
+			if msg != "" {
+				return msg
+			}
+		default:
+			return "JSON.stringify takes i32/string/array/object fields (field " + f.name + " is not lowerable yet)"
+		}
+		saReleaseOwnedTemp(w, scope, kh)
+	}
+	writeV(fmt.Sprintf("@sa_json_writer_end_object(%s)", wr))
+	return ""
+}
+
 // saLowerJSONStringify `JSON.stringify` 标量形（writer 直写后 buffer 拷出
 // 具化新串头；i32→i64、bool、串、null；数组/对象另步；status 码沿既有
 // extern 惯例忽略，见 test free 形）。
+// 局限：null 值字段按其声明种写（null 即 0 柄无种可辨，恒 0 写；JS `null`
+// 应写 `null`，此形另步）。
 func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if a == nil {
 		return "", false, "JSON.stringify takes one argument"
@@ -510,6 +639,13 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 		w.Write(fmt.Sprintf("  %s = call %s\n", s, line))
 		w.Write(fmt.Sprintf("  !%s\n", s))
 		return s
+	}
+	// 对象形（已知布局实例；字段序直写；getters 跳过；递归环拒）。
+	if base, def, msg := saInstBase(a, scope); msg == "" && def != nil {
+		if msg := saLowerJSONInstObject(w, base, def, scope, nextTemp, wr, map[string]bool{}); msg != "" {
+			return "", false, msg
+		}
+		goto finish
 	}
 	// 数组形（i32/串元；嵌套另步；空数组即 `[]`）。
 	if saIsArrValue(a, scope) {

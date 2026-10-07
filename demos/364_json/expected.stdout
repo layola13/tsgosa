@@ -4,3 +4,5 @@ true
 null
 [1,2]
 ["x","yy"]
+{"x":1,"s":"hi"}
+{"ok":true,"pt":{"x":9,"s":"yo"}}
