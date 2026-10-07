@@ -11,5 +11,8 @@ function main(): i32 {
   const g = a.flatMap(((x) => [x]));
   console.log(g.length);
   console.log(g[2]);
+  const h = a.flatMap((x) => { return [x * 100]; });
+  console.log(h.length);
+  console.log(h[2]);
   return 0;
 }
