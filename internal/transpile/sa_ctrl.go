@@ -1658,6 +1658,124 @@ func saLowerDescribeEach(w printer.EmitTextWriter, s *ast.Node, table *ast.Node,
 
 // saLowerEachOuter 分发外层 `test.each(table)(title, fn)`（`it.each` 同；
 // 形不合沿旧路；劫持沿旧路）。
+// saLowerCondRegistration `test.skipIf(c)/runIf(c)` 条件注册（c 须 true/false
+// 字面量；skipIf(true)/runIf(false) 走 skip 形（名+可选回调验形零发射），
+// 反之走普通注册（单串名即 todo 空过，describe 走分组）；非字面量大声拒）。
+func saLowerCondRegistration(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpression, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	inner := ce.Expression.AsCallExpression()
+	pa := inner.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+		return false, false
+	}
+	base, prop := pa.Expression.Text(), pa.Name().Text()
+	if base != "test" && base != "describe" && base != "it" {
+		return false, false
+	}
+	if prop != "skipIf" && prop != "runIf" {
+		return false, false
+	}
+	if !saIsUnresolvedTestName(scope, base) {
+		return false, false
+	}
+	var cargs []*ast.Node
+	if inner.Arguments != nil {
+		cargs = inner.Arguments.Nodes
+	}
+	if len(cargs) != 1 || cargs[0] == nil ||
+		(cargs[0].Kind != ast.KindTrueKeyword && cargs[0].Kind != ast.KindFalseKeyword) {
+		return fail(base + "." + prop + " condition must be a true/false literal")
+	}
+	cond := cargs[0].Kind == ast.KindTrueKeyword
+	run := (prop == "runIf") == cond
+	var oargs []*ast.Node
+	if ce.Arguments != nil {
+		oargs = ce.Arguments.Nodes
+	}
+	if !run {
+		if len(oargs) < 1 || len(oargs) > 2 {
+			return fail(base + " takes a name and an optional callback")
+		}
+		if oargs[0] == nil || (oargs[0].Kind != ast.KindStringLiteral && oargs[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return fail(base + " name must be a string literal")
+		}
+		if len(oargs) == 2 {
+			if _, ok := saCheckTestCallback(oargs[1], base, s, pos, refusals); !ok {
+				return true, false
+			}
+		}
+		return true, true
+	}
+	if len(oargs) == 1 && oargs[0] != nil &&
+		(oargs[0].Kind == ast.KindStringLiteral || oargs[0].Kind == ast.KindNoSubstitutionTemplateLiteral) &&
+		(base == "test" || base == "it") {
+		return true, true
+	}
+	if len(oargs) != 2 {
+		return fail(base + " takes a name and a callback (2 arguments)")
+	}
+	if oargs[0] == nil || (oargs[0].Kind != ast.KindStringLiteral && oargs[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(base + " name must be a string literal")
+	}
+	body, ok := saCheckTestCallback(oargs[1], base, s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	if base == "describe" {
+		if !saRunDescribe(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return true, false
+		}
+		return true, true
+	}
+	if !saInlineTestWithHooks(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return true, false
+	}
+	return true, true
+}
+
+// saLowerSequential `test.sequential(name, cb)` 即串行注册（vitest 串行语义
+// 与就地内联一致；`describe.sequential` 走分组；单串名即 todo 空过）。
+func saLowerSequential(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpression, base string, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	var margs []*ast.Node
+	if ce.Arguments != nil {
+		margs = ce.Arguments.Nodes
+	}
+	if len(margs) == 1 && margs[0] != nil &&
+		(margs[0].Kind == ast.KindStringLiteral || margs[0].Kind == ast.KindNoSubstitutionTemplateLiteral) &&
+		(base == "test" || base == "it") {
+		return true, true
+	}
+	if len(margs) != 2 {
+		return fail(base + ".sequential takes a name and a callback (2 arguments)")
+	}
+	if margs[0] == nil || (margs[0].Kind != ast.KindStringLiteral && margs[0].Kind != ast.KindNoSubstitutionTemplateLiteral) {
+		return fail(base + ".sequential name must be a string literal")
+	}
+	body, ok := saCheckTestCallback(margs[1], base+".sequential", s, pos, refusals)
+	if !ok {
+		return true, false
+	}
+	if base == "describe" {
+		if !saRunDescribe(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+			return true, false
+		}
+		return true, true
+	}
+	if !saInlineTestWithHooks(w, body, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+		return true, false
+	}
+	return true, true
+}
+
 func saLowerEachOuter(w printer.EmitTextWriter, s *ast.Node, ce *ast.CallExpression, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
 		ln, col := pos(s.Pos())
@@ -1807,6 +1925,11 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		if handled, ok := saLowerEachOuter(w, s, ce, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
 			return handled, ok
 		}
+		// `test.skipIf(c)(name, cb)`/`runIf` 条件注册（字面量折叠，step2
+		// `false` 恒假消死臂同形；`describe/it` 同；劫持规则同注册名）。
+		if handled, ok := saLowerCondRegistration(w, s, ce, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); handled {
+			return handled, ok
+		}
 		return false, false
 	}
 	// 成员式 `test.only/skip/todo`（`describe/it` 同）：skip 跳发射（体仅验形）、
@@ -1834,6 +1957,11 @@ func saLowerTestRegistration(w printer.EmitTextWriter, s *ast.Node, isVoid bool,
 		}
 		if prop == "concurrent" {
 			return fail(base + "." + prop + " needs an event loop (not lowerable)")
+		}
+		// `test.sequential` 即串行 test（vitest 串行语义与本仓就地内联一致；
+		// `describe.sequential` 同分组透明；并发另门）。
+		if prop == "sequential" {
+			return saLowerSequential(w, s, ce, base, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		}
 		if prop != "only" && prop != "skip" && prop != "todo" {
 			return false, false
