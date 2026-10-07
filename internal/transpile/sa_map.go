@@ -238,6 +238,29 @@ func saMapArrValKind(vt *ast.Node) string {
 	return "arr"
 }
 
+// saFuncReturnsStrArray 报告裸调用是否为串数组返回函数（签名预扫 "arrStr"；
+// 直接名/`fn:` 别名/link 限定三路同 saCallRetKind 口径；方法调用沿旧门 false）。
+func saFuncReturnsStrArray(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	nm := ce.Expression.Text()
+	if sig, ok := scope.funcs[nm]; ok {
+		return !sig.isVoid && sig.retKind == "arrStr"
+	}
+	if q, linked := saLinkCallee(scope, nm); linked {
+		if sig, ok := scope.funcs[q]; ok {
+			return !sig.isVoid && sig.retKind == "arrStr"
+		}
+	}
+	if k, ok := scope.types[nm]; ok && len(k) > 3 && k[:3] == "fn:" {
+		if sig, ok := scope.funcs[k[3:]]; ok {
+			return !sig.isVoid && sig.retKind == "arrStr"
+		}
+	}
+	return false
+}
+
 // saIsStrArrRvalue 报告右值是否为串元数组句柄（`m.get(k)` 且建表记 "arrStr"；
 // NonNull/括号/as 包装透视；`?.` 由调用方守卫，裸函数返回句柄未记元种仍 false）。
 func saIsStrArrRvalue(e *ast.Node, scope *saScope) bool {
@@ -260,7 +283,15 @@ func saIsStrArrRvalue(e *ast.Node, scope *saScope) bool {
 		return false
 	}
 	ce := e.AsCallExpression()
-	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+	if ce.Expression == nil {
+		return false
+	}
+	// 裸函数调用串数组返回（`get()[i]`；签名预扫记 "arrStr"，见 R3-37a；
+	// 方法调用基沿旧门，link 限定名查定义签名）。
+	if ce.Expression.Kind == ast.KindIdentifier {
+		return saFuncReturnsStrArray(ce, scope)
+	}
+	if ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return false
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()

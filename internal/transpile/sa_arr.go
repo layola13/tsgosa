@@ -932,6 +932,13 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saDeclareOwned(scope, name)
 		saPropArrNest(scope, src, name)
 		saPropArrStr(scope, src, name)
+		// 函数串数组返回绑定记串元（`const sv = get()`；调用柄新鲜无标记，
+		// 签名种为准，与右值下标分支同源）。
+		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+			if saFuncReturnsStrArray(vd.Initializer.AsCallExpression(), scope) {
+				saMarkArrStr(scope, name)
+			}
+		}
 		return true
 	}
 	ln, col := pos(d.Pos())

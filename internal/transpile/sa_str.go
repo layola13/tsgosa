@@ -424,12 +424,16 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return saLowerCheckedIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
 		}
-		// 右值串元数组元素读（`m.get(k)[i]`；柄经数组求值，元种由建表透传标记；
-		// 具名基沿上分支，`?.` 沿旧门；柄用后即释，与下标读位同形）。
+		// 右值串元数组元素读（`m.get(k)[i]`/`get()[i]`；柄经数组求值，元种由建表/
+		// 签名透传标记；具名基沿上分支，`?.` 沿旧门；柄用后即释，与下标读位同形）。
 		if ea.QuestionDotToken == nil && saIsStrArrRvalue(ea.Expression, scope) {
 			h, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
+			}
+			// 新鲜调用柄记串元（具名/借用基 no-op；map 臂建表已记，重记无害）。
+			if saIsTempOp(h) {
+				saMarkArrStr(scope, h)
 			}
 			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 			if msg != "" {
