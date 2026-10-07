@@ -1458,46 +1458,19 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		return saLowerStrIndexChar(w, bp, sel, scope, nextTemp), false, ""
 	case "trim", "trimStart", "trimEnd":
-		// ascii 三件套合成（形状证据：封存 lowerStringMethod:7304-7335；
-		// H14 实锤：旧形 `end_len(orig) - start` 全空串下溢；
-		// 改 sci 自家 STR_TRIM_ASCII 两步合成：先 trimStart 得中片，
-		// 再对中片 trimEnd；trimStart 本形已对（`bl - start`），分支保留）。
-		if method == "trimEnd" {
-			endlen := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_end_len(%s, %s)\n", endlen, bp, bl))
-			saOwnTemp(scope, endlen)
-			out := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, bp))
-			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, endlen))
-			saOwnTemp(scope, out)
-			return out, false, ""
+		// R2-6 回迁映射：修剪语义由 `sci/sa_std/ts_string.sa` `@ts_str_trim`
+		// 实现（mode 由调用点按方法折叠；trimEnd 不计前导只切尾；全空串下溢
+		// 由 extern 内聚 H14）；本侧只做 import + 调用 + 归属。
+		mode := "0"
+		if method == "trimStart" {
+			mode = "1"
+		} else if method == "trimEnd" {
+			mode = "2"
 		}
-		start := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_start_index(%s, %s)\n", start, bp, bl))
-		saOwnTemp(scope, start)
-		midlen := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, %s\n", midlen, bl, start))
-		midptr := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", midptr, bp, start))
-		nptr, nlen := midptr, midlen
-		if method != "trimStart" {
-			endlen := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = call @sa_str_trim_ascii_end_len(%s, %s)\n", endlen, midptr, midlen))
-			saOwnTemp(scope, endlen)
-			nlen = endlen
-		}
+		scope.addImport("sa_std/ts_string.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, nptr))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, nlen))
+		w.Write(fmt.Sprintf("  %s = call @ts_str_trim(%s, %s, %s)\n", out, bp, bl, mode))
 		// 修剪柄归属(返前释放；上游同位缺失，上游另有空操作数错).
 		saOwnTemp(scope, out)
 		return out, false, ""
