@@ -1307,11 +1307,8 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		}
 		switch init.Kind {
 		case ast.KindNumericLiteral:
-			if saIsFloatLit(init.Text()) {
-				ln, col := pos(d.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
-				return true
-			}
+			// 浮字面量记文本（f64 位经字面量直通，用点 i32 位沿旧门拒；
+			// 负号前缀非字面沿旧路；形状证据：上游初值折叠同形）。
 			consts[nm.Text()] = init.Text()
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 			consts[nm.Text()] = init.Text()
@@ -1607,11 +1604,6 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 		}
 		switch init.Kind {
 		case ast.KindNumericLiteral:
-			if saIsFloatLit(init.Text()) {
-				ln, col := pos(mb.decl.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
-				return false
-			}
 			consts[key] = init.Text()
 			folded = true
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
@@ -1828,11 +1820,6 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 			}
 			switch init.Kind {
 			case ast.KindNumericLiteral:
-				if saIsFloatLit(init.Text()) {
-					ln, col := pos(d.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float top-level const is beyond the i32 subset"})
-					return true
-				}
 				consts[ns+"."+vnm.Text()] = init.Text()
 				folded++
 			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
