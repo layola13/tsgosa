@@ -3599,17 +3599,166 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", data, v))
 		return nlen, "i32", ""
 	case "fill":
-		if len(argNodes) != 1 {
-			return "", "", "fill needs 1 argument"
+		if len(argNodes) < 1 || len(argNodes) > 3 {
+			return "", "", "fill takes 1-3 arguments"
 		}
 		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
-		// R1 回迁映射：全域值填充语义由 `sci/sa_std/ts_array.sa`
-		// `@ts_arr_fill` 实现，本侧只做实参门 + import + 直接调用（无新柄）。
-		scope.addImport("sa_std/ts_array.sa")
-		w.Write(fmt.Sprintf("  call @ts_arr_fill(%s, %s)\n", recv, v))
+		if len(argNodes) == 1 {
+			// R1 回迁映射：全域值填充语义由 `sci/sa_std/ts_array.sa`
+			// `@ts_arr_fill` 实现，本侧只做实参门 + import + 直接调用（无新柄）。
+			scope.addImport("sa_std/ts_array.sa")
+			w.Write(fmt.Sprintf("  call @ts_arr_fill(%s, %s)\n", recv, v))
+			return recv, "arr", ""
+		}
+		// 起止填充（缺省 0/len；负值 len 起钳 0；超长空扫天然；与 satsgo
+		// lowerArrayFill:6257 全域循环同骨架；归属 v 值复用不释）。
+		s, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
+		if msg := saCheckIntIndex(scope, s); msg != "" {
+			return "", "", msg
+		}
+		e := ""
+		if len(argNodes) == 3 {
+			var msg string
+			e, msg = saEvalI32(w, argNodes[2], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			if msg := saCheckIntIndex(scope, e); msg != "" {
+				return "", "", msg
+			}
+		}
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+		// 全 i32 域（文本长恒域内；`trunc` 窄化唯一，出入显式）。
+		slen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", slen, ln))
+		// 起位钳位（负 len 起、仍负即 0；超长循环空扫天然）。
+		sb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", sb))
+		sneg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", sneg, s))
+		snegL := fmt.Sprintf("L_fl_neg_%d", *nextTemp)
+		*nextTemp++
+		sposL := fmt.Sprintf("L_fl_pos_%d", *nextTemp)
+		*nextTemp++
+		sjoinL := fmt.Sprintf("L_fl_join_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", sneg, snegL, sposL))
+		w.Write(fmt.Sprintf("%s:\n", snegL))
+		sadj := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", sadj, s, slen))
+		snn := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", snn, sadj))
+		snnL := fmt.Sprintf("L_fl_nn_%d", *nextTemp)
+		*nextTemp++
+		szL := fmt.Sprintf("L_fl_z_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", snn, snnL, szL))
+		w.Write(fmt.Sprintf("%s:\n", snnL))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", sb))
+		w.Write(fmt.Sprintf("  jmp %s\n", sjoinL))
+		w.Write(fmt.Sprintf("%s:\n", szL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", sb, sadj))
+		w.Write(fmt.Sprintf("  jmp %s\n", sjoinL))
+		w.Write(fmt.Sprintf("%s:\n", sposL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", sb, s))
+		w.Write(fmt.Sprintf("  jmp %s\n", sjoinL))
+		w.Write(fmt.Sprintf("%s:\n", sjoinL))
+		beg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", beg, sb))
+		w.Write(fmt.Sprintf("  !%s\n", sb))
+		// 止位钳位（缺省 len；负 len 起、仍负即 0；超长循环空扫天然）。
+		fb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", fb))
+		if e == "" {
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fb, slen))
+		} else {
+			eneg := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", eneg, e))
+			enegL := fmt.Sprintf("L_fl_eneg_%d", *nextTemp)
+			*nextTemp++
+			eposL := fmt.Sprintf("L_fl_epos_%d", *nextTemp)
+			*nextTemp++
+			ejoinL := fmt.Sprintf("L_fl_ejoin_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eneg, enegL, eposL))
+			w.Write(fmt.Sprintf("%s:\n", enegL))
+			eadj := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", eadj, e, slen))
+			enn := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", enn, eadj))
+			ennL := fmt.Sprintf("L_fl_enn_%d", *nextTemp)
+			*nextTemp++
+			ezL := fmt.Sprintf("L_fl_ez_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", enn, ennL, ezL))
+			w.Write(fmt.Sprintf("%s:\n", ennL))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", fb))
+			w.Write(fmt.Sprintf("  jmp %s\n", ejoinL))
+			w.Write(fmt.Sprintf("%s:\n", ezL))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fb, eadj))
+			w.Write(fmt.Sprintf("  jmp %s\n", ejoinL))
+			w.Write(fmt.Sprintf("%s:\n", eposL))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fb, e))
+			w.Write(fmt.Sprintf("  jmp %s\n", ejoinL))
+			w.Write(fmt.Sprintf("%s:\n", ejoinL))
+		}
+		fin := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", fin, fb))
+		w.Write(fmt.Sprintf("  !%s\n", fb))
+		// 填充循环（与 satsgo lowerArrayFill:6257 全域循环同骨架；v 值复用不释）。
+		i := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, beg))
+		topL := fmt.Sprintf("L_fl_top_%d", *nextTemp)
+		*nextTemp++
+		bodyL := fmt.Sprintf("L_fl_body_%d", *nextTemp)
+		*nextTemp++
+		endL := fmt.Sprintf("L_fl_end_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("%s:\n", topL))
+		c1 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c1, i, fin))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c1, bodyL, endL))
+		w.Write(fmt.Sprintf("%s:\n", bodyL))
+		off := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
+		addr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v))
+		inext := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+		inext2 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", inext2, inext))
+		w.Write(fmt.Sprintf("  %s = %s\n", i, inext2))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
 		return recv, "arr", ""
 	case "sort", "toSorted":
 		if cb, _, msg := saArrCallbackNode(argNodes); msg != "" {
