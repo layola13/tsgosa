@@ -2734,36 +2734,14 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 	return old, ""
 }
 
-// saLowerPowOps 整数幂循环核（base**expo，非负指数；形状证据同 saLowerPow）。
-func saLowerPowOps(w printer.EmitTextWriter, base, expo string, nextLabel *int, nextTemp *int) string {
+// saLowerPowOps 整数幂（R3-12 回迁映射：语义由 `sci/sa_std/ts_math.sa`
+// `@ts_math_ipow` 实现，与 Math.pow 同核；形状证据同 saLowerPow）。
+func saLowerPowOps(w printer.EmitTextWriter, base, expo string, scope *saScope, nextLabel *int, nextTemp *int) string {
+	scope.addImport("sa_std/ts_math.sa")
 	res := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 1\n", res))
-	topL := fmt.Sprintf("L_pow_top_%d", *nextLabel)
-	*nextLabel++
-	bodyL := fmt.Sprintf("L_pow_body_%d", *nextLabel)
-	*nextLabel++
-	endL := fmt.Sprintf("L_pow_end_%d", *nextLabel)
-	*nextLabel++
-	ctr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", ctr, expo))
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	cc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", cc, ctr))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cc, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	nr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", nr, res, base))
-	w.Write(fmt.Sprintf("  %s = %s\n", res, nr))
-	nc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nc, ctr))
-	w.Write(fmt.Sprintf("  %s = %s\n", ctr, nc))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_ipow(%s, %s)\n", res, base, expo))
+	saOwnTemp(scope, res)
 	return res
 }
 
@@ -2778,7 +2756,7 @@ func saLowerPow(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saSco
 	if msgE != "" {
 		return "", msgE
 	}
-	return saLowerPowOps(w, base, expo, scope.nextLabel, nextTemp), ""
+	return saLowerPowOps(w, base, expo, scope, scope.nextLabel, nextTemp), ""
 }
 
 // saEvalI32 求 i32 操作数并按需发射临时量（形状证据：封存 lowerBinary:3214-3324

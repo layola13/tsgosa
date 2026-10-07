@@ -319,7 +319,7 @@ func saLowerPowAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
 		return false
 	}
-	res := saLowerPowOps(w, target, r, scope.nextLabel, nextTemp)
+	res := saLowerPowOps(w, target, r, scope, scope.nextLabel, nextTemp)
 	saStoreLocal(w, target, res, scope, nextTemp)
 	return true
 }
@@ -3039,7 +3039,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
 				return false
 			}
-			res := saLowerPowOps(w, target, r, scope.nextLabel, nextTemp)
+			res := saLowerPowOps(w, target, r, scope, scope.nextLabel, nextTemp)
 			saStoreLocal(w, target, res, scope, nextTemp)
 			return true
 		}
