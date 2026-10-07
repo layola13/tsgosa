@@ -2374,6 +2374,14 @@ func saLookupMethod(base *ast.Node, method string, scope *saScope) (*ast.Node, b
 			return nil, false
 		}
 		def = d
+	} else if base != nil && base.Kind == ast.KindSuperKeyword {
+		// `super.m()` 基即基类布局（与调用分发 `saSuperBase` 同源；构造内
+		// super() 调用形不经此口，沿旧门）。
+		bdef, _, msg := saSuperBase(scope)
+		if msg != "" {
+			return nil, false
+		}
+		def = bdef
 	} else {
 		return nil, false
 	}
