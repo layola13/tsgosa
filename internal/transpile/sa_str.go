@@ -1410,6 +1410,101 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		if (need == -1 && len(args) != 2 && len(args) != 3) || (need == 2 && len(args) != 2) {
 			return "", false, method + " needs 2 arguments"
 		}
+		if !saIsStrExpr(args[0], scope) {
+			// 正则首换（replace 仅首个；replaceAll 循环/`$` 模式/函数 repl 另步；
+			// 前片 + 替换 + 后片经 `@ts_str_slice` + concat 组装）。
+			if method == "replaceAll" {
+				return "", false, "String.replaceAll with a RegExp needs /g loop (not lowerable yet)"
+			}
+			if len(args) != 2 {
+				return "", false, "String.replace with a RegExp takes 2 arguments"
+			}
+			if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
+				return "", false, "String.replace $-patterns are not lowerable yet"
+			}
+			rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			// 替换柄 hit 路内求值（自求自释；miss 路无记录，两路汇合态一致）。
+			scope.addImport("sa_std/text/regex.sa")
+			scope.addImport("sa_std/ts_string.sa")
+			m := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, bp, bl))
+			hit := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+			hitL := fmt.Sprintf("L_rpl_hit_%d", *nextTemp)
+			*nextTemp++
+			missL := fmt.Sprintf("L_rpl_miss_%d", *nextTemp)
+			*nextTemp++
+			endL := fmt.Sprintf("L_rpl_end_%d", *nextTemp)
+			*nextTemp++
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", slot))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+			w.Write(fmt.Sprintf("%s:\n", missL))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, bp))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", slot, bl))
+			mfr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", mfr, m))
+			w.Write(fmt.Sprintf("  !%s\n", mfr))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", hitL))
+			// 替换柄 hit 路内求值（自求自释；miss 路无记录，两路汇合态一致）。
+			rp_, msg := strArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+			st := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_regex_group_start(%s, 0)\n", st, m))
+			ml := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", ml, m))
+			fr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+			w.Write(fmt.Sprintf("  !%s\n", fr))
+			se := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", se, st, ml))
+			pre := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, 0, %s, 0)\n", pre, bp, bl, st))
+			saOwnTemp(scope, pre)
+			suf := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, 0)\n", suf, bp, bl, se, bl))
+			saOwnTemp(scope, suf)
+			w.Write(fmt.Sprintf("  !%s\n", st))
+			w.Write(fmt.Sprintf("  !%s\n", ml))
+			acc := saConcatSlices(w, pre, rp_, scope, nextTemp)
+			joined := saConcatSlices(w, acc, suf, scope, nextTemp)
+			jp, jl := saExpandStr(w, joined, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, jp))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", slot, jl))
+			saReleaseOwnedTemp(w, scope, joined)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			oh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
+			ol := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ol, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, oh))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, ol))
+			saOwnTemp(scope, out)
+			return out, false, ""
+		}
 		n, msg := strArg(0)
 		if msg != "" {
 			return "", false, msg
