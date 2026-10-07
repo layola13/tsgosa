@@ -1,0 +1,9 @@
+@import "../demos/323_unannot_scan/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "323_unannot_scan"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 312, 32301)
+    !v
+    return
