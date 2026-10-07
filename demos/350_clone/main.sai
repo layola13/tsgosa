@@ -101,7 +101,7 @@ L_dc_body_5:
   t_48 = add t_39, t_47
   t_49 = add t_44, t_47
   t_50 = load t_48 + 0 as i32
-  t_51 = call @ts_arr_clone_flat(t_50)
+  t_51 = call @ts_arr_clone_deep(t_50)
   store t_49 + 0, t_51 as i32
   t_52 = add t_45, 1
   t_45 = t_52

@@ -1864,9 +1864,13 @@ func saLowerDeepCloneInner(w printer.EmitTextWriter, src, kind string, takeOwn b
 	daddr := fresh()
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, dloop, so))
 	if kind == "deep" {
+		// R3-14 回迁映射：内柄递归由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_clone_deep` 实现（SA 自递归合法已实证）。
 		inner := fresh()
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", inner, saddr))
-		inew := saLowerDeepCloneInner(w, inner, "flat", false, scope, nextTemp)
+		inew := fresh()
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_deep(%s)\n", inew, inner))
+		scope.addImport("sa_std/ts_array.sa")
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, inew))
 	} else {
 		cv := fresh()
