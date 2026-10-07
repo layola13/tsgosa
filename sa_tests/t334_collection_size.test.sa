@@ -1,0 +1,9 @@
+@import "../demos/334_collection_size/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "334_collection_size"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 22, 33401)
+    !v
+    return

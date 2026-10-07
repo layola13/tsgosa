@@ -375,6 +375,25 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	if pa.QuestionDotToken != nil {
 		return "", "optional member access not lowerable"
 	}
+	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		// lib.es2015.collection.d.ts `readonly size: number` 属性形：复用
+		// sa_map.go `size()` 臂同符号（`sci/sa_std/btree_map.sa`/`btree_set.sa`
+		// `sa_btree_{map,set}_len`），本侧只 @import + 调用，零手写。
+		if k, ok := scope.types[pa.Expression.Text()]; ok && (k == "map" || k == "set") {
+			recv := pa.Expression.Text()
+			if k == "map" {
+				scope.addImport("sa_std/btree_map.sa")
+			} else {
+				scope.addImport("sa_std/btree_set.sa")
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_%s_len(&%s)\n", t, k, recv))
+			saOwnTemp(scope, t)
+			return t, ""
+		}
+	}
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
 	}
