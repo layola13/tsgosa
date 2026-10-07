@@ -1,0 +1,9 @@
+@import "../demos/318_poly_param/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "318_poly_param"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 105011, 31801)
+    !v
+    return

@@ -2426,6 +2426,12 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
 					return a.Text(), ""
 				}
+				// 基类形参接派生实参多态（实参类为形参类本身或派生即直传句柄；与声明位 step395 同规：绑定跟初值，用点取决；无关/反向沿旧门）。
+				if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+					if saIsDerivedFrom(scope.classes, k[5:], sig.paramKinds[i][5:]) {
+						return a.Text(), ""
+					}
+				}
 			}
 			// 空字面量即 0 句柄（与 `Box|null` 空吸收同形；封存上游实发
 			// `call @f(0)`；错类沿旧门）。

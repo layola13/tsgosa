@@ -2779,6 +2779,21 @@ func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 
 // saSuperBase 解析方法内 super 基（同接收者；形状证据：封存
 // superBaseForRecv:219-232 + lowerSuperMethodCall:237-250）。
+// saIsDerivedFrom 报告sub 是否为 base 本身或其传统派生（跟 parent 链，防环；形状证据：抽象校验祖先链同形）。
+func saIsDerivedFrom(classes map[string]*saClassDef, sub, base string) bool {
+	for p := sub; p != ""; {
+		if p == base {
+			return true
+		}
+		pb := classes[p]
+		if pb == nil {
+			return false
+		}
+		p = pb.parent
+	}
+	return false
+}
+
 func saSuperBase(scope *saScope) (*saClassDef, string, string) {
 	if scope.thisSelf == "" || scope.thisClass == "" {
 		return nil, "", "super calls are only lowerable inside a subclass method"
