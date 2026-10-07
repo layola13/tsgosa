@@ -6,6 +6,8 @@
 @const str_const_0 = utf8:"k\0"
 @const str_const_1 = utf8:"\n\0"
 @const str_const_2 = utf8:"j\0"
+@const str_const_3 = utf8:"x\0"
+@const str_const_4 = utf8:"yy\0"
 @main() -> i32:
   t_1 = call @sa_btree_map_new()
   m = t_1
@@ -103,6 +105,125 @@ L_idx_end_1:
   t_45 = load t_43 + 8 as u64
   call @sa_print_bytes(&t_44, t_45)
   !t_43
+  t_46 = call @sa_btree_map_new()
+  sm = t_46
+  t_47 = alloc 16
+  store t_47 + 0, &str_const_3 as ptr
+  store t_47 + 8, 1 as u64
+  t_48 = alloc 16
+  store t_48 + 0, &str_const_4 as ptr
+  store t_48 + 8, 2 as u64
+  t_49 = alloc 16
+  t_50 = alloc 8
+  t_51 = add t_50, 0
+  store t_51 + 0, t_47 as i32
+  t_52 = add t_50, 4
+  store t_52 + 0, t_48 as i32
+  store t_49 + 0, t_50 as ptr
+  store t_49 + 8, 2 as u64
+  !t_50
+  sa = t_49
+  t_53 = alloc 16
+  store t_53 + 0, &str_const_0 as ptr
+  store t_53 + 8, 1 as u64
+  call @sa_btree_map_insert(&sm, &t_53, sa)
+  t_54 = alloc 16
+  store t_54 + 0, &str_const_0 as ptr
+  store t_54 + 8, 1 as u64
+  t_55 = call @sa_btree_map_get(&sm, &t_54)
+  t_56 = alloc 8
+  t_57 = load t_55 + 8 as u64
+  t_58 = ult 1, t_57
+  br t_58 -> L_idx_ok_6, L_idx_oob_5
+L_idx_ok_6:
+  t_59 = load t_55 + 0 as ptr
+  t_60 = mul 1, 4
+  t_61 = add t_59, t_60
+  t_62 = load t_61 + 0 as i32
+  store t_56 + 0, t_62 as ptr
+  jmp L_idx_end_4
+L_idx_oob_5:
+  store t_56 + 0, 0 as ptr
+  jmp L_idx_end_4
+L_idx_end_4:
+  t_63 = load t_56 + 0 as i32
+  !t_56
+  !t_55
+  t_64 = sext t_63 as i64
+  t_65 = alloc 64
+  t_66 = alloc 8
+  t_67 = call @sa_fmt_i64_into(t_64, 10, t_65, 64, &t_66)
+  t_68 = load t_66 + 0 as u64
+  t_69 = alloc 16
+  store t_69 + 0, t_65 as ptr
+  store t_69 + 8, t_68 as u64
+  !t_67
+  t_70 = load t_69 + 0 as ptr
+  t_71 = load t_69 + 8 as u64
+  call @sa_print_bytes(&t_70, t_71)
+  !t_69
+  t_72 = alloc 16
+  store t_72 + 0, &str_const_1 as ptr
+  store t_72 + 8, 1 as u64
+  t_73 = load t_72 + 0 as ptr
+  t_74 = load t_72 + 8 as u64
+  call @sa_print_bytes(&t_73, t_74)
+  !t_72
+  t_75 = alloc 16
+  store t_75 + 0, &str_const_0 as ptr
+  store t_75 + 8, 1 as u64
+  t_76 = call @sa_btree_map_get(&sm, &t_75)
+  sv = t_76
+  t_77 = alloc 8
+  t_78 = load sv + 8 as u64
+  t_79 = ult 0, t_78
+  br t_79 -> L_idx_ok_9, L_idx_oob_8
+L_idx_ok_9:
+  t_80 = load sv + 0 as ptr
+  t_81 = mul 0, 4
+  t_82 = add t_80, t_81
+  t_83 = load t_82 + 0 as i32
+  store t_77 + 0, t_83 as ptr
+  jmp L_idx_end_7
+L_idx_oob_8:
+  store t_77 + 0, 0 as ptr
+  jmp L_idx_end_7
+L_idx_end_7:
+  t_84 = load t_77 + 0 as i32
+  !t_77
+  t_85 = load t_84 + 8 as u64
+  t_86 = sext t_85 as i64
+  t_87 = alloc 64
+  t_88 = alloc 8
+  t_89 = call @sa_fmt_i64_into(t_86, 10, t_87, 64, &t_88)
+  t_90 = load t_88 + 0 as u64
+  t_91 = alloc 16
+  store t_91 + 0, t_87 as ptr
+  store t_91 + 8, t_90 as u64
+  !t_89
+  t_92 = load t_91 + 0 as ptr
+  t_93 = load t_91 + 8 as u64
+  call @sa_print_bytes(&t_92, t_93)
+  !t_91
+  t_94 = alloc 16
+  store t_94 + 0, &str_const_1 as ptr
+  store t_94 + 8, 1 as u64
+  t_95 = load t_94 + 0 as ptr
+  t_96 = load t_94 + 8 as u64
+  call @sa_print_bytes(&t_95, t_96)
+  !t_94
+  !t_88
+  !t_87
+  !sv
+  !t_75
+  !t_66
+  !t_65
+  !t_54
+  !t_53
+  !sa
+  !t_48
+  !t_47
+  !sm
   !t_37
   !t_36
   !t_25

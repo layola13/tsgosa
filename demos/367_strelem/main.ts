@@ -5,5 +5,8 @@ function main(): i32 {
   console.log(a[1]);
   console.log(c.length);
   console.log(c + "!");
+  if (c == "x") {
+    console.log(1);
+  }
   return 0;
 }

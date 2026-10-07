@@ -2,6 +2,8 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/ts_string.sa"
+@import "sa_std/control.sal"
 @const str_const_0 = utf8:"official\0"
 @const str_const_1 = utf8:"x\0"
 @const str_const_2 = utf8:"\n\0"
@@ -127,6 +129,42 @@ L_idx_end_4:
   t_58 = load t_56 + 8 as u64
   call @sa_print_bytes(&t_57, t_58)
   !t_56
+  t_59 = alloc 16
+  store t_59 + 0, &str_const_1 as ptr
+  store t_59 + 8, 1 as u64
+  t_60 = load c + 0 as ptr
+  t_61 = load c + 8 as u64
+  t_62 = load t_59 + 0 as ptr
+  t_63 = load t_59 + 8 as u64
+  t_64 = call @ts_str_equals(t_60, t_61, t_62, t_63)
+  t_65 = add t_64, 0
+  !t_64
+  EXPAND IF_TRUE t_65, L_then_7, L_endif_9
+L_then_7:
+  t_66 = sext 1 as i64
+  t_67 = alloc 64
+  t_68 = alloc 8
+  t_69 = call @sa_fmt_i64_into(t_66, 10, t_67, 64, &t_68)
+  t_70 = load t_68 + 0 as u64
+  t_71 = alloc 16
+  store t_71 + 0, t_67 as ptr
+  store t_71 + 8, t_70 as u64
+  !t_69
+  t_72 = load t_71 + 0 as ptr
+  t_73 = load t_71 + 8 as u64
+  call @sa_print_bytes(&t_72, t_73)
+  !t_71
+  t_74 = alloc 16
+  store t_74 + 0, &str_const_2 as ptr
+  store t_74 + 8, 1 as u64
+  t_75 = load t_74 + 0 as ptr
+  t_76 = load t_74 + 8 as u64
+  call @sa_print_bytes(&t_75, t_76)
+  !t_74
+  !t_68
+  !t_67
+L_endif_9:
+  !t_59
   !t_36
   !t_35
   !c
