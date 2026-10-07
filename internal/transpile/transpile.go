@@ -1096,6 +1096,15 @@ func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink, pos func(
 			// 对象形由 saHarvestDefaultObject 收割（hook A），此处无码。
 			continue
 		}
+		// 标识形初始绑定直落（`export default add`：同件 harvest 复用签名，defLocal 守限定名后缀；w2 实证；非函数/箭头名沿旧门；命名空间别名下探旧路）239 实证）。
+		if ex.Kind == ast.KindIdentifier {
+			if _, dup := link.harvest["default"]; !dup {
+				if hv, ok := link.harvest[ex.Text()]; ok {
+					link.harvest["default"] = saProgFunc{sig: hv.sig, exported: true, defLocal: ex.Text(), isArrow: hv.isArrow}
+					continue
+				}
+			}
+		}
 		if ex.Kind != ast.KindIdentifier {
 			ln, col := pos(ex.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "non-identifier default export is not lowerable"})
