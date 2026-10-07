@@ -2581,6 +2581,14 @@ func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
 		}
 	} else {
 		w, zero = "i32", true
+		if vd.Type != nil {
+			// 无初值串注解（`let s: string`/`declare` 成员）：空串物化，
+			// 读未写得 ""（注册表零填充 + 串标志恒置位，空串亦物化口径）；
+			// 写后读与局部 `let s: string` 零柄一致。
+			if k, ok2 := saAnnotKind(vd.Type); ok2 && k == "str" {
+				w, lit = "str", ""
+			}
+		}
 	}
 	if vd.Type != nil {
 		k, ok2 := saAnnotKind(vd.Type)
@@ -2594,14 +2602,11 @@ func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
 			return "", "", false, false
 		}
 	}
-	if w == "str" && vd.Initializer == nil {
-		return "", "", false, false
-	}
 	return w, lit, zero, true
 }
 
 // saModClaimName 判定单 declarator 是否归槽（具名 + 文件内被赋值 + `let`/`var` +
-// i32/串初值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
+// i32/串初值或串注解零值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
 func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool) (string, string, bool) {
 	if vd == nil {
 		return "", "", false
