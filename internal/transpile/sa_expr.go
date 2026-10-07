@@ -1574,19 +1574,6 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	return "", false
 }
 
-// saCallRetFn 取同文件函数返回别名目标（`(): Fn` 单 return 箭头直传登记；
-// 本名直调；link/别名被调/定义在后沿旧门）。
-func saCallRetFn(ce *ast.CallExpression, scope *saScope) (string, bool) {
-	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
-		return "", false
-	}
-	sig, ok := scope.funcs[ce.Expression.Text()]
-	if !ok || sig.retKind != "fn" || sig.retFn == "" {
-		return "", false
-	}
-	return sig.retFn, true
-}
-
 // saLowerProjCall lowers builtin-module projected calls (fs.readFile now; other surfaces
 // refuse loudly until their step; cf emitProjCall + StdProjectionTable).
 // saProjTable maps one fs/net surface to its projection contract (cf StdProjectionTable:

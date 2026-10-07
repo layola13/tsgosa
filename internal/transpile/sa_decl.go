@@ -742,26 +742,6 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclareOwned(scope, name)
 			return true
 		}
-		// 函数值返回调用按别名建种（`let f = mk()`；定义侧单 return 箭头
-		// 直传登记 retFn；占位 temp 用后即释，名纯记种无落字，与箭头
-		// 绑定同形；多 return 异构/定义在后/非 fn 返回沿旧门拒）。
-		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && k == "fn" {
-			op, voidCall, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
-			if msg != "" || voidCall {
-				ln, col := pos(init.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
-				return false
-			}
-			gen, ok := saCallRetFn(init.AsCallExpression(), scope)
-			if !ok {
-				ln, col := pos(init.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value return has no recorded target (define it before use)"})
-				return false
-			}
-			saReleaseOwnedTemp(w, scope, op)
-			scope.types[name] = "fn:" + gen
-			return true
-		}
 	}
 	if init.Kind == ast.KindTrueKeyword || init.Kind == ast.KindFalseKeyword {
 		op, msg := saEvalBool(w, init, scope, pos, refusals, nextTemp)
@@ -1240,11 +1220,6 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 			return inst, true
 		}
 		return "", false
-	}
-	if saIsFunctionAnnotation(t, aliasOf) {
-		// 函数值返回记 fn 种（定义侧单 return 箭头直传登记别名，
-		// 调用侧绑定；`-> i32` 占位后缀见 saSigRetSuffix 默认臂）。
-		return "fn", true
 	}
 	if t.Kind != ast.KindTypeReference {
 		return "", false
@@ -2520,56 +2495,6 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	// 局部名记别名（签名体前已入表，见上）。
 	scope.types[name] = "fn:" + gen
 	return true
-}
-
-// saLowerFnReturn 函数值返回（`(): Fn` 单 return 箭头/函数表达式直传）：
-// 合成空闲名复用 saLowerLocalArrow 出 out-of-line 被调 + 别名，gen 记入
-// funcs 表 retFn 供调用侧声明绑定；具名透传/多 return 异构/匿名域
-// （curFunc 为空）大声拒，禁静默错码。
-func saLowerFnReturn(w printer.EmitTextWriter, s *ast.Node, expr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (bool, bool) {
-	refuse := func(n *ast.Node, msg string) bool {
-		ln, col := pos(n.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-		return false
-	}
-	at := s
-	if expr != nil {
-		at = expr
-	}
-	if expr == nil || (expr.Kind != ast.KindArrowFunction && expr.Kind != ast.KindFunctionExpression) {
-		return refuse(at, "function return needs an arrow or function expression value (named passthrough is Phase 2)"), true
-	}
-	if scope.curFunc == "" {
-		return refuse(at, "function value return outside a named function is not lowerable"), true
-	}
-	synth := "__retfn"
-	for {
-		if _, taken := scope.types[synth]; !taken {
-			break
-		}
-		synth += "_"
-	}
-	if !saLowerLocalArrow(w, synth, expr, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp) {
-		return false, true
-	}
-	gen, ok := scope.types[synth]
-	delete(scope.types, synth)
-	if !ok || !strings.HasPrefix(gen, "fn:") {
-		return refuse(at, "function value return binding failed"), true
-	}
-	gen = strings.TrimPrefix(gen, "fn:")
-	sig, ok := scope.funcs[scope.curFunc]
-	if !ok {
-		return refuse(at, "function value return needs a recorded signature"), true
-	}
-	if sig.retFn != "" && sig.retFn != gen {
-		return refuse(at, "multiple function value returns need a single target"), true
-	}
-	sig.retFn = gen
-	scope.funcs[scope.curFunc] = sig
-	saReleaseExceptOp(w, scope, "0")
-	w.Write("  ret 0\n")
-	return true, false
 }
 
 // saSigRetSuffix 返回签名后缀（string/inst/arr（含串元 arrStr）句柄即 ptr，
