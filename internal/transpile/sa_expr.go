@@ -3009,6 +3009,33 @@ func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression,
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = sub 0, %s\n", t, arg))
 		return t, ""
+	case ast.KindPlusToken:
+		// 一元正号即恒等（i32 操作数直通；串等非 i32 沿既有记种门拒，
+		// 禁隐式 `Number(str)` 转换；新鲜临时量与 `-x` 臂同纪律）。
+		arg, msg := saEvalI32(w, un.Operand, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if msg := saCheckI32Value(scope, arg); msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", t, arg))
+		return t, ""
+	case ast.KindTildeToken:
+		// 按位非即 `xor x, -1`（二元 `^` 现货助记符同形；记种门同 `-x` 臂）。
+		arg, msg := saEvalI32(w, un.Operand, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if msg := saCheckI32Value(scope, arg); msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = xor %s, -1\n", t, arg))
+		return t, ""
 	case ast.KindExclamationToken:
 		var arg string
 		if un.Operand != nil && un.Operand.Kind == ast.KindIdentifier {
