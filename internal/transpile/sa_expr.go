@@ -485,6 +485,63 @@ func saLowerIsNaNFinite(w printer.EmitTextWriter, label string, ce *ast.CallExpr
 	return "1", false, ""
 }
 
+// saLowerBooleanArg `Boolean(x)` 真值（字面量折叠 + 具名读；调用形返
+// done=false 由调用方拒；读无副作用形不落字直接折叠）。
+func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, nextTemp *int) (string, bool, string) {
+	if a == nil {
+		return "", false, "Boolean takes one argument"
+	}
+	switch a.Kind {
+	case ast.KindNullKeyword:
+		return "0", true, ""
+	case ast.KindTrueKeyword:
+		return "1", true, ""
+	case ast.KindFalseKeyword:
+		return "0", true, ""
+	case ast.KindNumericLiteral:
+		if a.Text() == "0" {
+			return "0", true, ""
+		}
+		return "1", true, ""
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		if len(a.Text()) == 0 {
+			return "0", true, ""
+		}
+		return "1", true, ""
+	case ast.KindVoidExpression:
+		return "0", true, ""
+	case ast.KindIdentifier:
+		if a.Text() == "undefined" {
+			if _, ok := scope.types["undefined"]; !ok {
+				return "0", true, ""
+			}
+		}
+		k, ok := scope.types[a.Text()]
+		if !ok {
+			return "", false, "Boolean of unbound name " + a.Text()
+		}
+		switch {
+		case k == "i32" || k == "bool":
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, a.Text()))
+			return out, true, ""
+		case k == "str":
+			_, l := saExpandStr(w, a.Text(), nextTemp)
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, l))
+			return out, true, ""
+		case k == "arr" || k == "map" || k == "set" || k == "date" || k == "regex" || strings.HasPrefix(k, "inst:"):
+			// 对象/句柄恒真（读无副作用，不落字）。
+			return "1", true, ""
+		default:
+			return "", false, "Boolean of " + k + " is not lowerable yet"
+		}
+	}
+	return "", false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
@@ -2348,6 +2405,26 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		// lib.es5.d.ts 别名）。
 		if name == "isNaN" || name == "isFinite" {
 			return saLowerIsNaNFinite(w, name, ce, scope, pos, refusals, nextTemp)
+		}
+		// Boolean(x) 真值转换（lib.es5 全局；v1 接字面量 + 具名：
+		// null/undefined/void/0/"" /false 即 0，非零数/true/非空串即 1；
+		// i32/bool 具名 `ne 0`，串具名 len 判空，句柄具名恒真（读无副作用）；
+		// 调用形另步；`Boolean(-0)` 经 i32 求值恒 0 正确）。
+		if name == "Boolean" {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "Boolean takes one argument"
+			}
+			if op, done, msg := saLowerBooleanArg(w, argNodes[0], scope, nextTemp); msg != "" || done {
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
+			}
+			return "", false, "Boolean takes a literal or a bound value (call results are not lowerable yet)"
 		}
 		// btoa/atob bare globals lower through deno.sai without import
 		// (Web globals; strings only; shape evidence: upstream stdlib
