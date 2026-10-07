@@ -3403,14 +3403,24 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
-		// 默认导出匿名函数具名 `<anon>` 发射（不可调用；上游实发 `@<anon>`
-		// 同形；其余匿名形沿旧门）。
+		// 默认导出匿名函数具名 `default` 发射（不可调用：预扫跳过无名函数，
+		// 无调用方可寻址；`default` 为保留字，永不与用户函数重名；命名空间
+		// 成员要求具名（saFlattenNsMembers），故只走顶层 forceName="" 路。
+		// 上游实发 `@<anon>` 含非法标识符字符，`sa check` 判 ForbiddenSyntax
+		//（上游有病类，见 X-radix/X-decoysweep 定案口径），本仓取合法名，
+		// 有意分歧；其余匿名形沿旧门；重默认按 tsc 口径大声拒）。
 		if !ast.HasModifier(st, ast.ModifierFlagsDefault) {
 			ln, col := pos(st.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "anonymous function refused"})
 			return
 		}
-		name, ok = "<anon>", true
+		if _, dup := funcs["default"]; dup {
+			ln, col := pos(st.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate default export"})
+			return
+		}
+		funcs["default"] = saFuncSig{}
+		name, ok = "default", true
 	}
 	params, ok := saParamNames(fn)
 	if !ok {

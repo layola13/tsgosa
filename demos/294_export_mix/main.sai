@@ -4,7 +4,7 @@
 @import "sa_std/string.sai"
 @const str_const_0 = utf8:"number\0"
 @const str_const_1 = utf8:"\n\0"
-@<anon>() -> i32:
+@default() -> i32:
   ret 1
 @main__user() -> i32:
   t_1 = alloc 8
