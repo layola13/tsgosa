@@ -3604,9 +3604,10 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
 		saDeclareOwned(scope, p)
 	}
-	// Record 形参值种播种（读侧按表记种；无表恒 i32）。
+	// Record 形参值种播种（读侧按表记种；无表恒 i32）+ 串元数组形参标记。
 	if fn.Parameters != nil {
 		saSeedParamMapVals(fn.Parameters.Nodes, paramKinds, classes, scope)
+		saSeedParamArrStr(fn.Parameters.Nodes, paramKinds, scope)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒；
 	// 空体亦展开，与上游空体 drain 同形）。

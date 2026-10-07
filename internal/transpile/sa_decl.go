@@ -1996,6 +1996,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	// Record 形参值种播种（读侧按表记种；无表恒 i32；与函数序同形）。
 	if pl := arrow.ParameterList(); pl != nil {
 		saSeedParamMapVals(pl.Nodes, kinds, classes, scope)
+		saSeedParamArrStr(pl.Nodes, kinds, scope)
 	}
 	if len(arrowPendings) > 0 {
 		if !saDrainDestructuredParams(w, arrowPendings, scope, pos, refusals, nextLabel, nextTemp) {

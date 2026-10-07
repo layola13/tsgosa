@@ -44,6 +44,30 @@ func saPropArrStr(scope *saScope, from, to string) {
 	}
 }
 
+// saSeedParamArrStr 播形参串元标记（`a: string[]` 按注解记 arrStr；
+// 无注解/i32 数组不记，读侧沿旧门；函数/箭头序同形共用，见 saSeedParamMapVals）。
+func saSeedParamArrStr(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
+	for _, pn := range paramNodes {
+		if pn == nil {
+			continue
+		}
+		pd := pn.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || kinds[nm.Text()] != "arr" {
+			continue
+		}
+		if pd.Type == nil {
+			continue
+		}
+		if saIsStringArrayAnnot(pd.Type) {
+			saMarkArrStr(scope, nm.Text())
+		}
+	}
+}
+
 // saMarkArrStr records a string-element array handle (map init inline).
 func saMarkArrStr(scope *saScope, name string) {
 	if name == "" {
