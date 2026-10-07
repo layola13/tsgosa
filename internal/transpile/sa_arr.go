@@ -1662,8 +1662,8 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 			}
 			return op, ""
 		}
-		// 同文件数组函数返回句柄直传（`const a = get()`；签名预扫记 arr）。
-		if k, ok := saCallRetKind(ce, scope); ok && k == "arr" {
+		// 同文件数组函数返回句柄直传（`const a = get()`；签名预扫记 arr/arrStr）。
+		if k, ok := saCallRetKind(ce, scope); ok && (k == "arr" || k == "arrStr") {
 			op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg

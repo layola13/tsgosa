@@ -3234,9 +3234,13 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		if k, ok := saAnnotKind(t); ok && k == "f64" {
 			return "f64", true
 		}
-		// `Array<T>` 返回即句柄（声明位泛型句柄同形；元种擦除）。
+		// `Array<T>` 返回即句柄（声明位泛型句柄同形；串元记 "arrStr"，其余元种擦除）。
 		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
 			ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Array" {
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 &&
+				ref.TypeArguments.Nodes[0] != nil && ref.TypeArguments.Nodes[0].Kind == ast.KindStringKeyword {
+				return "arrStr", true
+			}
 			return "arr", true
 		}
 		return "", false
@@ -3261,7 +3265,13 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		}
 		return "boolean", true
 	case ast.KindArrayType, ast.KindTupleType:
-		// 数组/元组返回即句柄（上游实发 `-> ptr`；调用点按 arr 绑定）。
+		// 数组/元组返回即句柄（上游实发 `-> ptr`；调用点按 arr 绑定；
+		// 串元数组记 "arrStr"，调用点凭此走串位，其余沿旧 "arr"）。
+		if t.Kind == ast.KindArrayType {
+			if el := t.AsArrayTypeNode().ElementType; el != nil && el.Kind == ast.KindStringKeyword {
+				return "arrStr", true
+			}
+		}
 		return "arr", true
 	case ast.KindTypeOperator:
 		// `readonly T[]` 返回解包（可变拷贝语义；注解核同形）。

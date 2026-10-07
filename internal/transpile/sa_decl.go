@@ -670,8 +670,8 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
-		// 同文件数组函数返回句柄（`const a = get()`；签名预扫记 arr）。
-		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && k == "arr" {
+		// 同文件数组函数返回句柄（`const a = get()`；签名预扫记 arr/arrStr）。
+		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && (k == "arr" || k == "arrStr") {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
 		if saCallIsStr(init.AsCallExpression(), scope) && !saStrCallIsI32(init.AsCallExpression(), scope) {
@@ -2405,10 +2405,10 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	return true
 }
 
-// saSigRetSuffix 返回签名后缀（string/inst 句柄即 ptr，其余 i32；
-// 封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
+// saSigRetSuffix 返回签名后缀（string/inst/arr（含串元 arrStr）句柄即 ptr，
+// 其余 i32；封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
 func saSigRetSuffix(retKind string) string {
-	if retKind == "string" || retKind == "map" || retKind == "arr" || strings.HasPrefix(retKind, "inst:") {
+	if retKind == "string" || retKind == "map" || retKind == "arr" || retKind == "arrStr" || strings.HasPrefix(retKind, "inst:") {
 		return " -> ptr"
 	}
 	// f64 直通（上游实发 `-> f64`；形参 `saSigParamType` 同形在先）。
