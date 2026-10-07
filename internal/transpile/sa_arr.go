@@ -369,6 +369,12 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp), ""
 }
 
+// saJoinAccumulatorMsg 为 join 精确拒因（求值核与 `.length` 调用基共用一文；
+// H-join：分隔符分支合并需 move 感知归属，单归属 SSA 下无正确形；
+// 旧 lowering 任何用例皆 PhiStateConflict 陷阱；上游 p8/p9 形实发无效
+// .sai（PhiStateConflict/FallthroughForbidden），薄口拒收正确不移植）。
+const saJoinAccumulatorMsg = "join needs branch-merged string accumulator (beyond single-owner SSA)"
+
 // saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
@@ -429,6 +435,15 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
 			return t, ""
+		}
+		// join 调用基报精确拒因（saArrValueOf 只回笼统 `not an array expression`；
+		// 求值核同文，见 saJoinAccumulatorMsg）。
+		if ce := pa.Expression.AsCallExpression(); ce != nil && ce.Expression != nil &&
+			ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			if opa := ce.Expression.AsPropertyAccessExpression(); opa != nil && opa.Name() != nil &&
+				opa.Name().Text() == "join" {
+				return "", saJoinAccumulatorMsg
+			}
 		}
 	}
 	// Map/Set 用 `.size()` 方法（属性形大声拒）。
@@ -3593,7 +3608,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) > 1 {
 			return "", "", "join takes at most 1 argument"
 		}
-		return "", "", "join needs branch-merged string accumulator (beyond single-owner SSA)"
+		return "", "", saJoinAccumulatorMsg
 	case "copyWithin":
 		if len(argNodes) < 1 {
 			return "", "", "copyWithin needs 1 argument"
