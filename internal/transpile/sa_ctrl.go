@@ -3201,7 +3201,12 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	// discriminant i32 优先、败则串、再败则 bool（与 case 值同门 saEvalSwitchVal）。
 	disc, msg := saEvalSwitchVal(w, sw.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		ln, col := pos(s.Pos())
+		// H1b 第三批（step402 同例）：判别位。
+		dpos := s.Pos()
+		if sw.Expression != nil {
+			dpos = sw.Expression.Pos()
+		}
+		ln, col := pos(dpos)
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported switch discriminant: " + msg})
 		return false
 	}
