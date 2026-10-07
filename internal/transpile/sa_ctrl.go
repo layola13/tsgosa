@@ -1207,6 +1207,31 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 			saReleaseOwnedTemp(w, scope, recv)
 			return booleanize(failCmp, hit, "0", nil)
 		}
+		// `toContain` 数组形：映射 `arr.includes(v)` 同底座 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_scan`（includes 模式回 1/0；sa_arr.go includes 分支同参同形）；
+		// 串元数组须内容比（无底座）、针值记种门同 includes，皆大声拒。
+		if matcher == "toContain" && !saIsStrExpr(iargs[0], scope) {
+			if iargs[0].Kind == ast.KindIdentifier && scope.arrStr != nil && scope.arrStr[iargs[0].Text()] {
+				return fail("expect().toContain on string arrays needs content equality (no backend)")
+			}
+			h, hmsg := saArrValueOf(w, iargs[0], scope, pos, refusals, nextTemp)
+			if hmsg != "" {
+				return fail(hmsg)
+			}
+			want, msg := saEvalI32(w, margs[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail(msg)
+			}
+			if msg := saCheckI32Value(scope, want); msg != "" {
+				return fail(msg)
+			}
+			scope.addImport("sa_std/ts_array.sa")
+			hit := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_arr_scan(%s, %s, 0, 0, 0, 0)\n", hit, h, want))
+			saOwnTemp(scope, hit)
+			return booleanize(failCmp, hit, "0", []string{hit, h})
+		}
 		// `toMatch` 串形即子串（含 `toContain` 同形）。
 		scope.addImport("sa_std/string.sai")
 		ah, msg := saEvalStr(w, iargs[0], scope, pos, refusals, nextTemp)

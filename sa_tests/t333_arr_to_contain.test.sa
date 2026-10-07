@@ -1,0 +1,9 @@
+@import "../demos/333_arr_to_contain/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "333_arr_to_contain"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 2, 33301)
+    !v
+    return
