@@ -1711,7 +1711,18 @@ func saIsArrayCtor(e *ast.Node) bool {
 	}
 	if e.Kind == ast.KindCallExpression {
 		ce := e.AsCallExpression()
-		return ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "Array"
+		if ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "Array" {
+			return true
+		}
+		// `Array.of(...)` 元素式（单数值参亦为元）。
+		if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" &&
+				pa.Name() != nil && pa.Name().Text() == "of" && pa.QuestionDotToken == nil {
+				return true
+			}
+		}
+		return false
 	}
 	if e.Kind == ast.KindNewExpression {
 		ne := e.AsNewExpression()
@@ -1738,7 +1749,16 @@ func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos
 	if isNew && len(argNodes) != 1 {
 		return "", "new expressions other than new Map() / new Array(n) / new Date() are not lowerable"
 	}
-	if len(argNodes) == 1 {
+	// `Array.of` 元素式：单参亦为元（与 `Array(n)` 为长相别；零参即空数组）。
+	of := false
+	if e.Kind == ast.KindCallExpression {
+		if ce := e.AsCallExpression(); ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			of = pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" &&
+				pa.Name() != nil && pa.Name().Text() == "of"
+		}
+	}
+	if len(argNodes) == 1 && !of {
 		// 单参恒为长（`Array(5)` 即长 5；元素式请用字面量；
 		// 形状证据：封存调用式 newSizedArray 分支 + lowerNew:8603）。
 		v, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp)
