@@ -56,642 +56,546 @@
   !t_21
   t_22 = call @sa_json_writer_free(^t_3)
   !t_22
-  t_23 = sext t_20 as i64
-  t_24 = alloc 64
-  t_25 = alloc 8
-  t_26 = call @sa_fmt_i64_into(t_23, 10, t_24, 64, &t_25)
-  t_27 = load t_25 + 0 as u64
-  t_28 = alloc 16
-  store t_28 + 0, t_24 as ptr
-  store t_28 + 8, t_27 as u64
-  !t_26
-  t_29 = load t_28 + 0 as ptr
-  t_30 = load t_28 + 8 as u64
-  call @sa_print_bytes(&t_29, t_30)
+  t_23 = load t_20 + 0 as ptr
+  t_24 = load t_20 + 8 as u64
+  call @sa_print_bytes(&t_23, t_24)
+  !t_20
+  t_25 = alloc 16
+  store t_25 + 0, &str_const_1 as ptr
+  store t_25 + 8, 1 as u64
+  t_26 = load t_25 + 0 as ptr
+  t_27 = load t_25 + 8 as u64
+  call @sa_print_bytes(&t_26, t_27)
+  !t_25
+  t_28 = alloc 8
+  t_29 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_28)
+  t_30 = load t_28 + 0 as ptr
   !t_28
+  !t_29
   t_31 = alloc 16
-  store t_31 + 0, &str_const_1 as ptr
+  store t_31 + 0, &str_const_2 as ptr
   store t_31 + 8, 1 as u64
   t_32 = load t_31 + 0 as ptr
   t_33 = load t_31 + 8 as u64
-  call @sa_print_bytes(&t_32, t_33)
-  !t_31
-  t_34 = alloc 8
-  t_35 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_34)
-  t_36 = load t_34 + 0 as ptr
+  t_34 = call @sa_json_writer_write_string(t_30, &t_32, t_33)
   !t_34
+  t_35 = alloc 8
+  t_36 = call @sa_json_writer_finish(t_30, &t_35)
+  !t_36
+  t_37 = load t_35 + 0 as ptr
   !t_35
-  t_37 = alloc 16
-  store t_37 + 0, &str_const_2 as ptr
-  store t_37 + 8, 1 as u64
-  t_38 = load t_37 + 0 as ptr
-  t_39 = load t_37 + 8 as u64
-  t_40 = call @sa_json_writer_write_string(t_36, &t_38, t_39)
-  !t_40
-  t_41 = alloc 8
-  t_42 = call @sa_json_writer_finish(t_36, &t_41)
-  !t_42
-  t_43 = load t_41 + 0 as ptr
-  !t_41
-  t_44 = call @sa_json_buffer_data(t_43)
-  t_45 = call @sa_json_buffer_len(t_43)
-  t_46 = alloc 16
-  store t_46 + 0, &str_const_0 as ptr
-  store t_46 + 8, 0 as u64
-  t_47 = alloc 16
-  store t_47 + 0, t_44 as ptr
-  store t_47 + 8, t_45 as u64
-  !t_44
-  !t_45
-  t_48 = load t_46 + 0 as ptr
-  t_49 = load t_46 + 8 as u64
-  t_50 = load t_47 + 0 as ptr
-  t_51 = load t_47 + 8 as u64
-  t_52 = call @sa_string_concat(t_48, t_49, t_50, t_51)
-  t_53 = call @sa_fmt_buffer_data(t_52)
-  t_54 = call @sa_fmt_buffer_len(t_52)
-  t_55 = alloc 16
-  store t_55 + 0, t_53 as ptr
-  store t_55 + 8, t_54 as u64
-  !t_53
-  !t_54
-  !t_52
-  !t_46
+  t_38 = call @sa_json_buffer_data(t_37)
+  t_39 = call @sa_json_buffer_len(t_37)
+  t_40 = alloc 16
+  store t_40 + 0, &str_const_0 as ptr
+  store t_40 + 8, 0 as u64
+  t_41 = alloc 16
+  store t_41 + 0, t_38 as ptr
+  store t_41 + 8, t_39 as u64
+  !t_38
+  !t_39
+  t_42 = load t_40 + 0 as ptr
+  t_43 = load t_40 + 8 as u64
+  t_44 = load t_41 + 0 as ptr
+  t_45 = load t_41 + 8 as u64
+  t_46 = call @sa_string_concat(t_42, t_43, t_44, t_45)
+  t_47 = call @sa_fmt_buffer_data(t_46)
+  t_48 = call @sa_fmt_buffer_len(t_46)
+  t_49 = alloc 16
+  store t_49 + 0, t_47 as ptr
+  store t_49 + 8, t_48 as u64
   !t_47
-  t_56 = call @sa_json_buffer_free(^t_43)
-  !t_56
-  t_57 = call @sa_json_writer_free(^t_36)
+  !t_48
+  !t_46
+  !t_40
+  !t_41
+  t_50 = call @sa_json_buffer_free(^t_37)
+  !t_50
+  t_51 = call @sa_json_writer_free(^t_30)
+  !t_51
+  t_52 = load t_49 + 0 as ptr
+  t_53 = load t_49 + 8 as u64
+  call @sa_print_bytes(&t_52, t_53)
+  !t_49
+  t_54 = alloc 16
+  store t_54 + 0, &str_const_1 as ptr
+  store t_54 + 8, 1 as u64
+  t_55 = load t_54 + 0 as ptr
+  t_56 = load t_54 + 8 as u64
+  call @sa_print_bytes(&t_55, t_56)
+  !t_54
+  t_57 = alloc 8
+  t_58 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_57)
+  t_59 = load t_57 + 0 as ptr
   !t_57
-  t_58 = sext t_55 as i64
-  t_59 = alloc 64
-  t_60 = alloc 8
-  t_61 = call @sa_fmt_i64_into(t_58, 10, t_59, 64, &t_60)
-  t_62 = load t_60 + 0 as u64
-  t_63 = alloc 16
-  store t_63 + 0, t_59 as ptr
-  store t_63 + 8, t_62 as u64
+  !t_58
+  t_60 = call @sa_json_writer_write_bool(t_59, 1)
+  !t_60
+  t_61 = alloc 8
+  t_62 = call @sa_json_writer_finish(t_59, &t_61)
+  !t_62
+  t_63 = load t_61 + 0 as ptr
   !t_61
-  t_64 = load t_63 + 0 as ptr
-  t_65 = load t_63 + 8 as u64
-  call @sa_print_bytes(&t_64, t_65)
-  !t_63
+  t_64 = call @sa_json_buffer_data(t_63)
+  t_65 = call @sa_json_buffer_len(t_63)
   t_66 = alloc 16
-  store t_66 + 0, &str_const_1 as ptr
-  store t_66 + 8, 1 as u64
-  t_67 = load t_66 + 0 as ptr
-  t_68 = load t_66 + 8 as u64
-  call @sa_print_bytes(&t_67, t_68)
-  !t_66
-  t_69 = alloc 8
-  t_70 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_69)
-  t_71 = load t_69 + 0 as ptr
-  !t_69
-  !t_70
-  t_72 = call @sa_json_writer_write_bool(t_71, 1)
-  !t_72
-  t_73 = alloc 8
-  t_74 = call @sa_json_writer_finish(t_71, &t_73)
-  !t_74
-  t_75 = load t_73 + 0 as ptr
+  store t_66 + 0, &str_const_0 as ptr
+  store t_66 + 8, 0 as u64
+  t_67 = alloc 16
+  store t_67 + 0, t_64 as ptr
+  store t_67 + 8, t_65 as u64
+  !t_64
+  !t_65
+  t_68 = load t_66 + 0 as ptr
+  t_69 = load t_66 + 8 as u64
+  t_70 = load t_67 + 0 as ptr
+  t_71 = load t_67 + 8 as u64
+  t_72 = call @sa_string_concat(t_68, t_69, t_70, t_71)
+  t_73 = call @sa_fmt_buffer_data(t_72)
+  t_74 = call @sa_fmt_buffer_len(t_72)
+  t_75 = alloc 16
+  store t_75 + 0, t_73 as ptr
+  store t_75 + 8, t_74 as u64
   !t_73
-  t_76 = call @sa_json_buffer_data(t_75)
-  t_77 = call @sa_json_buffer_len(t_75)
-  t_78 = alloc 16
-  store t_78 + 0, &str_const_0 as ptr
-  store t_78 + 8, 0 as u64
-  t_79 = alloc 16
-  store t_79 + 0, t_76 as ptr
-  store t_79 + 8, t_77 as u64
+  !t_74
+  !t_72
+  !t_66
+  !t_67
+  t_76 = call @sa_json_buffer_free(^t_63)
   !t_76
+  t_77 = call @sa_json_writer_free(^t_59)
   !t_77
-  t_80 = load t_78 + 0 as ptr
-  t_81 = load t_78 + 8 as u64
-  t_82 = load t_79 + 0 as ptr
-  t_83 = load t_79 + 8 as u64
-  t_84 = call @sa_string_concat(t_80, t_81, t_82, t_83)
-  t_85 = call @sa_fmt_buffer_data(t_84)
-  t_86 = call @sa_fmt_buffer_len(t_84)
-  t_87 = alloc 16
-  store t_87 + 0, t_85 as ptr
-  store t_87 + 8, t_86 as u64
-  !t_85
-  !t_86
+  t_78 = load t_75 + 0 as ptr
+  t_79 = load t_75 + 8 as u64
+  call @sa_print_bytes(&t_78, t_79)
+  !t_75
+  t_80 = alloc 16
+  store t_80 + 0, &str_const_1 as ptr
+  store t_80 + 8, 1 as u64
+  t_81 = load t_80 + 0 as ptr
+  t_82 = load t_80 + 8 as u64
+  call @sa_print_bytes(&t_81, t_82)
+  !t_80
+  t_83 = alloc 8
+  t_84 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_83)
+  t_85 = load t_83 + 0 as ptr
+  !t_83
   !t_84
-  !t_78
-  !t_79
-  t_88 = call @sa_json_buffer_free(^t_75)
+  t_86 = call @sa_json_writer_write_null(t_85)
+  !t_86
+  t_87 = alloc 8
+  t_88 = call @sa_json_writer_finish(t_85, &t_87)
   !t_88
-  t_89 = call @sa_json_writer_free(^t_71)
-  !t_89
-  t_90 = sext t_87 as i64
-  t_91 = alloc 64
-  t_92 = alloc 8
-  t_93 = call @sa_fmt_i64_into(t_90, 10, t_91, 64, &t_92)
-  t_94 = load t_92 + 0 as u64
-  t_95 = alloc 16
-  store t_95 + 0, t_91 as ptr
-  store t_95 + 8, t_94 as u64
-  !t_93
-  t_96 = load t_95 + 0 as ptr
-  t_97 = load t_95 + 8 as u64
-  call @sa_print_bytes(&t_96, t_97)
-  !t_95
-  t_98 = alloc 16
-  store t_98 + 0, &str_const_1 as ptr
-  store t_98 + 8, 1 as u64
-  t_99 = load t_98 + 0 as ptr
-  t_100 = load t_98 + 8 as u64
-  call @sa_print_bytes(&t_99, t_100)
+  t_89 = load t_87 + 0 as ptr
+  !t_87
+  t_90 = call @sa_json_buffer_data(t_89)
+  t_91 = call @sa_json_buffer_len(t_89)
+  t_92 = alloc 16
+  store t_92 + 0, &str_const_0 as ptr
+  store t_92 + 8, 0 as u64
+  t_93 = alloc 16
+  store t_93 + 0, t_90 as ptr
+  store t_93 + 8, t_91 as u64
+  !t_90
+  !t_91
+  t_94 = load t_92 + 0 as ptr
+  t_95 = load t_92 + 8 as u64
+  t_96 = load t_93 + 0 as ptr
+  t_97 = load t_93 + 8 as u64
+  t_98 = call @sa_string_concat(t_94, t_95, t_96, t_97)
+  t_99 = call @sa_fmt_buffer_data(t_98)
+  t_100 = call @sa_fmt_buffer_len(t_98)
+  t_101 = alloc 16
+  store t_101 + 0, t_99 as ptr
+  store t_101 + 8, t_100 as u64
+  !t_99
+  !t_100
   !t_98
-  t_101 = alloc 8
-  t_102 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_101)
-  t_103 = load t_101 + 0 as ptr
-  !t_101
+  !t_92
+  !t_93
+  t_102 = call @sa_json_buffer_free(^t_89)
   !t_102
-  t_104 = call @sa_json_writer_write_null(t_103)
-  !t_104
-  t_105 = alloc 8
-  t_106 = call @sa_json_writer_finish(t_103, &t_105)
+  t_103 = call @sa_json_writer_free(^t_85)
+  !t_103
+  t_104 = load t_101 + 0 as ptr
+  t_105 = load t_101 + 8 as u64
+  call @sa_print_bytes(&t_104, t_105)
+  !t_101
+  t_106 = alloc 16
+  store t_106 + 0, &str_const_1 as ptr
+  store t_106 + 8, 1 as u64
+  t_107 = load t_106 + 0 as ptr
+  t_108 = load t_106 + 8 as u64
+  call @sa_print_bytes(&t_107, t_108)
   !t_106
-  t_107 = load t_105 + 0 as ptr
-  !t_105
-  t_108 = call @sa_json_buffer_data(t_107)
-  t_109 = call @sa_json_buffer_len(t_107)
-  t_110 = alloc 16
-  store t_110 + 0, &str_const_0 as ptr
-  store t_110 + 8, 0 as u64
-  t_111 = alloc 16
-  store t_111 + 0, t_108 as ptr
-  store t_111 + 8, t_109 as u64
-  !t_108
-  !t_109
-  t_112 = load t_110 + 0 as ptr
-  t_113 = load t_110 + 8 as u64
-  t_114 = load t_111 + 0 as ptr
-  t_115 = load t_111 + 8 as u64
-  t_116 = call @sa_string_concat(t_112, t_113, t_114, t_115)
-  t_117 = call @sa_fmt_buffer_data(t_116)
-  t_118 = call @sa_fmt_buffer_len(t_116)
-  t_119 = alloc 16
-  store t_119 + 0, t_117 as ptr
-  store t_119 + 8, t_118 as u64
-  !t_117
-  !t_118
-  !t_116
+  t_109 = alloc 16
+  t_110 = alloc 8
+  t_111 = add t_110, 0
+  store t_111 + 0, 1 as i32
+  t_112 = add t_110, 4
+  store t_112 + 0, 2 as i32
+  store t_109 + 0, t_110 as ptr
+  store t_109 + 8, 2 as u64
   !t_110
-  !t_111
-  t_120 = call @sa_json_buffer_free(^t_107)
-  !t_120
-  t_121 = call @sa_json_writer_free(^t_103)
-  !t_121
-  t_122 = sext t_119 as i64
-  t_123 = alloc 64
-  t_124 = alloc 8
-  t_125 = call @sa_fmt_i64_into(t_122, 10, t_123, 64, &t_124)
-  t_126 = load t_124 + 0 as u64
-  t_127 = alloc 16
-  store t_127 + 0, t_123 as ptr
-  store t_127 + 8, t_126 as u64
-  !t_125
-  t_128 = load t_127 + 0 as ptr
-  t_129 = load t_127 + 8 as u64
-  call @sa_print_bytes(&t_128, t_129)
-  !t_127
-  t_130 = alloc 16
-  store t_130 + 0, &str_const_1 as ptr
-  store t_130 + 8, 1 as u64
-  t_131 = load t_130 + 0 as ptr
-  t_132 = load t_130 + 8 as u64
-  call @sa_print_bytes(&t_131, t_132)
-  !t_130
-  t_133 = alloc 16
-  t_134 = alloc 8
-  t_135 = add t_134, 0
-  store t_135 + 0, 1 as i32
-  t_136 = add t_134, 4
-  store t_136 + 0, 2 as i32
-  store t_133 + 0, t_134 as ptr
-  store t_133 + 8, 2 as u64
-  !t_134
-  a = t_133
-  t_137 = alloc 8
-  t_138 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_137)
+  a = t_109
+  t_113 = alloc 8
+  t_114 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_113)
+  t_115 = load t_113 + 0 as ptr
+  !t_113
+  !t_114
+  t_116 = load a + 8 as u64
+  t_117 = load a + 0 as ptr
+  t_118 = call @sa_json_writer_begin_array(t_115)
+  !t_118
+  t_119 = add 0, 0
+L_js_top_120:
+  t_123 = sext t_119 as u64
+  t_124 = slt t_123, t_116
+  br t_124 -> L_js_body_121, L_js_end_122
+L_js_body_121:
+  t_125 = mul t_119, 4
+  t_126 = add t_117, t_125
+  t_127 = load t_126 + 0 as i32
+  t_128 = sext t_127 as i64
+  t_129 = call @sa_json_writer_write_i64(t_115, t_128)
+  !t_129
+  t_130 = add t_119, 1
+  t_119 = add t_130, 0
+  jmp L_js_top_120
+L_js_end_122:
+  t_131 = call @sa_json_writer_end_array(t_115)
+  !t_131
+  t_132 = alloc 8
+  t_133 = call @sa_json_writer_finish(t_115, &t_132)
+  !t_133
+  t_134 = load t_132 + 0 as ptr
+  !t_132
+  t_135 = call @sa_json_buffer_data(t_134)
+  t_136 = call @sa_json_buffer_len(t_134)
+  t_137 = alloc 16
+  store t_137 + 0, &str_const_0 as ptr
+  store t_137 + 8, 0 as u64
+  t_138 = alloc 16
+  store t_138 + 0, t_135 as ptr
+  store t_138 + 8, t_136 as u64
+  !t_135
+  !t_136
   t_139 = load t_137 + 0 as ptr
+  t_140 = load t_137 + 8 as u64
+  t_141 = load t_138 + 0 as ptr
+  t_142 = load t_138 + 8 as u64
+  t_143 = call @sa_string_concat(t_139, t_140, t_141, t_142)
+  t_144 = call @sa_fmt_buffer_data(t_143)
+  t_145 = call @sa_fmt_buffer_len(t_143)
+  t_146 = alloc 16
+  store t_146 + 0, t_144 as ptr
+  store t_146 + 8, t_145 as u64
+  !t_144
+  !t_145
+  !t_143
   !t_137
   !t_138
-  t_140 = load a + 8 as u64
-  t_141 = load a + 0 as ptr
-  t_142 = call @sa_json_writer_begin_array(t_139)
-  !t_142
-  t_143 = add 0, 0
-L_js_top_144:
-  t_147 = sext t_143 as u64
-  t_148 = slt t_147, t_140
-  br t_148 -> L_js_body_145, L_js_end_146
-L_js_body_145:
-  t_149 = mul t_143, 4
-  t_150 = add t_141, t_149
-  t_151 = load t_150 + 0 as i32
-  t_152 = sext t_151 as i64
-  t_153 = call @sa_json_writer_write_i64(t_139, t_152)
-  !t_153
-  t_154 = add t_143, 1
-  t_143 = add t_154, 0
-  jmp L_js_top_144
-L_js_end_146:
-  t_155 = call @sa_json_writer_end_array(t_139)
-  !t_155
-  t_156 = alloc 8
-  t_157 = call @sa_json_writer_finish(t_139, &t_156)
+  t_147 = call @sa_json_buffer_free(^t_134)
+  !t_147
+  t_148 = call @sa_json_writer_free(^t_115)
+  !t_148
+  t_149 = load t_146 + 0 as ptr
+  t_150 = load t_146 + 8 as u64
+  call @sa_print_bytes(&t_149, t_150)
+  !t_146
+  t_151 = alloc 16
+  store t_151 + 0, &str_const_1 as ptr
+  store t_151 + 8, 1 as u64
+  t_152 = load t_151 + 0 as ptr
+  t_153 = load t_151 + 8 as u64
+  call @sa_print_bytes(&t_152, t_153)
+  !t_151
+  t_154 = alloc 16
+  store t_154 + 0, &str_const_3 as ptr
+  store t_154 + 8, 1 as u64
+  t_155 = alloc 16
+  store t_155 + 0, &str_const_4 as ptr
+  store t_155 + 8, 2 as u64
+  t_156 = alloc 16
+  t_157 = alloc 8
+  t_158 = add t_157, 0
+  store t_158 + 0, t_154 as i32
+  t_159 = add t_157, 4
+  store t_159 + 0, t_155 as i32
+  store t_156 + 0, t_157 as ptr
+  store t_156 + 8, 2 as u64
   !t_157
-  t_158 = load t_156 + 0 as ptr
-  !t_156
-  t_159 = call @sa_json_buffer_data(t_158)
-  t_160 = call @sa_json_buffer_len(t_158)
-  t_161 = alloc 16
-  store t_161 + 0, &str_const_0 as ptr
-  store t_161 + 8, 0 as u64
-  t_162 = alloc 16
-  store t_162 + 0, t_159 as ptr
-  store t_162 + 8, t_160 as u64
-  !t_159
+  b = t_156
+  t_160 = alloc 8
+  t_161 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_160)
+  t_162 = load t_160 + 0 as ptr
   !t_160
-  t_163 = load t_161 + 0 as ptr
-  t_164 = load t_161 + 8 as u64
-  t_165 = load t_162 + 0 as ptr
-  t_166 = load t_162 + 8 as u64
-  t_167 = call @sa_string_concat(t_163, t_164, t_165, t_166)
-  t_168 = call @sa_fmt_buffer_data(t_167)
-  t_169 = call @sa_fmt_buffer_len(t_167)
-  t_170 = alloc 16
-  store t_170 + 0, t_168 as ptr
-  store t_170 + 8, t_169 as u64
-  !t_168
-  !t_169
-  !t_167
   !t_161
-  !t_162
-  t_171 = call @sa_json_buffer_free(^t_158)
-  !t_171
-  t_172 = call @sa_json_writer_free(^t_139)
-  !t_172
-  t_173 = sext t_170 as i64
-  t_174 = alloc 64
-  t_175 = alloc 8
-  t_176 = call @sa_fmt_i64_into(t_173, 10, t_174, 64, &t_175)
-  t_177 = load t_175 + 0 as u64
-  t_178 = alloc 16
-  store t_178 + 0, t_174 as ptr
-  store t_178 + 8, t_177 as u64
-  !t_176
-  t_179 = load t_178 + 0 as ptr
-  t_180 = load t_178 + 8 as u64
-  call @sa_print_bytes(&t_179, t_180)
-  !t_178
-  t_181 = alloc 16
-  store t_181 + 0, &str_const_1 as ptr
-  store t_181 + 8, 1 as u64
-  t_182 = load t_181 + 0 as ptr
-  t_183 = load t_181 + 8 as u64
-  call @sa_print_bytes(&t_182, t_183)
+  t_163 = load b + 8 as u64
+  t_164 = load b + 0 as ptr
+  t_165 = call @sa_json_writer_begin_array(t_162)
+  !t_165
+  t_166 = add 0, 0
+L_js_top_167:
+  t_170 = sext t_166 as u64
+  t_171 = slt t_170, t_163
+  br t_171 -> L_js_body_168, L_js_end_169
+L_js_body_168:
+  t_172 = mul t_166, 4
+  t_173 = add t_164, t_172
+  t_174 = load t_173 + 0 as i32
+  t_175 = load t_174 + 0 as ptr
+  t_176 = load t_174 + 8 as u64
+  t_177 = call @sa_json_writer_write_string(t_162, &t_175, t_176)
+  !t_177
+  t_178 = add t_166, 1
+  t_166 = add t_178, 0
+  jmp L_js_top_167
+L_js_end_169:
+  t_179 = call @sa_json_writer_end_array(t_162)
+  !t_179
+  t_180 = alloc 8
+  t_181 = call @sa_json_writer_finish(t_162, &t_180)
   !t_181
-  t_184 = alloc 16
-  store t_184 + 0, &str_const_3 as ptr
-  store t_184 + 8, 1 as u64
+  t_182 = load t_180 + 0 as ptr
+  !t_180
+  t_183 = call @sa_json_buffer_data(t_182)
+  t_184 = call @sa_json_buffer_len(t_182)
   t_185 = alloc 16
-  store t_185 + 0, &str_const_4 as ptr
-  store t_185 + 8, 2 as u64
+  store t_185 + 0, &str_const_0 as ptr
+  store t_185 + 8, 0 as u64
   t_186 = alloc 16
-  t_187 = alloc 8
-  t_188 = add t_187, 0
-  store t_188 + 0, t_184 as i32
-  t_189 = add t_187, 4
-  store t_189 + 0, t_185 as i32
-  store t_186 + 0, t_187 as ptr
-  store t_186 + 8, 2 as u64
-  !t_187
-  b = t_186
-  t_190 = alloc 8
-  t_191 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_190)
-  t_192 = load t_190 + 0 as ptr
-  !t_190
+  store t_186 + 0, t_183 as ptr
+  store t_186 + 8, t_184 as u64
+  !t_183
+  !t_184
+  t_187 = load t_185 + 0 as ptr
+  t_188 = load t_185 + 8 as u64
+  t_189 = load t_186 + 0 as ptr
+  t_190 = load t_186 + 8 as u64
+  t_191 = call @sa_string_concat(t_187, t_188, t_189, t_190)
+  t_192 = call @sa_fmt_buffer_data(t_191)
+  t_193 = call @sa_fmt_buffer_len(t_191)
+  t_194 = alloc 16
+  store t_194 + 0, t_192 as ptr
+  store t_194 + 8, t_193 as u64
+  !t_192
+  !t_193
   !t_191
-  t_193 = load b + 8 as u64
-  t_194 = load b + 0 as ptr
-  t_195 = call @sa_json_writer_begin_array(t_192)
+  !t_185
+  !t_186
+  t_195 = call @sa_json_buffer_free(^t_182)
   !t_195
-  t_196 = add 0, 0
-L_js_top_197:
-  t_200 = sext t_196 as u64
-  t_201 = slt t_200, t_193
-  br t_201 -> L_js_body_198, L_js_end_199
-L_js_body_198:
-  t_202 = mul t_196, 4
-  t_203 = add t_194, t_202
-  t_204 = load t_203 + 0 as i32
-  t_205 = load t_204 + 0 as ptr
-  t_206 = load t_204 + 8 as u64
-  t_207 = call @sa_json_writer_write_string(t_192, &t_205, t_206)
+  t_196 = call @sa_json_writer_free(^t_162)
+  !t_196
+  t_197 = load t_194 + 0 as ptr
+  t_198 = load t_194 + 8 as u64
+  call @sa_print_bytes(&t_197, t_198)
+  !t_194
+  t_199 = alloc 16
+  store t_199 + 0, &str_const_1 as ptr
+  store t_199 + 8, 1 as u64
+  t_200 = load t_199 + 0 as ptr
+  t_201 = load t_199 + 8 as u64
+  call @sa_print_bytes(&t_200, t_201)
+  !t_199
+  t_202 = alloc 16
+  store t_202 + 0, 1 as i32
+  t_203 = alloc 16
+  store t_203 + 0, &str_const_5 as ptr
+  store t_203 + 8, 2 as u64
+  store t_202 + 8, t_203 as ptr
+  p = t_202
+  t_204 = alloc 8
+  t_205 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_204)
+  t_206 = load t_204 + 0 as ptr
+  !t_204
+  !t_205
+  t_207 = call @sa_json_writer_begin_object(t_206)
   !t_207
-  t_208 = add t_196, 1
-  t_196 = add t_208, 0
-  jmp L_js_top_197
-L_js_end_199:
-  t_209 = call @sa_json_writer_end_array(t_192)
-  !t_209
-  t_210 = alloc 8
-  t_211 = call @sa_json_writer_finish(t_192, &t_210)
-  !t_211
-  t_212 = load t_210 + 0 as ptr
-  !t_210
-  t_213 = call @sa_json_buffer_data(t_212)
-  t_214 = call @sa_json_buffer_len(t_212)
-  t_215 = alloc 16
-  store t_215 + 0, &str_const_0 as ptr
-  store t_215 + 8, 0 as u64
-  t_216 = alloc 16
-  store t_216 + 0, t_213 as ptr
-  store t_216 + 8, t_214 as u64
+  t_208 = alloc 16
+  store t_208 + 0, &str_const_3 as ptr
+  store t_208 + 8, 1 as u64
+  t_209 = load t_208 + 0 as ptr
+  t_210 = load t_208 + 8 as u64
+  t_211 = load p + 0 as i32
+  t_212 = sext t_211 as i64
+  t_213 = call @sa_json_writer_field_i64(t_206, &t_209, t_210, t_212)
   !t_213
+  !t_208
+  t_214 = alloc 16
+  store t_214 + 0, &str_const_6 as ptr
+  store t_214 + 8, 1 as u64
+  t_215 = load t_214 + 0 as ptr
+  t_216 = load t_214 + 8 as u64
+  t_217 = load p + 8 as ptr
+  t_218 = load t_217 + 0 as ptr
+  t_219 = load t_217 + 8 as u64
+  t_220 = call @sa_json_writer_field_string(t_206, &t_215, t_216, &t_218, t_219)
+  !t_220
   !t_214
-  t_217 = load t_215 + 0 as ptr
-  t_218 = load t_215 + 8 as u64
-  t_219 = load t_216 + 0 as ptr
-  t_220 = load t_216 + 8 as u64
-  t_221 = call @sa_string_concat(t_217, t_218, t_219, t_220)
-  t_222 = call @sa_fmt_buffer_data(t_221)
-  t_223 = call @sa_fmt_buffer_len(t_221)
-  t_224 = alloc 16
-  store t_224 + 0, t_222 as ptr
-  store t_224 + 8, t_223 as u64
-  !t_222
-  !t_223
+  t_221 = call @sa_json_writer_end_object(t_206)
   !t_221
-  !t_215
-  !t_216
-  t_225 = call @sa_json_buffer_free(^t_212)
+  t_222 = alloc 8
+  t_223 = call @sa_json_writer_finish(t_206, &t_222)
+  !t_223
+  t_224 = load t_222 + 0 as ptr
+  !t_222
+  t_225 = call @sa_json_buffer_data(t_224)
+  t_226 = call @sa_json_buffer_len(t_224)
+  t_227 = alloc 16
+  store t_227 + 0, &str_const_0 as ptr
+  store t_227 + 8, 0 as u64
+  t_228 = alloc 16
+  store t_228 + 0, t_225 as ptr
+  store t_228 + 8, t_226 as u64
   !t_225
-  t_226 = call @sa_json_writer_free(^t_192)
   !t_226
-  t_227 = sext t_224 as i64
-  t_228 = alloc 64
-  t_229 = alloc 8
-  t_230 = call @sa_fmt_i64_into(t_227, 10, t_228, 64, &t_229)
-  t_231 = load t_229 + 0 as u64
-  t_232 = alloc 16
-  store t_232 + 0, t_228 as ptr
-  store t_232 + 8, t_231 as u64
-  !t_230
-  t_233 = load t_232 + 0 as ptr
-  t_234 = load t_232 + 8 as u64
-  call @sa_print_bytes(&t_233, t_234)
-  !t_232
-  t_235 = alloc 16
-  store t_235 + 0, &str_const_1 as ptr
-  store t_235 + 8, 1 as u64
-  t_236 = load t_235 + 0 as ptr
-  t_237 = load t_235 + 8 as u64
-  call @sa_print_bytes(&t_236, t_237)
+  t_229 = load t_227 + 0 as ptr
+  t_230 = load t_227 + 8 as u64
+  t_231 = load t_228 + 0 as ptr
+  t_232 = load t_228 + 8 as u64
+  t_233 = call @sa_string_concat(t_229, t_230, t_231, t_232)
+  t_234 = call @sa_fmt_buffer_data(t_233)
+  t_235 = call @sa_fmt_buffer_len(t_233)
+  t_236 = alloc 16
+  store t_236 + 0, t_234 as ptr
+  store t_236 + 8, t_235 as u64
+  !t_234
   !t_235
-  t_238 = alloc 16
-  store t_238 + 0, 1 as i32
-  t_239 = alloc 16
-  store t_239 + 0, &str_const_5 as ptr
-  store t_239 + 8, 2 as u64
-  store t_238 + 8, t_239 as ptr
-  p = t_238
-  t_240 = alloc 8
-  t_241 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_240)
-  t_242 = load t_240 + 0 as ptr
-  !t_240
+  !t_233
+  !t_227
+  !t_228
+  t_237 = call @sa_json_buffer_free(^t_224)
+  !t_237
+  t_238 = call @sa_json_writer_free(^t_206)
+  !t_238
+  t_239 = load t_236 + 0 as ptr
+  t_240 = load t_236 + 8 as u64
+  call @sa_print_bytes(&t_239, t_240)
+  !t_236
+  t_241 = alloc 16
+  store t_241 + 0, &str_const_1 as ptr
+  store t_241 + 8, 1 as u64
+  t_242 = load t_241 + 0 as ptr
+  t_243 = load t_241 + 8 as u64
+  call @sa_print_bytes(&t_242, t_243)
   !t_241
-  t_243 = call @sa_json_writer_begin_object(t_242)
-  !t_243
   t_244 = alloc 16
-  store t_244 + 0, &str_const_3 as ptr
-  store t_244 + 8, 1 as u64
-  t_245 = load t_244 + 0 as ptr
-  t_246 = load t_244 + 8 as u64
-  t_247 = load p + 0 as i32
-  t_248 = sext t_247 as i64
-  t_249 = call @sa_json_writer_field_i64(t_242, &t_245, t_246, t_248)
-  !t_249
-  !t_244
-  t_250 = alloc 16
-  store t_250 + 0, &str_const_6 as ptr
-  store t_250 + 8, 1 as u64
-  t_251 = load t_250 + 0 as ptr
-  t_252 = load t_250 + 8 as u64
-  t_253 = load p + 8 as ptr
-  t_254 = load t_253 + 0 as ptr
-  t_255 = load t_253 + 8 as u64
-  t_256 = call @sa_json_writer_field_string(t_242, &t_251, t_252, &t_254, t_255)
-  !t_256
+  store t_244 + 0, 1 as i32
+  t_245 = alloc 16
+  store t_245 + 0, 9 as i32
+  t_246 = alloc 16
+  store t_246 + 0, &str_const_7 as ptr
+  store t_246 + 8, 2 as u64
+  store t_245 + 8, t_246 as ptr
+  store t_244 + 8, t_245 as ptr
+  w = t_244
+  t_247 = alloc 8
+  t_248 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_247)
+  t_249 = load t_247 + 0 as ptr
+  !t_247
+  !t_248
+  t_250 = call @sa_json_writer_begin_object(t_249)
   !t_250
-  t_257 = call @sa_json_writer_end_object(t_242)
-  !t_257
-  t_258 = alloc 8
-  t_259 = call @sa_json_writer_finish(t_242, &t_258)
-  !t_259
-  t_260 = load t_258 + 0 as ptr
-  !t_258
-  t_261 = call @sa_json_buffer_data(t_260)
-  t_262 = call @sa_json_buffer_len(t_260)
-  t_263 = alloc 16
-  store t_263 + 0, &str_const_0 as ptr
-  store t_263 + 8, 0 as u64
-  t_264 = alloc 16
-  store t_264 + 0, t_261 as ptr
-  store t_264 + 8, t_262 as u64
+  t_251 = alloc 16
+  store t_251 + 0, &str_const_8 as ptr
+  store t_251 + 8, 2 as u64
+  t_252 = load t_251 + 0 as ptr
+  t_253 = load t_251 + 8 as u64
+  t_254 = load w + 0 as i32
+  t_255 = call @sa_json_writer_field_bool(t_249, &t_252, t_253, t_254)
+  !t_255
+  !t_251
+  t_256 = alloc 16
+  store t_256 + 0, &str_const_9 as ptr
+  store t_256 + 8, 2 as u64
+  t_257 = load t_256 + 0 as ptr
+  t_258 = load t_256 + 8 as u64
+  t_259 = load w + 8 as ptr
+  t_260 = call @sa_json_writer_object_field(t_249, &t_257, t_258)
+  !t_260
+  t_261 = call @sa_json_writer_begin_object(t_249)
   !t_261
+  t_262 = alloc 16
+  store t_262 + 0, &str_const_3 as ptr
+  store t_262 + 8, 1 as u64
+  t_263 = load t_262 + 0 as ptr
+  t_264 = load t_262 + 8 as u64
+  t_265 = load t_259 + 0 as i32
+  t_266 = sext t_265 as i64
+  t_267 = call @sa_json_writer_field_i64(t_249, &t_263, t_264, t_266)
+  !t_267
   !t_262
-  t_265 = load t_263 + 0 as ptr
-  t_266 = load t_263 + 8 as u64
-  t_267 = load t_264 + 0 as ptr
-  t_268 = load t_264 + 8 as u64
-  t_269 = call @sa_string_concat(t_265, t_266, t_267, t_268)
-  t_270 = call @sa_fmt_buffer_data(t_269)
-  t_271 = call @sa_fmt_buffer_len(t_269)
-  t_272 = alloc 16
-  store t_272 + 0, t_270 as ptr
-  store t_272 + 8, t_271 as u64
-  !t_270
-  !t_271
-  !t_269
-  !t_263
-  !t_264
-  t_273 = call @sa_json_buffer_free(^t_260)
-  !t_273
-  t_274 = call @sa_json_writer_free(^t_242)
+  t_268 = alloc 16
+  store t_268 + 0, &str_const_6 as ptr
+  store t_268 + 8, 1 as u64
+  t_269 = load t_268 + 0 as ptr
+  t_270 = load t_268 + 8 as u64
+  t_271 = load t_259 + 8 as ptr
+  t_272 = load t_271 + 0 as ptr
+  t_273 = load t_271 + 8 as u64
+  t_274 = call @sa_json_writer_field_string(t_249, &t_269, t_270, &t_272, t_273)
   !t_274
-  t_275 = sext t_272 as i64
-  t_276 = alloc 64
+  !t_268
+  t_275 = call @sa_json_writer_end_object(t_249)
+  !t_275
+  !t_256
+  t_276 = call @sa_json_writer_end_object(t_249)
+  !t_276
   t_277 = alloc 8
-  t_278 = call @sa_fmt_i64_into(t_275, 10, t_276, 64, &t_277)
-  t_279 = load t_277 + 0 as u64
-  t_280 = alloc 16
-  store t_280 + 0, t_276 as ptr
-  store t_280 + 8, t_279 as u64
+  t_278 = call @sa_json_writer_finish(t_249, &t_277)
   !t_278
-  t_281 = load t_280 + 0 as ptr
-  t_282 = load t_280 + 8 as u64
-  call @sa_print_bytes(&t_281, t_282)
-  !t_280
+  t_279 = load t_277 + 0 as ptr
+  !t_277
+  t_280 = call @sa_json_buffer_data(t_279)
+  t_281 = call @sa_json_buffer_len(t_279)
+  t_282 = alloc 16
+  store t_282 + 0, &str_const_0 as ptr
+  store t_282 + 8, 0 as u64
   t_283 = alloc 16
-  store t_283 + 0, &str_const_1 as ptr
-  store t_283 + 8, 1 as u64
-  t_284 = load t_283 + 0 as ptr
-  t_285 = load t_283 + 8 as u64
-  call @sa_print_bytes(&t_284, t_285)
-  !t_283
-  t_286 = alloc 16
-  store t_286 + 0, 1 as i32
-  t_287 = alloc 16
-  store t_287 + 0, 9 as i32
-  t_288 = alloc 16
-  store t_288 + 0, &str_const_7 as ptr
-  store t_288 + 8, 2 as u64
-  store t_287 + 8, t_288 as ptr
-  store t_286 + 8, t_287 as ptr
-  w = t_286
-  t_289 = alloc 8
-  t_290 = call @sa_json_writer_new(0, 0, 0, 0, 0, &t_289)
-  t_291 = load t_289 + 0 as ptr
+  store t_283 + 0, t_280 as ptr
+  store t_283 + 8, t_281 as u64
+  !t_280
+  !t_281
+  t_284 = load t_282 + 0 as ptr
+  t_285 = load t_282 + 8 as u64
+  t_286 = load t_283 + 0 as ptr
+  t_287 = load t_283 + 8 as u64
+  t_288 = call @sa_string_concat(t_284, t_285, t_286, t_287)
+  t_289 = call @sa_fmt_buffer_data(t_288)
+  t_290 = call @sa_fmt_buffer_len(t_288)
+  t_291 = alloc 16
+  store t_291 + 0, t_289 as ptr
+  store t_291 + 8, t_290 as u64
   !t_289
   !t_290
-  t_292 = call @sa_json_writer_begin_object(t_291)
-  !t_292
-  t_293 = alloc 16
-  store t_293 + 0, &str_const_8 as ptr
-  store t_293 + 8, 2 as u64
-  t_294 = load t_293 + 0 as ptr
-  t_295 = load t_293 + 8 as u64
-  t_296 = load w + 0 as i32
-  t_297 = call @sa_json_writer_field_bool(t_291, &t_294, t_295, t_296)
-  !t_297
-  !t_293
-  t_298 = alloc 16
-  store t_298 + 0, &str_const_9 as ptr
-  store t_298 + 8, 2 as u64
-  t_299 = load t_298 + 0 as ptr
-  t_300 = load t_298 + 8 as u64
-  t_301 = load w + 8 as ptr
-  t_302 = call @sa_json_writer_object_field(t_291, &t_299, t_300)
-  !t_302
-  t_303 = call @sa_json_writer_begin_object(t_291)
-  !t_303
-  t_304 = alloc 16
-  store t_304 + 0, &str_const_3 as ptr
-  store t_304 + 8, 1 as u64
-  t_305 = load t_304 + 0 as ptr
-  t_306 = load t_304 + 8 as u64
-  t_307 = load t_301 + 0 as i32
-  t_308 = sext t_307 as i64
-  t_309 = call @sa_json_writer_field_i64(t_291, &t_305, t_306, t_308)
-  !t_309
-  !t_304
-  t_310 = alloc 16
-  store t_310 + 0, &str_const_6 as ptr
-  store t_310 + 8, 1 as u64
-  t_311 = load t_310 + 0 as ptr
-  t_312 = load t_310 + 8 as u64
-  t_313 = load t_301 + 8 as ptr
-  t_314 = load t_313 + 0 as ptr
-  t_315 = load t_313 + 8 as u64
-  t_316 = call @sa_json_writer_field_string(t_291, &t_311, t_312, &t_314, t_315)
-  !t_316
-  !t_310
-  t_317 = call @sa_json_writer_end_object(t_291)
-  !t_317
-  !t_298
-  t_318 = call @sa_json_writer_end_object(t_291)
-  !t_318
-  t_319 = alloc 8
-  t_320 = call @sa_json_writer_finish(t_291, &t_319)
-  !t_320
-  t_321 = load t_319 + 0 as ptr
-  !t_319
-  t_322 = call @sa_json_buffer_data(t_321)
-  t_323 = call @sa_json_buffer_len(t_321)
-  t_324 = alloc 16
-  store t_324 + 0, &str_const_0 as ptr
-  store t_324 + 8, 0 as u64
-  t_325 = alloc 16
-  store t_325 + 0, t_322 as ptr
-  store t_325 + 8, t_323 as u64
-  !t_322
-  !t_323
-  t_326 = load t_324 + 0 as ptr
-  t_327 = load t_324 + 8 as u64
-  t_328 = load t_325 + 0 as ptr
-  t_329 = load t_325 + 8 as u64
-  t_330 = call @sa_string_concat(t_326, t_327, t_328, t_329)
-  t_331 = call @sa_fmt_buffer_data(t_330)
-  t_332 = call @sa_fmt_buffer_len(t_330)
-  t_333 = alloc 16
-  store t_333 + 0, t_331 as ptr
-  store t_333 + 8, t_332 as u64
-  !t_331
-  !t_332
-  !t_330
-  !t_324
-  !t_325
-  t_334 = call @sa_json_buffer_free(^t_321)
-  !t_334
-  t_335 = call @sa_json_writer_free(^t_291)
-  !t_335
-  t_336 = sext t_333 as i64
-  t_337 = alloc 64
-  t_338 = alloc 8
-  t_339 = call @sa_fmt_i64_into(t_336, 10, t_337, 64, &t_338)
-  t_340 = load t_338 + 0 as u64
-  t_341 = alloc 16
-  store t_341 + 0, t_337 as ptr
-  store t_341 + 8, t_340 as u64
-  !t_339
-  t_342 = load t_341 + 0 as ptr
-  t_343 = load t_341 + 8 as u64
-  call @sa_print_bytes(&t_342, t_343)
-  !t_341
-  t_344 = alloc 16
-  store t_344 + 0, &str_const_1 as ptr
-  store t_344 + 8, 1 as u64
-  t_345 = load t_344 + 0 as ptr
-  t_346 = load t_344 + 8 as u64
-  call @sa_print_bytes(&t_345, t_346)
-  !t_344
-  !t_338
-  !t_337
-  !t_333
-  !w
   !t_288
-  !t_287
-  !t_277
-  !t_276
-  !t_272
+  !t_282
+  !t_283
+  t_292 = call @sa_json_buffer_free(^t_279)
+  !t_292
+  t_293 = call @sa_json_writer_free(^t_249)
+  !t_293
+  t_294 = load t_291 + 0 as ptr
+  t_295 = load t_291 + 8 as u64
+  call @sa_print_bytes(&t_294, t_295)
+  !t_291
+  t_296 = alloc 16
+  store t_296 + 0, &str_const_1 as ptr
+  store t_296 + 8, 1 as u64
+  t_297 = load t_296 + 0 as ptr
+  t_298 = load t_296 + 8 as u64
+  call @sa_print_bytes(&t_297, t_298)
+  !t_296
+  !w
+  !t_246
+  !t_245
   !p
-  !t_239
-  !t_229
-  !t_228
-  !t_224
+  !t_203
   !b
-  !t_185
-  !t_184
-  !t_175
-  !t_174
-  !t_170
+  !t_155
+  !t_154
   !a
-  !t_124
-  !t_123
-  !t_119
-  !t_92
-  !t_91
-  !t_87
-  !t_60
-  !t_59
-  !t_55
-  !t_37
-  !t_25
-  !t_24
-  !t_20
+  !t_31
   ret 0

@@ -19,6 +19,7 @@
 > 用户令（2026-10-07，收录并执行）：六条铁律原样重申（①已有架构做②替换已有 JS 逻辑③禁新建文件④禁原创逻辑⑤禁 MAIN.GO 堆逻辑⑥禁 transpile.go 巨无霸），不另立；学习顺序 sala→sci/sa→satsgo/saemit→tsgosa；工具链优先（Go 用 `/usr/local/go/bin` 1.26.0，Zig 0.14.1，sci `sa` 已构建）；从最后一轮提交（`6d8def7e1`）继续；ts 基本语法优先、npm 次之；`lib.d.ts` 完全用 `sci/sa_std` 实现（新增语义先落 `sci/sa_std`，tsgosa 只映射）；ts 全特性 + 单元测试框架全部支持；每特性独立 commit 即推远端（`GIT_TOKEN`）。
 >
 > 用户令（2026-10-07，本轮收录并执行）：六条铁律原样重申不另立（①已有架构做②替换已有 JS 逻辑③禁新建 Go 文件④禁原创逻辑⑤禁 MAIN.GO 堆逻辑⑥禁 transpile.go 巨无霸，单次增量约 30 行内、领域 lowering 按归属落已有 `sa_*.go`）；学习顺序 sala→sci/sa→satsgo/saemit→tsgosa 落 `ts→sa`；工具链优先（Go 1.26.0 + Zig 0.14.1，已验 `/usr/local/go/bin`）；从最后一轮提交（`a7947a8db` R3-14）继续；ts 基本语法优先、npm 次之；`lib.d.ts` 完全用 `sci/sa_std` 实现（新增语义先落 `sci/sa_std`，tsgosa 只做 `@import` + 符号映射）；`this`/派生/匿名/导出导入 + ts 全特性 + 单元测试框架继续全支持；验收为 `satsgo` 已完成转换全部移植（差分门禁逐项对齐，0 复用浪费底座、本次必须用底座代码直接替换 JS 逻辑）；每特性独立 commit 即推 `https://github.com/layola13/tsgosa`。
+> 用户令（2026-10-07，本轮收录并执行）：六条铁律原样重申不另立（①必须在已有架构做②必须替换已有生成的JS逻辑③禁止新建文件④禁止原创逻辑⑤禁止在MAIN.GO里面堆逻辑⑥禁止在transpile.go写巨无霸，单次增量约30行内、领域lowering按归属落已有`sa_*.go`）；学习顺序sala→sci/sa→satsgo/saemit→tsgosa落`ts→sa`；工具链优先（Go 1.26.0已装`/usr/local/go/bin`+Zig 0.14.1已验）；从最后一轮提交（`0f6ab9b4c`）继续；ts基本语法优先、npm次之；`lib.d.ts`完全用`sci/sa_std`实现（新增语义先落`sci/sa_std`，tsgosa只做`@import`+符号映射，禁手写std lowering新域）；`this`/派生/匿名/导出导入+ts全特性+单元测试框架继续全支持；验收为`satsgo`已完成转换全部移植（`--check` 368/368+`--corpus` 286 agree零回退实测）+`docs/todo.md`四批探针+循环迭代1-4逐项核实验收（V05 stringify运行时误编译/366右值串元下标/Date.now归属/console.error插件接线/探针归档/外部库FFI清单）；每特性独立commit即推`https://github.com/layola13/tsgosa`（`GIT_TOKEN`）。
 
 ## 1. 六条铁律（违反即回滚）
 

@@ -242,6 +242,12 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		}
 		return false
 	}
+	// JSON.stringify 恒返新串柄（writer 直写后拷出具化；标量/数组/对象三形见
+	// saLowerJSONStringify；V05 直调 console.log 误走 i32 打印堆地址实证修）。
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "JSON" &&
+		pa.Name() != nil && pa.Name().Text() == "stringify" {
+		return true
+	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
 		// crypto Hash 终结即串值（`h.digest()` hex 串柄；update 值位另行拒）。
 		if pa.Name() != nil && pa.Name().Text() == "digest" {
