@@ -1540,7 +1540,8 @@ func saFlattenNsMembers(st *ast.Node) ([]saNsMember, bool) {
 
 // saFoldMixedNsConsts 折叠混合 ns 的导出纯量（`N.M.K` 键入顶层折叠值域，
 // 与 `N.K` 读位同键；纯度与 saFoldNamespaceConsts 逐 declarator 同形；
-// 非纯/重名即整块大声拒，副作用永不静默吞；`let` 须未被赋值（assigned 集判）。
+// 非纯/重名即整块大声拒，副作用永不静默吞；`let`/`var` 一律走槽（被赋值或
+// 零填充），折叠不碰。
 // 调用方：整块折叠不成且展平门过时（预扫折叠环；发射侧照常直落函数）。
 func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string]bool, assigned map[string]bool, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	members, ok := saFlattenNsMembers(st)
@@ -1565,11 +1566,9 @@ func saFoldMixedNsConsts(st *ast.Node, consts map[string]string, strs map[string
 			return false
 		}
 		seen[key] = true
-		// `let` 被赋值（裸名或限定点键）即跳过（槽另步；用点沿旧门大声拒）。
+		// `let`/`var` 一律走槽（被赋值或零填充；用点沿槽门，折叠不碰）。
 		if !isNsConstDecl(mb.node) {
-			if nm := vd.Name(); nm != nil && nm.Kind == ast.KindIdentifier && (assigned[nm.Text()] || assigned[key]) {
-				continue
-			}
+			continue
 		}
 		init := vd.Initializer
 		if init == nil {
@@ -2605,9 +2604,10 @@ func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
 	return w, lit, zero, true
 }
 
-// saModClaimName 判定单 declarator 是否归槽（具名 + 文件内被赋值 + `let`/`var` +
-// i32/串初值或串注解零值；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
-func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool) (string, string, bool) {
+// saModClaimName 判定单 declarator 是否归槽（具名 + `let`/`var` +
+// i32/串初值或串注解零值 + 被赋值（force 置位即命名空间/ambient 无条件认领，
+// 读未写零填充；顶层沿旧门）；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
+func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool, force bool) (string, string, bool) {
 	if vd == nil {
 		return "", "", false
 	}
@@ -2616,7 +2616,7 @@ func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[strin
 		return "", "", false
 	}
 	name := nm.Text()
-	if !assigned[name] {
+	if !force && !assigned[name] {
 		return "", "", false
 	}
 	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindArrowFunction {
@@ -2634,7 +2634,7 @@ func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[strin
 // 声明无码；封存 preRegisterModStates:593-616 + registerModState:343-385 子集）。
 func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) map[string]*saModState {
 	out := map[string]*saModState{}
-	feedVS := func(vs *ast.VariableStatement) {
+	feedVS := func(vs *ast.VariableStatement, force bool) {
 		if vs == nil || vs.DeclarationList == nil {
 			return
 		}
@@ -2647,7 +2647,7 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 		}
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			name, w, ok := saModClaimName(d, vd, assigned)
+			name, w, ok := saModClaimName(d, vd, assigned, force)
 			if !ok {
 				continue
 			}
@@ -2688,7 +2688,7 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 			continue
 		}
 		if st.Kind == ast.KindVariableStatement {
-			feedVS(st.AsVariableStatement())
+			feedVS(st.AsVariableStatement(), false)
 			continue
 		}
 		// `declare global { ... }` 环境变量授权：成员 var/let 经同一槽口径
@@ -2709,11 +2709,11 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 			if m == nil || m.Kind != ast.KindVariableStatement {
 				continue
 			}
-			feedVS(m.AsVariableStatement())
+			feedVS(m.AsVariableStatement(), true)
 		}
 	}
-	// 命名空间可变槽（`export let K` 被赋值名；`N.K` 键；i32/串初值子集；
-	// 未赋值走折叠，异形沿旧门用点拒；上游 nsMutableState 槽同形）。
+	// 命名空间可变槽（`export let K`；`N.K` 键；i32/串初值或零值子集；
+	// 读未写零填充（注册表口径）；异形沿旧门用点拒；上游 nsMutableState 槽同形）。
 	for _, st := range stmts {
 		members, ok := saFlattenNsMembers(st)
 		if !ok {
@@ -2727,14 +2727,10 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 			if vd == nil {
 				continue
 			}
-			nm := vd.Name()
-			if nm == nil || nm.Kind != ast.KindIdentifier {
+			if nm := vd.Name(); nm == nil || nm.Kind != ast.KindIdentifier {
 				continue
 			}
 			key := mb.dotted
-			if !assigned[nm.Text()] && !assigned[key] {
-				continue
-			}
 			if _, dup := out[key]; dup {
 				ln, col := pos(mb.decl.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + key + " is already declared (redefinition is not lowerable)"})
@@ -2787,7 +2783,7 @@ func saTryModState(st *ast.Node, assigned map[string]bool) bool {
 		return false
 	}
 	for _, d := range vs.DeclarationList.AsVariableDeclarationList().Declarations.Nodes {
-		if _, _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned); ok {
+		if _, _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned, false); ok {
 			return true
 		}
 	}
