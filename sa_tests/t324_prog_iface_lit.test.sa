@@ -1,0 +1,9 @@
+@import "../demos/324_prog_iface_lit/main.sa"
+@import "sa_std/testing/assert.sai"
+
+@test "324_prog_iface_lit"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 6, 32401)
+    !v
+    return

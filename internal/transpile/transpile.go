@@ -1116,14 +1116,20 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		// 传递布局播种（签名中 inst: 布局随函数签名入调用方表，供返回/实参
 		// 记种消解；调用方本地同名定义优先由 hook C-class 去重保障；未导出
 		// 沿当前行为（不播种，下游大声拒）；匿名合成布局不在收割域）。
+		// 直接目标失名时接全局首命中（与 saProgFindClass 同序；封存 program 共享 classDefs 同形；例如接口定义在 a、函数在 b、调用在 main）。
 		for _, k := range append([]string{hv.sig.retKind}, hv.sig.paramKinds...) {
 			if len(k) > 5 && k[:5] == "inst:" {
-				if ch, ok := link.classHarvests[tgt][k[5:]]; ok && ch.exported && ch.def != nil {
-					if link.classSeed == nil {
-						link.classSeed = map[string]*saClassDef{}
-					}
-					if _, dup := link.classSeed[k[5:]]; !dup {
+				if _, dup := link.classSeed[k[5:]]; !dup {
+					if ch, ok := link.classHarvests[tgt][k[5:]]; ok && ch.exported && ch.def != nil {
+						if link.classSeed == nil {
+							link.classSeed = map[string]*saClassDef{}
+						}
 						link.classSeed[k[5:]] = ch.def
+					} else if def := saProgFindClass(link, k[5:]); def != nil {
+						if link.classSeed == nil {
+							link.classSeed = map[string]*saClassDef{}
+						}
+						link.classSeed[k[5:]] = def
 					}
 				}
 			}
