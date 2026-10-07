@@ -1233,6 +1233,40 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			if bound {
 				return true
 			}
+			// star 转运目标（`export * from`；自身零可链成员）：沿 link.stars
+			// 收集候选名，每名经 saProgChase 解析（first-match/seen 守卫与
+			// 命名导入 star 分支同口径；上游 resolveReExports star 同形，m4 实证）。
+			local := nb.AsNamespaceImport().Name().Text()
+			names := map[string]bool{}
+			var walk func(t string, seen map[string]bool)
+			walk = func(t string, seen map[string]bool) {
+				if seen[t] {
+					return
+				}
+				seen[t] = true
+				for _, st := range link.stars[t] {
+					for member, hv := range link.harvests[st] {
+						if member != "default" && hv.exported && !hv.isArrow {
+							names[member] = true
+						}
+					}
+					walk(st, seen)
+				}
+			}
+			walk(tgt, map[string]bool{})
+			for member := range names {
+				if local == "" {
+					break
+				}
+				if q, sig, ok := saProgChase(link, tgt, member, map[string]bool{}); ok {
+					link.resolve[local+"."+member] = q
+					link.seed[q] = sig
+					bound = true
+				}
+			}
+			if bound {
+				return true
+			}
 		} else {
 			// Unresolvable relative target: no edge, no binding (use sites
 			// refuse); bare specs never reach here (warned above).
