@@ -1289,6 +1289,47 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + binding})
 		return false
 	}
+	// 对象 for-in 静态展开（布局字段逐个绑键名串常量 inline 体；`o[k]`
+	// 动态读沿旧门；break/continue 沿无循环栈门拒；空布局零次展开）。
+	if fo.Expression != nil && fo.Expression.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[fo.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			def, ok := scope.classes[k[5:]]
+			if !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + k[5:]})
+				return false
+			}
+			bodyStmts, ok := saEmbeddedBlock(fo.Statement)
+			if !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in body"})
+				return false
+			}
+			for _, f := range def.fields {
+				// 逐份独立域（名隔离；份尾释本份归属（含键绑），防静态重定义；
+				// 体终结则后续份不可达，截断防死码）。
+				savedF := saScopeEnter(scope)
+				copyDepth := len(scope.ownOrder)
+				kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", binding, kh))
+				scope.types[binding] = "str"
+				saConsumeOwn(scope, kh)
+				saDeclareOwned(scope, binding)
+				armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+				if armOK {
+					saReleaseDeeperThan(w, scope, copyDepth)
+				}
+				saScopeExit(scope, savedF)
+				if !armOK {
+					return false
+				}
+				if saArmTerminates(bodyStmts) {
+					break
+				}
+			}
+			return true
+		}
+	}
 	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-in")
 	if !ok {
 		return false
