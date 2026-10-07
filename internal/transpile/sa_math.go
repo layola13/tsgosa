@@ -350,65 +350,14 @@ func saEvalMathSqrt(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			fx = cp
 		}
 	}
+	// R3-2 回迁映射：整数二分开方语义由 `sci/sa_std/ts_math.sa` `@ts_math_isqrt`
+	// 实现（返 floor；循环内 mid 经槽中转，分支汇合自赋值对齐；旧内联产物潜伏
+	// UseAfterMove，改调即修）；本侧保留门禁 + 具名快照 + import + 调用 + 归属登记。
+	scope.addImport("sa_std/ts_math.sa")
 	acc := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", acc))
-	lo := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 1\n", lo))
-	hi := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", hi, fx))
-	topL := fmt.Sprintf("L_sqrt_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_sqrt_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	takeL := fmt.Sprintf("L_sqrt_take_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	skipL := fmt.Sprintf("L_sqrt_skip_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	nextL := fmt.Sprintf("L_sqrt_next_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_sqrt_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sle %s, %s\n", c, lo, hi))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	d := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", d, hi, lo))
-	h := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = div %s, 2\n", h, d))
-	mid := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", mid, lo, h))
-	q := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = div %s, %s\n", q, fx, mid))
-	ok := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sle %s, %s\n", ok, mid, q))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, takeL, skipL))
-	w.Write(fmt.Sprintf("%s:\n", takeL))
-	w.Write(fmt.Sprintf("  %s = %s\n", acc, mid))
-	loN := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", loN, mid))
-	w.Write(fmt.Sprintf("  %s = %s\n", lo, loN))
-	w.Write(fmt.Sprintf("  jmp %s\n", nextL))
-	w.Write(fmt.Sprintf("%s:\n", skipL))
-	hiN := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", hiN, mid))
-	w.Write(fmt.Sprintf("  %s = %s\n", hi, hiN))
-	w.Write(fmt.Sprintf("  jmp %s\n", nextL))
-	w.Write(fmt.Sprintf("%s:\n", nextL))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_isqrt(%s)\n", acc, fx))
+	saOwnTemp(scope, acc)
 	return acc, false, ""
 }
 
