@@ -2143,142 +2143,21 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 // 嵌套路两遍：遍 1 外槽累内长，遍 2 新柄逐内拷片；元静态全 arr 才展
 // （arrNest 标记），混合/未知大声拒；结果不再记嵌套（保守，另步传标记）。
 func saLowerArrayFlat(w printer.EmitTextWriter, recv string, depth int, scope *saScope, nextTemp *int) string {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	sdata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, recv))
-	mkCopy := func(nlen string) (string, string) {
-		n1p := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", n1p, nlen))
-		nby := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, n1p))
-		ddata := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
-		dest := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, nlen))
-		w.Write(fmt.Sprintf("  !%s\n", ddata))
-		saOwnTemp(scope, dest)
-		dloop := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
-		return dest, dloop
+	// R3-8 回迁映射：一层拍扁执行语义由 `sci/sa_std/ts_array.sa` `@ts_arr_flat`
+	//（+ `@ts_arr_mkcopy` 预分配）实现；isnest 由调用点折叠（depth==0/非嵌套
+	// 即浅拷）；arrNest 标记透传与归属登记保留本侧。
+	scope.addImport("sa_std/ts_array.sa")
+	isnest := "0"
+	if depth != 0 && scope.arrNest != nil && scope.arrNest[recv] {
+		isnest = "1"
 	}
-	if depth == 0 || scope.arrNest == nil || !scope.arrNest[recv] {
-		dest, dloop := mkCopy(ln)
-		saCopyRange(w, sdata, dloop, "0", ln, "0", scope, nextTemp)
-		if depth == 0 {
-			saPropArrNest(scope, recv, dest)
-		}
-		return dest
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_flat(%s, %s)\n", dest, recv, isnest))
+	if depth == 0 {
+		saPropArrNest(scope, recv, dest)
 	}
-	total := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", total))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", total))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_flat_sum_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_flat_sum_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_flat_sum_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	eoff := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", eoff, i))
-	eaddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", eaddr, sdata, eoff))
-	eh := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eh, eaddr))
-	elen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", elen, eh))
-	tn := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tn, total))
-	tn2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", tn2, tn, elen))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", total, tn2))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	tlen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tlen, total))
-	w.Write(fmt.Sprintf("  !%s\n", total))
-	dest, dloop := mkCopy(tlen)
-	pos := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", pos))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", pos))
-	j := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", j))
-	top2 := fmt.Sprintf("L_flat_cp_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	body2 := fmt.Sprintf("L_flat_cp_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	end2 := fmt.Sprintf("L_flat_cp_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  jmp %s\n", top2))
-	w.Write(fmt.Sprintf("%s:\n", top2))
-	c2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c2, j, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c2, body2, end2))
-	w.Write(fmt.Sprintf("%s:\n", body2))
-	f2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", f2, j))
-	g2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", g2, sdata, f2))
-	h2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", h2, g2))
-	hd := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hd, h2))
-	hl := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hl, h2))
-	pv := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", pv, pos))
-	saCopyRange(w, hd, dloop, "0", hl, pv, scope, nextTemp)
-	pv2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pv2, pv, hl))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", pos, pv2))
-	jnext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", jnext, j))
-	w.Write(fmt.Sprintf("  %s = %s\n", j, jnext))
-	w.Write(fmt.Sprintf("  jmp %s\n", top2))
-	w.Write(fmt.Sprintf("%s:\n", end2))
-	w.Write(fmt.Sprintf("  !%s\n", pos))
+	saOwnTemp(scope, dest)
 	return dest
 }
 
