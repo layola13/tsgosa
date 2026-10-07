@@ -917,6 +917,23 @@ func saForBindingName(init *ast.Node) (string, *ast.Node, bool) {
 // 现场构造（alloc 16 头 + 缓冲 + 逐槽 store）；其余一律大声拒。
 // 形状证据：封存 lowerForOf:2123/lowerForIn:2191 的 lowerExpr(fo.Expression)
 // 位（本薄口仅支持句柄/字面量子集）。
+// saForStrOrArrHandle 取 for-of 被巡句柄（数组经 saForArrHandle 原样；
+// 串经 saEvalStr 求柄，调用方按串形取字；其余沿数组门大声拒。串判定先行，
+// 免数组门误记拒因（求柄各臂自带 import/归属）。
+func saForStrOrArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) (string, string, bool) {
+	if saIsStrExpr(e, scope) {
+		sh, msg := saEvalStr(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported for-of base: %s", msg)})
+			return "", "", false
+		}
+		return sh, sh, true
+	}
+	h, ok := saForArrHandle(w, e, scope, pos, refusals, nextTemp, where, "for-of")
+	return h, "", ok
+}
+
 func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node, what string) (string, bool) {
 	if e != nil && e.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
@@ -960,7 +977,7 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	fo := s.AsForInOrOfStatement()
 	// `for await...of` 脱糖为同步 for-of（上游同形：空数组直接索引巡回；
 	// 子集无 thenable（Promise 值双边同拒在先），await 元素恒等，脱糖可靠；
-	// 非数组源仍由既有数组门大声拒，体内 await 沿既有门拒）。
+	// 非数组/串源仍由既有门大声拒，体内 await 沿既有门拒）。
 	binding, pat, ok := saForBindingName(fo.Initializer)
 	if !ok {
 		ln, col := pos(s.Pos())
@@ -982,7 +999,7 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			return false
 		}
 	}
-	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-of")
+	arrVal, strBase, ok := saForStrOrArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s)
 	if !ok {
 		return false
 	}
@@ -1014,17 +1031,29 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	baseT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	offT := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	elemPtr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	elemT := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", baseT, arrVal))
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", offT, idx))
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", elemPtr, baseT, offT))
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elemT, elemPtr))
+	elemT := ""
+	if strBase != "" {
+		// 串元取字（字节精确 1 字柄，复用 saLowerStrIndexChar，与 s[i] 同形）。
+		elemT = saLowerStrIndexChar(w, baseT, idx, scope, nextTemp)
+	} else {
+		offT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		elemPtr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		elemT = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", offT, idx))
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", elemPtr, baseT, offT))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elemT, elemPtr))
+	}
 	if pat != nil {
+		if strBase != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array patterns in for-of need array bases"})
+			scope.loops = scope.loops[:len(scope.loops)-1]
+			return false
+		}
 		// 数组模式解构（元为内层 slice 句柄，逐元越界归零 join 绑 i32；
 		// 空穴跳过，rest/嵌套名大声拒；形状证据：封存 destructureArray +
 		// lowerDestructuringDecl 数组位）。
@@ -1072,6 +1101,10 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		// 嵌套字面量直巡的行绑定记 arr（行即内层句柄，`row[0]`/`row.length`
 		// 可用；扁平直巡仍记 i32；变量被巡元素种未知，沿旧 i32 门）。
 		bindKind := "i32"
+		if strBase != "" {
+			// 串元绑定记 str（1 字柄；求值/拼接经串通道）。
+			bindKind = "str"
+		}
 		if be := fo.Expression; be != nil && be.Kind == ast.KindArrayLiteralExpression {
 			if al := be.AsArrayLiteralExpression(); al.Elements != nil {
 				for _, el := range al.Elements.Nodes {

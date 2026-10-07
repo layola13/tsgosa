@@ -1,0 +1,9 @@
+@import "../demos/302_str_forof/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "302_str_forof"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 3, 30201)
+    !v
+    return
