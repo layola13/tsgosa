@@ -269,7 +269,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					}
 					if len(targs) == 2 {
 						if vt := targs[1]; vt != nil && vt.Kind == ast.KindArrayType {
-							saSetMapVal(scope, name, "arr")
+							saSetMapVal(scope, name, saMapArrValKind(vt))
 						}
 					}
 				}

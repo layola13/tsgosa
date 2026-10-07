@@ -67,10 +67,10 @@ func saMapCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		case "keys", "values", "entries":
 			return "arr", true
 		}
-		// `get` 回值种按建表记（数组值即 arr；无表恒 i32）。
+		// `get` 回值种按建表记（数组值即 arr，串元数组即 arrStr；无表恒 i32）。
 		if m == "get" {
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
-				if vk, ok := scope.mapVals[pa.Expression.Text()]; ok && vk == "arr" {
+				if vk, ok := scope.mapVals[pa.Expression.Text()]; ok && (vk == "arr" || vk == "arrStr") {
 					return "arr", true
 				}
 			}
@@ -137,7 +137,13 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 	if vkind == "" {
 		vkind = "i32"
 	}
-	scope.types[t] = vkind
+	if vkind == "arrStr" {
+		// 串元数组值读回 arr 柄并透传串元标记（下游 `..[i]` 凭标记走串位）。
+		scope.types[t] = "arr"
+		saMarkArrStr(scope, t)
+	} else {
+		scope.types[t] = vkind
+	}
 	return t, ""
 }
 
@@ -211,6 +217,63 @@ func saSetMapVal(scope *saScope, name, vkind string) {
 		scope.mapVals = map[string]string{}
 	}
 	scope.mapVals[name] = vkind
+}
+
+// saMapArrValKind 判 Map 数组值元种（`string[]`/`Array<string>` 即串元 "arrStr"，
+// 其余数组即 "arr"；调用方建表记种，读侧凭此透传串元标记，禁静默错码）。
+func saMapArrValKind(vt *ast.Node) string {
+	if vt != nil && vt.Kind == ast.KindArrayType {
+		if el := vt.AsArrayTypeNode().ElementType; el != nil && el.Kind == ast.KindStringKeyword {
+			return "arrStr"
+		}
+	}
+	if vt != nil && vt.Kind == ast.KindTypeReference {
+		if ref := vt.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+			ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Array" &&
+			ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 &&
+			ref.TypeArguments.Nodes[0] != nil && ref.TypeArguments.Nodes[0].Kind == ast.KindStringKeyword {
+			return "arrStr"
+		}
+	}
+	return "arr"
+}
+
+// saIsStrArrRvalue 报告右值是否为串元数组句柄（`m.get(k)` 且建表记 "arrStr"；
+// NonNull/括号/as 包装透视；`?.` 由调用方守卫，裸函数返回句柄未记元种仍 false）。
+func saIsStrArrRvalue(e *ast.Node, scope *saScope) bool {
+	for e != nil && (e.Kind == ast.KindNonNullExpression || e.Kind == ast.KindParenthesizedExpression ||
+		e.Kind == ast.KindAsExpression || e.Kind == ast.KindSatisfiesExpression || e.Kind == ast.KindTypeAssertionExpression) {
+		switch e.Kind {
+		case ast.KindNonNullExpression:
+			e = e.AsNonNullExpression().Expression
+		case ast.KindParenthesizedExpression:
+			e = e.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			e = e.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			e = e.AsSatisfiesExpression().Expression
+		case ast.KindTypeAssertionExpression:
+			e = e.AsTypeAssertion().Expression
+		}
+	}
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return false
+	}
+	ce := e.AsCallExpression()
+	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa.Name() == nil || pa.Name().Text() != "get" || pa.QuestionDotToken != nil {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "map" {
+		return false
+	}
+	return scope.mapVals[pa.Expression.Text()] == "arrStr"
 }
 
 // saSeedParamMapVals 播形参 map 值种（`m: Record<string,T>` 按注解记表；
@@ -413,8 +476,8 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 				saReleaseKeySlice(w, ks, kcell)
 				return "0", "i32", ""
 			}
-			if scope.mapVals[recv] == "arr" {
-				// 数组值存（句柄 word 入槽；i32/串元皆位存，元种不记，串元读另步）。
+			if scope.mapVals[recv] == "arr" || scope.mapVals[recv] == "arrStr" {
+				// 数组值存（句柄 word 入槽；i32/串元皆位存，元种凭建表另辨）。
 				v, msg := saArrValueOf(w, argNodes[1], scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", "", msg
@@ -482,9 +545,15 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
 			// 读回种按建表记临时量（与下标读 112-116 同形；否则下游把句柄当 i32 用）。
+			// 串元数组值归一为 arr 柄并透传串元标记（下游 `..[i]` 凭标记走串位）。
 			vkind := scope.mapVals[recv]
 			if vkind == "" {
 				vkind = "i32"
+			}
+			if vkind == "arrStr" {
+				scope.types[t] = "arr"
+				saMarkArrStr(scope, t)
+				return t, "arr", ""
 			}
 			scope.types[t] = vkind
 			return t, vkind, ""
