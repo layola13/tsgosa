@@ -303,7 +303,7 @@ func saIsStrMethod(m string) bool {
 	switch m {
 	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith",
 		"toLowerCase", "toUpperCase", "repeat", "padStart", "padEnd", "replace", "replaceAll",
-		"includes", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
+		"includes", "search", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
 		"slice", "substring", "substr", "toString":
 		return true
 	}
@@ -1453,6 +1453,21 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = ne %s, -1\n", out, idx))
 		return out, false, ""
+	case "search":
+		// 串参即 `indexOf` 0 起（JS 同义）；正则参需 match offset，待底座
+		// `sa_regex_group_start`（另步）。
+		if len(args) != 1 {
+			return "", false, "search takes 1 argument"
+		}
+		if !saIsStrExpr(args[0], scope) {
+			return "", false, "String.search takes a string pattern (RegExp patterns need a match-offset backend)"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		return call1("sa_string_index_of", np, nl, "0"), false, ""
 	case "charAt", "at":
 		if len(args) != 1 {
 			return "", false, method + " needs 1 argument"
