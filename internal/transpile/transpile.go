@@ -2762,6 +2762,7 @@ type saFuncSig struct {
 	defaults     []bool
 	defaultExprs []*ast.Node
 	arrowCaps    []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
+	arrowThis    bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
 	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
 }
 

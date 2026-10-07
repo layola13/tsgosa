@@ -2532,8 +2532,15 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 		}
 	}
 	// 局部箭头捕获：调用点把捕获名按序追加为尾随实参（封存 lowerCall 的
-	// captureSig 实参拼接 :1336-1343 同序）。
+	// captureSig 实参拼接 :1336-1343 同序）；接收者捕获追传定义域 thisSelf
+	//（按值同值捕获口径；定义域外调用无绑定即大声拒，禁静默错位）。
 	args = append(args, sig.arrowCaps...)
+	if sig.arrowThis {
+		if scope.thisSelf == "" {
+			return "", false, "this capture outside a method is not lowerable"
+		}
+		args = append(args, scope.thisSelf)
+	}
 	call := fmt.Sprintf("call @%s(%s)", callName, strings.Join(args, ", "))
 	if sig.isVoid {
 		w.Write(fmt.Sprintf("  %s\n", call))

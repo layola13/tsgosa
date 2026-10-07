@@ -2193,6 +2193,33 @@ func saArrowCaptures(body *ast.Node, name string, paramNames []string, scope *sa
 	return caps
 }
 
+// saArrowUsesThis 报告箭头体是否直用 `this`（嵌套箭头穿透：其 this 即外层
+// this；嵌套函数/类有自属接收者，不计入；本层 this 由调用方判定）。
+func saArrowUsesThis(body *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		if x.Kind == ast.KindThisKeyword {
+			found = true
+			return
+		}
+		switch x.Kind {
+		case ast.KindFunctionDeclaration, ast.KindFunctionExpression,
+			ast.KindClassDeclaration, ast.KindClassExpression:
+			return
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(body)
+	return found
+}
+
 // saLowerLocalArrow lowering 局部 `let f = (…) => …` / `= function …`：
 // 生成 out-of-line `@__arrow_N` 并把局部名记为调用别名（不落字）。
 // 返回 false 即已落拒因。形状证据：封存 lowerArrowBinding:1058-1254。
@@ -2247,6 +2274,23 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 			return refuse(arrow, "function value capture "+cp+" is not lowerable")
 		}
 	}
+	// 方法接收者捕获（箭头 `this` 即方法 this；按值尾参传递，与值捕获
+	// 同归属口径；圈外 this 沿既有 `thisSelf == ""` 各门拒因，不动）。
+	usesThis := scope.thisSelf != "" && scope.thisClass != "" && saArrowUsesThis(body)
+	thisCap := ""
+	if usesThis {
+		thisCap = "__this"
+		for _, p := range params {
+			if p == thisCap {
+				return refuse(arrow, "this capture name is shadowed")
+			}
+		}
+		for _, cp := range captured {
+			if cp == thisCap {
+				return refuse(arrow, "this capture name is shadowed")
+			}
+		}
+	}
 	// out-of-line 发射：换新 builder 与作用域状态（封存 :1174-1253 save/restore）。
 	buf := printer.NewTextWriter("\n", 2)
 	*scope.arrowSeq++
@@ -2258,6 +2302,10 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	}
 	for _, cp := range captured {
 		allKinds[cp] = scope.types[cp]
+	}
+	if thisCap != "" {
+		sigNames = append(sigNames, thisCap)
+		allKinds[thisCap] = "ptr"
 	}
 	buf.Write("@" + gen + "(" + saSigParamList(allKinds, sigNames) + ")")
 	if !isVoid {
@@ -2279,6 +2327,12 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	for _, cp := range captured {
 		inner.types[cp] = scope.types[cp]
 	}
+	// 接收者捕获以内层 `this` 落定（体 `this` 经既有接收者通道；封存
+	// saInlineMethodCore 置位同形；`thisClass` 供方法/字段布局消解）。
+	if thisCap != "" {
+		inner.types[thisCap] = "ptr"
+		inner.thisSelf, inner.thisClass = thisCap, scope.thisClass
+	}
 	// 形参+捕获按签名序归属登记（逆序释放依赖此序）。
 	for _, p := range sigNames {
 		saDeclareOwned(inner, p)
@@ -2293,7 +2347,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	}
 	*scope.pendingFns = append(*scope.pendingFns, buf.String())
 	// 签名入表（调用核按名分发；arrowCaps 有序记尾随捕获实参）+ 局部名记别名。
-	scope.funcs[gen] = saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured}
+	scope.funcs[gen] = saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured, arrowThis: usesThis}
 	scope.types[name] = "fn:" + gen
 	return true
 }
