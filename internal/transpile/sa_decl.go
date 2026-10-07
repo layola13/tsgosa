@@ -473,7 +473,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vkind == "f64" {
-			// f64 binding (plain scalar words, never owned/released).
+			// f64 binding（owned 登记，drain 统一释放；call 结果 move 链被
+			// verifier 追踪（`Number("7")` leak 实证），`!f64` 合法已验证）。
 			if vd.Initializer == nil {
 				if isConst {
 					ln, col := pos(d.Pos())
@@ -482,7 +483,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = 0\n", name))
 				scope.types[name] = "f64"
-				saDeclarePlain(scope, name)
+				saDeclareOwned(scope, name)
 				continue
 			}
 			op, msg := saEvalF64(w, vd.Initializer, scope, pos, refusals, nextTemp)
@@ -493,7 +494,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = "f64"
-			saDeclarePlain(scope, name)
+			saDeclareOwned(scope, name)
 			continue
 		}
 		if strings.HasPrefix(vkind, "inst:") {
@@ -694,7 +695,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = "f64"
-			saDeclarePlain(scope, name)
+			saDeclareOwned(scope, name)
 			return true
 		}
 	}

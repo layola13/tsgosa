@@ -78,6 +78,7 @@ L_then_1:
   !t_12
   !t_2
   !t_1
+  !y
   ret 1
 L_endif_3:
   ret 0

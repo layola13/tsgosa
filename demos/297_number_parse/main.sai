@@ -66,7 +66,9 @@ L_endif_9:
   !t_23
   !t_17
   !t_16
+  !b
   !t_5
+  !a
   !t_1
   ret s
 @main() -> i32:

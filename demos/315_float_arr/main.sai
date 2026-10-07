@@ -45,6 +45,7 @@
   !t_11
   !t_10
   !a
+  !x
   ret t_20
 @main() -> i32:
   t_21 = call @main__user()

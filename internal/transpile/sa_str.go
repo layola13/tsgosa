@@ -609,7 +609,10 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if voidCall {
 				return "", "void call in string position"
 			}
-			return saRenderInterp64(w, op, scope, nextTemp), ""
+			op2 := saRenderInterp64(w, op, scope, nextTemp)
+			// date 调用 temp 用后即释（具名基无记录 no-op）。
+			saReleaseOwnedTemp(w, scope, op)
+			return op2, ""
 		}
 	}
 	var op string

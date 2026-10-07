@@ -654,6 +654,12 @@
   - 高频可用（实测非推测）：`async/await`（2457× 含跨函数）、模板字符串（10370×）、`as unknown→i32`（2499×）、数组/对象 spread、`for-in` 数组、`for-of Map.keys()`、`Map.set/get/has`＋`get()!`、`??`（仅 i32）、interface 先行字面量、可选参数、解构、无约束泛型、`implements`、`extends`（同文件基类；跨文件/Node 基类拒）、`static/#私有/getter/abstract`、函数重载、默认/rest 参数、`switch` 串＋fallthrough、float/bitwise。
   - 纠正三则：①`?.`/字面量须先声明 interface（后端 216 interface 正对，利好）；②`extends` 拒因基类外部声明（Node `EventEmitter` 桥同坑，动桥须先给 Node 基类建布局）；③整体搬迁三堵点：`JSON`＋`Object.*` 反射＋跨文件类型（切程序模式）＋`string ??`/`?.()` 高频糖；纯计算模块可搬，`index.ts` 级不行。
   - 下一步（用户指派）：`forwardModel.ts` 的 `toParseInventory/buildForwardModelIds`（库存 longest-match，需串数组）探“串数组禁区” interface 后门。
+- [x] B-backend2 第二批实测收录（用户指令优先处理，外部输入：19 探针＋4 追问；本环境无探针集，未复跑，原样收录）。
+  - 不可用：interface 对象数组（`P[]` 下标/字段/`.length` 全拒，核心堵点，与 interface 后门无关）→ 另步；`?.` 组合（仅参数直取可用，`p?.x ?? d`/局部/拷贝全拒）→ 另步（`== null` 显式判断可用）；`instanceof`（234×，含自定义类）→ 拒；`process.env`（319×）→ 拒；`setTimeout`（Phase 2 定死）→ 拒；`Promise.all`（47×）→ 拒；`TextEncoder`（86×）→ 拒；自定义 Error 子类（基类外部）→ 拒。
+  - 可修（本轮兑现两项）：`Date.now()`/`Number("7")` 之 `MemoryLeak` 系 lowering 归属 bug（i32 结果/调用柄未登记释放），非语义禁区 → R3-33 已修；`console.error`（`ImportResolutionFailed`，要 node 插件）→ 插件面另步。
+  - 可用利好：`string[]` push/读长、`indexOf` 手工多段 split（`splitForwardModelPositional` 可搬）、`String()/toString()`、`map/filter/find/forEach` 箭头、`for-of entries` 解构、`catch`（仅 i32 throw）。
+  - 新认知三条：①`toParseInventory` 搬不了（`P[]` 硬禁区），`buildForwardModelIds` 笛卡尔部分可搬；②`?.` 可用域极窄（2238 处须改写显式判空）；③分水岭：纯计算＋字符串＋受限控制流可搬，触对象数组/`JSON`/反射/`Error` 体系/Node 运行时一律不行；第三批建议探外部库定 FFI 清单。
+- [x] R3-33 `Date.now`/`Number` MemoryLeak 归属修复（本轮，第二批指派兑现，sci 零改动）：`Date.now/parse/new` 求值点 `saOwnTemp` 登记＋串 render 位用后即释；f64 绑定改 `saDeclareOwned`（`!f64` 合法已验证，drain 统一释放；call 结果 move 链被追踪之根因）。6 个 f64 demo 重生成（diff 仅 `!具名` 释放行，逐个 `sa check` ok）。落 `sa_date.go`/`sa_str.go`/`sa_decl.go` 既有处，`transpile.go`/`main.go` 未动。门禁 `--check` **367/367** + `--corpus` **286 agree**；`go vet` + `gofmt` 干净。
 - [x] R3-20 transpile.go 减负（本轮，零行为变更重构）：R3-15c 落在 `saLowerReturn` 的 arr 分支下沉 `sa_arr.go` 为 `saLowerInlineArrReturn`（transpile.go 只留种分发一行，领域逻辑归属数组域；铁律⑤⑥）。证据：全量 `--check` **358/358 SA-CLEAN 字节零漂移** + `--corpus` **286 agree**；`go vet` + `gofmt` 干净；`main.go` 未动。
 - [x] X-progimport 导入形扫荡定案（step414 后 hunting，零改码）：多文件多导入/同文件重命名导入双边同形一致（`@lib_a__f/@lib_b__g`）；`import = require()` 双边同拒（Phase 3）。结论：无活缺口；本步只记台账，不改码。门禁沿 step414 全绿。
 - [x] X-progvals2 跨文件值种扫荡定案（JEV 指派 a 项，零改码）：Map 形参双边同拒（字典种禁入值位）；Record 形参 TN 过/UP 拒（UP 字面量须接口，薄口 btree 直通值 3，领先系旧功）；串/数组跨文件 TN 过/UP 拒（UP 跨文件串常量重名，薄口串池命名空间旧功，值 10 一致）。结论：薄口领先三则，无活缺口；本步只记台账，不改码。门禁沿 step414 全绿。

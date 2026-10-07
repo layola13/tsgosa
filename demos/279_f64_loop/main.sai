@@ -79,6 +79,7 @@ L_for_end_6:
   !t_8
   !m
   !n
+  !i
   ret t_30
 @main() -> i32:
   t_31 = call @main__user()

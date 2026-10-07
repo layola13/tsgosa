@@ -46,6 +46,7 @@ func saLowerDateNew(w printer.EmitTextWriter, scope *saScope, nextTemp *int) str
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_time_unix_ms()\n", t))
+	saOwnTemp(scope, t)
 	return t
 }
 
@@ -123,6 +124,7 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_time_unix_ms()\n", t))
+			saOwnTemp(scope, t)
 			return t, "date", ""
 		case "parse":
 			if len(argNodes) != 1 {
@@ -156,6 +158,7 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", out, ms))
 			w.Write(fmt.Sprintf("  !%s\n", ms))
+			saOwnTemp(scope, out)
 			return out, "date", ""
 		}
 		return "", "", "unknown Date member " + method

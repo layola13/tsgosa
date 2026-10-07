@@ -48,6 +48,7 @@ L_endif_6:
   !t_16
   !t_10
   !t_9
+  !x
   ret s
 @main() -> i32:
   t_19 = call @main__user()
