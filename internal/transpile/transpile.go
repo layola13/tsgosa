@@ -1230,12 +1230,51 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				link.seed[q] = hv.sig
 				bound = true
 			}
-			if bound {
-				return true
+			// 类/纯量成员（`new A.P()`/`A.K`）：沿目标 + star 闭包（目标优先、
+			// first-match 不覆盖）播种 `本地_类` 布局键与 `本地.名` 折叠值，复用
+			// bindProgNsClasses/bindProgNsConsts 同键约定（实例通道/折叠读位零改；
+			// 收割表只含导出项；k1/k2/k3 实证）。
+			if nsLocal := nb.AsNamespaceImport().Name().Text(); nsLocal != "" {
+				order := []string{tgt}
+				seenT := map[string]bool{tgt: true}
+				for i := 0; i < len(order); i++ {
+					for _, st := range link.stars[order[i]] {
+						if !seenT[st] {
+							seenT[st] = true
+							order = append(order, st)
+						}
+					}
+				}
+				for _, t := range order {
+					for name, ch := range link.classHarvests[t] {
+						if strings.Contains(name, ".") || !ch.exported || ch.def == nil {
+							continue
+						}
+						if link.classSeed == nil {
+							link.classSeed = map[string]*saClassDef{}
+						}
+						if _, dup := link.classSeed[nsLocal+"_"+name]; !dup {
+							link.classSeed[nsLocal+"_"+name] = ch.def
+							bound = true
+						}
+					}
+					for name, kc := range link.constHarvests[t] {
+						if strings.Contains(name, ".") {
+							continue
+						}
+						if link.constSeed == nil {
+							link.constSeed = map[string]saProgConst{}
+						}
+						if _, dup := link.constSeed[nsLocal+"."+name]; !dup {
+							link.constSeed[nsLocal+"."+name] = kc
+							bound = true
+						}
+					}
+				}
 			}
-			// star 转运目标（`export * from`；自身零可链成员）：沿 link.stars
-			// 收集候选名，每名经 saProgChase 解析（first-match/seen 守卫与
-			// 命名导入 star 分支同口径；上游 resolveReExports star 同形，m4 实证）。
+			// star 转运目标（`export * from`）：沿 link.stars 收集候选名（目标
+			// 自身同名优先：已绑跳过），每名经 saProgChase 解析（first-match/seen
+			// 守卫与命名导入 star 分支同口径；上游 resolveReExports star 同形，m4 实证）。
 			local := nb.AsNamespaceImport().Name().Text()
 			names := map[string]bool{}
 			var walk func(t string, seen map[string]bool)
@@ -1257,6 +1296,9 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			for member := range names {
 				if local == "" {
 					break
+				}
+				if _, done := link.resolve[local+"."+member]; done {
+					continue
 				}
 				if q, sig, ok := saProgChase(link, tgt, member, map[string]bool{}); ok {
 					link.resolve[local+"."+member] = q
