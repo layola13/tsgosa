@@ -58,8 +58,12 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			if k == "str" {
 				return "", "string " + nm + " in condition"
 			}
-			if k == "map" || k == "set" || k == "date" {
+			if k == "map" || k == "set" {
 				return "", k + " " + nm + " in condition"
+			}
+			// date millis 条件直通（i64 寄存器非零即真；上游实发 `br t` 同形；召用位 3747 收窄口径同源）。
+			if k == "date" {
+				return nm, ""
 			}
 			// 实例句柄真值即非零（空为 0 句柄；`br` 直吃寄存器，与上游
 			// lowerIf 通用 lowerExpr+br 同形；封存 materializeCond 非立即量直通）。
@@ -3009,6 +3013,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			if k == "str" {
 				return "", "string " + nm + " in i32 expression"
+			}
+			// date millis i32 位直通（i64 寄存器低 32 位截断，调用位 3747 口径同源；上游逐字节同形 `sgt t, 0`；封存无 date 特判）。
+			if k == "date" {
+				return nm, ""
 			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in i32 expression"
