@@ -174,53 +174,22 @@ func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 // saLowerMathRoundingFloat 落浮点字面量实参的 floor/ceil/round/trunc 转换
 // （fptosi + 负零碎调整块；ceil 取负、round 先加 0.5、trunc 直转；封存 lowerMathRounding:5947-5988）。
 func saLowerMathRoundingFloat(w printer.EmitTextWriter, method, v string, scope *saScope, nextTemp *int) string {
-	fresh := func() string {
-		t := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		return t
-	}
-	farg := v
-	negateOut := false
+	// R3-11 回迁映射：浮点取整语义由 `sci/sa_std/ts_math.sa` `@ts_math_rounding`
+	// 实现（op 由调用点折叠 0=floor/1=ceil/2=round/3=trunc；f64 字面直传参）；
+	// 本侧只做 import + 调用（归属由外层统一登记；f64 字面非 temp 不登记）。
+	scope.addImport("sa_std/ts_math.sa")
+	op := "0"
 	if method == "ceil" {
-		fn := fresh()
-		w.Write(fmt.Sprintf("  %s = fneg %s\n", fn, v))
-		farg = fn
-		negateOut = true
+		op = "1"
 	} else if method == "round" {
-		fh := fresh()
-		w.Write(fmt.Sprintf("  %s = fadd %s, 0.5\n", fh, v))
-		farg = fh
+		op = "2"
 	} else if method == "trunc" {
-		ft := fresh()
-		w.Write(fmt.Sprintf("  %s = fptosi %s\n", ft, v))
-		return ft
+		op = "3"
 	}
-	t := fresh()
-	w.Write(fmt.Sprintf("  %s = fptosi %s\n", t, farg))
-	isNeg := fresh()
-	w.Write(fmt.Sprintf("  %s = fcmp_lt %s, 0.0\n", isNeg, farg))
-	back := fresh()
-	w.Write(fmt.Sprintf("  %s = sitofp %s\n", back, t))
-	isFrac := fresh()
-	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", isFrac, farg, back))
-	need := fresh()
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", need, isNeg, isFrac))
-	adjL := fmt.Sprintf("L_fl_adj_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_fl_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", need, adjL, endL))
-	w.Write(fmt.Sprintf("%s:\n", adjL))
-	dec := fresh()
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", dec, t))
-	w.Write(fmt.Sprintf("  %s = %s\n", t, dec))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	if negateOut {
-		out := fresh()
-		w.Write(fmt.Sprintf("  %s = sub 0, %s\n", out, t))
-		return out
-	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_math_rounding(%s, %s)\n", t, v, op))
+	saOwnTemp(scope, t)
 	return t
 }
 

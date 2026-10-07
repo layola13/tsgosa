@@ -27,39 +27,30 @@
   t_13 = load t_11 + 8 as u64
   call @sa_print_bytes(&t_12, t_13)
   !t_11
-  t_14 = fptosi 7.9
-  t_15 = fcmp_lt 7.9, 0.0
-  t_16 = sitofp t_14
-  t_17 = fcmp_ne 7.9, t_16
-  t_18 = and t_15, t_17
-  br t_18 -> L_fl_adj_1, L_fl_end_2
-L_fl_adj_1:
-  t_19 = sub t_14, 1
-  t_14 = t_19
-  jmp L_fl_end_2
-L_fl_end_2:
-  t_20 = sext t_14 as i64
-  t_21 = alloc 64
-  t_22 = alloc 8
-  t_23 = call @sa_fmt_i64_into(t_20, 10, t_21, 64, &t_22)
-  t_24 = load t_22 + 0 as u64
-  t_25 = alloc 16
-  store t_25 + 0, t_21 as ptr
-  store t_25 + 8, t_24 as u64
+  t_14 = call @ts_math_rounding(7.9, 0)
+  t_15 = sext t_14 as i64
+  t_16 = alloc 64
+  t_17 = alloc 8
+  t_18 = call @sa_fmt_i64_into(t_15, 10, t_16, 64, &t_17)
+  t_19 = load t_17 + 0 as u64
+  t_20 = alloc 16
+  store t_20 + 0, t_16 as ptr
+  store t_20 + 8, t_19 as u64
+  !t_18
+  t_21 = load t_20 + 0 as ptr
+  t_22 = load t_20 + 8 as u64
+  call @sa_print_bytes(&t_21, t_22)
+  !t_20
+  t_23 = alloc 16
+  store t_23 + 0, &str_const_0 as ptr
+  store t_23 + 8, 1 as u64
+  t_24 = load t_23 + 0 as ptr
+  t_25 = load t_23 + 8 as u64
+  call @sa_print_bytes(&t_24, t_25)
   !t_23
-  t_26 = load t_25 + 0 as ptr
-  t_27 = load t_25 + 8 as u64
-  call @sa_print_bytes(&t_26, t_27)
-  !t_25
-  t_28 = alloc 16
-  store t_28 + 0, &str_const_0 as ptr
-  store t_28 + 8, 1 as u64
-  t_29 = load t_28 + 0 as ptr
-  t_30 = load t_28 + 8 as u64
-  call @sa_print_bytes(&t_29, t_30)
-  !t_28
-  !t_22
-  !t_21
+  !t_17
+  !t_16
+  !t_14
   !t_5
   !t_4
   !t_2
