@@ -1454,20 +1454,66 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		w.Write(fmt.Sprintf("  %s = ne %s, -1\n", out, idx))
 		return out, false, ""
 	case "search":
-		// 串参即 `indexOf` 0 起（JS 同义）；正则参需 match offset，待底座
-		// `sa_regex_group_start`（另步）。
+		// 串参即 `indexOf` 0 起（JS 同义）；正则参 match 判空 + group0 起位
+		// （`@sa_regex_group_start`，miss 返 -1；free(0) 安全与 test 同形）。
 		if len(args) != 1 {
 			return "", false, "search takes 1 argument"
 		}
-		if !saIsStrExpr(args[0], scope) {
-			return "", false, "String.search takes a string pattern (RegExp patterns need a match-offset backend)"
+		if saIsStrExpr(args[0], scope) {
+			n, msg := strArg(0)
+			if msg != "" {
+				return "", false, msg
+			}
+			np, nl := saExpandStr(w, n, nextTemp)
+			return call1("sa_string_index_of", np, nl, "0"), false, ""
 		}
-		n, msg := strArg(0)
+		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", false, msg
 		}
-		np, nl := saExpandStr(w, n, nextTemp)
-		return call1("sa_string_index_of", np, nl, "0"), false, ""
+		rp, rl := saExpandStr(w, recv, nextTemp)
+		scope.addImport("sa_std/text/regex.sa")
+		m := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, rp, rl))
+		hit := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+		hitL := fmt.Sprintf("L_srch_hit_%d", *nextTemp)
+		*nextTemp++
+		missL := fmt.Sprintf("L_srch_miss_%d", *nextTemp)
+		*nextTemp++
+		endL := fmt.Sprintf("L_srch_end_%d", *nextTemp)
+		*nextTemp++
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+		w.Write(fmt.Sprintf("%s:\n", hitL))
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_start(%s, 0)\n", st, m))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, st))
+		w.Write(fmt.Sprintf("  !%s\n", st))
+		fr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+		w.Write(fmt.Sprintf("  !%s\n", fr))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", missL))
+		w.Write(fmt.Sprintf("  store %s + 0, -1 as i32\n", slot))
+		mfr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", mfr, m))
+		w.Write(fmt.Sprintf("  !%s\n", mfr))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		saOwnTemp(scope, out)
+		return out, false, ""
 	case "charAt", "at":
 		if len(args) != 1 {
 			return "", false, method + " needs 1 argument"

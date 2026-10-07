@@ -2,11 +2,13 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/text/regex.sa"
 @const str_const_0 = utf8:"a1b2\0"
 @const str_const_1 = utf8:"1\0"
 @const str_const_2 = utf8:"\n\0"
 @const str_const_3 = utf8:"9\0"
 @const str_const_4 = utf8:"b2\0"
+@const str_const_5 = utf8:"b\0"
 @main() -> i32:
   t_1 = alloc 16
   store t_1 + 0, &str_const_0 as ptr
@@ -69,6 +71,79 @@
   t_34 = load t_32 + 8 as u64
   call @sa_print_bytes(&t_33, t_34)
   !t_32
+  t_35 = call @sa_regex_compile(&str_const_5, 1, 1)
+  re = t_35
+  t_36 = load s + 0 as ptr
+  t_37 = load s + 8 as u64
+  t_38 = load s + 0 as ptr
+  t_39 = load s + 8 as u64
+  t_40 = call @sa_regex_match(re, &t_38, t_39)
+  t_41 = ne t_40, 0
+  t_45 = alloc 8
+  br t_41 -> L_srch_hit_42, L_srch_miss_43
+L_srch_hit_42:
+  t_46 = call @sa_regex_group_start(t_40, 0)
+  store t_45 + 0, t_46 as i32
+  !t_46
+  t_47 = call @sa_regex_match_free(^t_40)
+  !t_47
+  jmp L_srch_end_44
+L_srch_miss_43:
+  store t_45 + 0, -1 as i32
+  t_48 = call @sa_regex_match_free(^t_40)
+  !t_48
+  jmp L_srch_end_44
+L_srch_end_44:
+  t_49 = load t_45 + 0 as i32
+  !t_45
+  t_50 = load t_49 + 0 as ptr
+  t_51 = load t_49 + 8 as u64
+  call @sa_print_bytes(&t_50, t_51)
+  !t_49
+  t_52 = alloc 16
+  store t_52 + 0, &str_const_2 as ptr
+  store t_52 + 8, 1 as u64
+  t_53 = load t_52 + 0 as ptr
+  t_54 = load t_52 + 8 as u64
+  call @sa_print_bytes(&t_53, t_54)
+  !t_52
+  t_55 = load s + 0 as ptr
+  t_56 = load s + 8 as u64
+  t_57 = call @sa_regex_compile(&str_const_3, 1, 1)
+  t_58 = load s + 0 as ptr
+  t_59 = load s + 8 as u64
+  t_60 = call @sa_regex_match(t_57, &t_58, t_59)
+  t_61 = ne t_60, 0
+  t_65 = alloc 8
+  br t_61 -> L_srch_hit_62, L_srch_miss_63
+L_srch_hit_62:
+  t_66 = call @sa_regex_group_start(t_60, 0)
+  store t_65 + 0, t_66 as i32
+  !t_66
+  t_67 = call @sa_regex_match_free(^t_60)
+  !t_67
+  jmp L_srch_end_64
+L_srch_miss_63:
+  store t_65 + 0, -1 as i32
+  t_68 = call @sa_regex_match_free(^t_60)
+  !t_68
+  jmp L_srch_end_64
+L_srch_end_64:
+  t_69 = load t_65 + 0 as i32
+  !t_65
+  t_70 = load t_69 + 0 as ptr
+  t_71 = load t_69 + 8 as u64
+  call @sa_print_bytes(&t_70, t_71)
+  !t_69
+  t_72 = alloc 16
+  store t_72 + 0, &str_const_2 as ptr
+  store t_72 + 8, 1 as u64
+  t_73 = load t_72 + 0 as ptr
+  t_74 = load t_72 + 8 as u64
+  call @sa_print_bytes(&t_73, t_74)
+  !t_72
+  !t_57
+  !re
   !t_26
   !t_15
   !t_4
