@@ -4048,6 +4048,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 			}
 		}
+		// 逗号顺序求值取末值（左部副作用保留，结果 temp 即释，具名 no-op；
+		// 非 i32 成员沿既有门拒；`for` 头等多声明位仍沿旧门）。
+		if saBinaryOpKind(be) == ast.KindCommaToken {
+			lop, msgL := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+			if msgL != "" {
+				return "", msgL
+			}
+			saReleaseOwnedTemp(w, scope, lop)
+			return saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+		}
 		op, ok := map[ast.Kind]string{
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
 			ast.KindAsteriskToken: "mul", ast.KindSlashToken: "div",
