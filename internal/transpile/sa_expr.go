@@ -2433,6 +2433,20 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 				(a.Kind == ast.KindIdentifier && a.Text() == "undefined")) {
 				return "0", ""
 			}
+			// 接口形参配对象字面量实参：按注解布局现场具化（声明位
+			// saLowerObjectLiteral 同核；键集精确匹配，多/缺键沿其旧门；
+			// 类形参仍拒——上游字面量直传跳过构造 wiring，禁照抄）。
+			if a != nil && a.Kind == ast.KindObjectLiteralExpression {
+				if inm := sig.paramKinds[i][5:]; inm != "" {
+					if d, ok := scope.classes[inm]; ok && d != nil && d.isIface {
+						h, _, msg := saLowerObjectLiteral(w, a, inm, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return h, ""
+					}
+				}
+			}
 			return "", "instance argument needs matching class"
 		}
 		if a != nil && a.Kind == ast.KindIdentifier {

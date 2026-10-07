@@ -1,0 +1,9 @@
+@import "../demos/310_iface_lit_arg/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "310_iface_lit_arg"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1173, 31001)
+    !v
+    return
