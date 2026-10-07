@@ -1132,6 +1132,14 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				link.aliasSeed[local] = ah
 				continue
 			}
+			// 纯量直链：具名导入常量命中定义文件收割即播种折叠值（后续 hook C-const 植入本地折叠表；未导出沿未导出门）。
+			if ch, ok := link.constHarvests[tgt][remote]; ok {
+				if link.constSeed == nil {
+					link.constSeed = map[string]saProgConst{}
+				}
+				link.constSeed[local] = ch
+				continue
+			}
 			// 命名空间整件直链（`import { N }` + `N.f()` 经成员点键绑定；
 			// 零可链成员下探重导出透传/未导出门；上游 bindNSMembers 同形）。
 			if saBindProgNsMembers(link, tgt, remote, local) {
@@ -1582,6 +1590,41 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					link.constHarvest = map[string]saProgConst{}
 				}
 				link.constHarvest[mb.dotted] = saProgConst{text: text, isStr: topStr[mb.dotted]}
+			}
+		}
+		// 顶层导出纯量收割（const 唯读折叠稳定；let/var 可变不收；未导出不收；l1 实证）。
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindVariableStatement {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			vs := st.AsVariableStatement()
+			if vs == nil || vs.DeclarationList == nil {
+				continue
+			}
+			dl := vs.DeclarationList.AsVariableDeclarationList()
+			if dl == nil || dl.AsNode().Flags&ast.NodeFlagsConst == 0 {
+				continue
+			}
+			for _, d := range dl.Declarations.Nodes {
+				vd := d.AsVariableDeclaration()
+				if vd == nil {
+					continue
+				}
+				nm := vd.Name()
+				if nm == nil || nm.Kind != ast.KindIdentifier {
+					continue
+				}
+				text, ok := topConsts[nm.Text()]
+				if !ok {
+					continue
+				}
+				if link.constHarvest == nil {
+					link.constHarvest = map[string]saProgConst{}
+				}
+				link.constHarvest[nm.Text()] = saProgConst{text: text, isStr: topStr[nm.Text()]}
 			}
 		}
 		// Program hook A-slot: harvest ns slot descriptors (pointer shared
