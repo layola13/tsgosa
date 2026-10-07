@@ -452,6 +452,27 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saIsGenericAlias(vd.Type, scope.aliasOf)) {
 			return saLowerInferredDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
+		// 裸 `null` 注解按 i32 零槽建种（`let x: null = null`；注解直写或字面量
+		// 包装双形同收；初值须为 `null` 字面量或缺省（`const` 缺省沿既有门）；
+		// 余初值拒；H70）。
+		if vd.Type != nil && (vd.Type.Kind == ast.KindNullKeyword ||
+			(vd.Type.Kind == ast.KindLiteralType && vd.Type.AsLiteralTypeNode().Literal != nil &&
+				vd.Type.AsLiteralTypeNode().Literal.Kind == ast.KindNullKeyword)) {
+			if vd.Initializer != nil && vd.Initializer.Kind != ast.KindNullKeyword {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "null annotation needs a null initializer"})
+				return false
+			}
+			if vd.Initializer == nil && isConst {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = 0\n", name))
+			scope.types[name] = "i32"
+			saDeclarePlain(scope, name)
+			continue
+		}
 		if !ok || (vkind != "i32" && vkind != "bool" && vkind != "arr" && vkind != "str" && vkind != "f64" && !strings.HasPrefix(vkind, "inst:")) {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported annotation (i32/bool/arr/str locals only)"})
