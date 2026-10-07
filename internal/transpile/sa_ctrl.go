@@ -1161,7 +1161,7 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	}
 	if matcher != "toBe" && matcher != "toEqual" && matcher != "toStrictEqual" && !isZero && cmpName == "" &&
 		matcher != "toContain" && matcher != "toStartsWith" && matcher != "toEndsWith" && matcher != "toHaveLength" && matcher != "toThrow" && matcher != "toMatch" && matcher != "toBeNaN" {
-		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toBeNull/toBeDefined/toBeTruthy/toBeFalsy/toBeNaN/toBeGreaterThan/toBeLessThan/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
+		return fail("expect()." + matcher + " is not lowerable yet (only toBe/toEqual/toStrictEqual/toBeNull/toBeDefined/toBeTruthy/toBeFalsy/toBeNaN/toBeGreaterThan/toBeGreaterThanOrEqual/toBeLessThan/toBeLessThanOrEqual/toContain/toStartsWith/toEndsWith/toHaveLength/toThrow/toMatch)")
 	}
 	var iargs []*ast.Node
 	if inner.Arguments != nil {
