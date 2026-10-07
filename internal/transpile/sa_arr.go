@@ -1348,7 +1348,7 @@ func saIsArrMethod(m string) bool {
 	switch m {
 	case "push", "pop", "shift", "unshift", "fill", "sort", "indexOf", "lastIndexOf",
 		"includes", "reverse", "slice", "at", "join", "copyWithin", "toReversed",
-		"toSorted", "with", "toSpliced", "splice", "flat", "concat",
+		"toSorted", "with", "toSpliced", "splice", "flat", "flatMap", "concat",
 		"forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
 		"some", "every", "reduce", "reduceRight":
 		return true
@@ -1360,7 +1360,7 @@ func saIsArrMethod(m string) bool {
 func saIsHigherOrderMethod(m string) bool {
 	switch m {
 	case "forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
-		"some", "every", "reduce", "reduceRight", "sort", "toSorted":
+		"some", "every", "reduce", "reduceRight", "sort", "toSorted", "flatMap":
 		return true
 	}
 	return false
@@ -2586,6 +2586,68 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				return "0", ""
 			}
 			v = op
+		} else if wantKind == "arr" {
+			// flatMap 回调位：数组字面量直构 / 数组返回调用 / 数组绑定直传；
+			// 嵌套与串元结果大声拒（外层 esz 恒 4 i32 槽）。
+			// 形状证据：字面量走 saLowerArrayLiteral（嵌套标记同 186-226），
+			// 调用种走 saArrCallRet（与 1476-1478 同门），具名走 types 表。
+			var av string
+			switch {
+			case body.Kind == ast.KindArrayLiteralExpression:
+				h, msg := saLowerArrayLiteral(w, body, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					done()
+					return "", msg
+				}
+				if scope.arrNest[h] || scope.arrStr[h] {
+					done()
+					return "", "flatMap callback must return a flat number array"
+				}
+				av = h
+			case body.Kind == ast.KindCallExpression:
+				k, ok := saArrCallRet(body.AsCallExpression(), scope)
+				if !ok || k != "arr" {
+					done()
+					return "", "flatMap callback must return an array"
+				}
+				aop, avoidCall, amsg := saEvalCall(w, body.AsCallExpression(), scope, pos, refusals, nextTemp)
+				if amsg != "" {
+					done()
+					return "", amsg
+				}
+				if avoidCall {
+					done()
+					return "", "void callback value"
+				}
+				if scope.arrNest[aop] || scope.arrStr[aop] {
+					done()
+					return "", "flatMap callback must return a flat number array"
+				}
+				av = aop
+			case body.Kind == ast.KindIdentifier:
+				if k, ok := scope.types[body.Text()]; !ok || k != "arr" {
+					done()
+					return "", "flatMap callback must return an array"
+				}
+				if scope.arrNest[body.Text()] || scope.arrStr[body.Text()] {
+					done()
+					return "", "flatMap callback must return a flat number array"
+				}
+				av = body.Text()
+			default:
+				done()
+				return "", "flatMap callback must return an array"
+			}
+			done()
+			releaseInstAlias()
+			if inLoop {
+				saTruncateBodyOwned(scope, ownBase)
+			}
+			// 循环域截断吞掉内层 temp 归属记录；具名直传非 temp 不重登记。
+			if saIsTempOp(av) {
+				saOwnTemp(scope, av)
+			}
+			return av, ""
 		} else if wantKind == "str" {
 			sop, msg := saEvalStr(w, body, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -2736,6 +2798,51 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	// 新柄归属 + 链式接收者回收（R1 slice/concat 同纪律；具名/借用基 no-op）。
+	saOwnTemp(scope, h)
+	saReleaseOwnedTemp(w, scope, recv)
+	return h, ""
+}
+
+// saHigherOrderFlatMap `flatMap` 内联（map 展开 + 一层拼片 = JS 语义；
+// 回调须返扁平 i32 数组，分支拒因见 saCallbackValue "arr" 位；
+// 拼片复 `saAppendSlice`（R3-5 `@ts_arr_append_slice`），内层 temp 拼后即释，
+// 具名直传为借用不释；循环骨架与 saHigherOrderMap 同形）。
+func saHigherOrderFlatMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	h := saNewEmptyArray(w, nextTemp)
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_fm_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_fm_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_fm_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "arr", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
+	if msg != "" {
+		return "", msg
+	}
+	saAppendSlice(w, h, v, scope, nextTemp)
+	saReleaseOwnedTemp(w, scope, v)
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
 	saOwnTemp(scope, h)
 	saReleaseOwnedTemp(w, scope, recv)
 	return h, ""
@@ -3495,7 +3602,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return "", "", msg
 		}
 		return h, "arr", ""
-	case "forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every":
+	case "forEach", "map", "filter", "flatMap", "find", "findIndex", "findLast", "findLastIndex", "some", "every":
 		cb, _, msg := saArrCallbackNode(argNodes)
 		if msg != "" {
 			return "", "", msg
@@ -3505,6 +3612,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		if len(argNodes) != 1 {
 			return "", "", method + " takes only a callback"
+		}
+		if method == "flatMap" {
+			h, msg := saHigherOrderFlatMap(w, recv, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			return h, "arr", ""
 		}
 		if method == "map" {
 			h, msg := saHigherOrderMap(w, recv, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
