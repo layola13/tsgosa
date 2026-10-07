@@ -8,5 +8,8 @@ function main(): i32 {
   const e: number[] = [];
   const f = e.flatMap((x) => [x]);
   console.log(f.length);
+  const g = a.flatMap(((x) => [x]));
+  console.log(g.length);
+  console.log(g[2]);
   return 0;
 }

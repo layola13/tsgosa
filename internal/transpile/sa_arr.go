@@ -3238,10 +3238,19 @@ func saArrCallbackNode(args []*ast.Node) (*ast.Node, int, string) {
 		if a == nil {
 			continue
 		}
-		if a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression {
-			return a, i, ""
+		// 括号包裹解包（`((x) => ...)` 与裸箭头同形；具名仍不内联）。
+		n := a
+		for n.Kind == ast.KindParenthesizedExpression {
+			pe := n.AsParenthesizedExpression()
+			if pe == nil || pe.Expression == nil {
+				break
+			}
+			n = pe.Expression
 		}
-		if a.Kind == ast.KindIdentifier {
+		if n.Kind == ast.KindArrowFunction || n.Kind == ast.KindFunctionExpression {
+			return n, i, ""
+		}
+		if n.Kind == ast.KindIdentifier || a.Kind == ast.KindIdentifier {
 			return nil, -1, "pass the arrow inline (named callbacks do not inline)"
 		}
 	}
