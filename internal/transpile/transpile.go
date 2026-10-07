@@ -3834,23 +3834,8 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			return true, false
 		}
 		if scope.inlineRet.kind == "arr" {
-			// 块体数组返回：存槽（ptr 槽）+jmp end（镜像 str 分支；嵌套/串元
-			// 大声拒，外层 esz 恒 4 i32 槽；求值走 saArrValueOf 数组位）。
-			hop, msg := saArrValueOf(w, rs.Expression, scope, pos, refusals, nextTemp)
-			if msg != "" {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
-				return false, true
-			}
-			if scope.arrNest[hop] || scope.arrStr[hop] {
-				ln, col := pos(s.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "block-body array return must be a flat number array"})
-				return false, true
-			}
-			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", scope.inlineRet.slot, hop))
-			saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
-			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
-			return true, false
+			// 数组域下沉 sa_arr.go（transpile.go 只做种分发，零领域逻辑）。
+			return saLowerInlineArrReturn(w, rs.Expression, scope, pos, refusals, nextTemp, s.Pos())
 		}
 		op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {

@@ -2957,6 +2957,27 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	return out, ""
 }
 
+// saLowerInlineArrReturn 块体数组返回（inlineRet arr 种）：存槽（ptr 槽）
+// +jmp end（镜像 str 分支；嵌套/串元大声拒，外层 esz 恒 4 i32 槽；求值走
+// saArrValueOf 数组位）。由 saLowerReturn 分发（transpile.go 零领域逻辑）。
+func saLowerInlineArrReturn(w printer.EmitTextWriter, expr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, stmtPos int) (bool, bool) {
+	hop, msg := saArrValueOf(w, expr, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		ln, col := pos(stmtPos)
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false, true
+	}
+	if scope.arrNest[hop] || scope.arrStr[hop] {
+		ln, col := pos(stmtPos)
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "block-body array return must be a flat number array"})
+		return false, true
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", scope.inlineRet.slot, hop))
+	saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
+	w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
+	return true, false
+}
+
 // saTruncateBodyOwned 截断基点后新增归属（无发射；for-of 体臂
 // saScopeExit 同形：块内新登记名出体即除名）。
 func saTruncateBodyOwned(scope *saScope, base int) {
