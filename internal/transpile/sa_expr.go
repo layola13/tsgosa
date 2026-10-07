@@ -4032,6 +4032,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
 				return saStringContentEq(w, lh, rh, neg, scope, nextTemp), ""
 			}
+			// 串字典序比较（双边串位 `</<=/>/>=` 经 `@ts_str_compare`；单边串沿旧门）。
+			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindLessThanToken ||
+				be.OperatorToken.Kind == ast.KindLessThanEqualsToken ||
+				be.OperatorToken.Kind == ast.KindGreaterThanToken ||
+				be.OperatorToken.Kind == ast.KindGreaterThanEqualsToken) &&
+				saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
+				return saLowerStrCompare(w, be, be.OperatorToken.Kind, scope, pos, refusals, nextTemp)
+			}
 			return "", "only +/==/!= operate on strings"
 		}
 		if saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {

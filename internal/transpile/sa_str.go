@@ -927,6 +927,45 @@ func saLowerFloatConvert(w printer.EmitTextWriter, name string, ce *ast.CallExpr
 	return t, ""
 }
 
+// saLowerStrCompare 串字典序比较（双边串求值展开后经 `@ts_str_compare`
+// 取序（-1/0/+1），再对 0 作 slt/sle/sgt/sge；调用结果柄登记用后即释；
+// 串柄用后即释（具名/借用 no-op）；H30）。
+func saLowerStrCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, k ast.Kind, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	lh, msg := saEvalStr(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	rh, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	lp, ll := saExpandStr(w, lh, nextTemp)
+	rp, rl := saExpandStr(w, rh, nextTemp)
+	scope.addImport("sa_std/ts_string.sa")
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_compare(%s, %s, %s, %s)\n", t, lp, ll, rp, rl))
+	saOwnTemp(scope, t)
+	saReleaseOwnedTemp(w, scope, lh)
+	saReleaseOwnedTemp(w, scope, rh)
+	var cmp string
+	switch k {
+	case ast.KindLessThanToken:
+		cmp = "slt"
+	case ast.KindLessThanEqualsToken:
+		cmp = "sle"
+	case ast.KindGreaterThanToken:
+		cmp = "sgt"
+	default:
+		cmp = "sge"
+	}
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, 0\n", c, cmp, t))
+	saReleaseOwnedTemp(w, scope, t)
+	return c, ""
+}
+
 // saLowerParseIntArgs parseInt/Number.parseInt 实参（串求值 + 基数门；缺省/
 // 字面量 10 即十进制扫描，字面量 2-36 即通用扫描；非法/变量基数大声拒。
 // R2 回迁映射：扫描语义由 `sci/sa_std/ts_string.sa` `@ts_str_parse_int`
