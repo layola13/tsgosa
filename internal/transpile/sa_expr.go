@@ -452,6 +452,39 @@ func saNsCallChain(e *ast.Node) (dotted, emit, root string, ok bool) {
 	return strings.Join(segs, "."), strings.Join(segs, "_"), cur.Text(), true
 }
 
+// saLowerIsNaNFinite `isNaN`/`isFinite` 恒判定（`Number.` 成员与裸全局同形，
+// lib.es5.d.ts 别名；i32 子集无 NaN/Inf：浮点字面量早拒，除零走 verifier trap；
+// 串实参恒 false（JS 语义非 Number 即 false）；先判定后求值，单次求值保副作用）。
+func saLowerIsNaNFinite(w printer.EmitTextWriter, label string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	isNaN := len(label) >= 5 && label[len(label)-5:] == "isNaN"
+	bare := label == "isNaN" || label == "isFinite"
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, label + " takes one argument"
+	}
+	if argNodes[0] != nil && saIsStrExpr(argNodes[0], scope) {
+		// 裸全局串参先拒（coerce 经 Number() 回 NaN/f64，薄口无 NaN 种；
+		// `Number.isNaN/isFinite` 不 coerce，串恒 false 正确）。
+		if bare {
+			return "", false, label + " on strings needs numeric coercion (not in the i32 subset; use Number.isNaN/isFinite for strict checks)"
+		}
+		if _, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+			return "", false, msg
+		}
+		return "0", false, ""
+	}
+	if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+		return "", false, msg
+	}
+	if isNaN {
+		return "0", false, ""
+	}
+	return "1", false, ""
+}
+
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
@@ -784,31 +817,9 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				return op, false, ""
 			}
-			// Number.isNaN/isFinite 恒判定（i32 子集无 NaN/Inf：浮点字面量早拒，
-			// 除零走 verifier trap；串实参恒 false（JS 语义非 Number 即 false）；
-			// 先判定后求值，单次求值保副作用；与 isInteger 同形）。
+			// saLowerIsNaNFinite 恒判定 helper（成员/裸全局共享，见下）。
 			if pa.Name() != nil && (pa.Name().Text() == "isNaN" || pa.Name().Text() == "isFinite") {
-				isNaN := pa.Name().Text() == "isNaN"
-				var argNodes []*ast.Node
-				if ce.Arguments != nil {
-					argNodes = ce.Arguments.Nodes
-				}
-				if len(argNodes) != 1 {
-					return "", false, "Number." + pa.Name().Text() + " takes one argument"
-				}
-				if argNodes[0] != nil && saIsStrExpr(argNodes[0], scope) {
-					if _, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
-						return "", false, msg
-					}
-					return "0", false, ""
-				}
-				if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
-					return "", false, msg
-				}
-				if isNaN {
-					return "0", false, ""
-				}
-				return "1", false, ""
+				return saLowerIsNaNFinite(w, "Number."+pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
 			}
 			if pa.Name() != nil && pa.Name().Text() == "parseInt" {
 				var argNodes []*ast.Node
@@ -2332,6 +2343,11 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 				return "", false, msg
 			}
 			return op, false, ""
+		}
+		// isNaN/isFinite 裸全局（`Number.` 同形，见 saLowerIsNaNFinite；
+		// lib.es5.d.ts 别名）。
+		if name == "isNaN" || name == "isFinite" {
+			return saLowerIsNaNFinite(w, name, ce, scope, pos, refusals, nextTemp)
 		}
 		// btoa/atob bare globals lower through deno.sai without import
 		// (Web globals; strings only; shape evidence: upstream stdlib
