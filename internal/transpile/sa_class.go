@@ -199,6 +199,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 		return false
 	}
 	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{}, staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{}}
+	// 泛型形参模板直存（接口 saRecordIface 同形；参数属性 `v: T` 擦除查表用）。
+	for _, tp := range st.TypeParameters() {
+		if tp == nil || tp.Kind != ast.KindTypeParameter {
+			continue
+		}
+		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			def.tparams = append(def.tparams, nm.Text())
+		}
+	}
 	ownFields := map[string]bool{}
 	ownMethods := map[string]bool{}
 	// 单继承：基布局字段追加在下（父偏移守恒），方法按名拷贝（子类覆写）；
@@ -815,6 +824,24 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes 
 				def.offsets[fname] = *off
 				def.fkinds[fname] = "inst"
 				sz, _ := saFieldWidth("inst")
+				*off += sz
+				continue
+			}
+			// 泛型形参擦除为 ptr 句柄槽（`v: T`；上游具化值直存字面量，
+			// 本仓 wiring 经 i32 求值后按槽存；非形参未知名沿旧门）。
+			erased := false
+			for _, tp := range def.tparams {
+				if tp == pd.Type.AsTypeReferenceNode().TypeName.Text() {
+					erased = true
+					break
+				}
+			}
+			if erased {
+				*off = saAlignOff(*off, "arr")
+				def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+				def.offsets[fname] = *off
+				def.fkinds[fname] = "arr"
+				sz, _ := saFieldWidth("arr")
 				*off += sz
 				continue
 			}

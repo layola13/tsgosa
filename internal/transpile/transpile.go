@@ -3067,6 +3067,14 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		if el != nil && el.Kind == ast.KindNumberKeyword {
 			return "arr", true
 		}
+		// 泛型元数组（`T[]`：元种擦除后恒句柄数组，与 `any[]` 同形；
+		// 具名类元 `P[]` 同落句柄数组，上游同形 ptr 槽；形状证据见 step432）。
+		if el != nil && el.Kind == ast.KindTypeReference {
+			if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+				ref.TypeName.Kind == ast.KindIdentifier {
+				return "arr", true
+			}
+		}
 		if el != nil && (el.Kind == ast.KindAnyKeyword || el.Kind == ast.KindUnknownKeyword) {
 			return "arr", true
 		}
@@ -3105,6 +3113,11 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 			if ref.TypeName.Text() == "NoInfer" && ref.TypeArguments != nil &&
 				len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
 				return saAnnotKind(ref.TypeArguments.Nodes[0])
+			}
+			// `Array<T>` 即 `T[]`（元种擦除恒句柄数组；裸 `Array` 无参沿旧门）。
+			if ref.TypeName.Text() == "Array" && ref.TypeArguments != nil &&
+				len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+				return "arr", true
 			}
 			switch ref.TypeName.Text() {
 			case "i32":
