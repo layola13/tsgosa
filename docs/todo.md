@@ -122,6 +122,14 @@
 - 含义：后端 112 文件的 import 面（node 内建 300+ 处、npm 包、内部包）在单文件管线下全灭；`node:http` + `ws` 的 `runtime/server.ts` 双运行时、`runtime/database.ts` 三后端 require、`terminalPty.ts` 动态 pty、`child_process` 的各 CLI bridges——迁移前置条件是程序模式 + 插件链接全通。sci 侧 `.sai` extern 面已存在（node 287 行/os-process-path-fs-crypto-net-http-child_process，db 全套列式 API，http_server 含 websocket），缺的是转译投影→插件链接的 wiring（含本环境 `PackageNotResolved`）。
 - Demo 追加 `countGroups()`（扁平 `provLen` 表求和，对应 `toParseInventory` 计数半）：check（3371 指令）→ case11=3 → 镜算一致。
 
+## 循环迭代 5（2026-10-07 15:00 UTC）：第四批探针（基础语法全扫，60 个，全部跑运行时）
+
+- 位置：`/tmp/opencode/ts-sa-probe/b4cases/`，生成器 `gen_batch4.py`。43 通过（转译+check），其中 42 项原生运行与 bun 逐字节一致。
+- 15 拒收（基础语法，非偏门）：数组空穴 `H04`、对象 `for-in` `H12`（`for-in base must be bound array`）、**块作用域遮蔽 `H16`**（`duplicate local x`）、逗号表达式 `H21`、数组 `in` `H27`、一元 `+` `H28`、`~`/`>>>` `H29`、**串 `</>` 比较 `H30`**（条件位只认 `+/==/!=`）、tagged 模板 `H32`、数组截断赋值 `H37`、命名函数表达式自递归 `H46`（内名不可见）、**构造器非参数右值 `H47`**（`this.x = 3` 拒，只认 `this.f = param` 接线）、含可选字段接口的对象字面量 `H56`（布局匹配把可选字段算死）、函数类型注解 `H57`、裸 `null` 注解 `H70`（`i32|null` 可用，`null` 不可用）、`static {}` 块 `H51`。
+- 校验挂：`H24`（`a++ + ++a` 同表达式别名）`error[UseAfterMove]`。
+- 运行时差异（非拒收，更值得记）：`H35` 整数除零 bun 得 `Infinity`，SA 直接 `SIGFPE`（rc=136）——后端任何 `x / y` 无守卫迁移即崩溃点。
+- 通过的基本功（含易被低估的）：多声明符/`var`/尾逗号/else-if/label/`do-while`/三元嵌套/逻辑赋值/复合赋值/前后缀自增（单用）/`void`/嵌套模板/数值字面量全家/float 循环/`new Array(n)`/简写属性/箭头块/函数表达式/构造器参数属性/`readonly`/`private`/super 传参+调父方法/接口继承/元组注解/字面量联合/`as const`/`satisfies`/`const enum`/`declare`/命名空间类/`export const`/`undefined`。
+
 ## 待办（给后续轮）
 
 1. 归档探针：`/tmp/opencode/ts-sa-probe` 易失，建议收进本仓 `demos/`（fixture 例外）或另仓；生成器即文档。
