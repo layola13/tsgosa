@@ -176,35 +176,14 @@ func saEvalMathPow(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSc
 	if msgE != "" {
 		return "", false, msgE
 	}
-	nextLabel := scope.nextLabel
+	// R3-1 回迁映射：i32 逐乘幂语义由 `sci/sa_std/ts_math.sa` `@ts_math_ipow`
+	// 实现（expo<=0 返 1；f64 extern 不可直映）；本侧只做种门禁 + import + 调用。
+	scope.addImport("sa_std/ts_math.sa")
 	res := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 1\n", res))
-	topL := fmt.Sprintf("L_mpow_top_%d", *nextLabel)
-	*nextLabel++
-	bodyL := fmt.Sprintf("L_mpow_body_%d", *nextLabel)
-	*nextLabel++
-	endL := fmt.Sprintf("L_mpow_end_%d", *nextLabel)
-	*nextLabel++
-	ctr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", ctr, expo))
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	cc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", cc, ctr))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cc, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	nr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, %s\n", nr, res, base))
-	w.Write(fmt.Sprintf("  %s = %s\n", res, nr))
-	nc := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", nc, ctr))
-	w.Write(fmt.Sprintf("  %s = %s\n", ctr, nc))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_ipow(%s, %s)\n", res, base, expo))
+	// call 结果登记归属（用后/返前释放；extern call1 同形；常量旧形豁免）。
+	saOwnTemp(scope, res)
 	return res, false, ""
 }
 
