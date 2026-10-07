@@ -1,0 +1,9 @@
+@import "../demos/335_static_new_arg/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "335_static_new_arg"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 5, 33501)
+    !v
+    return

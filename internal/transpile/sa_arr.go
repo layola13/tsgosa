@@ -2696,6 +2696,26 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		}
 		scope.types[name] = kind
 	}
+	// releaseInstAlias 释 temp 源实例形参（`o = t` move 后堆归 o，t 已标
+	// consumed；命名实参不碰（维持既有用例行为，move 别名化另立史诗）；
+	// 自别名跳过；体不能释 o（bind 只记种不记归属），由成功路径在体后收；
+	// 失败路径产物作废不收）。
+	releaseInstAlias := func() {
+		for i, p := range params {
+			if len(paramKinds) == 0 || i >= len(paramKinds[0]) || len(paramKinds[0][i]) <= 5 || paramKinds[0][i][:5] != "inst:" || i >= len(argVals) {
+				continue
+			}
+			pd := p.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() == argVals[i] || !saIsTempOp(argVals[i]) {
+				continue
+			}
+			w.Write(fmt.Sprintf("  !%s\n", nm.Text()))
+		}
+	}
 	done := func() {
 		for name, s := range keep {
 			if s.ok {
@@ -2792,6 +2812,10 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		name := nm.Text()
 		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
 			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			// temp 实参 move 即标 consumed（返前 draining 跳过，防 `!t` 双释；
+			// 命名实参不标（读位不查 consumed，标后悬垂读更隐蔽，维持既有）；
+			// saConsumeTemp 对命名 no-op，天然区分；上游 new-实参同形无别名）。
+			saConsumeTemp(scope, argVals[i])
 			bind(name, kinds[i])
 			continue
 		}
@@ -2875,6 +2899,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			v = op
 		}
 		done()
+		releaseInstAlias()
 		return v, ""
 	}
 	slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -2903,6 +2928,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		return "", "unsupported callback body"
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	releaseInstAlias()
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	if kind == "str" {

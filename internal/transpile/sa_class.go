@@ -3487,9 +3487,10 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 	return saWireCtorBody(w, h, base, bdef.ctor, paramVal, nil, scope, pos, refusals, nextTemp)
 }
 
-// saInstArg 求实例实参句柄（绑定标识符/`this`；子类实例可传基形参，
-// 展平布局前缀一致，读基域安全）。
-func saInstArg(a *ast.Node, want string, scope *saScope) (string, string) {
+// saInstArg 求实例实参句柄（绑定标识符/`this`/`new C()`；子类实例可传基形参，
+// 展平布局前缀一致，读基域安全；`new` 形经 saLowerNewStmt 求临时句柄直传，
+// 无命名绑定故无双重释放，上游 q4b 形同形）。
+func saInstArg(w printer.EmitTextWriter, a *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	var have, h string
 	switch {
 	case a != nil && a.Kind == ast.KindIdentifier:
@@ -3501,6 +3502,17 @@ func saInstArg(a *ast.Node, want string, scope *saScope) (string, string) {
 		have, h = k[5:], nm
 	case a != nil && a.Kind == ast.KindThisKeyword && scope.thisSelf != "":
 		have, h = scope.thisClass, scope.thisSelf
+	case a != nil && a.Kind == ast.KindNewExpression:
+		ne := a.AsNewExpression()
+		cname, msg := saNewStmtClassName(ne)
+		if msg != "" {
+			return "", msg
+		}
+		have = cname
+		h, msg = saLowerNewStmt(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
 	default:
 		return "", "method instance argument must be a bound instance"
 	}
@@ -3689,7 +3701,7 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 		}
 		// 实例形参实参直传句柄（子类实例可传基形参，展平前缀一致）。
 		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
-			h, msg := saInstArg(a, kinds[i][5:], scope)
+			h, msg := saInstArg(w, a, kinds[i][5:], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
