@@ -3080,7 +3080,8 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		}
 		// 串元数组（`string[]` 具化 16 字节切片头数组；封存 annotationType
 		// ArrayType 即 tArray 不分元种 + lowerArrayLiteral 逐元 lowerExpr 同形）。
-		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str" || k == "arr") {
+		// 布尔元（`boolean[]`/`bool[]`）同收句柄数组（元按 0/1 存取）。
+		if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "str" || k == "arr" || k == "bool") {
 			return "arr", true
 		}
 		return "", false
@@ -3122,6 +3123,9 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 			switch ref.TypeName.Text() {
 			case "i32":
 				return "i32", true
+			case "bool":
+				// 方言布尔注解（与 `boolean` 关键字同种；`str` step342 同例补齐）。
+				return "bool", true
 			case "boolean":
 				return "bool", true
 			case "str":
@@ -3229,6 +3233,10 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 	case ast.KindTypeReference:
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true
+		}
+		// 布尔方言注解直通（`boolean`/`bool`；形参 `saSigParamType` 同形在先）。
+		if k, ok := saAnnotKind(t); ok && k == "bool" {
+			return "boolean", true
 		}
 		// f64 方言注解直通（上游实发 `-> f64`；形参 `saSigParamType` 同形在先）。
 		if k, ok := saAnnotKind(t); ok && k == "f64" {
