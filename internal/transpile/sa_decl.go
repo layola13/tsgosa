@@ -634,6 +634,21 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclareOwned(scope, name)
 		return true
 	}
+	if init.Kind == ast.KindElementAccessExpression && saIsStrExpr(init, scope) {
+		// 串元数组元素绑定记 str（与直接下标串位同形；`?.` 沿 saIsStrExpr 旧门；
+		// 否则误记 i32 会把句柄按整数打印，batch-4 实证）。
+		h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "str"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		return true
+	}
 	if _, ok := saArrBase(scope, init); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
