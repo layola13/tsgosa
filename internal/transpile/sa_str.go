@@ -1221,6 +1221,199 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 // 全形：indexOf 扫描 + 切片装配 + 逐段 push + 尾段；空头 16 字节零柄起，串元标记）。
 // limit 按 lib.es5.d.ts `split(separator, limit?)` 截断（0 即空；负数经 ToUint32 视为不限，
 // 以 i32 上确界归一；封存上游忽略 limit 系静默错码，本仓正确优先，step109 同例有意分歧）。
+// saRegexSplitMsg 正则 split（`s.split(/re/, limit?)`；整体循环切分：
+// 每轮剩余子串 match→段 push→位移；空匹配推进一步防死循环（ASCII 域）；
+// limit 达数即停（负 limit 即无限）；miss 即尾段后结束。
+// 返 [op, msg]（串分隔形返 ["",""]，由调用方走原路）。
+func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) [2]string {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) < 1 || len(args) > 2 {
+		return [2]string{"", "split takes 1-2 arguments"}
+	}
+	if saIsStrExpr(args[0], scope) {
+		return [2]string{"", ""}
+	}
+	rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return [2]string{"", msg}
+	}
+	haslim := len(args) == 2
+	lim := "0"
+	if haslim {
+		var msg string
+		lim, msg = saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return [2]string{"", msg}
+		}
+		if msg := saCheckI32Value(scope, lim); msg != "" {
+			return [2]string{"", msg}
+		}
+	}
+	rp, rl := saExpandStr(w, recv, nextTemp)
+	scope.addImport("sa_std/text/regex.sa")
+	scope.addImport("sa_std/ts_string.sa")
+	h := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, h)
+	saMarkArrStr(scope, h)
+	// 起位/计数（`add 0` 中转防 verifier 别名，R3-17b 同例）。
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+	cnt := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add 0, 0\n", cnt))
+	// 负 limit 即无限：生效限 max(lim, INT32_MAX)（JS 同义）。
+	limEff := lim
+	if haslim {
+		neg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, lim))
+		negL := fmt.Sprintf("L_rs_neg_%d", *nextTemp)
+		*nextTemp++
+		posL := fmt.Sprintf("L_rs_pos_%d", *nextTemp)
+		*nextTemp++
+		joinL := fmt.Sprintf("L_rs_join_%d", *nextTemp)
+		*nextTemp++
+		leff := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", leff))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", neg, negL, posL))
+		w.Write(fmt.Sprintf("%s:\n", negL))
+		w.Write(fmt.Sprintf("  store %s + 0, 2147483647 as i32\n", leff))
+		w.Write(fmt.Sprintf("  jmp %s\n", joinL))
+		w.Write(fmt.Sprintf("%s:\n", posL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", leff, lim))
+		w.Write(fmt.Sprintf("  jmp %s\n", joinL))
+		w.Write(fmt.Sprintf("%s:\n", joinL))
+		limEff = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", limEff, leff))
+		w.Write(fmt.Sprintf("  !%s\n", leff))
+	}
+	topL := fmt.Sprintf("L_rs_top_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_rs_end_%d", *nextTemp)
+	*nextTemp++
+	bodyL := fmt.Sprintf("L_rs_body_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	if haslim {
+		reached := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sge %s, %s\n", reached, cnt, limEff))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", reached, endL, bodyL))
+	} else {
+		over := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		iu := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", over, iu, rl))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", over, endL, bodyL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	rem := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", rem, rp, i))
+	riu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as u64\n", riu, i))
+	reml := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", reml, rl, riu))
+	m := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, rem, reml))
+	hit := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+	hitL := fmt.Sprintf("L_rs_hit_%d", *nextTemp)
+	*nextTemp++
+	missL := fmt.Sprintf("L_rs_miss_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	fr0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr0, m))
+	w.Write(fmt.Sprintf("  !%s\n", fr0))
+	seg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, 0)\n", seg, rp, rl, i, rl))
+	saOwnTemp(scope, seg)
+	saLowerArrayPush(w, h, seg, scope, nextTemp)
+	saReleaseOwnedTemp(w, scope, seg)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", hitL))
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_start(%s, 0)\n", st, m))
+	ml := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", ml, m))
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	// group 起位/长窄化 i32（文本长恒 i32 域；薄口串长门禁内聚）。
+	st32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", st32, st))
+	ml32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", ml32, ml))
+	w.Write(fmt.Sprintf("  !%s\n", st))
+	w.Write(fmt.Sprintf("  !%s\n", ml))
+	abs := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", abs, i, st32))
+	sg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, 0)\n", sg, rp, rl, i, abs))
+	saOwnTemp(scope, sg)
+	saLowerArrayPush(w, h, sg, scope, nextTemp)
+	// sg 分支内具化分支内释放（drain 不可见分支内 alloc，match 同例）。
+	saReleaseOwnedTemp(w, scope, sg)
+	se := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", se, abs, ml32))
+	// 空匹配推进一步（ASCII 域；JS 同义）。
+	isempty := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isempty, ml32))
+	advL := fmt.Sprintf("L_rs_adv_%d", *nextTemp)
+	*nextTemp++
+	nxtL := fmt.Sprintf("L_rs_nxt_%d", *nextTemp)
+	*nextTemp++
+	contL := fmt.Sprintf("L_rs_cont_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isempty, advL, nxtL))
+	w.Write(fmt.Sprintf("%s:\n", advL))
+	adv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", adv, abs))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, adv))
+	w.Write(fmt.Sprintf("  jmp %s\n", contL))
+	w.Write(fmt.Sprintf("%s:\n", nxtL))
+	// `add 0` 中转（裸拷贝即 move，源在另一路存活即汇合冲突）。
+	nxtv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", nxtv, se))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, nxtv))
+	w.Write(fmt.Sprintf("  jmp %s\n", contL))
+	w.Write(fmt.Sprintf("%s:\n", contL))
+	cn := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", cn, cnt))
+	w.Write(fmt.Sprintf("  %s = %s\n", cnt, cn))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return [2]string{h, ""}
+}
+
 func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	scope.addImport("sa_std/string.sai")
 	pa := ce.Expression.AsPropertyAccessExpression()
@@ -1237,6 +1430,13 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	}
 	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
+		// 正则分隔（`sa_regex_match` 循环切分；空匹配推进一步；limit 达数即停）。
+		if rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp); rms[0] != "" || rms[1] != "" {
+			if rms[1] != "" {
+				return "", rms[1]
+			}
+			return rms[0], ""
+		}
 		return "", msg
 	}
 	// R2-5 回迁映射：分隔扫描语义（负 limit 即不限长、空尾直返、截断）由
