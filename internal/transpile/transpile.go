@@ -571,6 +571,137 @@ func saProgStarTarget(link *saFileLink, tgt, remote string, seen map[string]bool
 	return "", false
 }
 
+// saMaterializeTypeForwards 物化类型转发收割（`export {X} from` 重导出 +
+// 本地 `export {X}` 名单的类型边：目标/本地布局直挂本件名下，后续直查命中；
+// 值边沿旧 chase；类（含接口）/别名/枚举全形；不含纯量（o5 双边延期守恒）；
+// o1/o3/o4/o6/o7 实证；取决后 claim 同名判定）。
+func saMaterializeTypeForwards(sf *ast.SourceFile, link *saFileLink, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool) {
+	if sf == nil || link == nil {
+		return
+	}
+	putClass := func(exported string, def *saClassDef) {
+		if def == nil {
+			return
+		}
+		if cur, dup := link.classHarvest[exported]; dup && cur.exported {
+			return
+		}
+		if link.classHarvest == nil {
+			link.classHarvest = map[string]saProgClass{}
+		}
+		link.classHarvest[exported] = saProgClass{def: def, exported: true}
+	}
+	putAlias := func(exported string, node *ast.TypeNode) {
+		if node == nil {
+			return
+		}
+		if cur, dup := link.aliasHarvest[exported]; dup && cur.exported {
+			return
+		}
+		if link.aliasHarvest == nil {
+			link.aliasHarvest = map[string]saProgAlias{}
+		}
+		link.aliasHarvest[exported] = saProgAlias{node: node, exported: true}
+	}
+	putEnum := func(exported string, members map[string]int64, nonInt map[string]bool) {
+		if members == nil {
+			return
+		}
+		if cur, dup := link.enumHarvest[exported]; dup && cur.exported {
+			return
+		}
+		if link.enumHarvest == nil {
+			link.enumHarvest = map[string]saProgEnum{}
+		}
+		link.enumHarvest[exported] = saProgEnum{members: members, nonInt: nonInt, exported: true}
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindExportDeclaration {
+			continue
+		}
+		ed := st.AsExportDeclaration()
+		if ed == nil || ed.IsTypeOnly {
+			continue
+		}
+		if ed.ModuleSpecifier != nil {
+			spec, edges, star := saProgReexpEdges(st)
+			if spec == "" || star || len(edges) == 0 {
+				continue
+			}
+			tgt, ok := link.specOf[spec]
+			if !ok || tgt == "" {
+				continue
+			}
+			names := make([]string, 0, len(edges))
+			for exported := range edges {
+				names = append(names, exported)
+			}
+			sort.Strings(names)
+			for _, exported := range names {
+				remote := edges[exported]
+				if ch, ok := link.classHarvests[tgt][remote]; ok && ch.exported && ch.def != nil {
+					putClass(exported, ch.def)
+					continue
+				}
+				if ah, ok := link.aliasHarvests[tgt][remote]; ok && ah.exported && ah.node != nil {
+					putAlias(exported, ah.node)
+					continue
+				}
+				if eh, ok := link.enumHarvests[tgt][remote]; ok && eh.exported && eh.members != nil {
+					putEnum(exported, eh.members, eh.nonInt)
+					continue
+				}
+			}
+			continue
+		}
+		if ed.ExportClause == nil {
+			continue
+		}
+		edges, star := saProgLocalEdges(st)
+		if star || len(edges) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(edges))
+		for exported := range edges {
+			names = append(names, exported)
+		}
+		sort.Strings(names)
+		for _, exported := range names {
+			local := edges[exported]
+			if def, ok := classes[local]; ok && def != nil {
+				putClass(exported, def)
+				continue
+			}
+			if node, ok := aliasOf[local]; ok && node != nil {
+				putAlias(exported, node)
+				continue
+			}
+			if members, ok := enums[local]; ok && members != nil {
+				putEnum(exported, members, enumNonInt[local])
+				continue
+			}
+		}
+	}
+}
+
+// saProgTypeForwarded 报告导出名是否已物化到本件类型收割域
+// （claim 同名判定用；值边不在此，沿 saProgChase）。
+func saProgTypeForwarded(link *saFileLink, exported string) bool {
+	if link == nil {
+		return false
+	}
+	if _, ok := link.classHarvest[exported]; ok {
+		return true
+	}
+	if _, ok := link.aliasHarvest[exported]; ok {
+		return true
+	}
+	if _, ok := link.enumHarvest[exported]; ok {
+		return true
+	}
+	return false
+}
+
 // saProgChase resolves (tgt, remote) to a qualified callee through re-export
 // edges (upstream resolveReExports:1317 同形；cycle 经 seen 守卫，未导出/
 // 箭头/断链一律 !ok 由调用方按形拒因）。remote=="default" 用 defLocal 后缀。
@@ -1781,6 +1912,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			modVars[local] = ms
 		}
+		// 类型转发物化前置（后续 claim 同名判定；o1/o3/o4/o6/o7 实证）。
+		saMaterializeTypeForwards(sf, link, classes, aliasOf, enums, enumNonInt)
 		// Program hook C2: value export lists stay unlinked in S1
 		// (named functions link via export modifier; star/default/lists
 		// refuse loudly for a later stage). Resolvable from-form re-exports
@@ -1813,8 +1946,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					okAll := true
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
-							okAll = false
-							break
+							// 类型物化边认领（本件收割域命中即无码）。
+							if !saProgTypeForwarded(link, exported) {
+								okAll = false
+								break
+							}
 						}
 					}
 					if okAll {
@@ -1833,8 +1969,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					okAll := true
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
-							okAll = false
-							break
+							if !saProgTypeForwarded(link, exported) {
+								okAll = false
+								break
+							}
 						}
 					}
 					if okAll {
@@ -4198,6 +4336,11 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				if tgt == "" {
 					continue
 				}
+				// 重导出 spec 同步进 specOf（物化查表用；o1 实证）。
+				if specOf[p] == nil {
+					specOf[p] = map[string]string{}
+				}
+				specOf[p][spec] = tgt
 				if star {
 					starOf[p] = append(starOf[p], tgt)
 					continue

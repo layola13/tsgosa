@@ -1,0 +1,9 @@
+@import "../demos/329_prog_reexp_types/main.sa"
+@import "sa_std/testing/assert.sai"
+
+@test "329_prog_reexp_types"():
+L_ENTRY:
+    v = call @main()
+    call @sa_assert_eq_i64(v, 2, 32901)
+    !v
+    return
