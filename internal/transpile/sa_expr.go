@@ -2774,6 +2774,13 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 			return true
 		}
 	}
+	// 前缀取负透传（`-x` 种随操作数；`+x` 双边同拒不动；求值见严格位同形臂）。
+	if e.Kind == ast.KindPrefixUnaryExpression {
+		un := e.AsPrefixUnaryExpression()
+		if un != nil && un.Operator == ast.KindMinusToken {
+			return saIsF64Operand(un.Operand, scope)
+		}
+	}
 	return false
 }
 
@@ -2788,6 +2795,18 @@ func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	}
 	if e == nil {
 		return "", "missing expression"
+	}
+	// 前缀取负侧经严格求值（操作数为浮即 `-x` 落 `fneg` 临时量；文本快捷
+	// 仅字面量/绑定，前缀须先行——`Text()` 无前缀形，误触即 panic；
+	// 其余前缀沿下 i32 旧路，行为不变）。
+	if e != nil && e.Kind == ast.KindPrefixUnaryExpression {
+		if un := e.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindMinusToken && saIsF64Operand(un.Operand, scope) {
+			op, msg := saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return op, ""
+		}
 	}
 	if saIsF64Operand(e, scope) {
 		return e.Text(), ""
@@ -2825,6 +2844,20 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 		return "", e.Text() + " is not a float"
 	case ast.KindParenthesizedExpression:
 		return saEvalF64Strict(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindPrefixUnaryExpression:
+		// 前缀取负（`-x` 经 `fneg`，与上游实发同形；`+x` 双边同拒沿旧门）。
+		if un := e.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindMinusToken {
+			v, msg := saEvalF64Strict(w, un.Operand, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = fneg %s\n", t, v))
+			scope.types[t] = "f64"
+			return t, ""
+		}
+		return "", "unsupported float expression"
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
 		var fop string

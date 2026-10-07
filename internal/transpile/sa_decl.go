@@ -788,6 +788,18 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclarePlain(scope, name)
 			return true
 		}
+		// 前缀取负推断（`-x` 非字面量经严格求值落 `fneg`；纯字面量已由上臂
+		// 折叠文本（别名首定禁重绑）；失败透传旧拒）。
+		if init != nil && init.Kind == ast.KindPrefixUnaryExpression {
+			if un := init.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindMinusToken {
+				if op, msg := saEvalF64Strict(w, init, scope, pos, refusals, nextTemp); msg == "" {
+					w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+					scope.types[name] = "f64"
+					saDeclarePlain(scope, name)
+					return true
+				}
+			}
+		}
 		ln, col := pos(init.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 		return false
