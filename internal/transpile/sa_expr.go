@@ -245,6 +245,19 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		}
 		return "", "struct return needs a recorded interface layout"
 	}
+	// 实例新建直返（`return new D()` 进 `(): B` 注解位：绑定跟初值句柄，与声明位 step395/实参位 step396 同规；封存 lowerReturn 无检查直返，用点经布局表大声拒；新柄已在 saLowerNewClass 内登记归属，返前释放除外口守住）。
+	if strings.HasPrefix(retKind, "inst:") && e != nil && e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		if ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+			if _, ok := scope.classes[ne.Expression.Text()]; ok {
+				h, msg := saLowerNewClass(w, ne.Expression.Text(), ne, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return h, ""
+			}
+		}
+	}
 	// 实例空合空回退（`return M[k] ?? null`；左须同布局实例源，右须空字面量；
 	// 封存 lowerBinary:3182-3206 通用槽形，本仓只收空右臂，余形由槽内拒）。
 	if strings.HasPrefix(retKind, "inst:") && e != nil && e.Kind == ast.KindBinaryExpression {

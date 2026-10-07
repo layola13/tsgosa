@@ -1,0 +1,9 @@
+@import "../demos/319_factory_base/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "319_factory_base"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 101011, 31901)
+    !v
+    return
