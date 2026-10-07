@@ -911,6 +911,76 @@ func saLowerExpectInstEq(w printer.EmitTextWriter, neg bool, iarg *ast.Node, ce 
 	return true, true
 }
 
+// saExpectArrElemKind 顶层数组臂元种（具名查 arrStr 标，字面量任一串元即串，
+// 余下恒 i32，与 push 种门同口径）。
+func saExpectArrElemKind(e *ast.Node, scope *saScope) string {
+	if e != nil && e.Kind == ast.KindIdentifier && scope.arrStr != nil && scope.arrStr[e.Text()] {
+		return "str"
+	}
+	if e != nil && e.Kind == ast.KindArrayLiteralExpression && e.AsArrayLiteralExpression().Elements != nil {
+		for _, el := range e.AsArrayLiteralExpression().Elements.Nodes {
+			if saIsStrValue(el, scope) {
+				return "str"
+			}
+		}
+	}
+	return "i32"
+}
+
+// saLowerExpectArrEq 顶层数组相等（toBe 即柄引用相等，toEqual/toStrictEqual
+// 即 saDeepArrEq 深比；toStrictEqual 的 undefined/稀疏区分在子集内不可达，
+// 与 toEqual 同形；双臂元种不同大声拒；新柄断言后释放，具名不动）。
+func saLowerExpectArrEq(w printer.EmitTextWriter, matcher string, neg bool, iarg *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
+	var margs []*ast.Node
+	if ce.Arguments != nil {
+		margs = ce.Arguments.Nodes
+	}
+	if len(margs) != 1 || iarg == nil || margs[0] == nil {
+		return false, false
+	}
+	marg := saUnwrapTransparent(margs[0])
+	if !saIsArrValue(saUnwrapTransparent(iarg), scope) || !saIsArrValue(marg, scope) {
+		return false, false
+	}
+	ah, msg := saArrValueOf(w, saUnwrapTransparent(iarg), scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return false, false
+	}
+	bh, msg := saArrValueOf(w, marg, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return false, false
+	}
+	ka, kb := saExpectArrElemKind(saUnwrapTransparent(iarg), scope), saExpectArrElemKind(marg, scope)
+	if ka != kb {
+		ln, col := pos(iarg.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "cannot compare arrays of different element kinds"})
+		return true, false
+	}
+	acc := ""
+	if matcher == "toBe" {
+		acc = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if !neg {
+			w.Write(fmt.Sprintf("  %s = ne %s, %s\n", acc, ah, bh))
+		} else {
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", acc, ah, bh))
+		}
+	} else {
+		acc = saDeepArrEq(w, ah, bh, ka, neg, scope, nextTemp, nextLabel)
+	}
+	saReleaseOwnedTemp(w, scope, ah)
+	saReleaseOwnedTemp(w, scope, bh)
+	failL := fmt.Sprintf("L_exparr_fail_%d", *nextLabel)
+	*nextLabel++
+	okL := fmt.Sprintf("L_exparr_ok_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", acc, failL, okL))
+	w.Write(failL + ":\n")
+	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
+	w.Write(okL + ":\n")
+	return true, true
+}
+
 // saDeepInstEq 递归深相等值式（返失败条件 bool；同布局逐域：
 // i32 eq/str 内容/arr 按元种表/inst 递归子布局；布局不同/未知域/混合元种/
 // 递归环大声拒；空布局恒等；调用方 br 断言）。
@@ -1123,6 +1193,14 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	if matcher == "toBe" || matcher == "toEqual" || matcher == "toStrictEqual" {
 		// 实例深相等（同布局双实例逐 i32 域 eq 链；与 `in` 布局门同源）。
 		if handled, ok := saLowerExpectInstEq(w, neg, iargs[0], ce, scope, pos, refusals, nextLabel, nextTemp); handled {
+			if ok {
+				saEmitExpectCount(w, scope, nextTemp)
+			}
+			return handled, ok
+		}
+		// 顶层数组相等（toBe 即柄引用相等，toEqual/toStrictEqual 即深比；
+		// 任一臂非数组沿旧路，禁抢 i32/串门）。
+		if handled, ok := saLowerExpectArrEq(w, matcher, neg, iargs[0], ce, scope, pos, refusals, nextLabel, nextTemp); handled {
 			if ok {
 				saEmitExpectCount(w, scope, nextTemp)
 			}
