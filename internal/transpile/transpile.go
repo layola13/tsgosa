@@ -445,6 +445,9 @@ type saFileLink struct {
 	classHarvest  map[string]saProgClass            // out: own top-level classes for dependents
 	classHarvests map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
 	classSeed     map[string]*saClassDef            // out/in: imported local class name -> defining layout
+	enumHarvest   map[string]saProgEnum             // out: own top-level enums for dependents
+	enumHarvests  map[string]map[string]saProgEnum  // all files: target -> name -> harvested enum (driver fills)
+	enumSeed      map[string]saProgEnum             // out/in: imported local enum name -> member maps
 	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
 	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
 	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
@@ -482,6 +485,13 @@ type saProgClass struct {
 type saProgConst struct {
 	text  string
 	isStr bool
+}
+
+// saProgEnum 收割枚举成员映射 + export 旗（与 classHarvest 同表不同域；调用方本地 enums/enumNonInt 同键植入）。
+type saProgEnum struct {
+	members  map[string]int64
+	nonInt   map[string]bool
+	exported bool
 }
 
 // saLowerSourceFile 发射 SA 文本（后端为 printer.NewTextWriter，替换 JS 落字）。
@@ -1087,6 +1097,19 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				link.classSeed[local] = ch.def
 				continue
 			}
+			// 枚举直链：具名导入枚举名命中定义文件收割即播种成员映射（本地同名定义优先由 hook 保障；未导出沿未导出门）。
+			if eh, ok := link.enumHarvests[tgt][remote]; ok {
+				if !eh.exported || eh.members == nil {
+					ln, col := pos(n.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
+					continue
+				}
+				if link.enumSeed == nil {
+					link.enumSeed = map[string]saProgEnum{}
+				}
+				link.enumSeed[local] = eh
+				continue
+			}
 			// 命名空间整件直链（`import { N }` + `N.f()` 经成员点键绑定；
 			// 零可链成员下探重导出透传/未导出门；上游 bindNSMembers 同形）。
 			if saBindProgNsMembers(link, tgt, remote, local) {
@@ -1255,6 +1278,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			enums[nm.Text()] = members
 			if len(nonInt) > 0 {
 				enumNonInt[nm.Text()] = nonInt
+			}
+			// 枚举收割（与类同表；未导出不收，下游沿未导出门）。
+			if link != nil && ast.HasModifier(st, ast.ModifierFlagsExport) {
+				if link.enumHarvest == nil {
+					link.enumHarvest = map[string]saProgEnum{}
+				}
+				link.enumHarvest[nm.Text()] = saProgEnum{members: members, nonInt: nonInt, exported: true}
 			}
 			continue
 		}
@@ -1559,6 +1589,19 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			if _, dup := classes[local]; !dup {
 				classes[local] = def
+			}
+		}
+		// Program hook C-enum: seed imported enum member maps (local
+		// definitions win; member maps shared read-only).
+		for local, eh := range link.enumSeed {
+			if eh.members == nil {
+				continue
+			}
+			if _, dup := enums[local]; !dup {
+				enums[local] = eh.members
+				if len(eh.nonInt) > 0 {
+					enumNonInt[local] = eh.nonInt
+				}
 			}
 		}
 		// Program hook C-const: seed imported const folds (local folds win;
@@ -4134,6 +4177,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	harvests := map[string]map[string]saProgFunc{}
 	classHarvests := map[string]map[string]saProgClass{}
+	enumHarvests := map[string]map[string]saProgEnum{}
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
 	for _, p := range reachable {
@@ -4152,6 +4196,9 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			classHarvest:  map[string]saProgClass{},
 			classHarvests: classHarvests,
 			classSeed:     map[string]*saClassDef{},
+			enumHarvest:   map[string]saProgEnum{},
+			enumHarvests:  enumHarvests,
+			enumSeed:      map[string]saProgEnum{},
 			constHarvest:  map[string]saProgConst{},
 			constHarvests: constHarvests,
 			constSeed:     map[string]saProgConst{},
@@ -4162,6 +4209,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
 		classHarvests[p] = lk.classHarvest
+		enumHarvests[p] = lk.enumHarvest
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
 		for _, r := range out.Refusals {
