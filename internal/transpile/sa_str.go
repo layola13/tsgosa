@@ -1221,16 +1221,95 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 // 全形：indexOf 扫描 + 切片装配 + 逐段 push + 尾段；空头 16 字节零柄起，串元标记）。
 // limit 按 lib.es5.d.ts `split(separator, limit?)` 截断（0 即空；负数经 ToUint32 视为不限，
 // 以 i32 上确界归一；封存上游忽略 limit 系静默错码，本仓正确优先，step109 同例有意分歧）。
-// saRegexSplitMsg 正则 split（`s.split(/re/, limit?)`；整体循环切分：
-// 每轮剩余子串 match→段 push→位移；空匹配推进一步防死循环（ASCII 域）；
-// limit 达数即停（负 limit 即无限）；miss 即尾段后结束。
+// saRegexHasGlobalFlag 报告正则静态带 /g（字面量/new 字面量 flags 含 g；
+// 绑定名未知保守 false；`replaceAll` 无 g 即 TypeError，JS 同义）。
+func saRegexHasGlobalFlag(e *ast.Node) bool {
+	if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
+		_, flags, ok := saRegexSplitLiteral(e.Text())
+		if !ok {
+			return false
+		}
+		return strings.Contains(flags, "g")
+	}
+	if e != nil && e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		if ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier || ne.Expression.Text() != "RegExp" {
+			return false
+		}
+		if ne.Arguments == nil || len(ne.Arguments.Nodes) < 2 {
+			return false
+		}
+		f := ne.Arguments.Nodes[1]
+		if f == nil || f.Kind != ast.KindStringLiteral {
+			return false
+		}
+		return strings.Contains(f.Text(), "g")
+	}
+	return false
+}
+
+// saRegexPatternHasNoGroup 报告正则模式静态无捕获组（字面量/new 字面量
+// 扫描未转义 `(`；绑定名组未知保守 false）。
+func saRegexPatternHasNoGroup(e *ast.Node) bool {
+	pat := ""
+	if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
+		var flags string
+		var ok bool
+		pat, flags, ok = saRegexSplitLiteral(e.Text())
+		_ = flags
+		if !ok {
+			return false
+		}
+	} else if e != nil && e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		if ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier || ne.Expression.Text() != "RegExp" {
+			return false
+		}
+		if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 {
+			return false
+		}
+		a0 := ne.Arguments.Nodes[0]
+		if a0 == nil || a0.Kind != ast.KindStringLiteral {
+			return false
+		}
+		pat = a0.Text()
+	} else {
+		return false
+	}
+	esc := false
+	for i := 0; i < len(pat); i++ {
+		c := pat[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if c == '\\' {
+			esc = true
+			continue
+		}
+		if c == '(' {
+			return false
+		}
+	}
+	return true
+}
+
+// saRegexSplitMsg 正则 split（`s.split(/re/, limit?)`）与正则 replaceAll
+// （`s.replaceAll(/re/, r)`；整体循环切分后段间插值，等价无捕获组语义）：
+// 每轮剩余子串 match→段 push（RA 兼插替换）→位移；空匹配推进一步防死循环
+// （ASCII 域）；limit 达数即停（负 limit 即无限）；miss 即尾段后结束。
 // 返 [op, msg]（串分隔形返 ["",""]，由调用方走原路）。
-func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) [2]string {
+// replNode 非空即 replaceAll 形（args[1] 为替换柄；捕获组大声拒）。
+func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, replNode *ast.Node) [2]string {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {
 		args = ce.Arguments.Nodes
 	}
-	if len(args) < 1 || len(args) > 2 {
+	isRA := replNode != nil
+	if (!isRA && (len(args) < 1 || len(args) > 2)) || (isRA && len(args) != 2) {
+		if isRA {
+			return [2]string{"", "String.replaceAll with a RegExp takes 2 arguments"}
+		}
 		return [2]string{"", "split takes 1-2 arguments"}
 	}
 	if saIsStrExpr(args[0], scope) {
@@ -1240,7 +1319,20 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 	if msg != "" {
 		return [2]string{"", msg}
 	}
-	haslim := len(args) == 2
+	// replaceAll 捕获组大声拒（组回填另步；无组即 split+join 等价；
+	// 绑定名组未知保守拒）。
+	var rph string
+	if isRA {
+		if !saRegexPatternHasNoGroup(args[0]) {
+			return [2]string{"", "String.replaceAll with capture groups is not lowerable yet"}
+		}
+		var msg string
+		rph, msg = saEvalStr(w, replNode, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return [2]string{"", msg}
+		}
+	}
+	haslim := !isRA && len(args) == 2
 	lim := "0"
 	if haslim {
 		var msg string
@@ -1377,6 +1469,10 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 	saLowerArrayPush(w, h, sg, scope, nextTemp)
 	// sg 分支内具化分支内释放（drain 不可见分支内 alloc，match 同例）。
 	saReleaseOwnedTemp(w, scope, sg)
+	// replaceAll 段间插值（rph 全程复用多轮 push，循环后统一释放）。
+	if isRA {
+		saLowerArrayPush(w, h, rph, scope, nextTemp)
+	}
 	se := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", se, abs, ml32))
@@ -1411,6 +1507,19 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 	w.Write(fmt.Sprintf("  %s = %s\n", cnt, cn))
 	w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	if isRA {
+		saReleaseOwnedTemp(w, scope, rph)
+		// 段间插值已在循环内完成，此处空分隔 join 组装成串。
+		eph := saLowerStringLiteral(w, "", scope, nextTemp)
+		ep, el := saExpandStr(w, eph, nextTemp)
+		scope.addImport("sa_std/ts_string.sa")
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_join_vals(%s, %s, %s)\n", out, h, ep, el))
+		saReleaseOwnedTemp(w, scope, eph)
+		saOwnTemp(scope, out)
+		return [2]string{out, ""}
+	}
 	return [2]string{h, ""}
 }
 
@@ -1431,7 +1540,7 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		// 正则分隔（`sa_regex_match` 循环切分；空匹配推进一步；limit 达数即停）。
-		if rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp); rms[0] != "" || rms[1] != "" {
+		if rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp, nil); rms[0] != "" || rms[1] != "" {
 			if rms[1] != "" {
 				return "", rms[1]
 			}
@@ -1611,13 +1720,31 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			return "", false, method + " needs 2 arguments"
 		}
 		if !saIsStrExpr(args[0], scope) {
-			// 正则首换（replace 仅首个；replaceAll 循环/`$` 模式/函数 repl 另步；
-			// 前片 + 替换 + 后片经 `@ts_str_slice` + concat 组装）。
+			// 正则 replaceAll：整体循环切分后段间插值（与 `split` 共享循环，
+			// 无捕获组即 join 等价；`$` 模式/函数 repl 另步）。
 			if method == "replaceAll" {
-				return "", false, "String.replaceAll with a RegExp needs /g loop (not lowerable yet)"
+				if len(args) != 2 {
+					return "", false, "String.replaceAll with a RegExp takes 2 arguments"
+				}
+				// 无 g 即 TypeError（JS 同义；绑定名未知保守拒）。
+				if !saRegexHasGlobalFlag(args[0]) {
+					return "", false, "String.replaceAll with a RegExp needs /g flag"
+				}
+				if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
+					return "", false, "String.replaceAll $-patterns are not lowerable yet"
+				}
+				rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp, args[1])
+				if rms[1] != "" {
+					return "", false, rms[1]
+				}
+				return rms[0], false, ""
 			}
 			if len(args) != 2 {
 				return "", false, "String.replace with a RegExp takes 2 arguments"
+			}
+			// `/g` 全换请用 replaceAll（首换分支禁多换错码）。
+			if saRegexHasGlobalFlag(args[0]) {
+				return "", false, "String.replace with /g needs replaceAll (first-only shape)"
 			}
 			if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
 				return "", false, "String.replace $-patterns are not lowerable yet"
@@ -1814,6 +1941,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		// `saLowerRegexMatchArray`；/g 全局另步）。
 		if len(args) != 1 {
 			return "", false, "match takes 1 argument"
+		}
+		if saRegexHasGlobalFlag(args[0]) {
+			return "", false, "String.match with /g needs full-match array (not lowerable yet)"
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -2084,13 +2214,4 @@ func saIsConsoleLog(ce *ast.CallExpression) bool {
 // （扩容拷贝）+ lowerInsertionSort:6057-6123 + lowerArrayScan:6444-6513 +
 // lowerArrayReverse:6516-6556 + lowerArraySlice:6559-6638 +
 // lowerArrayAt:6643-6654 + lowerArrayJoin:6658-6712 +
-// lowerCopyWithin:6717-6798 + lowerToReversed:6820-6879 +
-// lowerArrayWith:6883-6919 + lowerToSpliced:6923-6975 + spliceCopy:6978-7023 +
-// copyRange:7026-7057 + lowerArrayConcat:7061-7090 + lowerArrayFrom:7094-7153 +
-// newEmptyArray:7802-7817 + appendSlice:7820-7847 + arrayClampLen:6401-6440 +
-// 高阶 lowerHigherOrder:4875-5188 + callbackValue:5194-5250 +
-// lowerSortWithCmp:5539-5622。
-// 本薄口数组恒为 i32 元（elem/es乙固定）；高阶回调恒为 i32 位
-// （串回调值大声拒）；具名函数回调须内联书写（箭头别名无值，见 step17 门）。
-
-// saIsArrMethod 数组方法名集合（含高阶；未知成员另行大声拒）。
+// lowerCopyWithin:6717

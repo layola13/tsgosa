@@ -381,7 +381,8 @@ func saRegexSplitLiteral(text string) (string, string, bool) {
 	return pat, text[sep+1:], true
 }
 
-// saRegexCflags 映 JS flags 为 sal cflags 字面量（EXTENDED=1/ICASE=2/NEWLINE=4）。
+// saRegexCflags 映 JS flags 为 sal cflags 字面量（EXTENDED=1/ICASE=2/NEWLINE=4；
+// `g` 无底座状态位（全局性由调用方循环实现），编译期忽略，调用方按语义分流）。
 func saRegexCflags(flags string) (string, string) {
 	c := 1
 	for _, f := range flags {
@@ -390,8 +391,9 @@ func saRegexCflags(flags string) (string, string) {
 			c |= 2
 		case 'm':
 			c |= 4
+		case 'g':
 		default:
-			return "", "RegExp flag " + string(f) + " has no sa_std/text/regex projection (only i/m)"
+			return "", "RegExp flag " + string(f) + " has no sa_std/text/regex projection (only i/m/g)"
 		}
 	}
 	return fmt.Sprintf("%d", c), ""
