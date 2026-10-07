@@ -2574,6 +2574,20 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
 		return saLowerElementAssign(w, be, scope, pos, refusals, nextTemp, s)
 	}
+	// 数组清空调 `a.length = 0`（长槽置零；元素缓冲保留（len 遮蔽），后继
+	// push 即覆写；非零字面量/变量沿旧门（扩展造空位，禁静默错码）；`?.` 沿旧门）。
+	if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken &&
+		be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression &&
+		be.Right != nil && be.Right.Kind == ast.KindNumericLiteral && be.Right.Text() == "0" {
+		if pa := be.Left.AsPropertyAccessExpression(); pa != nil && pa.QuestionDotToken == nil &&
+			pa.Name() != nil && pa.Name().Text() == "length" &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
+				w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", pa.Expression.Text()))
+				return true
+			}
+		}
+	}
 	// 实例字段目标 `o.f = v`（经值位落存，结果丢弃）。
 	if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 		if _, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp); msg != "" {
