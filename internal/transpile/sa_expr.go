@@ -4254,12 +4254,6 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // 形状证据：封存 lowerBinary:3135-3177。品牌检查/动态键一律拒）。
 func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	verdict := ""
-	// 数组下标 `in` 先行（`k in arr` ⟺ 0<=k<len；对象字面量键臂在后，互斥）。
-	if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
-		if k, ok := scope.types[be.Right.Text()]; ok && (k == "arr" || k == "arrStr") {
-			return saLowerArrIn(w, be, be.Right.Text(), scope, pos, refusals, nextTemp)
-		}
-	}
 	// 私有品牌检查（`#x in o` 按属主静态折叠；封存 lowerExpr 私有 `in` 相）。
 	if be.Left != nil && be.Left.Kind == ast.KindPrivateIdentifier {
 		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
