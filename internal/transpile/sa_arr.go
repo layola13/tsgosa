@@ -1987,80 +1987,14 @@ func saLowerStructuredClone(w printer.EmitTextWriter, ce *ast.CallExpression, sc
 }
 
 func saLowerArrayPush(w printer.EmitTextWriter, arr, val string, scope *saScope, nextTemp *int) string {
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, arr))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, arr))
+	// R2-7 回迁映射：扩容拷贝压栈语义由 `sci/sa_std/ts_array.sa`
+	// `@ts_arr_push_word` 实现（返同柄，归属移交；旧柄泄漏纪律原样保留），
+	// 本侧只做 import + 调用 + 新长读回；形状证据：封存 lowerArrayPush:5999-6054。
+	scope.addImport("sa_std/ts_array.sa")
+	w.Write(fmt.Sprintf("  call @ts_arr_push_word(%s, %s)\n", arr, val))
 	nlen := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", nlen, ln))
-	nbytes := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nbytes, nlen))
-	ndata := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	allocOk := fmt.Sprintf("L_push_alloc_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	allocEmpty := fmt.Sprintf("L_push_empty_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	allocDone := fmt.Sprintf("L_push_done_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	isempty := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isempty, nbytes))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isempty, allocEmpty, allocOk))
-	w.Write(fmt.Sprintf("%s:\n", allocEmpty))
-	w.Write(fmt.Sprintf("  %s = alloc 4\n", ndata))
-	w.Write(fmt.Sprintf("  jmp %s\n", allocDone))
-	w.Write(fmt.Sprintf("%s:\n", allocOk))
-	w.Write(fmt.Sprintf("  %s = alloc %s\n", ndata, nbytes))
-	w.Write(fmt.Sprintf("%s:\n", allocDone))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	copyL := fmt.Sprintf("L_push_copy_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_push_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_push_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", copyL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	soff := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", soff, i))
-	saddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, data, soff))
-	tmp := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tmp, saddr))
-	daddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, ndata, soff))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, tmp))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", copyL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	voff := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", voff, ln))
-	vaddr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", vaddr, ndata, voff))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", vaddr, val))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", arr, ndata))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", arr, nlen))
-	w.Write(fmt.Sprintf("  !%s\n", ndata))
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", nlen, arr))
 	return nlen
 }
 
