@@ -377,34 +377,13 @@ func saEvalMathLog10(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 	if msg != "" {
 		return "", false, msg
 	}
+	// R3-3 回迁映射：十进制位数语义由 `sci/sa_std/ts_math.sa` `@ts_math_ilog10`
+	// 实现；本侧只做种门禁 + import + 调用 + 归属登记（call 结果登记，R3-1 同形）。
+	scope.addImport("sa_std/ts_math.sa")
 	lacc := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", lacc))
-	ltmp := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", ltmp, x))
-	topL := fmt.Sprintf("L_l10_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_l10_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_l10_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sge %s, 10\n", c, ltmp))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	q := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = div %s, 10\n", q, ltmp))
-	w.Write(fmt.Sprintf("  %s = %s\n", ltmp, q))
-	a := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", a, lacc))
-	w.Write(fmt.Sprintf("  %s = %s\n", lacc, a))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_ilog10(%s)\n", lacc, x))
+	saOwnTemp(scope, lacc)
 	return lacc, false, ""
 }
 
