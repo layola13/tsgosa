@@ -2,6 +2,7 @@
 @import "sa_std/btree_map.sa"
 @import "sa_std/control.sal"
 @import "sa_std/text/regex.sa"
+@import "sa_std/ts_string.sa"
 @import "sa_std/string.sai"
 @import "sa_std/fmt.sai"
 @const schemas__str_const_0 = utf8:"^[a-z]+$\0"
@@ -267,125 +268,119 @@ L_endif_37:
   t_86 = load t_84 + 8 as u64
   t_87 = load s + 0 as ptr
   t_88 = load s + 8 as u64
-  t_89 = call @sa_string_index_of(t_85, t_86, t_87, t_88, 0)
-  t_90 = eq t_89, 0
-  t_91 = eq t_86, t_88
-  t_92 = and t_90, t_91
+  t_89 = call @ts_str_equals(t_85, t_86, t_87, t_88)
+  t_90 = add t_89, 0
   !t_89
-  t_93 = add t_92, 0
-  EXPAND IF_TRUE t_93, L_then_39, L_endif_41
+  EXPAND IF_TRUE t_90, L_then_39, L_endif_41
 L_then_39:
-  t_94 = load sc + 0 as i32
-  store t_83 + 0, t_94 as i32
+  t_91 = load sc + 0 as i32
+  store t_83 + 0, t_91 as i32
   jmp L_cb_end_38
 L_endif_41:
   store t_83 + 0, 0 as i32
   jmp L_cb_end_38
 L_cb_end_38:
-  t_95 = load t_83 + 0 as i32
+  t_92 = load t_83 + 0 as i32
   !t_83
-  t_96 = mul t_95, 16
-  t_97 = add acc, t_96
+  t_93 = mul t_92, 16
+  t_94 = add acc, t_93
   !acc
-  acc = t_97
-  t_98 = alloc 16
-  store t_98 + 0, &schemas__str_const_4 as ptr
-  store t_98 + 8, 2 as u64
-  prefix = add t_98, 0
-  t_99 = alloc 8
-  store t_99 + 0, 0 as ptr
-  t_100 = load sc + 8 as ptr
-  t_101 = load prefix + 0 as ptr
-  t_102 = load prefix + 8 as u64
-  t_103 = load t_100 + 0 as ptr
-  t_104 = load t_100 + 8 as u64
-  t_105 = call @sa_string_concat(t_101, t_102, t_103, t_104)
-  t_106 = call @sa_fmt_buffer_data(t_105)
-  t_107 = call @sa_fmt_buffer_len(t_105)
-  t_108 = alloc 16
-  store t_108 + 0, t_106 as ptr
-  store t_108 + 8, t_107 as u64
-  !t_106
-  !t_107
+  acc = t_94
+  t_95 = alloc 16
+  store t_95 + 0, &schemas__str_const_4 as ptr
+  store t_95 + 8, 2 as u64
+  prefix = add t_95, 0
+  t_96 = alloc 8
+  store t_96 + 0, 0 as ptr
+  t_97 = load sc + 8 as ptr
+  t_98 = load prefix + 0 as ptr
+  t_99 = load prefix + 8 as u64
+  t_100 = load t_97 + 0 as ptr
+  t_101 = load t_97 + 8 as u64
+  t_102 = call @sa_string_concat(t_98, t_99, t_100, t_101)
+  t_103 = call @sa_fmt_buffer_data(t_102)
+  t_104 = call @sa_fmt_buffer_len(t_102)
+  t_105 = alloc 16
+  store t_105 + 0, t_103 as ptr
+  store t_105 + 8, t_104 as u64
+  !t_103
+  !t_104
+  !t_102
+  store t_96 + 0, t_105 as ptr
   !t_105
-  store t_99 + 0, t_108 as ptr
-  !t_108
   jmp L_cb_end_42
 L_cb_end_42:
-  t_109 = load t_99 + 0 as ptr
-  !t_99
-  label = t_109
-  t_110 = alloc 16
-  store t_110 + 0, &schemas__str_const_5 as ptr
-  store t_110 + 8, 4 as u64
-  t_111 = load label + 0 as ptr
-  t_112 = load label + 8 as u64
-  t_113 = load t_110 + 0 as ptr
-  t_114 = load t_110 + 8 as u64
-  t_115 = call @sa_string_index_of(t_111, t_112, t_113, t_114, 0)
-  t_116 = eq t_115, 0
-  t_117 = eq t_112, t_114
-  t_118 = and t_116, t_117
-  !t_115
-  t_119 = add t_118, 0
-  EXPAND IF_TRUE t_119, L_then_43, L_endif_45
+  t_106 = load t_96 + 0 as ptr
+  !t_96
+  label = t_106
+  t_107 = alloc 16
+  store t_107 + 0, &schemas__str_const_5 as ptr
+  store t_107 + 8, 4 as u64
+  t_108 = load label + 0 as ptr
+  t_109 = load label + 8 as u64
+  t_110 = load t_107 + 0 as ptr
+  t_111 = load t_107 + 8 as u64
+  t_112 = call @ts_str_equals(t_108, t_109, t_110, t_111)
+  t_113 = add t_112, 0
+  !t_112
+  EXPAND IF_TRUE t_113, L_then_43, L_endif_45
 L_then_43:
-  t_120 = add acc, 32
+  t_114 = add acc, 32
+  !acc
+  acc = t_114
+L_endif_45:
+  t_115 = call @sa_btree_map_new()
+  P = t_115
+  t_116 = alloc 16
+  store t_116 + 0, &schemas__str_const_6 as ptr
+  store t_116 + 8, 4 as u64
+  t_117 = alloc 16
+  store t_117 + 0, &schemas__str_const_7 as ptr
+  store t_117 + 8, 4 as u64
+  call @sa_btree_map_insert(&P, &t_116, t_117)
+  t_118 = alloc 16
+  store t_118 + 0, &schemas__str_const_6 as ptr
+  store t_118 + 8, 4 as u64
+  t_119 = call @schemas__parsePort(P, t_118)
+  t_120 = add acc, t_119
   !acc
   acc = t_120
-L_endif_45:
-  t_121 = call @sa_btree_map_new()
-  P = t_121
-  t_122 = alloc 16
-  store t_122 + 0, &schemas__str_const_6 as ptr
-  store t_122 + 8, 4 as u64
-  t_123 = alloc 16
-  store t_123 + 0, &schemas__str_const_7 as ptr
-  store t_123 + 8, 4 as u64
-  call @sa_btree_map_insert(&P, &t_122, t_123)
-  t_124 = alloc 16
-  store t_124 + 0, &schemas__str_const_6 as ptr
-  store t_124 + 8, 4 as u64
-  t_125 = call @schemas__parsePort(P, t_124)
-  t_126 = add acc, t_125
+  t_121 = alloc 16
+  store t_121 + 0, &schemas__str_const_8 as ptr
+  store t_121 + 8, 5 as u64
+  t_122 = call @schemas__isLower(t_121)
+  t_123 = mul t_122, 64
+  t_124 = add acc, t_123
   !acc
-  acc = t_126
-  t_127 = alloc 16
-  store t_127 + 0, &schemas__str_const_8 as ptr
-  store t_127 + 8, 5 as u64
-  t_128 = call @schemas__isLower(t_127)
-  t_129 = mul t_128, 64
-  t_130 = add acc, t_129
+  acc = t_124
+  t_125 = alloc 16
+  t_126 = alloc 12
+  t_127 = add t_126, 0
+  store t_127 + 0, 1 as i32
+  t_128 = add t_126, 4
+  store t_128 + 0, 2 as i32
+  t_129 = add t_126, 8
+  store t_129 + 0, 3 as i32
+  store t_125 + 0, t_126 as ptr
+  store t_125 + 8, 3 as u64
+  !t_126
+  t_130 = call @schemas__score(t_125, 5)
+  t_131 = mul t_130, 128
+  t_132 = add acc, t_131
   !acc
-  acc = t_130
-  t_131 = alloc 16
-  t_132 = alloc 12
-  t_133 = add t_132, 0
-  store t_133 + 0, 1 as i32
-  t_134 = add t_132, 4
-  store t_134 + 0, 2 as i32
-  t_135 = add t_132, 8
-  store t_135 + 0, 3 as i32
-  store t_131 + 0, t_132 as ptr
-  store t_131 + 8, 3 as u64
-  !t_132
-  t_136 = call @schemas__score(t_131, 5)
-  t_137 = mul t_136, 128
-  t_138 = add acc, t_137
-  !acc
-  acc = t_138
-  !t_136
-  !t_131
-  !t_128
-  !t_127
+  acc = t_132
+  !t_130
   !t_125
-  !t_124
-  !t_123
   !t_122
+  !t_121
+  !t_119
+  !t_118
+  !t_117
+  !t_116
   !P
-  !t_110
+  !t_107
   !label
-  !t_98
+  !t_95
   !t_82
   !sc
   !t_81

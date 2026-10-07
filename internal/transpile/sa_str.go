@@ -1207,30 +1207,24 @@ func saLowerNullishStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 // saStringContentEq 串内容相等（等长 + 零偏 indexOf 命中；negate 取反。
 // 形状证据：封存 stringContentEq:9146-9166）。
 func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope *saScope, nextTemp *int) string {
-	scope.addImport("sa_std/string.sai")
+	// R2 回迁映射：内容判等语义由 `sci/sa_std/ts_string.sa` `@ts_str_equals`
+	// 实现（等长 + 零偏命中；negate 由调用点折叠），本侧只做 import + 调用。
+	scope.addImport("sa_std/ts_string.sa")
 	lp, ll := saExpandStr(w, l, nextTemp)
 	rp, rl := saExpandStr(w, r, nextTemp)
-	idx := fmt.Sprintf("t_%d", *nextTemp)
+	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, lp, ll, rp, rl))
-	saOwnTemp(scope, idx)
-	at0 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
-	samelen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, ll, rl))
-	both := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
-	saReleaseOwnedTemp(w, scope, idx)
+	w.Write(fmt.Sprintf("  %s = call @ts_str_equals(%s, %s, %s, %s)\n", t, lp, ll, rp, rl))
+	// 调用结果归属(返前释放；上游 ownTemp 同形).
+	saOwnTemp(scope, t)
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	if negate {
-		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", out, both))
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", out, t))
 	} else {
-		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, both))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", out, t))
 	}
+	saReleaseOwnedTemp(w, scope, t)
 	return out
 }
 

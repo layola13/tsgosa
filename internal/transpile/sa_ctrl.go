@@ -752,23 +752,18 @@ func saLowerExpectCount(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scop
 // saStrContentEq 串内容相等值式（both=内容等且等长；idx 自清洁；ah/bh
 // 调用方自理；与 `saLowerExpectStrEq` 同指令同序，禁另立口径）。
 func saStrContentEq(w printer.EmitTextWriter, ah, bh string, scope *saScope, nextTemp *int) string {
-	scope.addImport("sa_std/string.sai")
+	// R2 回迁映射（与 saStringContentEq 同符号；negate 由调用方折叠）。
+	scope.addImport("sa_std/ts_string.sa")
 	ap, al := saExpandStr(w, ah, nextTemp)
 	bp, bl := saExpandStr(w, bh, nextTemp)
-	idx := fmt.Sprintf("t_%d", *nextTemp)
+	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, bp, bl))
-	saOwnTemp(scope, idx)
-	at0 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
-	samelen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, al, bl))
+	w.Write(fmt.Sprintf("  %s = call @ts_str_equals(%s, %s, %s, %s)\n", t, ap, al, bp, bl))
+	saOwnTemp(scope, t)
 	both := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
-	saReleaseOwnedTemp(w, scope, idx)
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", both, t))
+	saReleaseOwnedTemp(w, scope, t)
 	return both
 }
 
@@ -1385,15 +1380,15 @@ func saLowerExpectAssertion(w printer.EmitTextWriter, s *ast.Node, isVoid bool, 
 	return true, true
 }
 
-// saLowerExpectStrEq lowering 串 `toBe/toEqual`（内容等 + 等长，与 `==`
-// 内容相等同指令同序，idx 自清洁；`.not` 翻转比较符；混种沿串门大声拒）。
+// saLowerExpectStrEq lowering 串 `toBe/toEqual`（经 `@ts_str_equals`
+// 内容判等，与 `==` 同符号；`.not` 翻转比较符；混种沿串门大声拒）。
 func saLowerExpectStrEq(w printer.EmitTextWriter, s *ast.Node, neg bool, actual, expected *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (bool, bool) {
 	fail := func(msg string) (bool, bool) {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return true, false
 	}
-	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/ts_string.sa")
 	ah, msg := saEvalStr(w, actual, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return fail(msg)
@@ -1404,34 +1399,28 @@ func saLowerExpectStrEq(w printer.EmitTextWriter, s *ast.Node, neg bool, actual,
 	}
 	ap, al := saExpandStr(w, ah, nextTemp)
 	np, nl := saExpandStr(w, nh, nextTemp)
-	idx := fmt.Sprintf("t_%d", *nextTemp)
+	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, 0)\n", idx, ap, al, np, nl))
-	saOwnTemp(scope, idx)
-	at0 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", at0, idx))
-	samelen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = eq %s, %s\n", samelen, al, nl))
+	w.Write(fmt.Sprintf("  %s = call @ts_str_equals(%s, %s, %s, %s)\n", t, ap, al, np, nl))
+	saOwnTemp(scope, t)
 	both := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", both, at0, samelen))
-	t := fmt.Sprintf("t_%d", *nextTemp)
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", both, t))
+	saReleaseOwnedTemp(w, scope, t)
+	c := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	cmp := "eq"
 	if neg {
 		cmp = "ne"
 	}
-	w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, cmp, both))
-	saReleaseOwnedTemp(w, scope, idx)
+	w.Write(fmt.Sprintf("  %s = %s %s, 0\n", c, cmp, both))
 	saReleaseOwnedTemp(w, scope, ah)
 	saReleaseOwnedTemp(w, scope, nh)
 	failL := fmt.Sprintf("L_exp_fail_%d", *nextLabel)
 	*nextLabel++
 	okL := fmt.Sprintf("L_exp_ok_%d", *nextLabel)
 	*nextLabel++
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, failL, okL))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, failL, okL))
 	w.Write(failL + ":\n")
 	w.Write(fmt.Sprintf("  panic(%d)\n", 2501))
 	w.Write(okL + ":\n")
