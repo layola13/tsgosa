@@ -114,6 +114,14 @@
 - 含义：串数组元素加载只对“具名局部数组基址”对齐，右值基址（调用/Map.get 链）仍错。修 367 时只对齐了具名路径。
 - D09a `Date.now()` 仍 `MemoryLeak`（R3-33 未覆盖本形态）；V05 stringify 误编译仍挂起。
 
+## 循环迭代 4（2026-10-07 14:30 UTC）：第三批探针（外部库面）+ Demo 聚合
+
+- 18 探针（`/tmp/opencode/ts-sa-probe/b3cases/`，生成器 `gen_batch3.py`），后端用量：`node:path` 62×、`node:fs` 47×、`fs/promises` 34×、`crypto` 42×、`child_process` 34×、`os` 27×、`events` 24×、`fetch` 52×、`Bun.*` 15-20×、`@codex-ui/shared` 85×、`ws`/`node-pty`/`sqlite` 各有专用文件、`@napi-rs/keyring` 4×、`js-tiktoken` 代表 npm 包、`node:http` 5×。
+- 仅 3 项转译通过但 check 挂 `ImportResolutionFailed`：`path.join`、`crypto.randomUUID`、`os.homedir`——转译器投影出 `@import "node.sai"`（投影表存在），缺插件链接（同 D12 `console.error` 家族，接线问题非语义问题）。
+- 其余 15 项转译即拒：`fs.readFileSync`（`not a projected surface`）、`fs/promises`/`spawn`/`createServer`/`fetch`（`unknown function` + Phase 2 警告）、`EventEmitter` 基类（同 D15）、`fileURLToPath`（`not a projected std surface, see StdProjectionTable`）、`WebSocketServer`（`unknown class`）、动态 `import()`/`Bun.serve`（`only direct function calls`）、`require()`两种（含 `bun:sqlite`，顶层 const 拒）、`@codex-ui/shared`/`keyring`/`tiktoken`（单文件 Phase 2 警告，程序模式待验证）。
+- 含义：后端 112 文件的 import 面（node 内建 300+ 处、npm 包、内部包）在单文件管线下全灭；`node:http` + `ws` 的 `runtime/server.ts` 双运行时、`runtime/database.ts` 三后端 require、`terminalPty.ts` 动态 pty、`child_process` 的各 CLI bridges——迁移前置条件是程序模式 + 插件链接全通。sci 侧 `.sai` extern 面已存在（node 287 行/os-process-path-fs-crypto-net-http-child_process，db 全套列式 API，http_server 含 websocket），缺的是转译投影→插件链接的 wiring（含本环境 `PackageNotResolved`）。
+- Demo 追加 `countGroups()`（扁平 `provLen` 表求和，对应 `toParseInventory` 计数半）：check（3371 指令）→ case11=3 → 镜算一致。
+
 ## 待办（给后续轮）
 
 1. 归档探针：`/tmp/opencode/ts-sa-probe` 易失，建议收进本仓 `demos/`（fixture 例外）或另仓；生成器即文档。
