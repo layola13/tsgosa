@@ -374,12 +374,6 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return out, ""
 }
 
-// saJoinAccumulatorMsg 为 join 精确拒因（求值核与 `.length` 调用基共用一文；
-// H-join：分隔符分支合并需 move 感知归属，单归属 SSA 下无正确形；
-// 旧 lowering 任何用例皆 PhiStateConflict 陷阱；上游 p8/p9 形实发无效
-// .sai（PhiStateConflict/FallthroughForbidden），薄口拒收正确不移植）。
-const saJoinAccumulatorMsg = "join needs branch-merged string accumulator (beyond single-owner SSA)"
-
 // saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
@@ -443,13 +437,15 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			saReleaseOwnedTemp(w, scope, h)
 			return t, ""
 		}
-		// join 调用基报精确拒因（saArrValueOf 只回笼统 `not an array expression`；
-		// 求值核同文，见 saJoinAccumulatorMsg）。
-		if ce := pa.Expression.AsCallExpression(); ce != nil && ce.Expression != nil &&
-			ce.Expression.Kind == ast.KindPropertyAccessExpression {
-			if opa := ce.Expression.AsPropertyAccessExpression(); opa != nil && opa.Name() != nil &&
-				opa.Name().Text() == "join" {
-				return "", saJoinAccumulatorMsg
+		// join 调用基走串位（R3-13b 已开门；saEvalStr 经 saIsArrJoinCall
+		// 识串，结果读后即释；失败沿旧路落串门）。
+		if ce := pa.Expression.AsCallExpression(); ce != nil && saIsArrJoinCall(ce, scope) {
+			if sh, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, sh))
+				saReleaseOwnedTemp(w, scope, sh)
+				return t, ""
 			}
 		}
 	}
@@ -1976,70 +1972,6 @@ func saLowerArrayAt(w printer.EmitTextWriter, recv, idx string, scope *saScope, 
 	return out
 }
 
-// saLowerArrayJoin 元素经 interp 折叠拼接（分隔符除首元外；形状证据：
-// 封存 lowerArrayJoin:6658-6712；本薄口元恒 i32，直走 interp）。
-// 注：当前 dispatch 门大声拒（分支合并归属无正确形，见 H-join），本函数留档待搬。
-func saLowerArrayJoin(w printer.EmitTextWriter, recv, sep string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	scope.addImport("sa_std/string.sai")
-	scope.addImport("sa_std/fmt.sai")
-	sepslice := saLowerStringLiteral(w, ",", scope, nextTemp)
-	if sep != "" {
-		sepslice = sep
-	}
-	acc := saLowerStringLiteral(w, "", scope, nextTemp)
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_jn_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_jn_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_jn_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	first := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	fl := fmt.Sprintf("L_jn_fl_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	fe := fmt.Sprintf("L_jn_fe_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", first, i))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", first, fl, fe))
-	w.Write(fmt.Sprintf("%s:\n", fl))
-	acc = saConcatSlices(w, acc, sepslice, scope, nextTemp)
-	w.Write(fmt.Sprintf("  jmp %s\n", fe))
-	w.Write(fmt.Sprintf("%s:\n", fe))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-	raw := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", raw, addr))
-	part := saRenderInterp(w, raw, scope, nextTemp)
-	acc = saConcatSlices(w, acc, part, scope, nextTemp)
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	return acc, ""
-}
-
 // saLowerToReversed 逆序拷贝到新数组（形状证据：封存 lowerToReversed:6820-6879）。
 func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, nextTemp *int) string {
 	// R1 回迁映射：逆序语义由 `sci/sa_std/ts_array.sa` `@ts_arr_toreversed`
@@ -3461,13 +3393,29 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		return saLowerArrayAt(w, recv, v, scope, nextTemp), "i32", ""
 	case "join":
-		// join 大声拒（H-join：分隔符分支合并需 move 感知归属，
-		// 单归属 SSA 下无正确形；旧 lowering 任何用例皆 PhiStateConflict
-		// 陷阱（exit 0 + 非法 .sai，最坏）；上游同形亦拒。lowering 留档待搬）。
+		// R3-13b 回迁映射：拼接语义由 `sci/sa_std/ts_string.sa`
+		// `@ts_arr_join_vals` 实现（分支合并经槽中转 + 自赋值对齐，H-join
+		// 旧陷阱已解；缺省分隔符 ","）；本侧只做参数门 + import + 调用 +
+		// 归属（分隔符用后释放，结果登记）。
 		if len(argNodes) > 1 {
 			return "", "", "join takes at most 1 argument"
 		}
-		return "", "", saJoinAccumulatorMsg
+		sep := saLowerStringLiteral(w, ",", scope, nextTemp)
+		if len(argNodes) == 1 {
+			ns, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			sep = ns
+		}
+		sp, sl := saExpandStr(w, sep, nextTemp)
+		scope.addImport("sa_std/ts_string.sa")
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_join_vals(%s, %s, %s)\n", out, recv, sp, sl))
+		saReleaseOwnedTemp(w, scope, sep)
+		saOwnTemp(scope, out)
+		return out, "str", ""
 	case "copyWithin":
 		if len(argNodes) < 1 {
 			return "", "", "copyWithin needs 1 argument"
