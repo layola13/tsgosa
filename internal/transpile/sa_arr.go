@@ -714,6 +714,15 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			}
 		}
 	}
+	// `this` 源：布局取接收者类（`scope.thisClass`，与 `this.v` 读位同源；
+	// 句柄取 `scope.thisSelf`，直读 `load hid + off` 与上游 r2 形同形；
+	// 静态方法 thisSelf 为空沿旧门；注解优先既有）。
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+		src = scope.thisSelf
+		if def == nil && scope.thisClass != "" {
+			def, _ = scope.classes[scope.thisClass]
+		}
+	}
 	if def == nil && vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
 		// 字面量源现场具化（无注解按键集匹配；具名注解须同名，泛型优先
 		// 具化；封存 destructureObject:5465-5509 + layoutOfLiteral 键集匹配）。

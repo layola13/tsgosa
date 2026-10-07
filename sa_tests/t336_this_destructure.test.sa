@@ -1,0 +1,9 @@
+@import "../demos/336_this_destructure/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "336_this_destructure"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 12, 33601)
+    !v
+    return
