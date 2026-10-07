@@ -2397,6 +2397,21 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	for _, p := range sigNames {
 		saDeclareOwned(inner, p)
 	}
+	// 签名入表（调用核按名分发；arrowCaps 有序记尾随捕获实参）+ 体前登记
+	// （命名函数表达式内名自递归体即可见；pendings/体 lowering 在后）。
+	sig := saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured, arrowThis: usesThis}
+	scope.funcs[gen] = sig
+	// 命名函数表达式内名记内层别名（`g` 直调即 `@gen` 自递归；只落内层域，
+	// 出体即弃，外层 `g()` 仍大声拒；形参同名守卫（形参遮蔽内名）；匿名/箭头沿旧门）。
+	if arrow.Kind == ast.KindFunctionExpression {
+		if fe := arrow.AsFunctionExpression(); fe != nil {
+			if nm := fe.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() != "" {
+				if _, taken := inner.types[nm.Text()]; !taken {
+					inner.types[nm.Text()] = "fn:" + gen
+				}
+			}
+		}
+	}
 	if len(pendings) > 0 {
 		if !saDrainDestructuredParams(buf, pendings, inner, pos, refusals, nextLabel, nextTemp) {
 			return false
@@ -2406,8 +2421,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 		return false
 	}
 	*scope.pendingFns = append(*scope.pendingFns, buf.String())
-	// 签名入表（调用核按名分发；arrowCaps 有序记尾随捕获实参）+ 局部名记别名。
-	scope.funcs[gen] = saFuncSig{params: len(params), isVoid: isVoid, retKind: retKind, paramKinds: saSigKinds(paramKinds, params), arrowCaps: captured, arrowThis: usesThis}
+	// 局部名记别名（签名体前已入表，见上）。
 	scope.types[name] = "fn:" + gen
 	return true
 }
