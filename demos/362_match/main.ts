@@ -8,5 +8,8 @@ function main(): i32 {
   const e = re.exec("a1b2");
   console.log(e.length);
   console.log(e[0]);
+  const g = s.match(/[0-9]/g);
+  console.log(g.length);
+  console.log(g[1]);
   return 0;
 }

@@ -512,6 +512,117 @@ func saLowerRegexTest(w printer.EmitTextWriter, recv string, arg *ast.Node, scop
 	return hit, ""
 }
 
+// saLowerRegexMatchGlobal `match /g` 全整体数组（循环收整体；空匹配推进；
+// miss 即结束（无尾段）；`saMarkArrStr` 记串元；分支内 alloc 分支内释放）。
+func saLowerRegexMatchGlobal(w printer.EmitTextWriter, rh, tp, tl string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/text/regex.sa")
+	scope.addImport("sa_std/ts_string.sa")
+	h := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, h)
+	saMarkArrStr(scope, h)
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+	topL := fmt.Sprintf("L_mg_top_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_mg_end_%d", *nextTemp)
+	*nextTemp++
+	bodyL := fmt.Sprintf("L_mg_body_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	iu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+	over := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", over, iu, tl))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", over, endL, bodyL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	rem := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", rem, tp, i))
+	riu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as u64\n", riu, i))
+	reml := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", reml, tl, riu))
+	m := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match(%s, &%s, %s)\n", m, rh, rem, reml))
+	hit := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, m))
+	hitL := fmt.Sprintf("L_mg_hit_%d", *nextTemp)
+	*nextTemp++
+	missL := fmt.Sprintf("L_mg_miss_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	fr0 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr0, m))
+	w.Write(fmt.Sprintf("  !%s\n", fr0))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", hitL))
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_start(%s, 0)\n", st, m))
+	ml := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", ml, m))
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	st32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", st32, st))
+	ml32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", ml32, ml))
+	w.Write(fmt.Sprintf("  !%s\n", st))
+	w.Write(fmt.Sprintf("  !%s\n", ml))
+	abs := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", abs, i, st32))
+	se := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", se, abs, ml32))
+	sg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, 0)\n", sg, tp, tl, abs, se))
+	saOwnTemp(scope, sg)
+	saLowerArrayPush(w, h, sg, scope, nextTemp)
+	saReleaseOwnedTemp(w, scope, sg)
+	isempty := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isempty, ml32))
+	advL := fmt.Sprintf("L_mg_adv_%d", *nextTemp)
+	*nextTemp++
+	nxtL := fmt.Sprintf("L_mg_nxt_%d", *nextTemp)
+	*nextTemp++
+	contL := fmt.Sprintf("L_mg_cont_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isempty, advL, nxtL))
+	w.Write(fmt.Sprintf("%s:\n", advL))
+	adv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", adv, abs))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, adv))
+	w.Write(fmt.Sprintf("  jmp %s\n", contL))
+	w.Write(fmt.Sprintf("%s:\n", nxtL))
+	nxtv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", nxtv, se))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, nxtv))
+	w.Write(fmt.Sprintf("  jmp %s\n", contL))
+	w.Write(fmt.Sprintf("%s:\n", contL))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return h
+}
+
 // saLowerRegexMatchArray match 整体单元素串数组（miss 即 null 0 柄；
 // `String.match` 无 g 与 `RegExp.exec` 共享；整体经 group0 ptr/len 具化新头
 // push 入新串元数组；`saMarkArrStr` 记串元；分支内 alloc 分支内释放）。

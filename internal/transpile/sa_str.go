@@ -1938,12 +1938,16 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		return out, false, ""
 	case "match":
 		// 无 g 全匹配整体单元素串数组（与 `RegExp.exec` 同形，共享
-		// `saLowerRegexMatchArray`；/g 全局另步）。
+		// `saLowerRegexMatchArray`；/g 全局循环收整体）。
 		if len(args) != 1 {
 			return "", false, "match takes 1 argument"
 		}
 		if saRegexHasGlobalFlag(args[0]) {
-			return "", false, "String.match with /g needs full-match array (not lowerable yet)"
+			rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return saLowerRegexMatchGlobal(w, rh, bp, bl, scope, nextTemp), false, ""
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
