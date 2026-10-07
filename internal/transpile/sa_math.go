@@ -27,15 +27,23 @@ func saNumberConst(pa *ast.PropertyAccessExpression) (string, bool) {
 	return "", false
 }
 
-// saIsNumberIsInteger 识别 `Number.isInteger(x)`（形状证据：封存 lowerCall:3837-3848 +
-// stdlib.go:404-411；f64 位本薄口不可达——浮点字面早拒）。
+// saIsNumberIsInteger 识别 `Number.isInteger/isSafeInteger(x)`（后者 i32
+// 恒安全（|x|≤2^31-1<2^53-1），求值保留副作用后与前者同折 "1"；f64 位
+// 本薄口不可达——浮点字面早拒。形状证据：封存 lowerCall:3837-3848 +
+// stdlib.go:404-411；isSafeInteger 上游未路由，本仓按恒等式 thin-lead）。
 func saIsNumberIsInteger(ce *ast.CallExpression) bool {
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return false
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()
-	return pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Number" &&
-		pa.Name() != nil && pa.Name().Text() == "isInteger"
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Expression.Text() != "Number" {
+		return false
+	}
+	if pa.Name() == nil {
+		return false
+	}
+	nm := pa.Name().Text()
+	return nm == "isInteger" || nm == "isSafeInteger"
 }
 
 // saEvalMathAbs 求 `Math.abs(x)`（形状证据：封存 lowerMathInline abs:5754-5780

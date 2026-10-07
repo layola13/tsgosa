@@ -741,15 +741,15 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return op, false, ""
 			}
 		}
-		// Number.isInteger(x)：i32 操作数恒整（求值保留副作用后折 "1"；
-		// 形状证据：封存 lowerCall:3837-3848）。
+		// Number.isInteger/isSafeInteger(x)：i32 操作数恒整/恒安全（求值保留
+		// 副作用后折 "1"；形状证据：封存 lowerCall:3837-3848）。
 		if saIsNumberIsInteger(ce) {
 			var argNodes []*ast.Node
 			if ce.Arguments != nil {
 				argNodes = ce.Arguments.Nodes
 			}
 			if len(argNodes) != 1 {
-				return "", false, "Number.isInteger takes one argument"
+				return "", false, "Number.isInteger/isSafeInteger takes one argument"
 			}
 			if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
 				return "", false, msg

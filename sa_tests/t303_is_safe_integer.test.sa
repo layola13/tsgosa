@@ -1,0 +1,9 @@
+@import "../demos/303_is_safe_integer/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "303_is_safe_integer"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1, 30301)
+    !v
+    return
