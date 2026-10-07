@@ -15,6 +15,7 @@
   ret t_1
 @main__user() -> i32:
   t_2 = alloc 4
+  store t_2 + 0, 6 as i32
   c = t_2
   t_3 = alloc 8
   store t_3 + 0, 0 as ptr

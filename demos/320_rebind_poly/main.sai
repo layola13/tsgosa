@@ -5,6 +5,7 @@
 @const str_const_0 = utf8:"\n\0"
 @main__user() -> i32:
   t_1 = alloc 4
+  store t_1 + 0, 0 as i32
   b = t_1
   store b + 0, 1 as i32
   t_2 = alloc 8
@@ -18,6 +19,7 @@ L_cb_end_1:
   !t_2
   r0 = t_5
   t_6 = alloc 4
+  store t_6 + 0, 0 as i32
   !b
   b = t_6
   store b + 0, 2 as i32

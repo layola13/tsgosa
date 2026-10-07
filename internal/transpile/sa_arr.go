@@ -1588,7 +1588,7 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 			h, def, msg := saInstBase(pa.Expression, scope)
 			// map 索引实例基（`m[k].a`；saInstBase 只认标识符/this；
 			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
-			if msg == "" && def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression) {
+			if msg == "" && def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression) {
 				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
 			}
 			if msg == "" {

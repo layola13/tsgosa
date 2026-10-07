@@ -67,6 +67,8 @@ type saClassDef struct {
 	statics       map[string]saStaticVal
 	ctor          *ast.Node
 	ctorOwner     string
+	finits        map[string]*ast.Node
+	finitOrder    []string
 	parent        string
 	isIface       bool
 	isAbstract    bool
@@ -475,6 +477,15 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
 					return false
 				}
+			}
+			if pd.Initializer != nil && !ast.HasModifier(m, ast.ModifierFlagsStatic) {
+				// 实例字段初值登记（构造时基先派后、先于构造体落槽；ES2022
+				// class fields 语义，见 internal/transformers/estransforms/classfields.go）。
+				if def.finits == nil {
+					def.finits = map[string]*ast.Node{}
+				}
+				def.finits[fkey] = pd.Initializer
+				def.finitOrder = append(def.finitOrder, fkey)
 			}
 			if _, dup := def.offsets[fkey]; dup {
 				// 继承字段重声明：守基偏移（同宽同种恒成立）。
@@ -1203,6 +1214,14 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 					return len(vk) > 5 && vk[:5] == "inst:"
 				}
 			}
+		}
+	}
+	if e != nil && e.Kind == ast.KindNewExpression {
+		// `new C()` 临时实例基（`new C().m()`；类已记布局才放行，构造与
+		// 归属复用 saLowerNewStmt，与 step419 实参 new 形同核）。
+		if cname, msg := saNewStmtClassName(e.AsNewExpression()); msg == "" {
+			def, ok := scope.classes[cname]
+			return ok && !def.isIface && !def.isAbstract
 		}
 	}
 	if e != nil && e.Kind == ast.KindCallExpression {
@@ -2637,6 +2656,18 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 // 上游 lowerExpr 通用基同形）。
 // temp 按建表值种记 `inst:T`；非 map 索引/错种沿旧门大声拒，永不空-def-无-msg）。
 func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
+	if e != nil && e.Kind == ast.KindNewExpression {
+		// `new C()` 临时实例基：构造即 saOwnTemp 归属，域尾/返前释放口回收。
+		cname, msg := saNewStmtClassName(e.AsNewExpression())
+		if msg != "" {
+			return "", nil, msg
+		}
+		h, msg := saLowerNewStmt(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", nil, msg
+		}
+		return h, scope.classes[cname], ""
+	}
 	if e != nil && e.Kind == ast.KindCallExpression {
 		// 调用结果基（`M.get(k).f`；求值后按记种消解布局；上游 lowerExpr 通用基同形）。
 		ce := e.AsCallExpression()
@@ -2958,6 +2989,9 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	// 头槽归属（嵌套递归同记；具名绑定时消费，余下返前释放；
 	// 封存 lowerObjectLiteral 尾 declareOwned(h) 同形）。
 	saOwnTemp(scope, h)
+	if msg := saLowerFieldInits(w, h, def, scope, pos, refusals, nextTemp); msg != "" {
+		return "", msg
+	}
 	if def.ctor == nil {
 		// 无显式构造：多余实参直接丢弃（P-newargs：上游同形忽略，
 		// 无求值无副作用；有参构造沿下 arity 门）。
@@ -3055,6 +3089,100 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		return "", "unwirable"
 	}
 	return h, ""
+}
+
+// saLowerFieldInits 落实例字段初值（继承链基先派后，先于构造 wiring；
+// 只收字面量初值——数/负数/布尔/串，求值与调用方作用域无关；余形及
+// 「派生重声明且祖先有构造」之序依赖形大声拒，禁旧路静默丢初值）。
+func saLowerFieldInits(w printer.EmitTextWriter, h string, def *saClassDef, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	var chain []*saClassDef
+	for c, n := def, 0; c != nil && n < 32; n++ {
+		chain = append([]*saClassDef{c}, chain...)
+		c = scope.classes[c.parent]
+	}
+	for i, c := range chain {
+		for _, fk := range c.finitOrder {
+			init := saUnwrapTransparent(c.finits[fk])
+			for _, a := range chain[:i] {
+				if _, ok := a.offsets[fk]; ok && a.ctor != nil {
+					return "field " + fk + " initializer overrides a base constructor field (not lowerable)"
+				}
+			}
+			if !saIsPureLiteral(init) {
+				return "field " + fk + " initializer must be a literal"
+			}
+			off := def.offsets[fk]
+			switch def.fkinds[fk] {
+			case "str":
+				v, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+			case "i32", "":
+				v, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
+			case "arr":
+				if init.Kind != ast.KindArrayLiteralExpression {
+					return "field " + fk + " initializer must be an array literal"
+				}
+				v, msg := saArrValueOf(w, init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+			case "inst":
+				sub, ok := def.fsub[fk]
+				if !ok || init.Kind != ast.KindObjectLiteralExpression {
+					return "field " + fk + " initializer must be an object literal of a recorded layout"
+				}
+				v, _, msg := saLowerObjectLiteral(w, init, sub, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+			default:
+				return "field " + fk + " initializer kind is not lowerable"
+			}
+		}
+	}
+	return ""
+}
+
+// saIsPureLiteral 报告字面量树（数/负数/布尔/串/null，及其数组与对象字面量
+// 嵌套；无标识符引用，故求值与调用方作用域无关）。
+func saIsPureLiteral(e *ast.Node) bool {
+	e = saUnwrapTransparent(e)
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword,
+		ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return true
+	case ast.KindPrefixUnaryExpression:
+		pu := e.AsPrefixUnaryExpression()
+		return (pu.Operator == ast.KindMinusToken || pu.Operator == ast.KindPlusToken) &&
+			pu.Operand != nil && pu.Operand.Kind == ast.KindNumericLiteral
+	case ast.KindArrayLiteralExpression:
+		for _, el := range e.AsArrayLiteralExpression().Elements.Nodes {
+			if !saIsPureLiteral(el) {
+				return false
+			}
+		}
+		return true
+	case ast.KindObjectLiteralExpression:
+		for _, p := range e.AsObjectLiteralExpression().Properties.Nodes {
+			if p == nil || p.Kind != ast.KindPropertyAssignment || !saIsPureLiteral(p.AsPropertyAssignment().Initializer) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // saCtorWiringKinds 预扫构造体 `this.f = param` 的 str 目标（返回 param 名集；

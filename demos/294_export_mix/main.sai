@@ -8,73 +8,77 @@
   ret 1
 @main__user() -> i32:
   t_1 = alloc 8
+  t_2 = alloc 4
+  store t_2 + 0, 1 as i32
+  store t_1 + 0, t_2 as ptr
   a = t_1
-  t_2 = alloc 16
-  store t_2 + 0, &str_const_0 as ptr
-  store t_2 + 8, 6 as u64
-  t = t_2
-  t_3 = load a + 0 as ptr
-  t_4 = load t_3 + 0 as i32
-  t_5 = sext t_4 as i64
-  t_6 = alloc 64
-  t_7 = alloc 8
-  t_8 = call @sa_fmt_i64_into(t_5, 10, t_6, 64, &t_7)
-  t_9 = load t_7 + 0 as u64
-  t_10 = alloc 16
-  store t_10 + 0, t_6 as ptr
-  store t_10 + 8, t_9 as u64
+  t_3 = alloc 16
+  store t_3 + 0, &str_const_0 as ptr
+  store t_3 + 8, 6 as u64
+  t = t_3
+  t_4 = load a + 0 as ptr
+  t_5 = load t_4 + 0 as i32
+  t_6 = sext t_5 as i64
+  t_7 = alloc 64
+  t_8 = alloc 8
+  t_9 = call @sa_fmt_i64_into(t_6, 10, t_7, 64, &t_8)
+  t_10 = load t_8 + 0 as u64
+  t_11 = alloc 16
+  store t_11 + 0, t_7 as ptr
+  store t_11 + 8, t_10 as u64
+  !t_9
+  t_12 = load t_11 + 0 as ptr
+  t_13 = load t_11 + 8 as u64
+  call @sa_print_bytes(&t_12, t_13)
+  !t_11
+  t_14 = alloc 16
+  store t_14 + 0, &str_const_1 as ptr
+  store t_14 + 8, 1 as u64
+  t_15 = load t_14 + 0 as ptr
+  t_16 = load t_14 + 8 as u64
+  call @sa_print_bytes(&t_15, t_16)
+  !t_14
+  t_17 = load t + 0 as ptr
+  t_18 = load t + 8 as u64
+  call @sa_print_bytes(&t_17, t_18)
+  t_19 = alloc 16
+  store t_19 + 0, &str_const_1 as ptr
+  store t_19 + 8, 1 as u64
+  t_20 = load t_19 + 0 as ptr
+  t_21 = load t_19 + 8 as u64
+  call @sa_print_bytes(&t_20, t_21)
+  !t_19
+  t_22 = load a + 0 as ptr
+  t_23 = load t_22 + 0 as i32
   !t_8
-  t_11 = load t_10 + 0 as ptr
-  t_12 = load t_10 + 8 as u64
-  call @sa_print_bytes(&t_11, t_12)
-  !t_10
-  t_13 = alloc 16
-  store t_13 + 0, &str_const_1 as ptr
-  store t_13 + 8, 1 as u64
-  t_14 = load t_13 + 0 as ptr
-  t_15 = load t_13 + 8 as u64
-  call @sa_print_bytes(&t_14, t_15)
-  !t_13
-  t_16 = load t + 0 as ptr
-  t_17 = load t + 8 as u64
-  call @sa_print_bytes(&t_16, t_17)
-  t_18 = alloc 16
-  store t_18 + 0, &str_const_1 as ptr
-  store t_18 + 8, 1 as u64
-  t_19 = load t_18 + 0 as ptr
-  t_20 = load t_18 + 8 as u64
-  call @sa_print_bytes(&t_19, t_20)
-  !t_18
-  t_21 = load a + 0 as ptr
-  t_22 = load t_21 + 0 as i32
   !t_7
-  !t_6
   !t
   !a
-  ret t_22
+  !t_2
+  ret t_23
 @main() -> i32:
-  t_23 = call @main__user()
-  t_24 = sext t_23 as i64
-  t_25 = alloc 64
-  t_26 = alloc 8
-  t_27 = call @sa_fmt_i64_into(t_24, 10, t_25, 64, &t_26)
-  t_28 = load t_26 + 0 as u64
-  t_29 = alloc 16
-  store t_29 + 0, t_25 as ptr
-  store t_29 + 8, t_28 as u64
+  t_24 = call @main__user()
+  t_25 = sext t_24 as i64
+  t_26 = alloc 64
+  t_27 = alloc 8
+  t_28 = call @sa_fmt_i64_into(t_25, 10, t_26, 64, &t_27)
+  t_29 = load t_27 + 0 as u64
+  t_30 = alloc 16
+  store t_30 + 0, t_26 as ptr
+  store t_30 + 8, t_29 as u64
+  !t_28
+  t_31 = load t_30 + 0 as ptr
+  t_32 = load t_30 + 8 as u64
+  call @sa_print_bytes(&t_31, t_32)
+  !t_30
+  t_33 = alloc 16
+  store t_33 + 0, &str_const_1 as ptr
+  store t_33 + 8, 1 as u64
+  t_34 = load t_33 + 0 as ptr
+  t_35 = load t_33 + 8 as u64
+  call @sa_print_bytes(&t_34, t_35)
+  !t_33
   !t_27
-  t_30 = load t_29 + 0 as ptr
-  t_31 = load t_29 + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  !t_29
-  t_32 = alloc 16
-  store t_32 + 0, &str_const_1 as ptr
-  store t_32 + 8, 1 as u64
-  t_33 = load t_32 + 0 as ptr
-  t_34 = load t_32 + 8 as u64
-  call @sa_print_bytes(&t_33, t_34)
-  !t_32
   !t_26
-  !t_25
-  !t_23
+  !t_24
   ret 0

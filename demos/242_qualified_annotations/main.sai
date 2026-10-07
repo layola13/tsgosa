@@ -9,6 +9,7 @@
   ret t_1
 @mk() -> i32:
   t_2 = alloc 4
+  store t_2 + 0, 0 as i32
   store t_2 + 0, 1 as i32
   tmp = t_2
   t_3 = load tmp + 0 as i32
@@ -16,6 +17,7 @@
   ret t_3
 @main__user() -> i32:
   t_4 = alloc 4
+  store t_4 + 0, 0 as i32
   store t_4 + 0, 41 as i32
   c = t_4
   t_5 = call @take(c)

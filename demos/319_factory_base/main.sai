@@ -5,6 +5,7 @@
 @const str_const_0 = utf8:"\n\0"
 @mk() -> ptr:
   t_1 = alloc 4
+  store t_1 + 0, 0 as i32
   ret t_1
 @main__user() -> i32:
   t_2 = call @mk()
@@ -15,6 +16,7 @@
   t_5 = add t_4, 1
   r1 = t_5
   t_6 = alloc 4
+  store t_6 + 0, 0 as i32
   d = t_6
   store d + 0, 1 as i32
   t_7 = alloc 8

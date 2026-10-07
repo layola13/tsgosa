@@ -654,7 +654,7 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			// map 索引实例基（`m[k].m()`；saInstBase 只认标识符/this；
 			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
-			if def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression) {
+			if def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression) {
 				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", false, msg
@@ -3143,7 +3143,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			// map 索引实例基（`m["a"].x`；saInstBase 只认标识符/this）。
-			if def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression) {
+			if def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression) {
 				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", msg
@@ -3382,7 +3382,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						}
 						// map 索引实例基（`m[k].f = v`；saInstBase 只认标识符/this；
 						// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
-						if def == nil && lpa.Expression != nil && (lpa.Expression.Kind == ast.KindElementAccessExpression || lpa.Expression.Kind == ast.KindCallExpression) {
+						if def == nil && lpa.Expression != nil && (lpa.Expression.Kind == ast.KindElementAccessExpression || lpa.Expression.Kind == ast.KindCallExpression || lpa.Expression.Kind == ast.KindNewExpression) {
 							h, def, msg = saInstBaseElem(w, lpa.Expression, scope, pos, refusals, nextTemp)
 							if msg != "" {
 								return "", msg
