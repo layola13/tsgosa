@@ -2706,6 +2706,9 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 				}
 			}
 		}
+		if op, msg, handled := saLowerFieldIncDec(w, operand, up, prefix, scope, nextTemp); handled {
+			return op, msg
+		}
 		return "", "incdec target must be bound i32 variable"
 	}
 	op := "add"

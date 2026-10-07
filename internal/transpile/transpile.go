@@ -3375,6 +3375,8 @@ type saInlineRet struct {
 	// scopeBase 为内联体 ownOrder 基点（return 存槽后释基点之后的新生归属；
 	// 封存 releaseDeeperThan:2684，调用方域保持 live）。
 	scopeBase int
+	// instMode 为实例槽返回归属（0 未见/1 移交/2 别名；见 saLowerInlineInstReturn）。
+	instMode int
 }
 
 // saStrPool 是文件级字符串常量池（`@const str_const_N = utf8:"...\\0"` 行在
@@ -3796,6 +3798,14 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		if rs.Expression == nil {
 			saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
 			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
+			return true, false
+		}
+		if strings.HasPrefix(scope.inlineRet.kind, "inst:") {
+			if msg := saLowerInlineInstReturn(w, rs.Expression, scope, pos, refusals, nextTemp); msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
 			return true, false
 		}
 		if scope.inlineRet.kind == "str" {

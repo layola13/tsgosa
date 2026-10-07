@@ -2820,7 +2820,13 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		// 实例句柄直传绑定（方法实例形参经变参 kinds 表）。
 		name := nm.Text()
 		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
-			w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			// 命名实参快照（`o = add p, 0`，saStoreLocal 命名源同形）：直写即 move，
+			// 调用方绑定（含同为接收者 `p.f(p)`）随后读即 UseAfterMove。
+			if saIsTempOp(argVals[i]) {
+				w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			} else {
+				w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
+			}
 			// temp 实参 move 即标 consumed（返前 draining 跳过，防 `!t` 双释；
 			// 命名实参不标（读位不查 consumed，标后悬垂读更隐蔽，维持既有）；
 			// saConsumeTemp 对命名 no-op，天然区分；上游 new-实参同形无别名）。
@@ -2911,19 +2917,22 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		releaseInstAlias()
 		return v, ""
 	}
+	kind := "i32"
+	if wantKind == "str" || strings.HasPrefix(wantKind, "inst:") {
+		kind = wantKind
+	}
 	slot := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
-	saOwnTemp(scope, slot)
+	if !strings.HasPrefix(kind, "inst:") {
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+		saOwnTemp(scope, slot)
+	}
 	endL := fmt.Sprintf("L_cb_end_%d", *nextLabel)
 	*nextLabel++
-	kind := "i32"
-	if wantKind == "str" {
-		kind = "str"
-	}
 	savedRet := scope.inlineRet
-	scope.inlineRet = &saInlineRet{slot: slot, end: endL, kind: kind, scopeBase: len(scope.ownOrder)}
+	ir := &saInlineRet{slot: slot, end: endL, kind: kind, scopeBase: len(scope.ownOrder)}
+	scope.inlineRet = ir
 	stmts, ok := saBlockStmts(body)
 	if !ok {
 		scope.inlineRet = savedRet
@@ -2938,6 +2947,20 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	releaseInstAlias()
+	if strings.HasPrefix(kind, "inst:") {
+		// 实例返回：slot 即汇合寄存器（各 return 位 move/快照落同名，无内存槽）；
+		// 移交（new/体内新生）即调用方归属，别名（this/绑定）快照不登记堆。
+		if ir.instMode == 0 {
+			return "", "method returning an instance has no instance return"
+		}
+		scope.types[slot] = kind
+		if ir.instMode == 1 {
+			saOwnTemp(scope, slot)
+		} else {
+			saDeclarePlain(scope, slot)
+		}
+		return slot, ""
+	}
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	if kind == "str" {

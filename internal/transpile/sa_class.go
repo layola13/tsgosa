@@ -1244,9 +1244,131 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 					return !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:"
 				}
 			}
+			if ce.Expression.Kind == ast.KindPropertyAccessExpression && saStaticInstClass(e, scope) != "" {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// saMethodInstReturn 方法返回注解的实例类（`this` 类型即接收者类；具名类
+// 引用无类型实参；接口/未知/余形为空）。
+func saMethodInstReturn(mn *ast.Node, className string, scope *saScope) string {
+	if mn == nil || mn.Kind != ast.KindMethodDeclaration {
+		return ""
+	}
+	typ := mn.AsMethodDeclaration().Type
+	if typ == nil {
+		return ""
+	}
+	if typ.Kind == ast.KindThisType {
+		return className
+	}
+	if typ.Kind == ast.KindTypeReference {
+		ref := typ.AsTypeReferenceNode()
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+			if d, ok := scope.classes[ref.TypeName.Text()]; ok && !d.isIface {
+				return d.name
+			}
+		}
+	}
+	return ""
+}
+
+// saStaticInstClass 语法级消解实例表达式的类（this/实例绑定/new/实例返回方法
+// 调用链；零发射，供判定位用；不可消解为空）。
+func saStaticInstClass(e *ast.Node, scope *saScope) string {
+	e = saUnwrapTransparent(e)
+	if e == nil {
+		return ""
+	}
+	switch e.Kind {
+	case ast.KindThisKeyword:
+		if scope.thisSelf != "" {
+			return scope.thisClass
+		}
+	case ast.KindIdentifier:
+		if k, ok := scope.types[e.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			return k[5:]
+		}
+	case ast.KindNewExpression:
+		if cname, msg := saNewStmtClassName(e.AsNewExpression()); msg == "" {
+			if d, ok := scope.classes[cname]; ok && !d.isIface && !d.isAbstract {
+				return cname
+			}
+		}
+	case ast.KindCallExpression:
+		ce := e.AsCallExpression()
+		if ce.QuestionDotToken != nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return ""
+		}
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa.QuestionDotToken != nil || pa.Name() == nil {
+			return ""
+		}
+		base := saStaticInstClass(pa.Expression, scope)
+		if base == "" {
+			return ""
+		}
+		if d, ok := scope.classes[base]; ok {
+			return saMethodInstReturn(d.methods[pa.Name().Text()], base, scope)
+		}
+	}
+	return ""
+}
+
+// saLowerInlineInstReturn 内联方法体 `return <实例>` 存槽（this/实例绑定为别名，
+// new/内联体新生归属为移交；同一方法别名与移交混返即归属不定大声拒；类须为
+// 声明返回类或其派生）。
+func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	ir := scope.inlineRet
+	want := ir.kind[5:]
+	e := saUnwrapTransparent(expr)
+	var h, have string
+	switch {
+	case e != nil && e.Kind == ast.KindThisKeyword && scope.thisSelf != "":
+		h, have = scope.thisSelf, scope.thisClass
+	case e != nil && e.Kind == ast.KindIdentifier:
+		k, ok := scope.types[e.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return "method instance return must be an instance"
+		}
+		h, have = e.Text(), k[5:]
+	case e != nil && saCouldBeInst(e, scope) && (e.Kind == ast.KindNewExpression || e.Kind == ast.KindCallExpression):
+		th, def, msg := saInstBaseElem(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		h, have = th, def.name
+	default:
+		return "method instance return must be this, a bound instance, new or an instance call"
+	}
+	if !saIsDerivedFrom(scope.classes, have, want) {
+		return "method instance return class mismatch (want " + want + ")"
+	}
+	mode := 2
+	if b := saOwnOf(scope, h); b != nil && b.heap && !b.consumed && !b.released {
+		for i := ir.scopeBase; i < len(scope.ownOrder); i++ {
+			if scope.ownOrder[i] == h {
+				mode = 1
+				break
+			}
+		}
+	}
+	if ir.instMode != 0 && ir.instMode != mode {
+		return "method returns both fresh and existing instances (ownership ambiguous)"
+	}
+	ir.instMode = mode
+	if mode == 1 {
+		w.Write(fmt.Sprintf("  %s = %s\n", ir.slot, h))
+		saConsumeOwn(scope, h)
+	} else {
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", ir.slot, h))
+	}
+	saReleaseDeeperThan(w, scope, ir.scopeBase)
+	w.Write(fmt.Sprintf("  jmp %s\n", ir.end))
+	return ""
 }
 
 // saRecordIface 记录接口布局（i32 字段；无码。形状证据：封存
@@ -3876,6 +3998,8 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(mn); ok && k == "str" {
 		wantKind = "str"
+	} else if ic := saMethodInstReturn(mn, className, scope); ic != "" {
+		wantKind = "inst:" + ic
 	}
 	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, kinds)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
@@ -4161,6 +4285,50 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 		return "", nil, "nested field " + leaf + " has no recorded sub layout"
 	}
 	return t, sub, ""
+}
+
+// saLowerFieldIncDec 实例 i32 域自增 `o.f++`/`this.f--`（读-改-写回，前缀返新值、
+// 后缀返旧值，与模块槽自增同序；基限 this/实例绑定；非 i32 域与存取器大声拒）。
+func saLowerFieldIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, nextTemp *int) (string, string, bool) {
+	if operand == nil || operand.Kind != ast.KindPropertyAccessExpression {
+		return "", "", false
+	}
+	pa := operand.AsPropertyAccessExpression()
+	if pa.QuestionDotToken != nil || pa.Name() == nil || !saCouldBeInst(pa.Expression, scope) {
+		return "", "", false
+	}
+	h, def, msg := saInstBase(pa.Expression, scope)
+	if msg != "" || def == nil {
+		return "", "", false
+	}
+	field, msg := saPrivResolve(def, pa.Name().Text(), scope.thisClass)
+	if msg != "" {
+		return "", msg, true
+	}
+	if _, ok := def.offsets[field]; !ok {
+		return "", "", false
+	}
+	if k := def.fkinds[field]; k != "" && k != "i32" {
+		return "", "++/-- on non-i32 field " + field + " is not lowerable", true
+	}
+	cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+	if msg != "" {
+		return "", msg, true
+	}
+	op := "add"
+	if !up {
+		op = "sub"
+	}
+	nw := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, 1\n", nw, op, cur))
+	if msg := saLowerClassFieldStore(w, h, def, field, nw); msg != "" {
+		return "", msg, true
+	}
+	if prefix {
+		return nw, "", true
+	}
+	return cur, "", true
 }
 
 // saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str/arr 存句柄）。
