@@ -3421,16 +3421,26 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						}
 					}
 				}
-				// 命名空间可变槽写（`N.K = v`；读位同键；封存 emitModStore 系列）。
+				// 命名空间可变槽写（`N.K = v`；读位同键；i32/串按宽分发，计算串
+				// 大声拒；封存 emitModStore 系列 + modWiden/emitModStoreStringDispatch）。
 				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
 					lpa := be.Left.AsPropertyAccessExpression()
 					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil && lpa.Name().Kind == ast.KindIdentifier {
-						if ms, ok := scope.modVars[lpa.Expression.Text()+"."+lpa.Name().Text()]; ok && ms.w == "i32" {
-							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
-							if msg != "" {
-								return "", msg
+						if ms, ok := scope.modVars[lpa.Expression.Text()+"."+lpa.Name().Text()]; ok {
+							if ms.w == "str" {
+								text, ok := saModStrText(be.Right, scope)
+								if !ok {
+									return "", fmt.Sprintf("module state %s stores string literals and string constants only (computed strings are not lowerable yet)", ms.qual)
+								}
+								return saModStoreStr(w, ms, text, scope, nextTemp), ""
 							}
-							return saModStoreI32(w, ms, op, scope, nextTemp), ""
+							if ms.w == "i32" {
+								op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								return saModStoreI32(w, ms, op, scope, nextTemp), ""
+							}
 						}
 					}
 				}

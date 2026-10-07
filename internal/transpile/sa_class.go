@@ -434,7 +434,7 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					} else if k == "arr" {
 						fkind = "arr"
 					}
-			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
+				} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 					if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
 						fkind = "inst"
 						if def.fsub == nil {
@@ -1435,8 +1435,8 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 			sz, _ := saFieldWidth(fkind)
 			off += sz
 		}
-	def.size = off
-	classes[name] = def
+		def.size = off
+		classes[name] = def
 		return def.name, true
 	}
 }
@@ -2082,6 +2082,10 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 	base := pa.Expression
 	if base != nil && base.Kind == ast.KindIdentifier {
 		nm := base.Text()
+		// 命名空间可变串槽（`N.S` 活值；求值见 saEvalStr 属性分支同键）。
+		if ms, ok := scope.modVars[nm+"."+field]; ok && ms.w == "str" {
+			return true
+		}
 		if d, ok := scope.classes[nm]; ok {
 			if sv, ok := d.statics[field]; ok {
 				return sv.kind == "str"
@@ -2153,7 +2157,7 @@ func saLookupMethod(base *ast.Node, method string, scope *saScope) (*ast.Node, b
 }
 
 // saMethodReturnKind 返回方法/getter 的声明返回种（无注解/非法即失败；
-/// 供串位调用识别，`c.get(): string` 即串值）。
+// / 供串位调用识别，`c.get(): string` 即串值）。
 func saMethodReturnKind(mn *ast.Node) (string, bool) {
 	if mn == nil {
 		return "", false

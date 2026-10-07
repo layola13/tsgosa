@@ -490,6 +490,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 					return "", "not a string expression"
 				}
+				// 命名空间可变串槽读（`N.S` 活值具化；与顶层串槽同门）。
+				if ms, ok := scope.modVars[pa.Expression.Text()+"."+pa.Name().Text()]; ok && ms.w == "str" {
+					return saModLoadStr(w, ms, scope, nextTemp), ""
+				}
 			}
 			// 串/计算枚举成员读拒（整数成员串位沿既有串门拒）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {

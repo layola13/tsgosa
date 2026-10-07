@@ -2712,8 +2712,8 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 			feedVS(m.AsVariableStatement())
 		}
 	}
-	// 命名空间可变槽（`export let K` 被赋值名；`N.K` 键；i32 初值子集；
-	// 未赋值走折叠，串/异形沿旧门用点拒；上游 nsMutableState 槽同形）。
+	// 命名空间可变槽（`export let K` 被赋值名；`N.K` 键；i32/串初值子集；
+	// 未赋值走折叠，异形沿旧门用点拒；上游 nsMutableState 槽同形）。
 	for _, st := range stmts {
 		members, ok := saFlattenNsMembers(st)
 		if !ok {
@@ -2751,7 +2751,14 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				continue
 			}
 			w, lit, zero, ok := saModSlotInit(vd)
-			if !ok || w != "i32" {
+			if !ok {
+				continue
+			}
+			if w == "str" {
+				// 命名空间可变串槽（`export let S` 串初值；空串物化同顶层门；
+				// 无初值串沿旧门用点拒；与顶层串槽同形）。
+				ptr, ln, flag := saModStrKeyOf(key)
+				out[key] = &saModState{qual: key, w: "str", key: ptr, key2: ln, flag: flag, init: lit}
 				continue
 			}
 			k, flag := saModKeyOf(key)
