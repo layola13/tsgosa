@@ -687,6 +687,16 @@ func saMaterializeTypeForwards(sf *ast.SourceFile, link *saFileLink, classes map
 				putEnum(exported, members, enumNonInt[local])
 				continue
 			}
+			// 值边认领：同件 harvest 翻 export 旗（函数/箭头 defLocal/isArrow 透传；d1/d3 实证；
+			// default 名缺 defLocal 时补本地名，否则 chase 拒绝）。
+			if hv, ok := link.harvest[local]; ok {
+				hv.exported = true
+				if hv.defLocal == "" {
+					hv.defLocal = local
+				}
+				link.harvest[exported] = hv
+				continue
+			}
 		}
 	}
 }
@@ -1985,9 +1995,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					okAll := true
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
-							if !saProgTypeForwarded(link, exported) {
-								okAll = false
-								break
+							if hv, ok := link.harvest[exported]; !ok || !hv.exported {
+								if !saProgTypeForwarded(link, exported) {
+									okAll = false
+									break
+								}
 							}
 						}
 					}
