@@ -934,7 +934,16 @@ func saPreseedImportedAliases(sf *ast.SourceFile, aliasOf map[string]*ast.TypeNo
 			if _, dup := aliasOf[name]; dup {
 				continue
 			}
-			if ah, ok := link.aliasHarvests[tgt][remote]; ok && ah.exported && ah.node != nil {
+			patgt := tgt
+			if _, ok := link.aliasHarvests[patgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					a, ok := link.aliasHarvests[t][r]
+					return ok && a.exported && a.node != nil
+				}); ok {
+					patgt = st
+				}
+			}
+			if ah, ok := link.aliasHarvests[patgt][remote]; ok && ah.exported && ah.node != nil {
 				aliasOf[name] = ah.node
 			}
 		}
@@ -1006,7 +1015,16 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 			if _, dup := classes[name]; dup {
 				continue
 			}
-			if ch, ok := link.classHarvests[tgt][remote]; ok && ch.exported && ch.def != nil {
+			ptgt := tgt
+			if _, ok := link.classHarvests[ptgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					c, ok := link.classHarvests[t][r]
+					return ok && c.exported && c.def != nil
+				}); ok {
+					ptgt = st
+				}
+			}
+			if ch, ok := link.classHarvests[ptgt][remote]; ok && ch.exported && ch.def != nil {
 				classes[name] = ch.def
 			}
 			// 命名空间成员布局预播种（`import { N }` + `extends N.C` 记录期

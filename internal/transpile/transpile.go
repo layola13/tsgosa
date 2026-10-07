@@ -550,6 +550,27 @@ func saLinkHarvestsMap(link *saFileLink) map[string]map[string]saProgFunc {
 	return link.harvests
 }
 
+// saProgStarTarget 经 star 边找首个收割含名的目标文件（first-match；seen 防环；与
+// saProgChase star 分支同序；类/枚举/别名/纯量直链复用；重导出透传另步）。
+func saProgStarTarget(link *saFileLink, tgt, remote string, seen map[string]bool, has func(t, r string) bool) (string, bool) {
+	if link == nil {
+		return "", false
+	}
+	if seen[tgt] {
+		return "", false
+	}
+	seen[tgt] = true
+	for _, st := range link.stars[tgt] {
+		if has(st, remote) {
+			return st, true
+		}
+		if nt, ok := saProgStarTarget(link, st, remote, seen, has); ok {
+			return nt, true
+		}
+	}
+	return "", false
+}
+
 // saProgChase resolves (tgt, remote) to a qualified callee through re-export
 // edges (upstream resolveReExports:1317 同形；cycle 经 seen 守卫，未导出/
 // 箭头/断链一律 !ok 由调用方按形拒因）。remote=="default" 用 defLocal 后缀。
@@ -1094,7 +1115,17 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			// 类直链：具名导入类名命中定义文件收割即播种布局（本地名直挂
 			// 调用点 `new`/方法内联复用实例通道；未导出沿"未导出"门；
 			// 默认/命名空间成员类/reexp 透传沿旧门后阶段）。
-			if ch, ok := link.classHarvests[tgt][remote]; ok {
+			// star 透传后续（`export *` 转发类型；n1 实证）。
+			ctgt := tgt
+			if _, ok := link.classHarvests[ctgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					c, ok := link.classHarvests[t][r]
+					return ok && c.exported && c.def != nil
+				}); ok {
+					ctgt = st
+				}
+			}
+			if ch, ok := link.classHarvests[ctgt][remote]; ok {
 				if !ch.exported || ch.def == nil {
 					ln, col := pos(n.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
@@ -1107,7 +1138,16 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				continue
 			}
 			// 枚举直链：具名导入枚举名命中定义文件收割即播种成员映射（本地同名定义优先由 hook 保障；未导出沿未导出门）。
-			if eh, ok := link.enumHarvests[tgt][remote]; ok {
+			etgt := tgt
+			if _, ok := link.enumHarvests[etgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					e, ok := link.enumHarvests[t][r]
+					return ok && e.exported && e.members != nil
+				}); ok {
+					etgt = st
+				}
+			}
+			if eh, ok := link.enumHarvests[etgt][remote]; ok {
 				if !eh.exported || eh.members == nil {
 					ln, col := pos(n.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
@@ -1120,7 +1160,16 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				continue
 			}
 			// 类型别名直链：具名导入别名命中定义文件收割即播种节点（纯类型无值绑定；本地同名别名优先由 hook 保障；未导出沿未导出门）。
-			if ah, ok := link.aliasHarvests[tgt][remote]; ok {
+			atgt := tgt
+			if _, ok := link.aliasHarvests[atgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					a, ok := link.aliasHarvests[t][r]
+					return ok && a.exported && a.node != nil
+				}); ok {
+					atgt = st
+				}
+			}
+			if ah, ok := link.aliasHarvests[atgt][remote]; ok {
 				if !ah.exported || ah.node == nil {
 					ln, col := pos(n.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
@@ -1133,7 +1182,16 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				continue
 			}
 			// 纯量直链：具名导入常量命中定义文件收割即播种折叠值（后续 hook C-const 植入本地折叠表；未导出沿未导出门）。
-			if ch, ok := link.constHarvests[tgt][remote]; ok {
+			ktgt := tgt
+			if _, ok := link.constHarvests[ktgt][remote]; !ok {
+				if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					_, ok := link.constHarvests[t][r]
+					return ok
+				}); ok {
+					ktgt = st
+				}
+			}
+			if ch, ok := link.constHarvests[ktgt][remote]; ok {
 				if link.constSeed == nil {
 					link.constSeed = map[string]saProgConst{}
 				}
