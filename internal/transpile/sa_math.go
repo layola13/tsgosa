@@ -438,69 +438,19 @@ func saEvalMathSpreadMinMax(w printer.EmitTextWriter, method string, spread *ast
 	} else {
 		return "", false, "spread min/max needs a slice operand"
 	}
+	// R3-4 回迁映射：数组极值语义由 `sci/sa_std/ts_math.sa` `@ts_math_spread_minmax`
+	// 实现（best 初极值由 ismax 内聚；分支汇合 best 自赋值对齐）；本侧保留源门禁
+	//（字面量具化/绑定）+ import + 调用 + 归属登记（call 结果登记，R3-1 同形）。
 	isMax := method == "max"
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, arr))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, arr))
+	ismax := "0"
+	if isMax {
+		ismax = "1"
+	}
+	scope.addImport("sa_std/ts_math.sa")
 	best := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	if isMax {
-		w.Write(fmt.Sprintf("  %s = -2147483648\n", best))
-	} else {
-		w.Write(fmt.Sprintf("  %s = 2147483647\n", best))
-	}
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", i))
-	topL := fmt.Sprintf("L_mm_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_mm_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_mm_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	takeL := fmt.Sprintf("L_mm_take_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	skipL := fmt.Sprintf("L_mm_skip_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-	elem := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elem, addr))
-	cmp := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if isMax {
-		w.Write(fmt.Sprintf("  %s = sgt %s, %s\n", cmp, elem, best))
-	} else {
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cmp, elem, best))
-	}
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, takeL, skipL))
-	w.Write(fmt.Sprintf("%s:\n", takeL))
-	nb := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", nb, elem))
-	w.Write(fmt.Sprintf("  %s = %s\n", best, nb))
-	w.Write(fmt.Sprintf("  jmp %s\n", skipL))
-	w.Write(fmt.Sprintf("%s:\n", skipL))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  %s = call @ts_math_spread_minmax(%s, %s)\n", best, arr, ismax))
+	saOwnTemp(scope, best)
 	return best, false, ""
 }
 
