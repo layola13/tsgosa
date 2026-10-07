@@ -320,6 +320,20 @@ func saIsFloatLit(text string) bool {
 	return false
 }
 
+// saIsDecIntLit 判纯十进制整数字面（`this.x = 3` 接线位；十六进制/浮点/
+// 负号沿旧门，禁 SA 立即数进制歧义）。
+func saIsDecIntLit(text string) bool {
+	if len(text) == 0 {
+		return false
+	}
+	for i := 0; i < len(text); i++ {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // saSpreadCallArgs 展开定元 spread 调用（单尾 spread；静态部按位求值；
 // 余位经越界归零 join 填齐；形状证据：封存 resolveSpreadCall:7764-7798）。
 // 返回 (args, msg, handled)：无 spread 即 handled=false。

@@ -3579,6 +3579,13 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			return false
 		}
 		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
+			// i32 字面量直存（`this.x = 3`；字段须 i32 种；串/句柄/浮点/
+			// 十六进制/负数字面沿旧门大声拒）。
+			if br := bin.Right; br != nil && br.Kind == ast.KindNumericLiteral &&
+				def.fkinds[fname] == "i32" && !saIsFloatLit(br.Text()) && saIsDecIntLit(br.Text()) {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, br.Text()))
+				continue
+			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor wiring right side must be a parameter name"})
 			return false
