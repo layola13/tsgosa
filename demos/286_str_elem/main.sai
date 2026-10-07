@@ -2,6 +2,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/ts_string.sa"
 @const str_const_0 = utf8:"ab\0"
 @const str_const_1 = utf8:"cd\0"
 @const str_const_2 = utf8:"\n\0"
@@ -101,125 +102,38 @@ L_idx_end_7:
   t_43 = load t_40 + 8 as u64
   t_44 = load t_41 + 0 as ptr
   t_45 = load t_41 + 8 as u64
-  t_46 = alloc 16
-  store t_46 + 0, 0 as ptr
-  store t_46 + 8, 0 as u64
-  t_47 = 0
-  jmp L_sp_top_10
-L_sp_top_10:
-  t_48 = call @sa_string_index_of(t_42, t_43, t_44, t_45, t_47)
-  t_49 = ne t_48, -1
-  br t_49 -> L_sp_body_11, L_sp_end_12
-L_sp_body_11:
-  t_50 = add t_42, t_47
-  t_51 = sub t_48, t_47
-  t_52 = alloc 16
-  store t_52 + 0, t_50 as ptr
-  store t_52 + 8, t_51 as u64
-  t_53 = load t_46 + 8 as u64
-  t_54 = load t_46 + 0 as ptr
-  t_55 = add t_53, 1
-  t_56 = mul t_55, 4
-  t_58 = eq t_56, 0
-  br t_58 -> L_push_empty_14, L_push_alloc_13
-L_push_empty_14:
-  t_57 = alloc 4
-  jmp L_push_done_15
-L_push_alloc_13:
-  t_57 = alloc t_56
-L_push_done_15:
-  t_59 = 0
-L_push_copy_16:
-  t_60 = slt t_59, t_53
-  br t_60 -> L_push_body_17, L_push_end_18
-L_push_body_17:
-  t_61 = mul t_59, 4
-  t_62 = add t_54, t_61
-  t_63 = load t_62 + 0 as i32
-  t_64 = add t_57, t_61
-  store t_64 + 0, t_63 as i32
-  t_65 = add t_59, 1
-  t_59 = t_65
-  jmp L_push_copy_16
-L_push_end_18:
-  t_66 = mul t_53, 4
-  t_67 = add t_57, t_66
-  store t_67 + 0, t_52 as i32
-  store t_46 + 0, t_57 as ptr
-  store t_46 + 8, t_55 as u64
-  !t_57
-  t_68 = add t_48, t_45
-  t_47 = t_68
-  jmp L_sp_top_10
-L_sp_end_12:
-  t_69 = add t_42, t_47
-  t_70 = sub t_43, t_47
-  t_71 = alloc 16
-  store t_71 + 0, t_69 as ptr
-  store t_71 + 8, t_70 as u64
-  t_72 = load t_46 + 8 as u64
-  t_73 = load t_46 + 0 as ptr
-  t_74 = add t_72, 1
-  t_75 = mul t_74, 4
-  t_77 = eq t_75, 0
-  br t_77 -> L_push_empty_20, L_push_alloc_19
-L_push_empty_20:
-  t_76 = alloc 4
-  jmp L_push_done_21
-L_push_alloc_19:
-  t_76 = alloc t_75
-L_push_done_21:
-  t_78 = 0
-L_push_copy_22:
-  t_79 = slt t_78, t_72
-  br t_79 -> L_push_body_23, L_push_end_24
-L_push_body_23:
-  t_80 = mul t_78, 4
-  t_81 = add t_73, t_80
-  t_82 = load t_81 + 0 as i32
-  t_83 = add t_76, t_80
-  store t_83 + 0, t_82 as i32
-  t_84 = add t_78, 1
-  t_78 = t_84
-  jmp L_push_copy_22
-L_push_end_24:
-  t_85 = mul t_72, 4
-  t_86 = add t_76, t_85
-  store t_86 + 0, t_71 as i32
-  store t_46 + 0, t_76 as ptr
-  store t_46 + 8, t_74 as u64
-  !t_76
+  t_46 = call @ts_str_split(t_42, t_43, t_44, t_45, 0, 0)
   g = t_46
-  t_87 = load g + 8 as u64
+  t_47 = load g + 8 as u64
   !g
   !t_41
   !f
   !t_2
   !t_1
-  ret t_87
+  ret t_47
 @main() -> i32:
-  t_88 = call @main__user()
-  t_89 = sext t_88 as i64
-  t_90 = alloc 64
-  t_91 = alloc 8
-  t_92 = call @sa_fmt_i64_into(t_89, 10, t_90, 64, &t_91)
-  t_93 = load t_91 + 0 as u64
-  t_94 = alloc 16
-  store t_94 + 0, t_90 as ptr
-  store t_94 + 8, t_93 as u64
-  !t_92
-  t_95 = load t_94 + 0 as ptr
-  t_96 = load t_94 + 8 as u64
-  call @sa_print_bytes(&t_95, t_96)
-  !t_94
-  t_97 = alloc 16
-  store t_97 + 0, &str_const_2 as ptr
-  store t_97 + 8, 1 as u64
-  t_98 = load t_97 + 0 as ptr
-  t_99 = load t_97 + 8 as u64
-  call @sa_print_bytes(&t_98, t_99)
-  !t_97
-  !t_91
-  !t_90
-  !t_88
+  t_48 = call @main__user()
+  t_49 = sext t_48 as i64
+  t_50 = alloc 64
+  t_51 = alloc 8
+  t_52 = call @sa_fmt_i64_into(t_49, 10, t_50, 64, &t_51)
+  t_53 = load t_51 + 0 as u64
+  t_54 = alloc 16
+  store t_54 + 0, t_50 as ptr
+  store t_54 + 8, t_53 as u64
+  !t_52
+  t_55 = load t_54 + 0 as ptr
+  t_56 = load t_54 + 8 as u64
+  call @sa_print_bytes(&t_55, t_56)
+  !t_54
+  t_57 = alloc 16
+  store t_57 + 0, &str_const_2 as ptr
+  store t_57 + 8, 1 as u64
+  t_58 = load t_57 + 0 as ptr
+  t_59 = load t_57 + 8 as u64
+  call @sa_print_bytes(&t_58, t_59)
+  !t_57
+  !t_51
+  !t_50
+  !t_48
   ret 0

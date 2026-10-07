@@ -1221,115 +1221,26 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	if msg != "" {
 		return "", msg
 	}
-	lim := ""
+	// R2-5 回迁映射：分隔扫描语义（负 limit 即不限长、空尾直返、截断）由
+	// `sci/sa_std/ts_string.sa` `@ts_str_split` 实现（`@ts_arr_push_word`
+	// 复用数组增长同形）；本侧只做种门禁 + import + 归属/串标记透传。
+	lim, haslim := "0", "0"
 	if len(args) >= 2 {
-		limRaw, msg := saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
+		var msg string
+		lim, msg = saEvalI32(w, args[1], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
 		}
-		// 负 limit 经 ToUint32 即大数（node 实证 -1 不限长），归一为 i32 上确界；
-		// EXPAND SELECT 系 control.sal 宏（三元值核同形，用时方进口，单参零漂移）。
-		scope.addImport("sa_std/control.sal")
-		neg := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, limRaw))
-		lim = fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, 2147483647, %s\n", lim, neg, limRaw))
+		haslim = "1"
 	}
 	bp, bl := saExpandStr(w, recv, nextTemp)
 	sp, sl := saExpandStr(w, sep, nextTemp)
+	scope.addImport("sa_std/ts_string.sa")
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", h))
-	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", h))
+	w.Write(fmt.Sprintf("  %s = call @ts_str_split(%s, %s, %s, %s, %s, %s)\n", h, bp, bl, sp, sl, lim, haslim))
 	saOwnTemp(scope, h)
 	saMarkArrStr(scope, h)
-	start := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = 0\n", start))
-	topL := fmt.Sprintf("L_sp_top_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	bodyL := fmt.Sprintf("L_sp_body_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_sp_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	// 有 limit 时循环顶按已收段数截断（满即弃尾直返），无 limit 保持原三标号零漂移。
-	workL, tailL, doneL := "", "", ""
-	if lim != "" {
-		workL = fmt.Sprintf("L_sp_work_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		tailL = fmt.Sprintf("L_sp_tail_%d", *scope.nextLabel)
-		*scope.nextLabel++
-		doneL = fmt.Sprintf("L_sp_done_%d", *scope.nextLabel)
-		*scope.nextLabel++
-	}
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	if lim != "" {
-		cnt := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", cnt, h))
-		room := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", room, cnt, lim))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", room, workL, doneL))
-		w.Write(fmt.Sprintf("%s:\n", workL))
-	}
-	idx := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, %s)\n", idx, bp, bl, sp, sl, start))
-	// 循环内调用结果不登记不释放（dedup 体内 scan 同形； draining 只释直线头）。
-	found := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, -1\n", found, idx))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", found, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	pp := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pp, bp, start))
-	pl := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", pl, idx, start))
-	part := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", part))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", part, pp))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", part, pl))
-	// 段柄入槽即数组载荷（字面量串元同形：只头登记，段不单独释放）。
-	saLowerArrayPush(w, h, part, scope, nextTemp)
-	nstart := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", nstart, idx, sl))
-	w.Write(fmt.Sprintf("  %s = %s\n", start, nstart))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	if lim != "" {
-		cnt2 := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", cnt2, h))
-		room2 := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", room2, cnt2, lim))
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", room2, tailL, doneL))
-		w.Write(fmt.Sprintf("%s:\n", tailL))
-	}
-	pp2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", pp2, bp, start))
-	pl2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = sub %s, %s\n", pl2, bl, start))
-	tail := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", tail))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", tail, pp2))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", tail, pl2))
-	saLowerArrayPush(w, h, tail, scope, nextTemp)
-	if lim != "" {
-		w.Write(fmt.Sprintf("%s:\n", doneL))
-	}
 	return h, ""
 }
 
