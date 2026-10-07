@@ -255,6 +255,24 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = kind
+				// `Map<K, Array<V>>` 值种记表（数组值存取；串元传播另步；
+				// 类型参数在 `new` 上（`new Map<K,V>()`）或注解上）。
+				if kind == "map" {
+					var targs []*ast.Node
+					if ne.TypeArguments != nil {
+						targs = ne.TypeArguments.Nodes
+					} else if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+						if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+							ref.TypeName.Text() == "Map" && ref.TypeArguments != nil {
+							targs = ref.TypeArguments.Nodes
+						}
+					}
+					if len(targs) == 2 {
+						if vt := targs[1]; vt != nil && vt.Kind == ast.KindArrayType {
+							saSetMapVal(scope, name, "arr")
+						}
+					}
+				}
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)
 				continue

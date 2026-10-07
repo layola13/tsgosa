@@ -67,6 +67,14 @@ func saMapCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		case "keys", "values", "entries":
 			return "arr", true
 		}
+		// `get` 回值种按建表记（数组值即 arr；无表恒 i32）。
+		if m == "get" {
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if vk, ok := scope.mapVals[pa.Expression.Text()]; ok && vk == "arr" {
+					return "arr", true
+				}
+			}
+		}
 		return "i32", true
 	}
 	if !saIsSetMethod(m) {
@@ -398,6 +406,16 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			}
 			if scope.mapVals[recv] == "str" {
 				v, msg := saEvalStr(w, argNodes[1], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+				saReleaseKeySlice(w, ks, kcell)
+				return "0", "i32", ""
+			}
+			if scope.mapVals[recv] == "arr" {
+				// 数组值存（句柄 word 入槽；i32/串元皆位存，元种不记，串元读另步）。
+				v, msg := saArrValueOf(w, argNodes[1], scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", "", msg
 				}

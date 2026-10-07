@@ -1540,6 +1540,10 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		// 串 `split` 回串元数组（`saLowerStringSplit`；串基纯语法判定零落字）。
 		return "arr", true
 	}
+	// `Map.get` 数组值回 arr 句柄（`saMapCallKind` 建表记种；串 split 同形）。
+	if k, ok := saMapCallKind(ce, scope); ok && k == "arr" {
+		return "arr", true
+	}
 	if m == "exec" {
 		// 正则 `.exec` 回整体单元素串数组（`saLowerRegexMatchArray` 共享）。
 		if k, ok := saRegexCallKind(ce, scope); ok && k == "arr" {
