@@ -1,0 +1,9 @@
+@import "../demos/311_float_infer/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "311_float_infer"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 1, 31101)
+    !v
+    return

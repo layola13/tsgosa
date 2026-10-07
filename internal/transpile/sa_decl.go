@@ -540,6 +540,27 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 	return true
 }
 
+// saFloatLitOperand 无注解浮字面量初值求 f64 操作数（字面直返文本；+ 号去号
+// 返文本；- 号由调用点经 `fneg` 直写目标（纯别名首定禁重绑，param 同律），
+// 与上游实发同形；其余沿旧门）。
+func saFloatLitOperand(e *ast.Node) (string, bool) {
+	if e != nil && e.Kind == ast.KindNumericLiteral && saIsFloatLit(e.Text()) {
+		return e.Text(), true
+	}
+	if e != nil && e.Kind == ast.KindPrefixUnaryExpression {
+		un := e.AsPrefixUnaryExpression()
+		if un != nil && un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral &&
+			saIsFloatLit(un.Operand.Text()) &&
+			(un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
+			if un.Operator == ast.KindPlusToken {
+				return un.Operand.Text(), true
+			}
+			return "-" + un.Operand.Text(), true
+		}
+	}
+	return "", false
+}
+
 func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, isConst bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if vd.Initializer == nil {
 		if isConst {
@@ -759,6 +780,14 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		// 无注解浮字面量推断 f64（上游初值种绑定同形；用点经既有 f64 机；
+		// 符号位经 `fneg`，与上游实发同形；顶层 const 另步）。
+		if fl, ok := saFloatLitOperand(init); ok {
+			w.Write(fmt.Sprintf("  %s = %s\n", name, fl))
+			scope.types[name] = "f64"
+			saDeclarePlain(scope, name)
+			return true
+		}
 		ln, col := pos(init.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 		return false
