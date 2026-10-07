@@ -511,6 +511,61 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 		w.Write(fmt.Sprintf("  !%s\n", s))
 		return s
 	}
+	// 数组形（i32/串元；嵌套另步；空数组即 `[]`）。
+	if saIsArrValue(a, scope) {
+		println("DBG json ARR-BRANCH")
+		h, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		if scope.arrNest[h] {
+			return "", false, "JSON.stringify takes a flat array (nested arrays are not lowerable yet)"
+		}
+		isStr := scope.arrStr[h]
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+		data := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, h))
+		writeV(fmt.Sprintf("@sa_json_writer_begin_array(%s)", wr))
+		i := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+		topL := fmt.Sprintf("L_js_top_%d", *nextTemp)
+		*nextTemp++
+		bodyL := fmt.Sprintf("L_js_body_%d", *nextTemp)
+		*nextTemp++
+		endL := fmt.Sprintf("L_js_end_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("%s:\n", topL))
+		iu := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+		c := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iu, ln))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+		w.Write(fmt.Sprintf("%s:\n", bodyL))
+		el := saArrElemAt(w, data, i, nextTemp)
+		if isStr {
+			ep, elen := saExpandStr(w, el, nextTemp)
+			writeV(fmt.Sprintf("@sa_json_writer_write_string(%s, &%s, %s)", wr, ep, elen))
+		} else {
+			wide := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, el))
+			writeV(fmt.Sprintf("@sa_json_writer_write_i64(%s, %s)", wr, wide))
+		}
+		inext := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, inext))
+		w.Write(fmt.Sprintf("  jmp %s\n", topL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		writeV(fmt.Sprintf("@sa_json_writer_end_array(%s)", wr))
+		goto finish
+	}
 	switch {
 	case a.Kind == ast.KindNullKeyword || a.Kind == ast.KindUndefinedKeyword:
 		writeV(fmt.Sprintf("@sa_json_writer_write_null(%s)", wr))
@@ -535,6 +590,7 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 		w.Write(fmt.Sprintf("  %s = sext %s as i64\n", wide, v))
 		writeV(fmt.Sprintf("@sa_json_writer_write_i64(%s, %s)", wr, wide))
 	}
+finish:
 	oh := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 8\n", oh))
