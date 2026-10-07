@@ -1735,20 +1735,17 @@ func saIsArrayCtor(e *ast.Node) bool {
 // 形状证据：封存 lowerCall Array:3871-3884 + newSizedArray）。
 func saLowerArrayCtor(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	var argNodes []*ast.Node
-	isNew := false
 	if e.Kind == ast.KindCallExpression {
 		if ce := e.AsCallExpression(); ce.Arguments != nil {
 			argNodes = ce.Arguments.Nodes
 		}
 	} else {
-		isNew = true
 		if ne := e.AsNewExpression(); ne.Arguments != nil {
 			argNodes = ne.Arguments.Nodes
 		}
 	}
-	if isNew && len(argNodes) != 1 {
-		return "", "new expressions other than new Map() / new Array(n) / new Date() are not lowerable"
-	}
+	// `new Array(n)` 单参即长；零参/多参即元素式（与 `Array.of` 同，
+	// 与 `Array(...)` 多元臂共享；spread 元沿既有门拒）。
 	// `Array.of` 元素式：单参亦为元（与 `Array(n)` 为长相别；零参即空数组）。
 	of := false
 	if e.Kind == ast.KindCallExpression {

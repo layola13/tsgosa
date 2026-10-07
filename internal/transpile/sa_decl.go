@@ -203,14 +203,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			continue
 		}
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindNewExpression {
-			// `new Array(n)` 定长零数组（`new Array(a, b)` 落通用拒绝）。
+			// `new Array(n)` 定长零数组；零参/多参即元素式（与 `Array.of` 同，
+			// 具化核自判；`new Array(a, b)` 不再落通用拒绝）。
 			if saIsArrayCtor(vd.Initializer) {
-				ne := vd.Initializer.AsNewExpression()
-				if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 {
-					ln, col := pos(vd.Initializer.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new expressions other than new Map() / new Array(n) / new Date() are not lowerable"})
-					return false
-				}
 				if vd.Type != nil {
 					if k, ok := saAnnotKind(vd.Type); !ok || k != "arr" {
 						ln, col := pos(d.Pos())
