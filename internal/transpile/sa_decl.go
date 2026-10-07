@@ -2272,7 +2272,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 }
 
 // saSigRetSuffix 返回签名后缀（string/inst 句柄即 ptr，其余 i32；
- // 封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
+// 封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
 func saSigRetSuffix(retKind string) string {
 	if retKind == "string" || retKind == "map" || retKind == "arr" || strings.HasPrefix(retKind, "inst:") {
 		return " -> ptr"
@@ -2629,20 +2629,16 @@ func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[strin
 // 声明无码；封存 preRegisterModStates:593-616 + registerModState:343-385 子集）。
 func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) map[string]*saModState {
 	out := map[string]*saModState{}
-	for _, st := range stmts {
-		if st.Kind != ast.KindVariableStatement {
-			continue
-		}
-		vs := st.AsVariableStatement()
+	feedVS := func(vs *ast.VariableStatement) {
 		if vs == nil || vs.DeclarationList == nil {
-			continue
+			return
 		}
 		vdl := vs.DeclarationList.AsVariableDeclarationList()
 		if vdl == nil {
-			continue
+			return
 		}
 		if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst != 0 {
-			continue
+			return
 		}
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
@@ -2680,6 +2676,35 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				ms.init = lit
 			}
 			out[name] = ms
+		}
+	}
+	for _, st := range stmts {
+		if st == nil {
+			continue
+		}
+		if st.Kind == ast.KindVariableStatement {
+			feedVS(st.AsVariableStatement())
+			continue
+		}
+		// `declare global { ... }` 环境变量授权：成员 var/let 经同一槽口径
+		// （串名模块不碰；块仍整块擦除无码；从未赋值名沿认领门拒收——宿主
+		// 注入无底座，读未写即拒，dd1 同族；形状证据：封存 lowerNamespace
+		// ambient 擦除 + modstate 槽机制）。
+		if st.Kind != ast.KindModuleDeclaration || !ast.HasModifier(st, ast.ModifierFlagsAmbient) {
+			continue
+		}
+		md := st.AsModuleDeclaration()
+		if md == nil || md.Body == nil || md.Body.Kind != ast.KindModuleBlock {
+			continue
+		}
+		if nm := md.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "global" {
+			continue
+		}
+		for _, m := range md.Body.AsModuleBlock().Statements.Nodes {
+			if m == nil || m.Kind != ast.KindVariableStatement {
+				continue
+			}
+			feedVS(m.AsVariableStatement())
 		}
 	}
 	// 命名空间可变槽（`export let K` 被赋值名；`N.K` 键；i32 初值子集；
