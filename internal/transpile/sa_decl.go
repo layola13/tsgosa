@@ -87,7 +87,29 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 		if saTryMathAliasDecl(d, vd, name, scope, pos, refusals) {
 			continue
 		}
-		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
+		litInit := vd.Initializer
+		adoptWant := ""
+		if vd.Type == nil && litInit != nil && (litInit.Kind == ast.KindSatisfiesExpression || litInit.Kind == ast.KindAsExpression) {
+			// satisfies/as 裹装字面量视为带注解声明（封存 lowerExpr:2872-2876 擦除同形；只接已记录接口名，as const/泛型沿旧路保持拒收位置与文案）。
+			var inner *ast.Node
+			var tnode *ast.TypeNode
+			if litInit.Kind == ast.KindSatisfiesExpression {
+				se := litInit.AsSatisfiesExpression()
+				inner, tnode = se.Expression, se.Type
+			} else {
+				ae := litInit.AsAsExpression()
+				inner, tnode = ae.Expression, ae.Type
+			}
+			if inner != nil && inner.Kind == ast.KindObjectLiteralExpression && tnode != nil && tnode.Kind == ast.KindTypeReference {
+				if ref := tnode.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+					if def, ok := scope.classes[ref.TypeName.Text()]; ok && def.isIface {
+						litInit = inner
+						adoptWant = ref.TypeName.Text()
+					}
+				}
+			}
+		}
+		if litInit != nil && litInit.Kind == ast.KindObjectLiteralExpression {
 			// 对象字面量声明（注解须为同名接口；无注解按键集匹配）。
 			// `Record<string,T>` 注解走 Map 具化（Z1；余形沿旧门）。
 			if vd.Type != nil {
@@ -98,7 +120,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					continue
 				}
 			}
-			want := ""
+			want := adoptWant
 			if vd.Type != nil {
 				tn := vd.Type
 				if tn.Kind != ast.KindTypeReference {
@@ -133,9 +155,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					return false
 				}
 			}
-			h, defname, msg := saLowerObjectLiteral(w, vd.Initializer, want, scope, pos, refusals, nextTemp)
+			h, defname, msg := saLowerObjectLiteral(w, litInit, want, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				ln, col := pos(vd.Initializer.Pos())
+				ln, col := pos(litInit.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 				return false
 			}

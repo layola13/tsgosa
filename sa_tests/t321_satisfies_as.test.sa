@@ -1,0 +1,9 @@
+@import "../demos/321_satisfies_as/main.sai"
+@import "sa_std/testing/assert.sai"
+
+@test "321_satisfies_as"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 21, 32101)
+    !v
+    return
