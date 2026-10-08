@@ -4097,11 +4097,23 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", method + " without a comparator takes 0 arguments"
 		}
-		// 串元数组无字典序底座（sci string.sai 无 lexicographic 现货，串比较
-		// step324 同例拒收；数值插入会按指针数序错排，大声拒）。
+		// 串元数组字典序原地/拷贝排（`@ts_arr_sort_str`，比较位 `@ts_str_compare`；
+		// toSorted 先克隆后排；标记透传/归属同数值径；数值插入按指针数序错排永禁）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
 			scope.arrStr != nil && scope.arrStr[pa.Expression.Text()] {
-			return "", "", method + " on string arrays needs lexicographic order (no backend)"
+			scope.addImport("sa_std/ts_array.sa")
+			scope.addImport("sa_std/ts_string.sa")
+			target := recv
+			if method == "toSorted" {
+				target = fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", target, recv))
+				saPropArrNest(scope, recv, target)
+				saPropArrStr(scope, recv, target)
+				saOwnTemp(scope, target)
+			}
+			w.Write(fmt.Sprintf("  call @ts_arr_sort_str(%s)\n", target))
+			return target, "arr", ""
 		}
 		if method == "sort" {
 			// R1 回迁映射：原地数值插入排序语义由 `sci/sa_std/ts_array.sa`
