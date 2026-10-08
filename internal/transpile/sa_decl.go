@@ -219,36 +219,48 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			want := adoptWant
 			if vd.Type != nil {
 				tn := vd.Type
-				if tn.Kind != ast.KindTypeReference {
-					ln, col := pos(d.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
-					return false
-				}
-				ref := tn.AsTypeReferenceNode()
-				// 限定名先守（`x: NS.Iface` TypeName.Text 会 panic，0 崩溃铁律；见 step376）。
-				if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
-					ln, col := pos(d.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
-					return false
-				}
-				want = ref.TypeName.Text()
-				// 泛型具化优先（`const b: Box<i32> = {...}` 按单态布局具化；
-				// 不可具化下探既有擦除；封存 layoutOfAnnotation 同形）。
-				if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
-					if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, scope.classes); ok {
-						want = lname
+				// 单类+空联合注解按布局名收（`const p: P | null = {...}` 即 P
+				// 布局；与空初值位同 `saUnionInstKind` 口径；isIface 门保留）。
+				if tn.Kind == ast.KindUnionType {
+					if inst, ok := saUnionInstKind(tn.AsUnionTypeNode(), scope.classes); ok && len(inst) > 5 {
+						want = inst[5:]
+					} else {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+						return false
 					}
-				}
-				// 同构映射别名（`Partial<B>`/用户同构；布局恒等；见上）。
-				if _, ok := scope.classes[want]; !ok {
-					if lname, ok := saMappedAliasLayout(ref, scope.classes, scope.aliasOf); ok {
-						want = lname
+				} else {
+					if tn.Kind != ast.KindTypeReference {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+						return false
 					}
-				}
-				if def, ok := scope.classes[want]; !ok || !def.isIface {
-					ln, col := pos(d.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
-					return false
+					ref := tn.AsTypeReferenceNode()
+					// 限定名先守（`x: NS.Iface` TypeName.Text 会 panic，0 崩溃铁律；见 step376）。
+					if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+						return false
+					}
+					want = ref.TypeName.Text()
+					// 泛型具化优先（`const b: Box<i32> = {...}` 按单态布局具化；
+					// 不可具化下探既有擦除；封存 layoutOfAnnotation 同形）。
+					if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+						if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, scope.classes); ok {
+							want = lname
+						}
+					}
+					// 同构映射别名（`Partial<B>`/用户同构；布局恒等；见上）。
+					if _, ok := scope.classes[want]; !ok {
+						if lname, ok := saMappedAliasLayout(ref, scope.classes, scope.aliasOf); ok {
+							want = lname
+						}
+					}
+					if def, ok := scope.classes[want]; !ok || !def.isIface {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+						return false
+					}
 				}
 			}
 			h, defname, msg := saLowerObjectLiteral(w, litInit, want, scope, pos, refusals, nextTemp)
@@ -552,6 +564,23 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					vd.Initializer.Kind == ast.KindUndefinedKeyword {
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = base
+					saDeclarePlain(scope, name)
+					continue
+				}
+			}
+			// 单类+空联合配空初值按实例布局记种（`const p: P | null = null`
+			// 即 `inst:P` 零句柄；与形参 2633、声明种 1405 同 `saUnionInstKind`
+			// 口径；`?.` 守卫读位凭此解析布局，其余联合/初值沿旧门）。
+			if inst, ok := saUnionInstKind(vd.Type.AsUnionTypeNode(), scope.classes); ok {
+				if vd.Initializer == nil || vd.Initializer.Kind == ast.KindNullKeyword ||
+					vd.Initializer.Kind == ast.KindUndefinedKeyword {
+					if vd.Initializer == nil && isConst {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = 0\n", name))
+					scope.types[name] = inst
 					saDeclarePlain(scope, name)
 					continue
 				}
