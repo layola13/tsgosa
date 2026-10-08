@@ -149,3 +149,10 @@
 2. 修 lowering 归属 bug：`Number()/Date.now()` i32 结果未登记释放（`MemoryLeak`），`console.error` 缺 node 插件 import（`ImportResolutionFailed`）。
 3. node 插件本环境 wiring 未通：`203_node_path` 跑分 `PackageNotResolved`；`sa plugin install` 需 TTY 确认特权插件，且曾因硬编码 `/content/sci` 路径失败（已用软链绕过，`http-client` 已装，`node` 本体报 `InvalidPluginPermission`）。`node:path` 前缀形可投影出 `@import "node.sai"`，转译侧通、链接侧待通。
 4. 下一步探针方向（二选一）：`Hono` 路由/`better-sqlite3` 等外部库调用形状（预期全拒，产出 FFI 清单）；或先修第 2 条再探 `toParseInventory` 库存 longest-match。
+
+## 同步（2026-10-08，本轮收录；历史原文不动，状态在此）
+
+- 待办 2 已消：`Number("7")`/`Date.now()` MemoryLeak 由 R3-33 系消除，`376_f64convert`/`322_date_cmp` 锁定，本环境 `check ok` 复现；`console.error` 转译投影 + node 插件链打通（循环 7，`check` 307 指令 ok）。
+- 待办 3 已通：node wiring 通（`sa test --list` 90/90，循环 7；`t289` 报的缺 `sa.mod` 钥匙已补）。
+- H 系列已锁定：H21/H28/H29→`411_comma_unary`；H47→`413_ctor_lit`；H46→`415_named_fnexpr`；H56→`417_opt_field`（缺省字段置零，读已给字段正确；读缺省得 0 vs JS `undefined` 语义差仍在，demo 不断言该形）；H30→`384_strcmp` + `@ts_str_compare` 回迁；B02 `string|null ??`→`414_null_strarg`（R3-76 实参空柄修复）。
+- 仍 open：待办 1 探针归档（`/tmp` 易失未收仓）；待办 4 FFI 清单；H16 块遮蔽/H37 截断赋值/V05 stringify 运行时/366 右值串元（`call()[i]`，缺 LLVM 原生复验）/H35 除零 SIGFPE；`"a"+null` 上游放行实为误编译（句柄当整数打印），薄口拒收为正确立场，不移植。
