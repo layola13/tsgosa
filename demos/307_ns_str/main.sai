@@ -62,42 +62,50 @@ L_ms_ok_10:
 L_ms_bad_11:
   panic(1403)
 L_ms_ok_12:
-  t_21 = alloc 16
-  store t_21 + 0, &str_const_0 as ptr
-  store t_21 + 8, 1 as u64
-  t_22 = load t_21 + 8 as u64
+  t_21 = call @sa_modstate_get_u64(532726582355244096)
+  t_22 = ne t_21, 0
   !t_21
-  t_23 = sext t_22 as i64
-  t_24 = alloc 64
-  t_25 = alloc 8
-  t_26 = call @sa_fmt_i64_into(t_23, 10, t_24, 64, &t_25)
-  t_27 = load t_25 + 0 as u64
-  t_28 = alloc 16
-  store t_28 + 0, t_24 as ptr
-  store t_28 + 8, t_27 as u64
-  !t_26
-  t_29 = load t_28 + 0 as ptr
-  t_30 = load t_28 + 8 as u64
-  call @sa_print_bytes(&t_29, t_30)
-  !t_28
-  t_31 = alloc 16
-  store t_31 + 0, &str_const_2 as ptr
-  store t_31 + 8, 1 as u64
-  t_32 = load t_31 + 0 as ptr
-  t_33 = load t_31 + 8 as u64
-  call @sa_print_bytes(&t_32, t_33)
+  br t_22 -> L_ms_done_13, L_ms_init_14
+L_ms_init_14:
+  t_23 = alloc 16
+  store t_23 + 0, &str_const_0 as ptr
+  store t_23 + 8, 1 as u64
+  t_24 = load t_23 + 0 as ptr
+  t_25 = load t_23 + 8 as u64
+  !t_23
+  t_26 = trunc t_24 as u64
+  t_27 = call @sa_modstate_set_u64(6276260990094522072, t_26)
+  t_28 = ne t_27, 0
+  !t_27
+  br t_28 -> L_ms_bad_15, L_ms_ok_16
+L_ms_bad_15:
+  panic(1403)
+L_ms_ok_16:
+  t_29 = call @sa_modstate_set_u64(6568344709354992133, t_25)
+  t_30 = ne t_29, 0
+  !t_29
+  br t_30 -> L_ms_bad_17, L_ms_ok_18
+L_ms_bad_17:
+  panic(1403)
+L_ms_ok_18:
+  t_31 = call @sa_modstate_set_u64(532726582355244096, 1)
+  t_32 = ne t_31, 0
   !t_31
-  t_34 = alloc 16
-  store t_34 + 0, &str_const_0 as ptr
-  store t_34 + 8, 1 as u64
-  t_35 = load t_34 + 8 as u64
+  br t_32 -> L_ms_bad_19, L_ms_ok_20
+L_ms_bad_19:
+  panic(1403)
+L_ms_ok_20:
+  jmp L_ms_done_13
+L_ms_done_13:
+  t_33 = call @sa_modstate_get_u64(6276260990094522072)
+  t_34 = call @sa_modstate_get_u64(6568344709354992133)
+  t_35 = alloc 16
+  store t_35 + 0, t_33 as ptr
+  store t_35 + 8, t_34 as u64
+  !t_33
   !t_34
-  !t_25
-  !t_24
-  !t_13
-  ret t_35
-@main() -> i32:
-  t_36 = call @main__user()
+  t_36 = load t_35 + 8 as u64
+  !t_35
   t_37 = sext t_36 as i64
   t_38 = alloc 64
   t_39 = alloc 8
@@ -118,7 +126,77 @@ L_ms_ok_12:
   t_47 = load t_45 + 8 as u64
   call @sa_print_bytes(&t_46, t_47)
   !t_45
+  t_48 = call @sa_modstate_get_u64(532726582355244096)
+  t_49 = ne t_48, 0
+  !t_48
+  br t_49 -> L_ms_done_21, L_ms_init_22
+L_ms_init_22:
+  t_50 = alloc 16
+  store t_50 + 0, &str_const_0 as ptr
+  store t_50 + 8, 1 as u64
+  t_51 = load t_50 + 0 as ptr
+  t_52 = load t_50 + 8 as u64
+  !t_50
+  t_53 = trunc t_51 as u64
+  t_54 = call @sa_modstate_set_u64(6276260990094522072, t_53)
+  t_55 = ne t_54, 0
+  !t_54
+  br t_55 -> L_ms_bad_23, L_ms_ok_24
+L_ms_bad_23:
+  panic(1403)
+L_ms_ok_24:
+  t_56 = call @sa_modstate_set_u64(6568344709354992133, t_52)
+  t_57 = ne t_56, 0
+  !t_56
+  br t_57 -> L_ms_bad_25, L_ms_ok_26
+L_ms_bad_25:
+  panic(1403)
+L_ms_ok_26:
+  t_58 = call @sa_modstate_set_u64(532726582355244096, 1)
+  t_59 = ne t_58, 0
+  !t_58
+  br t_59 -> L_ms_bad_27, L_ms_ok_28
+L_ms_bad_27:
+  panic(1403)
+L_ms_ok_28:
+  jmp L_ms_done_21
+L_ms_done_21:
+  t_60 = call @sa_modstate_get_u64(6276260990094522072)
+  t_61 = call @sa_modstate_get_u64(6568344709354992133)
+  t_62 = alloc 16
+  store t_62 + 0, t_60 as ptr
+  store t_62 + 8, t_61 as u64
+  !t_60
+  !t_61
+  t_63 = load t_62 + 8 as u64
+  !t_62
   !t_39
   !t_38
-  !t_36
+  !t_13
+  ret t_63
+@main() -> i32:
+  t_64 = call @main__user()
+  t_65 = sext t_64 as i64
+  t_66 = alloc 64
+  t_67 = alloc 8
+  t_68 = call @sa_fmt_i64_into(t_65, 10, t_66, 64, &t_67)
+  t_69 = load t_67 + 0 as u64
+  t_70 = alloc 16
+  store t_70 + 0, t_66 as ptr
+  store t_70 + 8, t_69 as u64
+  !t_68
+  t_71 = load t_70 + 0 as ptr
+  t_72 = load t_70 + 8 as u64
+  call @sa_print_bytes(&t_71, t_72)
+  !t_70
+  t_73 = alloc 16
+  store t_73 + 0, &str_const_2 as ptr
+  store t_73 + 8, 1 as u64
+  t_74 = load t_73 + 0 as ptr
+  t_75 = load t_73 + 8 as u64
+  call @sa_print_bytes(&t_74, t_75)
+  !t_73
+  !t_67
+  !t_66
+  !t_64
   ret 0

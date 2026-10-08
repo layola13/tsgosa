@@ -364,17 +364,17 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			return "", nm + " is not a string"
 		}
+		// 顶层可变串槽读优先（被赋值名永不折叠；与 i32 侧同序，否则
+		// 命名空间串赋值后仍读旧字面量，307 实锤）。
+		if ms, ok := scope.modVars[nm]; ok && ms.w == "str" {
+			return saModLoadStr(w, ms, scope, nextTemp), ""
+		}
 		// 顶层串常量折叠读（具化；非串顶层量沿串门拒；封存 lowerExpr:2775）。
 		if text, ok := scope.topConsts[nm]; ok {
 			if scope.topStr[nm] {
 				return saLowerStringLiteral(w, text, scope, nextTemp), ""
 			}
 			return "", "not a string expression"
-		}
-		// 顶层可变串槽读（具化 16 字节头；方法/`.length` 经此自动通；
-		// 形状证据：封存 modStrRecv:653-666 + emitModLoadString:941-962）。
-		if ms, ok := scope.modVars[nm]; ok && ms.w == "str" {
-			return saModLoadStr(w, ms, scope, nextTemp), ""
 		}
 		if nm == "undefined" {
 			return "", "not a string expression"
@@ -535,17 +535,18 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 				}
 			}
-			// 命名空间拍扁串读（`N.S` 具化；非串沿串门拒）。
+			// 命名空间拍扁串读（`N.S` 具化；非串沿串门拒；可变槽优先，
+			// 与标识符分支同序，否则赋值后仍读旧字面量，307 实锤）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				// 命名空间可变串槽读（`N.S` 活值具化；与顶层串槽同门）。
+				if ms, ok := scope.modVars[pa.Expression.Text()+"."+pa.Name().Text()]; ok && ms.w == "str" {
+					return saModLoadStr(w, ms, scope, nextTemp), ""
+				}
 				if text, ok := scope.topConsts[pa.Expression.Text()+"."+pa.Name().Text()]; ok {
 					if scope.topStr[pa.Expression.Text()+"."+pa.Name().Text()] {
 						return saLowerStringLiteral(w, text, scope, nextTemp), ""
 					}
 					return "", "not a string expression"
-				}
-				// 命名空间可变串槽读（`N.S` 活值具化；与顶层串槽同门）。
-				if ms, ok := scope.modVars[pa.Expression.Text()+"."+pa.Name().Text()]; ok && ms.w == "str" {
-					return saModLoadStr(w, ms, scope, nextTemp), ""
 				}
 			}
 			// 串/计算枚举成员读拒（整数成员串位沿既有串门拒）。
