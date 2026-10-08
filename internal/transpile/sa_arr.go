@@ -165,6 +165,9 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 	if saIsF64Operand(el, scope) {
 		// 浮元（字面量文本/f64 绑定名/`-x` 经严格求值落 `fneg`；`store X
 		// as i32` 与上游实发逐字同形；读位经既有 i32 门；`+` 形双边同拒）。
+		// 已知缺口：小数元截断存槽（`[1.5,2.5]` 真机读回 1/2，上游同错；
+		// f64 数组 8 字节布局 Phase 2 另立；曾试 choke 点全拒，误伤只读
+		// length 的 315，已回退）。
 		v, msg := saEvalF64Strict(w, el, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
