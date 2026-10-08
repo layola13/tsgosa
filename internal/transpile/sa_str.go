@@ -1880,9 +1880,17 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			if len(args) != 2 {
 				return "", false, "String.replace with a RegExp takes 2 arguments"
 			}
-			// `/g` 全换请用 replaceAll（首换分支禁多换错码）。
+			// `/g` 全换自动改调 replaceAll 核（与 replaceAll 同形同门同 `$` 拒因；
+			// JS 双边等价，旧拒收无指纹依赖；P-A1）。
 			if saRegexHasGlobalFlag(args[0]) {
-				return "", false, "String.replace with /g needs replaceAll (first-only shape)"
+				if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
+					return "", false, "String.replace $-patterns are not lowerable yet"
+				}
+				rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp, args[1])
+				if rms[1] != "" {
+					return "", false, rms[1]
+				}
+				return rms[0], false, ""
 			}
 			if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
 				return "", false, "String.replace $-patterns are not lowerable yet"
