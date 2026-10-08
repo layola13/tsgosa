@@ -1,0 +1,2 @@
+# 非字面 static 初值记表期大声拒（旧路落实例槽但无 finit 登记，实例读静默得零如读零 vs node 11；类名读 `C.y` 早拒；字面静态折叠与无初值静态不受影响）
+static field y initializer must be a literal
