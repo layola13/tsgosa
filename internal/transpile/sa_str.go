@@ -840,6 +840,31 @@ func saConcatSlices(w printer.EmitTextWriter, left, right string, scope *saScope
 	return out
 }
 
+// saUnwrapStrBuf u64 缓冲柄读回 16 字节串句柄（`saConcatSlices`
+// 822-830 同形；string.sai 串构造系 extern 皆回 u64 缓冲，
+// 直当句柄读 +0/+8 即野指针解引用，真机 SIGSEGV 实锤）。
+func saUnwrapStrBuf(w printer.EmitTextWriter, buf string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/fmt.sai")
+	dptr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", dptr, buf))
+	dlen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", dlen, buf))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", out))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", out, dptr))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, dlen))
+	saOwnTemp(scope, dptr)
+	saOwnTemp(scope, dlen)
+	saOwnTemp(scope, out)
+	saReleaseOwnedTemp(w, scope, dptr)
+	saReleaseOwnedTemp(w, scope, dlen)
+	saReleaseOwnedTemp(w, scope, buf)
+	return out
+}
+
 // saConcatStr `+` 拼接（两侧须皆为串位；混合数值须显式 String()，
 // 子集门，大声拒——封存 lowerBinary 无数值隐式强制证据）。
 func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -1786,9 +1811,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		return call1(sym, np, nl), false, ""
 	case "toLowerCase":
-		return call1("sa_string_to_lower_ascii"), false, ""
+		return saUnwrapStrBuf(w, call1("sa_string_to_lower_ascii"), scope, nextTemp), false, ""
 	case "toUpperCase":
-		return call1("sa_string_to_upper_ascii"), false, ""
+		return saUnwrapStrBuf(w, call1("sa_string_to_upper_ascii"), scope, nextTemp), false, ""
 	case "repeat":
 		if len(args) != 1 {
 			return "", false, "repeat needs 1 argument"
@@ -1797,7 +1822,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		if msg != "" {
 			return "", false, msg
 		}
-		return call1("sa_string_repeat", a), false, ""
+		return saUnwrapStrBuf(w, call1("sa_string_repeat", a), scope, nextTemp), false, ""
 	case "padStart", "padEnd":
 		if len(args) < 1 {
 			return "", false, method + " needs 1 argument"
@@ -1819,7 +1844,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		if method == "padEnd" {
 			sym = "sa_string_pad_end"
 		}
-		return call1(sym, a, pp, pl), false, ""
+		return saUnwrapStrBuf(w, call1(sym, a, pp, pl), scope, nextTemp), false, ""
 	case "replace", "replaceAll":
 		need := 2
 		if method == "replace" {
@@ -1961,7 +1986,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 				return "", false, msg
 			}
 		}
-		return call1("sa_string_replace", np, nl, rp, rl, all), false, ""
+		return saUnwrapStrBuf(w, call1("sa_string_replace", np, nl, rp, rl, all), scope, nextTemp), false, ""
 	case "includes":
 		if len(args) < 1 {
 			return "", false, "includes needs 1 argument"
@@ -2103,8 +2128,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		saOwnTemp(scope, out)
 		return out, false, ""
 	case "concat":
-		// 逐片折叠 @sa_string_concat（形状证据：封存 lowerStringMethod:7336-7347；
-		// 注意此处直接折叠缓冲柄，与 + 拼接的读回形不同，各守其源）。
+		// 逐片折叠经 `saConcatSlices`（`@sa_string_concat` 回 u64 缓冲柄，
+		// string.sai:11，须读回 16 字节句柄；旧路直把缓冲柄当句柄，
+		// 真机 `mov (%rax),%rax` 野指针 SIGSEGV 实锤，`+` 路同形修正）。
 		// 归属：中间柄用后即释、末柄登记（具名/借用基 no-op；trim/slice 同口径）。
 		acc := recv
 		for i := range args {
@@ -2112,14 +2138,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			if msg != "" {
 				return "", false, msg
 			}
-			np, nl := saExpandStr(w, n, nextTemp)
-			abp, abl := saExpandStr(w, acc, nextTemp)
-			t := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", t, abp, abl, np, nl))
-			saReleaseOwnedTemp(w, scope, acc)
-			saOwnTemp(scope, t)
-			acc = t
+			acc = saConcatSlices(w, acc, n, scope, nextTemp)
 		}
 		return acc, false, ""
 	case "slice", "substring", "substr":

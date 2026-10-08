@@ -190,102 +190,110 @@ L_rpl_end_52:
   t_94 = load t_91 + 0 as ptr
   t_95 = load t_91 + 8 as u64
   t_96 = call @sa_string_replace(t_88, t_89, t_92, t_93, t_94, t_95, 0)
-  t_97 = load t_96 + 0 as ptr
-  t_98 = load t_96 + 8 as u64
-  call @sa_print_bytes(&t_97, t_98)
-  !t_96
+  t_97 = call @sa_fmt_buffer_data(t_96)
+  t_98 = call @sa_fmt_buffer_len(t_96)
   t_99 = alloc 16
-  store t_99 + 0, &str_const_3 as ptr
-  store t_99 + 8, 1 as u64
+  store t_99 + 0, t_97 as ptr
+  store t_99 + 8, t_98 as u64
+  !t_97
+  !t_98
+  !t_96
   t_100 = load t_99 + 0 as ptr
   t_101 = load t_99 + 8 as u64
   call @sa_print_bytes(&t_100, t_101)
   !t_99
-  t_102 = load s + 0 as ptr
-  t_103 = load s + 8 as u64
-  t_104 = call @sa_regex_compile(&str_const_1, 5, 1)
-  t_105 = alloc 16
-  store t_105 + 0, &str_const_2 as ptr
-  store t_105 + 8, 1 as u64
-  t_106 = load s + 0 as ptr
-  t_107 = load s + 8 as u64
+  t_102 = alloc 16
+  store t_102 + 0, &str_const_3 as ptr
+  store t_102 + 8, 1 as u64
+  t_103 = load t_102 + 0 as ptr
+  t_104 = load t_102 + 8 as u64
+  call @sa_print_bytes(&t_103, t_104)
+  !t_102
+  t_105 = load s + 0 as ptr
+  t_106 = load s + 8 as u64
+  t_107 = call @sa_regex_compile(&str_const_1, 5, 1)
   t_108 = alloc 16
-  store t_108 + 0, 0 as ptr
-  store t_108 + 8, 0 as u64
-  t_109 = add 0, 0
-  t_110 = add 0, 0
-L_rs_top_111:
-  t_115 = sext t_109 as u64
-  t_114 = sgt t_115, t_107
-  br t_114 -> L_rs_end_112, L_rs_body_113
-L_rs_body_113:
-  t_116 = add t_106, t_109
-  t_117 = sext t_109 as u64
-  t_118 = sub t_107, t_117
-  t_119 = call @sa_regex_match(t_104, &t_116, t_118)
-  t_120 = ne t_119, 0
-  br t_120 -> L_rs_hit_121, L_rs_miss_122
-L_rs_miss_122:
-  t_123 = call @sa_regex_match_free(^t_119)
-  !t_123
-  t_124 = call @ts_str_slice(t_106, t_107, t_109, t_107, 0)
-  call @ts_arr_push_word(t_108, t_124)
-  t_125 = load t_108 + 8 as u64
-  !t_124
-  jmp L_rs_end_112
-L_rs_hit_121:
-  t_126 = call @sa_regex_group_start(t_119, 0)
-  t_127 = call @sa_regex_group_len(t_119, 0)
-  t_128 = call @sa_regex_match_free(^t_119)
-  !t_128
-  t_129 = trunc t_126 as i32
-  t_130 = trunc t_127 as i32
+  store t_108 + 0, &str_const_2 as ptr
+  store t_108 + 8, 1 as u64
+  t_109 = load s + 0 as ptr
+  t_110 = load s + 8 as u64
+  t_111 = alloc 16
+  store t_111 + 0, 0 as ptr
+  store t_111 + 8, 0 as u64
+  t_112 = add 0, 0
+  t_113 = add 0, 0
+L_rs_top_114:
+  t_118 = sext t_112 as u64
+  t_117 = sgt t_118, t_110
+  br t_117 -> L_rs_end_115, L_rs_body_116
+L_rs_body_116:
+  t_119 = add t_109, t_112
+  t_120 = sext t_112 as u64
+  t_121 = sub t_110, t_120
+  t_122 = call @sa_regex_match(t_107, &t_119, t_121)
+  t_123 = ne t_122, 0
+  br t_123 -> L_rs_hit_124, L_rs_miss_125
+L_rs_miss_125:
+  t_126 = call @sa_regex_match_free(^t_122)
   !t_126
+  t_127 = call @ts_str_slice(t_109, t_110, t_112, t_110, 0)
+  call @ts_arr_push_word(t_111, t_127)
+  t_128 = load t_111 + 8 as u64
   !t_127
-  t_131 = add t_109, t_129
-  t_132 = call @ts_str_slice(t_106, t_107, t_109, t_131, 0)
-  call @ts_arr_push_word(t_108, t_132)
-  t_133 = load t_108 + 8 as u64
-  !t_132
-  call @ts_arr_push_word(t_108, t_105)
-  t_134 = load t_108 + 8 as u64
-  t_135 = add t_131, t_130
-  t_136 = eq t_130, 0
-  br t_136 -> L_rs_adv_137, L_rs_nxt_138
-L_rs_adv_137:
-  t_140 = add t_131, 1
-  t_109 = t_140
-  jmp L_rs_cont_139
-L_rs_nxt_138:
-  t_141 = add t_135, 0
-  t_109 = t_141
-  jmp L_rs_cont_139
-L_rs_cont_139:
-  t_142 = add t_110, 1
-  t_110 = t_142
-  jmp L_rs_top_111
-L_rs_end_112:
-  !t_105
-  t_143 = alloc 16
-  store t_143 + 0, &str_const_6 as ptr
-  store t_143 + 8, 0 as u64
-  t_144 = load t_143 + 0 as ptr
-  t_145 = load t_143 + 8 as u64
-  t_146 = call @ts_arr_join_vals(t_108, t_144, t_145)
-  !t_143
+  jmp L_rs_end_115
+L_rs_hit_124:
+  t_129 = call @sa_regex_group_start(t_122, 0)
+  t_130 = call @sa_regex_group_len(t_122, 0)
+  t_131 = call @sa_regex_match_free(^t_122)
+  !t_131
+  t_132 = trunc t_129 as i32
+  t_133 = trunc t_130 as i32
+  !t_129
+  !t_130
+  t_134 = add t_112, t_132
+  t_135 = call @ts_str_slice(t_109, t_110, t_112, t_134, 0)
+  call @ts_arr_push_word(t_111, t_135)
+  t_136 = load t_111 + 8 as u64
+  !t_135
+  call @ts_arr_push_word(t_111, t_108)
+  t_137 = load t_111 + 8 as u64
+  t_138 = add t_134, t_133
+  t_139 = eq t_133, 0
+  br t_139 -> L_rs_adv_140, L_rs_nxt_141
+L_rs_adv_140:
+  t_143 = add t_134, 1
+  t_112 = t_143
+  jmp L_rs_cont_142
+L_rs_nxt_141:
+  t_144 = add t_138, 0
+  t_112 = t_144
+  jmp L_rs_cont_142
+L_rs_cont_142:
+  t_145 = add t_113, 1
+  t_113 = t_145
+  jmp L_rs_top_114
+L_rs_end_115:
+  !t_108
+  t_146 = alloc 16
+  store t_146 + 0, &str_const_6 as ptr
+  store t_146 + 8, 0 as u64
   t_147 = load t_146 + 0 as ptr
   t_148 = load t_146 + 8 as u64
-  call @sa_print_bytes(&t_147, t_148)
+  t_149 = call @ts_arr_join_vals(t_111, t_147, t_148)
   !t_146
-  t_149 = alloc 16
-  store t_149 + 0, &str_const_3 as ptr
-  store t_149 + 8, 1 as u64
   t_150 = load t_149 + 0 as ptr
   t_151 = load t_149 + 8 as u64
   call @sa_print_bytes(&t_150, t_151)
   !t_149
-  !t_108
-  !t_104
+  t_152 = alloc 16
+  store t_152 + 0, &str_const_3 as ptr
+  store t_152 + 8, 1 as u64
+  t_153 = load t_152 + 0 as ptr
+  t_154 = load t_152 + 8 as u64
+  call @sa_print_bytes(&t_153, t_154)
+  !t_152
+  !t_111
+  !t_107
   !t_91
   !t_90
   !t_47
