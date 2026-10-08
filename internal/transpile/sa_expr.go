@@ -822,10 +822,112 @@ func saJSONArrElemI32(def *saClassDef, fname string) bool {
 	return false
 }
 
-// saLowerJSONParseDecl `const p: P = JSON.parse(s)` 进平布局接口（parse 节点
-// 逐字段类型化 getter 具化；缺键/类型失配沿子集运行时策略归零（OOB→0、
-// null→0、缺省可选→0 同律，无 trap 原语）；串字段具化拷出（node 释放前
-// 离开借用）；数组/嵌套另步大声拒）。
+// saFillJSONNest 具化一层嵌套布局（子节点 → 子结构槽；子字段仅收
+// i32/bool/串（与顶层臂同形），嵌套数组/双重嵌套大声拒（另步）；缺键零
+// 结构体（i32/bool 零槽，余零柄）；返回 msg，""=ok）。
+func saFillJSONNest(w printer.EmitTextWriter, sn, sh string, subdef *saClassDef, scope *saScope, nextTemp *int) string {
+	for _, sf := range subdef.fields {
+		fk := subdef.fkinds[sf.name]
+		if fk != "i32" && fk != "bool" && fk != "str" {
+			if subdef.fopt[sf.name] {
+				continue
+			}
+			return "JSON.parse nested field needs flat i32/string/bool subfields (field " + sf.name + " is not lowerable yet)"
+		}
+	}
+	for _, sf := range subdef.fields {
+		fk := subdef.fkinds[sf.name]
+		if fk != "i32" && fk != "bool" && fk != "str" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", sh, subdef.offsets[sf.name]))
+			continue
+		}
+		kh := saLowerStringLiteral(w, sf.name, scope, nextTemp)
+		kp, kl := saExpandStr(w, kh, nextTemp)
+		saReleaseOwnedTemp(w, scope, kh)
+		if fk == "str" {
+			ps := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", ps))
+			ls := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", ls))
+			st := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_string(%s, &%s, %s, &%s, &%s)\n", st, sn, kp, kl, ps, ls))
+			okv := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", okv, st))
+			w.Write(fmt.Sprintf("  !%s\n", st))
+			pL := fmt.Sprintf("L_jpn_t_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			fL := fmt.Sprintf("L_jpn_f_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jpn_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", okv, pL, fL))
+			w.Write(fmt.Sprintf("%s:\n", pL))
+			dp := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dp, ps))
+			dl := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", dl, ls))
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", bh))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", bh, dp))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", bh, dl))
+			saOwnTemp(scope, bh)
+			empty := saLowerStringLiteral(w, "", scope, nextTemp)
+			owned := saConcatSlices(w, empty, bh, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", sh, subdef.offsets[sf.name], owned))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", sh, subdef.offsets[sf.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			w.Write(fmt.Sprintf("  !%s\n", ps))
+			w.Write(fmt.Sprintf("  !%s\n", ls))
+			continue
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if fk == "bool" {
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_bool(%s, &%s, %s, &%s)\n", st, sn, kp, kl, slot))
+		} else {
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_i64(%s, &%s, %s, &%s)\n", st, sn, kp, kl, slot))
+		}
+		w.Write(fmt.Sprintf("  !%s\n", st))
+		if fk == "bool" {
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", v, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			v32 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v32, v))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", sh, subdef.offsets[sf.name], v32))
+			continue
+		}
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		v32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v32, v))
+		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", sh, subdef.offsets[sf.name], v32))
+	}
+	return ""
+}
+
+// saLowerJSONParseDecl `const p: P = JSON.parse(s)` 进布局接口（含一层嵌套）。
 func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration, name, vkind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	refuse := func(n *ast.Node, msg string) bool {
 		ln, col := pos(n.Pos())
@@ -848,10 +950,13 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 		if fk == "arr" && saJSONArrElemI32(def, f.name) {
 			continue
 		}
+		if fk == "inst" {
+			continue
+		}
 		if def.fopt[f.name] {
 			continue
 		}
-		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool/i32-array interfaces (field "+f.name+" is not lowerable yet)")
+		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool/i32-array/nested interfaces (field "+f.name+" is not lowerable yet)")
 	}
 	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
 	if !ok {
@@ -870,6 +975,71 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	for _, f := range def.fields {
+		if def.fkinds[f.name] == "inst" {
+			// 嵌套布局（子节点取数 + 一层具化；缺键零结构体；环/深层另步拒）。
+			sub, ok := def.fsub[f.name]
+			if !ok {
+				return refuse(vd.Name(), "JSON.parse nested field "+f.name+" needs a recorded sub layout")
+			}
+			subdef, ok := scope.classes[sub]
+			if !ok || subdef == nil {
+				return refuse(vd.Name(), "JSON.parse nested field "+f.name+" needs a recorded sub layout")
+			}
+			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			kp, kl := saExpandStr(w, kh, nextTemp)
+			sns := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", sns))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", sns))
+			stN := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", stN, node, kp, kl, sns))
+			w.Write(fmt.Sprintf("  !%s\n", stN))
+			sn := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sn, sns))
+			w.Write(fmt.Sprintf("  !%s\n", sns))
+			nonnull := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonnull, sn))
+			pL := fmt.Sprintf("L_jpn_t_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			fL := fmt.Sprintf("L_jpn_f_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jpn_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonnull, pL, fL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			zh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc %d\n", zh, subdef.size))
+			for _, sf := range subdef.fields {
+				if subdef.fkinds[sf.name] == "i32" || subdef.fkinds[sf.name] == "bool" {
+					w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", zh, subdef.offsets[sf.name]))
+					continue
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", zh, subdef.offsets[sf.name]))
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], zh))
+			w.Write(fmt.Sprintf("  !%s\n", zh))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", pL))
+			sh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc %d\n", sh, subdef.size))
+			if msg := saFillJSONNest(w, sn, sh, subdef, scope, nextTemp); msg != "" {
+				return refuse(vd.Name(), msg)
+			}
+			fr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", fr, sn))
+			w.Write(fmt.Sprintf("  !%s\n", fr))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], sh))
+			w.Write(fmt.Sprintf("  !%s\n", sh))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			continue
+		}
 		if def.fkinds[f.name] == "bool" {
 			// 布尔字段（get_bool 给 u8，zext 入 i32 槽；缺键预零即 false，
 			// 与缺省可选同律）。
