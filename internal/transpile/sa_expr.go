@@ -5312,9 +5312,9 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 	if op.Kind == ast.KindIdentifier {
 		name := op.Text()
 		if k, ok := scope.types[name]; ok {
-			// checker 权威：`any`/`unknown` 擦除为 i32 后 typeof 不可折叠
+			// checker 权威：`any`/`unknown`/未消解裸形参擦除为 i32 后 typeof 不可折叠
 			//（封存 typeofKind:58-59；上游同位拒收；无 tcx 回退既有种逻辑）。
-			if saIsAnyOrUnknown(scope.tcx, op) {
+			if saIsAnyOrUnknown(scope.tcx, op) || saIsUnresolvedTypeParam(scope.tcx, op) {
 				return "", "typeof " + name + " is not statically known"
 			}
 			switch {
