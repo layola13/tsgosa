@@ -1247,9 +1247,27 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 		}
 		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool/i32-array/nested interfaces (field "+f.name+" is not lowerable yet)")
 	}
-	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
-	if !ok {
-		return refuse(vd.Name(), "JSON.parse takes one argument")
+	var arg *ast.Node
+	parseOk := false
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+		arg, parseOk = saIsJSONParseCall(vd.Initializer.AsCallExpression())
+	}
+	if !parseOk {
+		// 括号/非空裹调用（AsCallExpression 裸断言禁错种直调，先判种再剥）。
+		unwrapped := vd.Initializer
+		for unwrapped != nil && (unwrapped.Kind == ast.KindParenthesizedExpression || unwrapped.Kind == ast.KindNonNullExpression) {
+			if unwrapped.Kind == ast.KindParenthesizedExpression {
+				unwrapped = unwrapped.AsParenthesizedExpression().Expression
+			} else {
+				unwrapped = unwrapped.AsNonNullExpression().Expression
+			}
+		}
+		if unwrapped != nil && unwrapped.Kind == ast.KindCallExpression {
+			arg, parseOk = saIsJSONParseCall(unwrapped.AsCallExpression())
+		}
+		if !parseOk {
+			return refuse(vd.Name(), "JSON.parse takes one argument")
+		}
 	}
 	ah, msg := saEvalStr(w, arg, scope, pos, refusals, nextTemp)
 	if msg != "" {

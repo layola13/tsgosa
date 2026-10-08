@@ -144,6 +144,67 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 			}
 		}
+		for litInit != nil && (litInit.Kind == ast.KindParenthesizedExpression || litInit.Kind == ast.KindNonNullExpression) {
+			// 括号/非空透明剥离（值恒等；as const 不在此列，沿旧门）。
+			if litInit.Kind == ast.KindParenthesizedExpression {
+				litInit = litInit.AsParenthesizedExpression().Expression
+			} else {
+				litInit = litInit.AsNonNullExpression().Expression
+			}
+		}
+		if vd.Type != nil && litInit != nil && (litInit.Kind == ast.KindSatisfiesExpression || litInit.Kind == ast.KindAsExpression) {
+			// 注解声明配 satisfies/as 字面量（断言目标须与注解同名接口，
+			// 否则 TS 本错，大声拒；as const 沿旧门）。
+			asConst := false
+			if litInit.Kind == ast.KindAsExpression {
+				if ae := litInit.AsAsExpression(); ae != nil && ae.Type != nil && ae.Type.Kind == ast.KindTypeReference {
+					if ref := ae.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "const" {
+						asConst = true
+					}
+				}
+			}
+			if !asConst {
+				var inner *ast.Node
+				var tnode *ast.TypeNode
+				if litInit.Kind == ast.KindSatisfiesExpression {
+					se := litInit.AsSatisfiesExpression()
+					inner, tnode = se.Expression, se.Type
+				} else {
+					ae := litInit.AsAsExpression()
+					inner, tnode = ae.Expression, ae.Type
+				}
+				wantName := ""
+				if tn := vd.Type; tn != nil && tn.Kind == ast.KindTypeReference {
+					if ref := tn.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+						wantName = ref.TypeName.Text()
+					}
+				}
+				assertName := ""
+				for inner != nil && (inner.Kind == ast.KindParenthesizedExpression || inner.Kind == ast.KindNonNullExpression) {
+					if inner.Kind == ast.KindParenthesizedExpression {
+						inner = inner.AsParenthesizedExpression().Expression
+					} else {
+						inner = inner.AsNonNullExpression().Expression
+					}
+				}
+				if inner != nil && inner.Kind == ast.KindObjectLiteralExpression && tnode != nil && tnode.Kind == ast.KindTypeReference {
+					if ref := tnode.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+						assertName = ref.TypeName.Text()
+					}
+				}
+				if wantName == "" || assertName == "" || wantName != assertName {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "satisfies target must name the annotated interface"})
+					return false
+				}
+				if _, ok := scope.classes[wantName]; !ok {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+					return false
+				}
+				litInit = inner
+			}
+		}
 		if litInit != nil && litInit.Kind == ast.KindObjectLiteralExpression {
 			// 对象字面量声明（注解须为同名接口；无注解按键集匹配）。
 			// `Record<string,T>` 注解走 Map 具化（Z1；余形沿旧门）。
@@ -599,23 +660,32 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					}
 				}
 			}
-			if vd.Initializer == nil || vd.Initializer.Kind != ast.KindCallExpression {
+			// 括号/非空透明剥离（值恒等；satisfies/as 裹调用另步）。
+			init := vd.Initializer
+			for init != nil && (init.Kind == ast.KindParenthesizedExpression || init.Kind == ast.KindNonNullExpression) {
+				if init.Kind == ast.KindParenthesizedExpression {
+					init = init.AsParenthesizedExpression().Expression
+				} else {
+					init = init.AsNonNullExpression().Expression
+				}
+			}
+			if init == nil || init.Kind != ast.KindCallExpression {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
 				return false
 			}
 			// `const p: P = JSON.parse(s)` 进布局具化（平 i32 接口；
 			// 与 stringify 同域，见 sa_expr.go；余形另步）。
-			if _, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression()); ok {
+			if _, ok := saIsJSONParseCall(init.AsCallExpression()); ok {
 				return saLowerJSONParseDecl(w, vd, name, vkind, scope, pos, refusals, nextTemp)
 			}
-			got, ok := saCallRetKind(vd.Initializer.AsCallExpression(), scope)
+			got, ok := saCallRetKind(init.AsCallExpression(), scope)
 			if !ok || got != vkind {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct call return mismatch for " + name})
 				return false
 			}
-			op, voidCall, msg := saEvalCall(w, vd.Initializer.AsCallExpression(), scope, pos, refusals, nextTemp)
+			op, voidCall, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
 			if msg != "" || voidCall {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported struct call: " + msg})
