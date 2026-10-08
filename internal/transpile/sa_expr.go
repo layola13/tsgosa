@@ -492,6 +492,23 @@ func saLowerIsNaNFinite(w printer.EmitTextWriter, label string, ce *ast.CallExpr
 		return "0", false, ""
 	}
 	if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
+		// f64 实参真判定（NaN/Inf 可达：`t=fcmp_ne v,v` 判 NaN；
+		// isFinite 经 `v-v==0`，nan/inf 皆 false，有限 true；P-A2）。
+		if fv, fmsg := saEvalF64Strict(w, argNodes[0], scope, pos, refusals, nextTemp); fmsg == "" {
+			if isNaN {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", t, fv, fv))
+				return t, false, ""
+			}
+			d := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = fsub %s, %s\n", d, fv, fv))
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = fcmp_eq %s, 0.0\n", t, d))
+			return t, false, ""
+		}
 		return "", false, msg
 	}
 	if isNaN {
@@ -4338,6 +4355,10 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 	case ast.KindNumericLiteral:
 		if saIsFloatLit(e.Text()) {
 			return e.Text(), ""
+		}
+		// 整字面补 .0（初值位同形；后端强制转换亦可，但显式小数保 SAI 自洽）。
+		if saIsDecIntLit(e.Text()) {
+			return e.Text() + ".0", ""
 		}
 		return "", "integer " + e.Text() + " in float expression"
 	case ast.KindCallExpression:
