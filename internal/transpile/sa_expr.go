@@ -1772,6 +1772,12 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				if arg != nil && arg.Kind == ast.KindIdentifier {
 					if k, ok := scope.types[arg.Text()]; ok && (k == "i32" || k == "bool") {
+						// checker 真 any/unknown 擦除种禁折叠（`unknown` 形参可持数组柄，
+						// 折 0 即静默错码；与 saTypeofKind 同 `saIsAnyOrUnknown` 口径；
+						// 无 ctx 回退既有种逻辑，零行为变）。
+						if saIsAnyOrUnknown(scope.tcx, arg) {
+							return "", false, "Array.isArray needs a statically known array or primitive"
+						}
 						if _, msg := saEvalI32(w, arg, scope, pos, refusals, nextTemp); msg != "" {
 							return "", false, msg
 						}

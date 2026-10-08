@@ -160,4 +160,5 @@
 - B08 `Object.keys(o).length`（172×）已锁（`418_objkeys_len`，已知布局字段数静态折叠，hasOwn 同门；数组实参/存取器在场沿旧门拒）。
 - D11 本地联合 `?.` 部分关闭（`421_opt_union_local`）：`const p: P | null = null` 按 `inst:P` 零句柄记种、`{...}` 字面量按布局收（皆复用 `saUnionInstKind`，与形参/声明种同口径），`?.` 走既有守卫读；链式 `?.`（`b.a?.v`）仍拒。
 - B22 联合形参擦除修正：不可折叠联合形参（`v: i32|string`）不再缺省 i32（曾致 `typeof` 恒折真、`v+1` 整数算串柄，静默错码），改诚实拒收（上游同位拒收；可折叠 `string|null`/`Box|null` 不受影响，414/421 通行）。
+- `Array.isArray` 擦除种误编译修正：`unknown` 形参（擦为 i32）持数组柄时恒折 0（bun 为 1），标识符分支加 checker 真 any/unknown 守卫（与 `saTypeofKind` 同口径，无 ctx 零行为变）；真 i32/数组形照旧折叠。
 - H37 部分关闭：`a.length = 0` 字面清零已支持（`419_arr_clear`，len 槽置零 + 清后 push 回写验证；非零字面/变量沿旧门拒——增长需扩容、收缩需静态长度，无依据禁臆测）。
