@@ -82,55 +82,31 @@ L_idx_end_1:
   store t_34 + 8, 2 as u64
   !t_35
   n = t_34
-  t_38 = load n + 8 as u64
-  t_39 = load n + 0 as ptr
-  t_40 = alloc 16
-  t_41 = add t_38, 1
-  t_42 = mul t_41, 4
-  t_43 = alloc t_42
-  store t_40 + 0, t_43 as ptr
-  store t_40 + 8, t_38 as u64
+  t_38 = call @ts_arr_clone_deep(n)
+  d = t_38
+  t_39 = load d + 8 as u64
+  t_40 = sext t_39 as i64
+  t_41 = alloc 64
+  t_42 = alloc 8
+  t_43 = call @sa_fmt_i64_into(t_40, 10, t_41, 64, &t_42)
+  t_44 = load t_42 + 0 as u64
+  t_45 = alloc 16
+  store t_45 + 0, t_41 as ptr
+  store t_45 + 8, t_44 as u64
   !t_43
-  t_44 = load t_40 + 0 as ptr
-  t_45 = 0
-L_dc_top_4:
-  t_46 = slt t_45, t_38
-  br t_46 -> L_dc_body_5, L_dc_end_6
-L_dc_body_5:
-  t_47 = mul t_45, 4
-  t_48 = add t_39, t_47
-  t_49 = add t_44, t_47
-  t_50 = load t_48 + 0 as i32
-  t_51 = call @ts_arr_clone_deep(t_50)
-  store t_49 + 0, t_51 as i32
-  t_52 = add t_45, 1
-  t_45 = t_52
-  jmp L_dc_top_4
-L_dc_end_6:
-  d = t_40
-  t_53 = load d + 8 as u64
-  t_54 = sext t_53 as i64
-  t_55 = alloc 64
-  t_56 = alloc 8
-  t_57 = call @sa_fmt_i64_into(t_54, 10, t_55, 64, &t_56)
-  t_58 = load t_56 + 0 as u64
-  t_59 = alloc 16
-  store t_59 + 0, t_55 as ptr
-  store t_59 + 8, t_58 as u64
-  !t_57
-  t_60 = load t_59 + 0 as ptr
-  t_61 = load t_59 + 8 as u64
-  call @sa_print_bytes(&t_60, t_61)
-  !t_59
-  t_62 = alloc 16
-  store t_62 + 0, &str_const_0 as ptr
-  store t_62 + 8, 1 as u64
-  t_63 = load t_62 + 0 as ptr
-  t_64 = load t_62 + 8 as u64
-  call @sa_print_bytes(&t_63, t_64)
-  !t_62
-  !t_56
-  !t_55
+  t_46 = load t_45 + 0 as ptr
+  t_47 = load t_45 + 8 as u64
+  call @sa_print_bytes(&t_46, t_47)
+  !t_45
+  t_48 = alloc 16
+  store t_48 + 0, &str_const_0 as ptr
+  store t_48 + 8, 1 as u64
+  t_49 = load t_48 + 0 as ptr
+  t_50 = load t_48 + 8 as u64
+  call @sa_print_bytes(&t_49, t_50)
+  !t_48
+  !t_42
+  !t_41
   !d
   !n
   !t_31

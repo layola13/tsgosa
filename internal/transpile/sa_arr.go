@@ -2247,75 +2247,22 @@ func saLowerDeepCloneInner(w printer.EmitTextWriter, src, kind string, takeOwn b
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", cp, src))
 		return cp
 	}
-	fresh := func() string {
-		t := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		return t
-	}
-	freshL := func(p string) string {
-		l := fmt.Sprintf("L_dc_%s_%d", p, *scope.nextLabel)
-		*scope.nextLabel++
-		return l
-	}
-	ln := fresh()
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, src))
-	sdata := fresh()
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sdata, src))
-	dest := fresh()
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", dest))
-	ln1 := fresh()
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", ln1, ln))
-	nby := fresh()
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, ln1))
-	ddata := fresh()
-	w.Write(fmt.Sprintf("  %s = alloc %s\n", ddata, nby))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", dest, ddata))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", dest, ln))
-	w.Write(fmt.Sprintf("  !%s\n", ddata))
-	dloop := fresh()
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dloop, dest))
-	iv := fresh()
-	w.Write(fmt.Sprintf("  %s = 0\n", iv))
-	topL, bodyL, endL := freshL("top"), freshL("body"), freshL("end")
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fresh()
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iv, ln))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	so := fresh()
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", so, iv))
-	saddr := fresh()
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", saddr, sdata, so))
-	daddr := fresh()
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", daddr, dloop, so))
-	if kind == "deep" {
-		// R3-14 回迁映射：内柄递归由 `sci/sa_std/ts_array.sa`
-		// `@ts_arr_clone_deep` 实现（SA 自递归合法已实证）。
-		inner := fresh()
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", inner, saddr))
-		inew := fresh()
-		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_deep(%s)\n", inew, inner))
-		scope.addImport("sa_std/ts_array.sa")
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, inew))
-	} else {
-		cv := fresh()
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", cv, saddr))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", daddr, cv))
-	}
-	inext := fresh()
-	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, iv))
-	w.Write(fmt.Sprintf("  %s = %s\n", iv, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
+	// R3-14 回迁映射：嵌套深拷贝整体由 `sci/sa_std/ts_array.sa`
+	// `@ts_arr_clone_deep` 单调用实现（外层循环 + 内层 flat 一级，
+	// 封存 lowerDeepCloneInner 两层形；更深嵌套拷内层片头，上游同形）。
+	// 调用方旧内联循环逐元调运行时会致双重遍历（运行时再循环），
+	// 首元叶整数即野指针解引用，真机 SIGSEGV 实锤，故整包下沉。
+	scope.addImport("sa_std/ts_array.sa")
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_deep(%s)\n", dest, src))
 	if takeOwn {
 		saOwnTemp(scope, dest)
 	}
-	if kind == "deep" {
-		if scope.arrNest == nil {
-			scope.arrNest = map[string]bool{}
-		}
-		scope.arrNest[dest] = true
+	if scope.arrNest == nil {
+		scope.arrNest = map[string]bool{}
 	}
+	scope.arrNest[dest] = true
 	return dest
 }
 
