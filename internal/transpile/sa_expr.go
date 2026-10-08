@@ -821,13 +821,13 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	}
 	for _, f := range def.fields {
 		fk := def.fkinds[f.name]
-		if fk == "i32" || fk == "str" {
+		if fk == "i32" || fk == "str" || fk == "bool" {
 			continue
 		}
 		if def.fopt[f.name] {
 			continue
 		}
-		return refuse(vd.Name(), "JSON.parse takes flat i32/string interfaces (field "+f.name+" is not lowerable yet)")
+		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool interfaces (field "+f.name+" is not lowerable yet)")
 	}
 	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
 	if !ok {
@@ -846,6 +846,29 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	for _, f := range def.fields {
+		if def.fkinds[f.name] == "bool" {
+			// 布尔字段（get_bool 给 u8，zext 入 i32 槽；缺键预零即 false，
+			// 与缺省可选同律）。
+			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			kp, kl := saExpandStr(w, kh, nextTemp)
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+			st := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_bool(%s, &%s, %s, &%s)\n", st, node, kp, kl, slot))
+			w.Write(fmt.Sprintf("  !%s\n", st))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", v, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			v32 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v32, v))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v32))
+			continue
+		}
 		if def.fkinds[f.name] == "str" {
 			// 串字段具化拷出（借用离 node：getter 给借用 (ptr,len)，
 			// concat 空串拷出 owned；缺键分支存 0 柄，与缺省可选同律）。
