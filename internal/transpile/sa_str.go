@@ -871,17 +871,14 @@ func saUnwrapStrBuf(w printer.EmitTextWriter, buf string, scope *saScope, nextTe
 	return out
 }
 
-// saConcatStr `+` 拼接（两侧须皆为串位；混合数值须显式 String()，
-// 子集门，大声拒——封存 lowerBinary 无数值隐式强制证据）。
+// saConcatStr `+` 拼接（任一臂串位即串拼接；非串臂经文本化，i32/bool/f64
+// 走 interp，实例/数组沿文本化拒因；JS `+` 同义，P-A2 string+）。
 func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	if !saIsStrValue(l, scope) || !saIsStrValue(r, scope) {
-		return "", "string + needs string operands on both sides (use String(x))"
-	}
-	lh, msgL := saEvalStr(w, l, scope, pos, refusals, nextTemp)
+	lh, msgL := saToSlice(w, l, scope, pos, refusals, nextTemp)
 	if msgL != "" {
 		return "", msgL
 	}
-	rh, msgR := saEvalStr(w, r, scope, pos, refusals, nextTemp)
+	rh, msgR := saToSlice(w, r, scope, pos, refusals, nextTemp)
 	if msgR != "" {
 		return "", msgR
 	}
