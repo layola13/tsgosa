@@ -4156,6 +4156,13 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 			return true
 		}
 	}
+	// 裸调用经返回种（`parseFloat/Number` 回 f64；前缀取负臂同式已覆，
+	// 此处补直接操作数位，否则条件位 `parseFloat(x) > 4` 落 sgt 错值）。
+	if e.Kind == ast.KindCallExpression {
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "f64" {
+			return true
+		}
+	}
 	// 前缀取负透传（`-x` 种随操作数：绑定/字面量/嵌套取负递归判定，f64
 	// 调用经返回种；`+x` 双边同拒不动；求值见严格位同形臂；消费位皆经
 	// 严格求值，无 `Text()` 直通风险）。
@@ -4200,6 +4207,13 @@ func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 	}
 	if saIsF64Operand(e, scope) {
+		// f64 种调用经严格求值（`Text()` 无调用形，误触即 panic；
+		// 前缀取负臂同形，调用核直传）。
+		if e.Kind == ast.KindCallExpression {
+			if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "f64" {
+				return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+			}
+		}
 		return e.Text(), ""
 	}
 	return saEvalI32(w, orig, scope, pos, refusals, nextTemp)

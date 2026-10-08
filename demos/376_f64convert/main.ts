@@ -7,5 +7,5 @@ function main(): i32 {
   const a: f64 = Number("42");
   console.log(a);
   console.log(s);
-  return s;
+  return 0;
 }

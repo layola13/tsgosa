@@ -43,7 +43,8 @@
   t_17 = load t_15 + 8 as u64
   t_18 = call @sa_parse_float(&t_16, t_17)
   !t_15
-  t_19 = sgt t_18, 4
+  t_19 = fcmp_gt t_18, 4
+  !t_18
   EXPAND IF_TRUE t_19, L_then_1, L_endif_3
 L_then_1:
   !s
@@ -101,7 +102,6 @@ L_endif_3:
   !t_25
   !t_24
   !a
-  !t_18
   !t_6
   !t_5
-  ret s
+  ret 0
