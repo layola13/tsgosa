@@ -299,6 +299,18 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 				if h, def, msg := saInstBase(lpa.Expression, scope); msg == "" && def != nil {
 					if field, msg := saPrivResolve(def, lpa.Name().Text(), scope.thisClass); msg == "" {
 						if _, ok := def.offsets[field]; ok {
+							if k := def.fkinds[field]; k == "str" && saBinaryOpKind(be) == ast.KindPlusEqualsToken {
+								cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+								if msg == "" {
+									rhs, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+									if msg == "" {
+										out := saConcatSlices(w, cur, rhs, scope, nextTemp)
+										if msg := saLowerClassFieldStore(w, h, def, field, out); msg == "" {
+											return true
+										}
+									}
+								}
+							}
 							if k := def.fkinds[field]; k == "" || k == "i32" {
 								cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
 								if msg == "" {
