@@ -26764,6 +26764,13 @@ func (c *Checker) isErrorType(t *Type) bool {
 	return t == c.errorType || t.flags&TypeFlagsAny != 0 && t.alias != nil
 }
 
+// IsErrorType 报告类型是否为错误类型（含未解消符号捏造的 any；
+// 供薄口子集：方言拼写（`i32` 等）checker 不识，落此门，须回退 scope 种，
+// 真 any/unknown 不在此列）。
+func (c *Checker) IsErrorType(t *Type) bool {
+	return c.isErrorType(t)
+}
+
 func compareTypeIds(t1, t2 *Type) int {
 	return int(t1.id) - int(t2.id)
 }

@@ -2085,8 +2085,9 @@ func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
 	return found
 }
 
-// saIsAnyOrUnknown 报告 checker 下该节点是否为 any/unknown（封存
-// typeofKindSingle:58-59 全形；无 ctx/异常/nil 一律 false，调用方回退既有
+// saIsAnyOrUnknown 报告 checker 下该节点是否为真 any/unknown（封存
+// typeofKindSingle:58-59 全形；错误类型（方言拼写 checker 不识，捏造 any）
+// 除外，回退 scope 种；无 ctx/异常/nil 一律 false，调用方回退既有
 // scope 种逻辑，零行为变）。
 func saIsAnyOrUnknown(tcx *saTypeCtx, n *ast.Node) bool {
 	if tcx == nil || tcx.check == nil || n == nil {
@@ -2096,7 +2097,10 @@ func saIsAnyOrUnknown(tcx *saTypeCtx, n *ast.Node) bool {
 	func() {
 		defer func() { _ = recover() }()
 		if ty := tcx.check.GetTypeAtLocation(n); ty != nil {
-			found = ty.Flags()&checker.TypeFlagsAnyOrUnknown != 0
+			if ty.Flags()&checker.TypeFlagsAnyOrUnknown == 0 {
+				return
+			}
+			found = !tcx.check.IsErrorType(ty)
 		}
 	}()
 	return found
