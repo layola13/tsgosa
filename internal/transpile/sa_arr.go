@@ -2456,35 +2456,18 @@ func recvIsStrArray(scope *saScope, pa *ast.PropertyAccessExpression) bool {
 	return scope.arrStr != nil && scope.arrStr[pa.Expression.Text()]
 }
 
-// saLowerArrayScanStr 串元数组内容扫描（includes/indexOf 正向 + lastIndexOf
-// 逆向；针具化一次，逐元 `@ts_str_equals` 内容判等，与 `saLowerExpectStrEq`
-// 同符号同序，地址直比永禁；includes 命中返 1 扫尽返 0，index 系返位/-1；
-// 起位钳位与 `@ts_arr_scan` L_Q_CLAMP/L_Q_DEFLT 同形）。
+// saLowerArrayScanStr 串元数组内容扫描门面（includes/indexOf 正向 +
+// lastIndexOf 逆向；针求值 + 起位种门禁留本侧，扫描语义内聚
+// `@ts_str_arr_scan`；includes 终值 1/0、index 系返位/-1 皆由符号 wantidx 位决定）。
 func saLowerArrayScanStr(w printer.EmitTextWriter, recv, method string, argNodes []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string, string) {
 	nh, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", "", msg
 	}
 	reverse := method == "lastIndexOf"
-	scope.addImport("sa_std/ts_string.sa")
-	np, nl := saExpandStr(w, nh, nextTemp)
-	ln := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
-	data := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
-	// 起位钳位（与 `@ts_arr_scan` L_Q_CLAMP/L_Q_DEFLT 同形：缺省正向 0/逆向末位；
-	// 显式负值 len+from，仍负正向钳 0、逆向空扫天然返 -1；显式超长正向空扫天然，
-	// 逆向上确界 len-1）。
-	from := "0"
-	lm1 := ""
-	if reverse {
-		lm1 = fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", lm1, ln))
-		from = lm1
-	}
+	// R3 回迁映射：串元内容扫描语义由 `sci/sa_std/ts_string.sa`
+	// `@ts_str_arr_scan` 实现（起位钳位/逆向/内容判等内聚符号内；记种门禁留调用点）。
+	fromVal, hasfrom := "0", "0"
 	if len(argNodes) > 1 {
 		fv, msg := saEvalI32(w, argNodes[1], scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -2493,148 +2476,23 @@ func saLowerArrayScanStr(w printer.EmitTextWriter, recv, method string, argNodes
 		if msg := saCheckIntIndex(scope, fv); msg != "" {
 			return "", "", msg
 		}
-		fslot := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 8\n", fslot))
-		neg := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", neg, fv))
-		fnegL := fmt.Sprintf("L_ss_fneg_%d", *nextLabel)
-		*nextLabel++
-		fposL := fmt.Sprintf("L_ss_fpos_%d", *nextLabel)
-		*nextLabel++
-		feL := fmt.Sprintf("L_ss_fe_%d", *nextLabel)
-		*nextLabel++
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", neg, fnegL, fposL))
-		w.Write(fmt.Sprintf("%s:\n", fnegL))
-		adj := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, %s\n", adj, fv, ln))
-		stillNeg := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = slt %s, 0\n", stillNeg, adj))
-		fnnL := fmt.Sprintf("L_ss_fnn_%d", *nextLabel)
-		*nextLabel++
-		fzL := fmt.Sprintf("L_ss_fz_%d", *nextLabel)
-		*nextLabel++
-		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", stillNeg, fnnL, fzL))
-		w.Write(fmt.Sprintf("%s:\n", fnnL))
-		if reverse {
-			// 逆向仍负即空扫：起位 -1（首轮 `sge` 即假）。
-			w.Write(fmt.Sprintf("  store %s + 0, -1 as i32\n", fslot))
-		} else {
-			w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", fslot))
-		}
-		w.Write(fmt.Sprintf("  jmp %s\n", feL))
-		w.Write(fmt.Sprintf("%s:\n", fzL))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fslot, adj))
-		w.Write(fmt.Sprintf("  jmp %s\n", feL))
-		w.Write(fmt.Sprintf("%s:\n", fposL))
-		if reverse {
-			// 逆向上确界 len-1（超长钳末位；首轮下标合法，禁越界读）。
-			over := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", over, fv, ln))
-			fovL := fmt.Sprintf("L_ss_fov_%d", *nextLabel)
-			*nextLabel++
-			finL := fmt.Sprintf("L_ss_fin_%d", *nextLabel)
-			*nextLabel++
-			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", over, finL, fovL))
-			w.Write(fmt.Sprintf("%s:\n", fovL))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fslot, lm1))
-			w.Write(fmt.Sprintf("  jmp %s\n", feL))
-			w.Write(fmt.Sprintf("%s:\n", finL))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fslot, fv))
-			w.Write(fmt.Sprintf("  jmp %s\n", feL))
-		} else {
-			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", fslot, fv))
-			w.Write(fmt.Sprintf("  jmp %s\n", feL))
-		}
-		w.Write(fmt.Sprintf("%s:\n", feL))
-		from = fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", from, fslot))
-		w.Write(fmt.Sprintf("  !%s\n", fslot))
+		fromVal, hasfrom = fv, "1"
 	}
-	// 命中槽初 -1（includes 终判 `ne idx, -1`，indexOf 直返）。
-	slot := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-	w.Write(fmt.Sprintf("  store %s + 0, -1 as i32\n", slot))
-	i := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	// 初值经 `add 0` 中转（裸寄存器拷贝被 verifier 视作别名，
-	// 回边重赋即 RegisterRedefinition；命名源快照同形）。
-	w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, from))
-	topL := fmt.Sprintf("L_ss_top_%d", *nextLabel)
-	*nextLabel++
-	bodyL := fmt.Sprintf("L_ss_body_%d", *nextLabel)
-	*nextLabel++
-	hitL := fmt.Sprintf("L_ss_hit_%d", *nextLabel)
-	*nextLabel++
-	contL := fmt.Sprintf("L_ss_cont_%d", *nextLabel)
-	*nextLabel++
-	endL := fmt.Sprintf("L_ss_end_%d", *nextLabel)
-	*nextLabel++
-	w.Write(fmt.Sprintf("%s:\n", topL))
-	c := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
+	rev, wi := "0", "1"
 	if reverse {
-		w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c, i))
-	} else {
-		w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+		rev = "1"
 	}
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
-	w.Write(fmt.Sprintf("%s:\n", bodyL))
-	off := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
-	addr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
-	eh := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	// 串元 4 字节槽（句柄截断值；`as ptr` 8 字节读会并入下元，
-	// gdb 实锤 rax=高低元拼接；先 i32 取值再按柄解引用，367 同形）。
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eh, addr))
-	ep, el := saExpandStr(w, eh, nextTemp)
-	eq := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @ts_str_equals(%s, %s, %s, %s)\n", eq, ep, el, np, nl))
-	saOwnTemp(scope, eq)
-	hit := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", hit, eq))
-	saReleaseOwnedTemp(w, scope, eq)
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, contL))
-	w.Write(fmt.Sprintf("%s:\n", hitL))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, i))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", contL))
-	inext := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	if reverse {
-		w.Write(fmt.Sprintf("  %s = sub %s, 1\n", inext, i))
-	} else {
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
-	}
-	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
-	w.Write(fmt.Sprintf("  jmp %s\n", topL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	idx := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", idx, slot))
-	w.Write(fmt.Sprintf("  !%s\n", slot))
-	saReleaseOwnedTemp(w, scope, nh)
 	if method == "includes" {
-		out := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = ne %s, -1\n", out, idx))
-		saOwnTemp(scope, out)
-		return out, "i32", ""
+		wi = "0"
 	}
-	saOwnTemp(scope, idx)
-	return idx, "i32", ""
+	scope.addImport("sa_std/ts_string.sa")
+	np, nl := saExpandStr(w, nh, nextTemp)
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_arr_scan(%s, %s, %s, %s, %s, %s, %s)\n", dest, recv, np, nl, fromVal, hasfrom, rev, wi))
+	saOwnTemp(scope, dest)
+	saReleaseOwnedTemp(w, scope, nh)
+	return dest, "i32", ""
 }
 
 // 嵌套路两遍：遍 1 外槽累内长，遍 2 新柄逐内拷片；元静态全 arr 才展
