@@ -220,3 +220,14 @@
 - 拒收聚类 Top：形参注解567/返回注解503+联合119（富类型：泛型/联合/Record/回调/unknown/void/Promise）；step2 kind244 amplified 428（顶层非常函数语句/对象字面量）；非直接调用126；typeof系60；replace /g、instanceof、动态 Array.isArray、非数组 for-of、富字段类、fs.existsSync、RegExp 组各 <40。
 - 结论：整仓重构现不可承接——缺整层：完整类型系统擦除、async/await、事件循环回调分发、多文件链接、npm/bun 运行时绑定、流/进程/网络面。薄口 471 demo 皆 i32/str/arr 微形，与 10 万行量级全 TS 不在同一联赛。
 - 可行路径（绞杀者）：先抽最小纯逻辑模块单编单测验证，再逐个扩大；或先定多文件 program-link + 最小 node 插件面。待用户拍板先啃哪块。
+
+
+## P4b codex 后端缺口双轴计划（频率×难度；170 文件双边扫聚类，kind244=顶层变量语句已实锤）
+### 频率 Top（次）
+1. 形参富注解 567；2. 返回富注解 503+联合 119；3. 顶层变量语句 428；4. 非直接调用 126（70+56）；5. typeof 未知 60+（40+20）；6. 串条件位 58+（31+15+12）；7. replace/g 49（28+21）；8. node 系 import 警告群（fs/promises 31、child_process 31、events 24…，警告非拒）；9. Array.isArray 动态 25（19+6）；10. for-of 非数组 17；11. instanceof 23（16+7）；12. 富字段类 13；13. fs.existsSync 11；14. 非直接调用语句 11；15. RegExp 组 8。
+### 难度轴
+- S（单门 widening）：replace/g→replaceAll 自动改调；fs.existsSync 补投影；void 函数 return 值（弃值或收紧）；串条件位其它比较符经现货串比较核；Array 字面量子集 7 例。
+- M（需新判定/小运行时）：顶层变量语句（模块初始化序+导出联动）；非直接调用（链式/计算名分形）；typeof 收窄（字面量类型+与 Array.isArray 联动）；Array.isArray 动态（运行时种标）；instanceof（类标比对）；for-of 可迭代（Set/Map 布局遍历）；富字段（bool/f64 入布局）；RegExp 组（ERE 改写）。
+- XL（史诗）：富类型全擦除（泛型/联合/Record/函数类型/unknown/void/Promise，1189 次之根）；async/await+事件循环（88 文件）；node/bun 运行时全系绑定；f64 数组布局；闭包透传。
+### 分期
+- P-A 快赢（S 项逐个锁仓）；P-B 中坚（M 项逐个设计+锁仓）；P-C 史诗（XL 项立项制，每项先 sci/运行时语义再回迁）。
