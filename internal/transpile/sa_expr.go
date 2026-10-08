@@ -803,7 +803,8 @@ func saIsJSONParseCall(ce *ast.CallExpression) (*ast.Node, bool) {
 
 // saLowerJSONParseDecl `const p: P = JSON.parse(s)` 进平布局接口（parse 节点
 // 逐字段类型化 getter 具化；缺键/类型失配沿子集运行时策略归零（OOB→0、
-// null→0、缺省可选→0 同律，无 trap 原语）；串/嵌套字段另步大声拒）。
+// null→0、缺省可选→0 同律，无 trap 原语）；串字段具化拷出（node 释放前
+// 离开借用）；数组/嵌套另步大声拒）。
 func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration, name, vkind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	refuse := func(n *ast.Node, msg string) bool {
 		ln, col := pos(n.Pos())
@@ -820,13 +821,13 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	}
 	for _, f := range def.fields {
 		fk := def.fkinds[f.name]
-		if fk == "i32" {
+		if fk == "i32" || fk == "str" {
 			continue
 		}
 		if def.fopt[f.name] {
 			continue
 		}
-		return refuse(vd.Name(), "JSON.parse takes flat i32 interfaces (field "+f.name+" is not lowerable yet)")
+		return refuse(vd.Name(), "JSON.parse takes flat i32/string interfaces (field "+f.name+" is not lowerable yet)")
 	}
 	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
 	if !ok {
@@ -845,8 +846,61 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	for _, f := range def.fields {
+		if def.fkinds[f.name] == "str" {
+			// 串字段具化拷出（借用离 node：getter 给借用 (ptr,len)，
+			// concat 空串拷出 owned；缺键分支存 0 柄，与缺省可选同律）。
+			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			kp, kl := saExpandStr(w, kh, nextTemp)
+			ps := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", ps))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", ps))
+			ls := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", ls))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", ls))
+			st := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_string(%s, &%s, %s, &%s, &%s)\n", st, node, kp, kl, ps, ls))
+			okv := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", okv, st))
+			w.Write(fmt.Sprintf("  !%s\n", st))
+			pL := fmt.Sprintf("L_jp_t_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			fL := fmt.Sprintf("L_jp_f_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jp_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", okv, pL, fL))
+			w.Write(fmt.Sprintf("%s:\n", pL))
+			dp := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dp, ps))
+			dl := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", dl, ls))
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", bh))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", bh, dp))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", bh, dl))
+			saOwnTemp(scope, bh)
+			empty := saLowerStringLiteral(w, "", scope, nextTemp)
+			owned := saConcatSlices(w, empty, bh, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], owned))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			w.Write(fmt.Sprintf("  !%s\n", ps))
+			w.Write(fmt.Sprintf("  !%s\n", ls))
+			continue
+		}
 		if def.fkinds[f.name] != "i32" {
-			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+			// 可选非串句柄缺省存空柄（8 字节槽全零；i32 槽 4 字节另存）。
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
 			continue
 		}
 		kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
