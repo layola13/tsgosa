@@ -801,6 +801,47 @@ func saIsJSONParseCall(ce *ast.CallExpression) (*ast.Node, bool) {
 	return argNodes[0], true
 }
 
+// defSubLayout 取嵌套布局（fsub 登记 + classes 落表；供 parse 嵌套臂）。
+func defSubLayout(def *saClassDef, fname string, scope *saScope) (*saClassDef, string, bool) {
+	if def == nil || def.fsub == nil {
+		return nil, "", false
+	}
+	sub, ok := def.fsub[fname]
+	if !ok {
+		return nil, "", false
+	}
+	subdef, ok := scope.classes[sub]
+	if !ok || subdef == nil {
+		return nil, "", false
+	}
+	return subdef, sub, true
+}
+
+// saJSONArrInstSub 报告数组字段是否为已记录布局元数组（parse struct
+// 数组臂准入；返回子布局名）。
+func saJSONArrInstSub(def *saClassDef, fname string, scope *saScope) (string, bool) {
+	if def == nil || def.fdefs == nil {
+		return "", false
+	}
+	tn, ok := def.fdefs[fname]
+	if !ok || tn == nil || tn.Kind != ast.KindArrayType {
+		return "", false
+	}
+	el := tn.AsArrayTypeNode().ElementType
+	if el == nil || el.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := el.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	sub := ref.TypeName.Text()
+	if subdef, ok := scope.classes[sub]; !ok || subdef == nil {
+		return "", false
+	}
+	return sub, true
+}
+
 // saJSONArrElemI32 报告字段是否为 i32 元数组（parse 数组臂准入；
 // `i32[]` 元为 TypeReference（方言名非关键字），经 saAnnotKind 判 i32；
 // fdefs 无记录/非数组/异元一律 false，沿旧门）。
@@ -822,21 +863,264 @@ func saJSONArrElemI32(def *saClassDef, fname string) bool {
 	return false
 }
 
-// saFillJSONNest 具化一层嵌套布局（子节点 → 子结构槽；子字段仅收
-// i32/bool/串（与顶层臂同形），嵌套数组/双重嵌套大声拒（另步）；缺键零
-// 结构体（i32/bool 零槽，余零柄）；返回 msg，""=ok）。
-func saFillJSONNest(w printer.EmitTextWriter, sn, sh string, subdef *saClassDef, scope *saScope, nextTemp *int) string {
+// saFillJSONArrInst 具化 struct 数组字段（子节点取数 + 逐元递归具化；
+// 缺键/非数组折空数组（与 `[]` 字面量同形）；visited 环卫；返回 msg）。
+func saFillJSONArrInst(w printer.EmitTextWriter, pn, ph string, pdef *saClassDef, fname string, scope *saScope, nextTemp *int, visited map[string]bool) string {
+	sub, ok := saJSONArrInstSub(pdef, fname, scope)
+	if !ok {
+		// 可选回退存零（必备门前已拒）。
+		w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", ph, pdef.offsets[fname]))
+		return ""
+	}
+	subdef, ok := scope.classes[sub]
+	if !ok || subdef == nil {
+		w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", ph, pdef.offsets[fname]))
+		return ""
+	}
+	kh := saLowerStringLiteral(w, fname, scope, nextTemp)
+	kp, kl := saExpandStr(w, kh, nextTemp)
+	saReleaseOwnedTemp(w, scope, kh)
+	anslot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", anslot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", anslot))
+	stObj := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", stObj, pn, kp, kl, anslot))
+	w.Write(fmt.Sprintf("  !%s\n", stObj))
+	an := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", an, anslot))
+	w.Write(fmt.Sprintf("  !%s\n", anslot))
+	nonnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonnull, an))
+	hasL := fmt.Sprintf("L_jpa_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	emptyL := fmt.Sprintf("L_jpa_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jpa_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonnull, hasL, emptyL))
+	w.Write(fmt.Sprintf("%s:\n", emptyL))
+	eh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", eh))
+	ed := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 0\n", ed))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", eh, ed))
+	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", eh))
+	w.Write(fmt.Sprintf("  !%s\n", ed))
+	w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", ph, pdef.offsets[fname], eh))
+	w.Write(fmt.Sprintf("  !%s\n", eh))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", hasL))
+	cs := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", cs))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", cs))
+	stCnt := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_value_count(%s, &%s)\n", stCnt, an, cs))
+	w.Write(fmt.Sprintf("  !%s\n", stCnt))
+	cnt := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", cnt, cs))
+	w.Write(fmt.Sprintf("  !%s\n", cs))
+	bytes := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 8\n", bytes, cnt))
+	ahdr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", ahdr))
+	adata := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %s\n", adata, bytes))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", ahdr, adata))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", ahdr, cnt))
+	w.Write(fmt.Sprintf("  !%s\n", adata))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+	topL := fmt.Sprintf("L_jpa_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_jpa_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	loopEndL := fmt.Sprintf("L_jpa_loopend_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	iu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iu, cnt))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, loopEndL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	es := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", es))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", es))
+	stArr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_array_get(%s, %s, &%s)\n", stArr, an, i, es))
+	w.Write(fmt.Sprintf("  !%s\n", stArr))
+	en := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", en, es))
+	w.Write(fmt.Sprintf("  !%s\n", es))
+	elem := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", elem, subdef.size))
+	if visited[sub] {
+		return "JSON.parse does not support recursive layouts yet"
+	}
+	visited[sub] = true
+	if msg := saFillJSONNest(w, en, elem, subdef, scope, nextTemp, visited); msg != "" {
+		return msg
+	}
+	delete(visited, sub)
+	frEl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", frEl, en))
+	w.Write(fmt.Sprintf("  !%s\n", frEl))
+	dd := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dd, ahdr))
+	off := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 8\n", off, i))
+	addr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, dd, off))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", addr, elem))
+	w.Write(fmt.Sprintf("  !%s\n", elem))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", loopEndL))
+	frArr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", frArr, an))
+	w.Write(fmt.Sprintf("  !%s\n", frArr))
+	w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", ph, pdef.offsets[fname], ahdr))
+	w.Write(fmt.Sprintf("  !%s\n", ahdr))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return ""
+}
+
+// saFillJSONInst 具化嵌套布局字段（子节点取数 + saFillJSONNest 递归；
+// 缺键零结构体；visited 环卫；返回 msg）。
+func saFillJSONInst(w printer.EmitTextWriter, sn, sh string, subdef *saClassDef, fname string, scope *saScope, nextTemp *int, visited map[string]bool) string {
+	nested, sub, ok := defSubLayout(subdef, fname, scope)
+	if !ok {
+		// 可选回退存零（必备无记录门前已拒）。
+		w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", sh, subdef.offsets[fname]))
+		return ""
+	}
+	if visited[sub] {
+		return "JSON.parse does not support recursive layouts yet"
+	}
+	kh := saLowerStringLiteral(w, fname, scope, nextTemp)
+	kp, kl := saExpandStr(w, kh, nextTemp)
+	saReleaseOwnedTemp(w, scope, kh)
+	sns := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", sns))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", sns))
+	stN := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", stN, sn, kp, kl, sns))
+	w.Write(fmt.Sprintf("  !%s\n", stN))
+	cn := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", cn, sns))
+	w.Write(fmt.Sprintf("  !%s\n", sns))
+	nonnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonnull, cn))
+	pL := fmt.Sprintf("L_jpn_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_jpn_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jpn_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonnull, pL, fL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	zh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", zh, nested.size))
+	for _, sf := range nested.fields {
+		if nested.fkinds[sf.name] == "i32" || nested.fkinds[sf.name] == "bool" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", zh, nested.offsets[sf.name]))
+			continue
+		}
+		w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", zh, nested.offsets[sf.name]))
+	}
+	w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", sh, subdef.offsets[fname], zh))
+	w.Write(fmt.Sprintf("  !%s\n", zh))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", pL))
+	ch := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", ch, nested.size))
+	visited[sub] = true
+	if msg := saFillJSONNest(w, cn, ch, nested, scope, nextTemp, visited); msg != "" {
+		return msg
+	}
+	delete(visited, sub)
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", fr, cn))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", sh, subdef.offsets[fname], ch))
+	w.Write(fmt.Sprintf("  !%s\n", ch))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return ""
+}
+
+// saFillJSONNest 递归具化嵌套布局（子节点 → 子结构槽；标量/串 +
+// 嵌套布局 + struct 数组；visited 环卫，环布局拒；缺键零值；返回 msg）。
+func saFillJSONNest(w printer.EmitTextWriter, sn, sh string, subdef *saClassDef, scope *saScope, nextTemp *int, visited map[string]bool) string {
 	for _, sf := range subdef.fields {
 		fk := subdef.fkinds[sf.name]
-		if fk != "i32" && fk != "bool" && fk != "str" {
-			if subdef.fopt[sf.name] {
+		if fk == "i32" || fk == "bool" || fk == "str" {
+			continue
+		}
+		if fk == "inst" {
+			if _, _, ok := defSubLayout(subdef, sf.name, scope); ok {
 				continue
 			}
-			return "JSON.parse nested field needs flat i32/string/bool subfields (field " + sf.name + " is not lowerable yet)"
 		}
+		if fk == "arr" {
+			if _, ok := saJSONArrInstSub(subdef, sf.name, scope); ok {
+				continue
+			}
+		}
+		if subdef.fopt[sf.name] {
+			continue
+		}
+		return "JSON.parse nested field needs servable subfields (field " + sf.name + " is not lowerable yet)"
 	}
 	for _, sf := range subdef.fields {
 		fk := subdef.fkinds[sf.name]
+		if fk == "inst" {
+			if msg := saFillJSONInst(w, sn, sh, subdef, sf.name, scope, nextTemp, visited); msg != "" {
+				return msg
+			}
+			continue
+		}
+		if fk == "arr" {
+			if msg := saFillJSONArrInst(w, sn, sh, subdef, sf.name, scope, nextTemp, visited); msg != "" {
+				return msg
+			}
+			continue
+		}
 		if fk != "i32" && fk != "bool" && fk != "str" {
 			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", sh, subdef.offsets[sf.name]))
 			continue
@@ -950,6 +1234,11 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 		if fk == "arr" && saJSONArrElemI32(def, f.name) {
 			continue
 		}
+		if fk == "arr" {
+			if _, ok := saJSONArrInstSub(def, f.name, scope); ok {
+				continue
+			}
+		}
 		if fk == "inst" {
 			continue
 		}
@@ -976,68 +1265,17 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
 	for _, f := range def.fields {
 		if def.fkinds[f.name] == "inst" {
-			// 嵌套布局（子节点取数 + 一层具化；缺键零结构体；环/深层另步拒）。
-			sub, ok := def.fsub[f.name]
-			if !ok {
-				return refuse(vd.Name(), "JSON.parse nested field "+f.name+" needs a recorded sub layout")
-			}
-			subdef, ok := scope.classes[sub]
-			if !ok || subdef == nil {
-				return refuse(vd.Name(), "JSON.parse nested field "+f.name+" needs a recorded sub layout")
-			}
-			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
-			kp, kl := saExpandStr(w, kh, nextTemp)
-			sns := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = alloc 8\n", sns))
-			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", sns))
-			stN := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", stN, node, kp, kl, sns))
-			w.Write(fmt.Sprintf("  !%s\n", stN))
-			sn := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", sn, sns))
-			w.Write(fmt.Sprintf("  !%s\n", sns))
-			nonnull := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonnull, sn))
-			pL := fmt.Sprintf("L_jpn_t_%d", *scope.nextLabel)
-			*scope.nextLabel++
-			fL := fmt.Sprintf("L_jpn_f_%d", *scope.nextLabel)
-			*scope.nextLabel++
-			endL := fmt.Sprintf("L_jpn_end_%d", *scope.nextLabel)
-			*scope.nextLabel++
-			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonnull, pL, fL))
-			w.Write(fmt.Sprintf("%s:\n", fL))
-			zh := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = alloc %d\n", zh, subdef.size))
-			for _, sf := range subdef.fields {
-				if subdef.fkinds[sf.name] == "i32" || subdef.fkinds[sf.name] == "bool" {
-					w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", zh, subdef.offsets[sf.name]))
-					continue
-				}
-				w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", zh, subdef.offsets[sf.name]))
-			}
-			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], zh))
-			w.Write(fmt.Sprintf("  !%s\n", zh))
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
-			w.Write(fmt.Sprintf("%s:\n", pL))
-			sh := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = alloc %d\n", sh, subdef.size))
-			if msg := saFillJSONNest(w, sn, sh, subdef, scope, nextTemp); msg != "" {
+			// 嵌套布局经 helper（单一实现；visited 种子置顶层布局名）。
+			if msg := saFillJSONInst(w, node, h, def, f.name, scope, nextTemp, map[string]bool{iname: true}); msg != "" {
 				return refuse(vd.Name(), msg)
 			}
-			fr := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", fr, sn))
-			w.Write(fmt.Sprintf("  !%s\n", fr))
-			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], sh))
-			w.Write(fmt.Sprintf("  !%s\n", sh))
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
-			w.Write(fmt.Sprintf("%s:\n", endL))
+			continue
+		}
+		if def.fkinds[f.name] == "arr" && !saJSONArrElemI32(def, f.name) {
+			// struct 数组经 helper（i32 数组仍走下标注臂）。
+			if msg := saFillJSONArrInst(w, node, h, def, f.name, scope, nextTemp, map[string]bool{iname: true}); msg != "" {
+				return refuse(vd.Name(), msg)
+			}
 			continue
 		}
 		if def.fkinds[f.name] == "bool" {

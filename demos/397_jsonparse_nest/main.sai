@@ -21,6 +21,7 @@
   store t_6 + 8, 5 as u64
   t_7 = load t_6 + 0 as ptr
   t_8 = load t_6 + 8 as u64
+  !t_6
   t_9 = alloc 8
   store t_9 + 0, 0 as ptr
   t_10 = call @sa_json_object_get(t_4, &t_7, t_8, &t_9)
@@ -101,6 +102,5 @@ L_jpn_end_3:
   !t_36
   !o
   !t_23
-  !t_6
   !t_1
   ret 0

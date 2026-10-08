@@ -580,6 +580,25 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 		if strings.HasPrefix(vkind, "inst:") {
 			// 实例注解配调用初值（被调返回种须同名；`p = make(…)` 封存
 			// lowerCall 值返回同形；字面量/`new` 初值已在前分支办）。
+			// struct 数组取元绑定（`const e: Item = b.items[i]`；布局须与
+			// 注解同名；越界归零柄）。
+			if vd.Initializer != nil && vd.Initializer.Kind == ast.KindElementAccessExpression {
+				if ea := vd.Initializer.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+					if layout, ok := saStructArrElemLayout(ea.Expression, scope); ok && "inst:"+layout == vkind {
+						h, msg := saLowerIndexLoadExpr(w, ea, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							ln, col := pos(d.Pos())
+							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+							return false
+						}
+						w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+						scope.types[name] = vkind
+						saConsumeOwn(scope, h)
+						saDeclareOwned(scope, name)
+						continue
+					}
+				}
+			}
 			if vd.Initializer == nil || vd.Initializer.Kind != ast.KindCallExpression {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
@@ -733,6 +752,25 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		return true
+	}
+	if init.Kind == ast.KindElementAccessExpression {
+		// struct 数组取元绑定记 inst（`const e = b.items[i]`；布局经基查表；
+		// 越界归零柄；`?.`/裸标识符基沿读位旧门）。
+		if ea := init.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+			if layout, ok := saStructArrElemLayout(ea.Expression, scope); ok {
+				h, msg := saLowerIndexLoadExpr(w, ea, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(init.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = "inst:" + layout
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
+				return true
+			}
+		}
 	}
 	if _, ok := saArrBase(scope, init); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)

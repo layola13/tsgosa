@@ -1292,6 +1292,12 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 				}
 			}
 		}
+		// struct 数组取元基（`b.items[i]` 经布局字段；`?.` 沿读位旧门）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+			if _, ok := saStructArrElemLayout(ea.Expression, scope); ok {
+				return true
+			}
+		}
 	}
 	if e != nil && e.Kind == ast.KindNewExpression {
 		// `new C()` 临时实例基（`new C().m()`；类已记布局才放行，构造与

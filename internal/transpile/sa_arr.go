@@ -296,6 +296,99 @@ func saLowerOptionalIndex(w printer.EmitTextWriter, base, idx string, nextLabel,
 	return dest
 }
 
+// saStructArrElemLayout 解析 struct 数组基布局名（`b.items` 经实例字段
+// fdefs 元查布局表；裸标识符 struct 数组另步，返 false）。
+func saStructArrElemLayout(base *ast.Node, scope *saScope) (string, bool) {
+	if base == nil || base.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := base.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil ||
+		pa.Name().Kind != ast.KindIdentifier {
+		return "", false
+	}
+	var def *saClassDef
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		k, ok := scope.types[pa.Expression.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return "", false
+		}
+		def, ok = scope.classes[k[5:]]
+		if !ok || def == nil {
+			return "", false
+		}
+	} else if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword {
+		var ok bool
+		def, ok = scope.classes[scope.thisClass]
+		if !ok || def == nil {
+			return "", false
+		}
+	} else {
+		return "", false
+	}
+	fname := pa.Name().Text()
+	if def.fkinds[fname] != "arr" {
+		return "", false
+	}
+	return saJSONArrInstSub(def, fname, scope)
+}
+
+// saLowerStructArrElem 越界归零 struct 元读（8 字节柄槽；OOB 得 0 柄；
+// 与 saLowerCheckedIndex 同骨架，值宽按 ptr，元步进 8；布局名由调用方
+// 持证绑定，发射侧只搬句柄）。
+func saLowerStructArrElem(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "index base must be bound array"
+	}
+	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckIntIndex(scope, idx); msg != "" {
+		return "", msg
+	}
+	freshT := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	freshL := func(p string) string {
+		l := fmt.Sprintf("L_%s_%d", p, *scope.nextLabel)
+		*scope.nextLabel++
+		return l
+	}
+	slot := freshT()
+	endL := freshL("sidx_end")
+	oobL := freshL("sidx_oob")
+	loadL := freshL("sidx_ok")
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	ln := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, base))
+	ok := freshT()
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, idx, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, loadL, oobL))
+	w.Write(fmt.Sprintf("%s:\n", loadL))
+	data := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, base))
+	off := freshT()
+	w.Write(fmt.Sprintf("  %s = mul %s, 8\n", off, idx))
+	addr := freshT()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+	v := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", v, addr))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", oobL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
+}
+
 func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
 	freshT := func() string {
 		t := fmt.Sprintf("t_%d", *nextTemp)
@@ -383,6 +476,19 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", "index base must be bound array"
+	}
+	// struct 数组取元具化（`b.items[i]` 8 字节柄槽；越界归零柄；记 inst 种，
+	// 链读/绑定经种分发；`?.` 沿旧门；裸标识符 struct 数组另步）。
+	if layout, ok := saStructArrElemLayout(ea.Expression, scope); ok {
+		if isOpt {
+			return "", "optional struct index reads are not lowerable"
+		}
+		h, msg := saLowerStructArrElem(w, ea, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		scope.types[h] = "inst:" + layout
+		return h, ""
 	}
 	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 	if msg != "" {
