@@ -801,6 +801,27 @@ func saIsJSONParseCall(ce *ast.CallExpression) (*ast.Node, bool) {
 	return argNodes[0], true
 }
 
+// saJSONArrElemI32 报告字段是否为 i32 元数组（parse 数组臂准入；
+// `i32[]` 元为 TypeReference（方言名非关键字），经 saAnnotKind 判 i32；
+// fdefs 无记录/非数组/异元一律 false，沿旧门）。
+func saJSONArrElemI32(def *saClassDef, fname string) bool {
+	if def == nil || def.fdefs == nil {
+		return false
+	}
+	tn, ok := def.fdefs[fname]
+	if !ok || tn == nil || tn.Kind != ast.KindArrayType {
+		return false
+	}
+	el := tn.AsArrayTypeNode().ElementType
+	if el == nil {
+		return false
+	}
+	if k, ok := saAnnotKind(el); ok && k == "i32" {
+		return true
+	}
+	return false
+}
+
 // saLowerJSONParseDecl `const p: P = JSON.parse(s)` 进平布局接口（parse 节点
 // 逐字段类型化 getter 具化；缺键/类型失配沿子集运行时策略归零（OOB→0、
 // null→0、缺省可选→0 同律，无 trap 原语）；串字段具化拷出（node 释放前
@@ -824,10 +845,13 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 		if fk == "i32" || fk == "str" || fk == "bool" {
 			continue
 		}
+		if fk == "arr" && saJSONArrElemI32(def, f.name) {
+			continue
+		}
 		if def.fopt[f.name] {
 			continue
 		}
-		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool interfaces (field "+f.name+" is not lowerable yet)")
+		return refuse(vd.Name(), "JSON.parse takes flat i32/string/bool/i32-array interfaces (field "+f.name+" is not lowerable yet)")
 	}
 	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
 	if !ok {
@@ -919,6 +943,146 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 			w.Write(fmt.Sprintf("%s:\n", endL))
 			w.Write(fmt.Sprintf("  !%s\n", ps))
 			w.Write(fmt.Sprintf("  !%s\n", ls))
+			continue
+		}
+		if def.fkinds[f.name] == "arr" && saJSONArrElemI32(def, f.name) {
+			// i32 数组字段（子节点取数循环具化；缺键/非数组分支空数组，
+			// 与 `[]` 字面量同形；错元归零与标量臂同律）。
+			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			kp, kl := saExpandStr(w, kh, nextTemp)
+			anslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", anslot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", anslot))
+			stObj := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", stObj, node, kp, kl, anslot))
+			w.Write(fmt.Sprintf("  !%s\n", stObj))
+			an := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", an, anslot))
+			w.Write(fmt.Sprintf("  !%s\n", anslot))
+			nonnull := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonnull, an))
+			hasL := fmt.Sprintf("L_jpa_t_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			emptyL := fmt.Sprintf("L_jpa_f_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jpa_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonnull, hasL, emptyL))
+			w.Write(fmt.Sprintf("%s:\n", emptyL))
+			eh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", eh))
+			ed := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 0\n", ed))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", eh, ed))
+			w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", eh))
+			w.Write(fmt.Sprintf("  !%s\n", ed))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], eh))
+			w.Write(fmt.Sprintf("  !%s\n", eh))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", hasL))
+			cs := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", cs))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", cs))
+			stCnt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_value_count(%s, &%s)\n", stCnt, an, cs))
+			w.Write(fmt.Sprintf("  !%s\n", stCnt))
+			cnt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", cnt, cs))
+			w.Write(fmt.Sprintf("  !%s\n", cs))
+			bytes := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = mul %s, 4\n", bytes, cnt))
+			ahdr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", ahdr))
+			adata := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc %s\n", adata, bytes))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", ahdr, adata))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", ahdr, cnt))
+			w.Write(fmt.Sprintf("  !%s\n", adata))
+			i := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+			topL := fmt.Sprintf("L_jpa_top_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			bodyL := fmt.Sprintf("L_jpa_body_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			loopEndL := fmt.Sprintf("L_jpa_loopend_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", topL))
+			iu := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+			c := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iu, cnt))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, loopEndL))
+			w.Write(fmt.Sprintf("%s:\n", bodyL))
+			es := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", es))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", es))
+			stArr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_array_get(%s, %s, &%s)\n", stArr, an, i, es))
+			w.Write(fmt.Sprintf("  !%s\n", stArr))
+			en := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", en, es))
+			w.Write(fmt.Sprintf("  !%s\n", es))
+			vs := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", vs))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as i64\n", vs))
+			stAs := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_as_i64(%s, &%s)\n", stAs, en, vs))
+			w.Write(fmt.Sprintf("  !%s\n", stAs))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v, vs))
+			w.Write(fmt.Sprintf("  !%s\n", vs))
+			v32 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v32, v))
+			dd := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dd, ahdr))
+			off := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, i))
+			addr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, dd, off))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", addr, v32))
+			frel := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", frel, en))
+			w.Write(fmt.Sprintf("  !%s\n", frel))
+			inext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", i, inext))
+			w.Write(fmt.Sprintf("  jmp %s\n", topL))
+			w.Write(fmt.Sprintf("%s:\n", loopEndL))
+			frArr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", frArr, an))
+			w.Write(fmt.Sprintf("  !%s\n", frArr))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ahdr))
+			w.Write(fmt.Sprintf("  !%s\n", ahdr))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
 			continue
 		}
 		if def.fkinds[f.name] != "i32" {
