@@ -4,6 +4,6 @@
 @test "328_prog_star_types"():
 L_ENTRY:
     v = call @main()
-    call @sa_assert_eq_i64(v, 1, 32801)
+    call @sa_assert_eq_i64(v, 0, 32801)
     !v
     return

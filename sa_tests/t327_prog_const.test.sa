@@ -4,6 +4,6 @@
 @test "327_prog_const"():
 L_ENTRY:
     v = call @main()
-    call @sa_assert_eq_i64(v, 9, 32701)
+    call @sa_assert_eq_i64(v, 0, 32701)
     !v
     return

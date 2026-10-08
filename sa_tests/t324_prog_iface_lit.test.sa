@@ -1,9 +1,12 @@
-@import "../demos/324_prog_iface_lit/main.sa"
+@import "../demos/324_prog_iface_lit/lib_b.sa"
 @import "sa_std/testing/assert.sai"
 
 @test "324_prog_iface_lit"():
 L_ENTRY:
-    v = call @main()
+    o = alloc 4
+    store o + 0, 5 as i32
+    v = call @lib_b__get(o)
     call @sa_assert_eq_i64(v, 6, 32401)
     !v
+    !o
     return

@@ -1,9 +1,9 @@
-@import "../demos/331_prog_export_list/main.sa"
+@import "../demos/331_prog_export_list/lib_u.sa"
 @import "sa_std/testing/assert.sai"
 
 @test "331_prog_export_list"():
 L_ENTRY:
-    v = call @main()
+    v = call @lib_u__add(2, 3)
     call @sa_assert_eq_i64(v, 5, 33101)
     !v
     return

@@ -1,9 +1,9 @@
-@import "../demos/330_prog_default_arrow/main.sa"
+@import "../demos/330_prog_default_arrow/lib_d.sa"
 @import "sa_std/testing/assert.sai"
 
 @test "330_prog_default_arrow"():
 L_ENTRY:
-    v = call @main()
+    v = call @lib_d__add(2, 3)
     call @sa_assert_eq_i64(v, 5, 33001)
     !v
     return

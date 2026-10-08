@@ -1,0 +1,1 @@
+{"version":1,"tests":[{"id":54,"name":"273_pow_assign","selector":"_saasm_test_54","source_file":"/content/sa_all/tsgosa/sa_tests/t273_pow_assign.test.sa","line":4,"col":1,"ignored":false,"should_panic":false}]}

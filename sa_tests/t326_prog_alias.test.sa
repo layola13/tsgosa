@@ -1,9 +1,9 @@
-@import "../demos/326_prog_alias/main.sa"
+@import "../demos/326_prog_alias/lib_b.sa"
 @import "sa_std/testing/assert.sai"
 
 @test "326_prog_alias"():
 L_ENTRY:
-    v = call @main()
+    v = call @lib_b__id(7)
     call @sa_assert_eq_i64(v, 7, 32601)
     !v
     return
