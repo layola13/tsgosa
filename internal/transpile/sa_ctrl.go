@@ -818,10 +818,12 @@ func saDeepArrEq(w printer.EmitTextWriter, ah, bh, elemKind string, neg bool, sc
 	if elemKind == "str" {
 		ea := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", ea, eaddr))
+		// 串元 4 字节槽先 i32 取值再按柄解引用（`as ptr` 8 字节读并入下元，
+		// 串扫描同形实锤；saExpandStr 内再解一次）。
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", ea, eaddr))
 		eb := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", eb, faddr))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eb, faddr))
 		both := saStrContentEq(w, ea, eb, scope, nextTemp)
 		dd = fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++

@@ -242,8 +242,8 @@ L_deq_body_19:
   t_117 = mul t_115, 4
   t_118 = add t_112, t_117
   t_119 = add t_113, t_117
-  t_120 = load t_118 + 0 as ptr
-  t_121 = load t_119 + 0 as ptr
+  t_120 = load t_118 + 0 as i32
+  t_121 = load t_119 + 0 as i32
   t_122 = load t_120 + 0 as ptr
   t_123 = load t_120 + 8 as u64
   t_124 = load t_121 + 0 as ptr
