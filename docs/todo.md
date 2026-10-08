@@ -180,6 +180,7 @@
 - 双拒对齐（诚实一致，不做，25 项）：bigint 字面量/运算、regexp 字面量、`delete`、this 形参、计算方法名调用、索引签名、`typeof` 查询、`Object.assign`/`fromEntries`/`create`/`defineProperty`、`matchAll`/`normalize`、Math.hypot/clz32、WeakMap、Symbol、Proxy、私有方法、具名 tag 形参、JSON.parse、`.bind`、嵌套/剩余解构、`for-of entries`、D11 链式 `?.`、B23 `?.()`、H37 非零、H57、F01 闭包捕获。
 - 分歧已修：对象解构缺省（C1 门 + C2 折叠，438）。
 - 分歧 open：串展开 `[..."ab"]`（上游通，薄口拒）→ 已复核：上游按 4 字节步长取 UTF-8 流并装入 i32 元（元值与元种“应为单字串”双错），属误编译；正确实现需逐字柄构造（新机制），暂不做，薄口拒收正确。
+- 分歧已决（类名直读非字面静态，零改码）：`static y: i32 = 1 + 2` / `static y: i32 = C.x + 10` 配 `console.log(C.y)`——上游 verdict 过但产物悬空 `load C + 0 as i32`（`sa check` 报 `UnknownRegister`，exit 0 + 无效 SAI 最坏类）；封存 `staticLiteralText` 只折字面量、非字面走实例槽 legacy，类名直读无实例可依故悬空。薄口大声拒正确，不移植。对侧皆通：字面静态类名读（折叠立即数）与实例读（含非字面，`load c + 0` 同形，check ok）。静态初始化序锁仓仅剩实例径核值。
 - 通过待锁仓（薄口通、无 demo，逐项核值后锁）：iface 继承/readonly、getter+setter 对、静态初始化序、箭头 this 嵌套、satisfies 串形、`Number()/String()/Boolean()` 构造、`new Array(n)`、`Set/Map` 构造对、`...rest` 形参、数组解构位。
 
 ## 待办清单（优先级序）
