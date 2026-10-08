@@ -2075,6 +2075,111 @@ func saLowerTernaryF64Join(w printer.EmitTextWriter, condOp, aKind, aText, bKind
 	return res
 }
 
+// saArmHasEffect 报告三元臂子树是否含副作用（调用/new/自增自减/
+// 赋值；函数边界重置，闭包体不计）。真机实证：i32 臂先求值后 SELECT
+// （封存 lowerTernary:8498-8515），副作用臂恒执行——`true ? 7 : boom()`
+// 打印 99，自递归 `n<=1 ? 1 : n*fact(n-1)` 无限递归 SIGSEGV；
+// 上游同 eager（parity），故只对副作用臂改分支惰性形（纯臂零字节变）。
+func saArmHasEffect(n *ast.Node) bool {
+	found := false
+	var walk func(x *ast.Node)
+	walk = func(x *ast.Node) {
+		if x == nil || found {
+			return
+		}
+		switch x.Kind {
+		case ast.KindCallExpression, ast.KindNewExpression:
+			found = true
+			return
+		case ast.KindFunctionDeclaration, ast.KindArrowFunction,
+			ast.KindFunctionExpression, ast.KindClassDeclaration:
+			return
+		case ast.KindPrefixUnaryExpression:
+			if un := x.AsPrefixUnaryExpression(); un != nil &&
+				(un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
+				found = true
+				return
+			}
+		case ast.KindPostfixUnaryExpression:
+			if un := x.AsPostfixUnaryExpression(); un != nil &&
+				(un.Operator == ast.KindPlusPlusToken || un.Operator == ast.KindMinusMinusToken) {
+				found = true
+				return
+			}
+		case ast.KindBinaryExpression:
+			if be := x.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+				be.OperatorToken.Kind == ast.KindEqualsToken {
+				found = true
+				return
+			}
+		}
+		x.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(n)
+	return found
+}
+
+// saReleaseArmTemps 释放在臂内新建的归属临时量（分支内声明 join 后
+// 不可见，for-of 巡后释放同形；外层存活不在增量内，不碰）。
+func saReleaseArmTemps(w printer.EmitTextWriter, scope *saScope, base int) {
+	done := map[string]bool{}
+	for i := len(scope.ownOrder) - 1; i >= base && i >= 0; i-- {
+		name := scope.ownOrder[i]
+		if done[name] {
+			continue
+		}
+		done[name] = true
+		if b := saOwnOf(scope, name); saIsTempOp(name) && b != nil && b.heap && !b.consumed && !b.released {
+			w.Write(fmt.Sprintf("  !%s\n", name))
+			b.released = true
+		}
+	}
+}
+
+// saLowerTernaryLazyI32 副作用臂 i32 三元分支惰性形（槽汇合与串臂同形；
+// 封存分支 idiom 见串臂 2212-2232/f64 汇合 2040-2076）。
+func saLowerTernaryLazyI32(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, condOp string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 4\n", slot))
+	tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+	*nextLabel++
+	fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	base := len(scope.ownOrder)
+	av, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+	if msgA != "" {
+		return "", msgA
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, av))
+	// 臂值入槽即消费，臂内新建临时量就地释放（分支内声明 join 后
+	// 不可见；借用绑定/字面量 no-op）。
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	base = len(scope.ownOrder)
+	bv, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+	if msgB != "" {
+		return "", msgB
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, bv))
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res, ""
+}
+
 // saDeclaredAt 报告 binder 是否在该位置解出名字（值/类型/import 统算可见；
 // 无 ctx 一律 false。形状证据：封存 declaredAt:205-219）。
 func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
@@ -2238,6 +2343,16 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 				return saLowerTernaryF64Join(w, condOp, ak, at, bk, bt, scope, nextLabel, nextTemp), false, ""
 			}
 		}
+	}
+	// 副作用臂走分支惰性形（纯臂沿 SELECT 零变；判定位于求值前，
+	// 求值失败仍落上游同形拒因，verdict 不变）。
+	if saArmHasEffect(ce.WhenTrue) || saArmHasEffect(ce.WhenFalse) {
+		t, msg := saLowerTernaryLazyI32(w, ce, where, condOp, scope, pos, refusals, nextLabel, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		needImport("sa_std/control.sal")
+		return t, false, ""
 	}
 	a, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 	b, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
