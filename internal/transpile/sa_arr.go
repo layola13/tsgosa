@@ -4097,12 +4097,12 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if len(argNodes) != 0 {
 			return "", "", method + " without a comparator takes 0 arguments"
 		}
-		// 串元数组字典序原地/拷贝排（`@ts_arr_sort_str`，比较位 `@ts_str_compare`；
-		// toSorted 先克隆后排；标记透传/归属同数值径；数值插入按指针数序错排永禁）。
+		// 串元数组字典序原地/拷贝排（`@ts_arr_sort_str`，比较环内联、
+		// ts_array.sa 零对外依赖；toSorted 先克隆后排；标记透传/归属同数值径；
+		// 数值插入按指针数序错排永禁）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
 			scope.arrStr != nil && scope.arrStr[pa.Expression.Text()] {
 			scope.addImport("sa_std/ts_array.sa")
-			scope.addImport("sa_std/ts_string.sa")
 			target := recv
 			if method == "toSorted" {
 				target = fmt.Sprintf("t_%d", *nextTemp)
