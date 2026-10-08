@@ -4377,6 +4377,11 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 // otherwise strict float rules apply).
 func saEvalF64(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e != nil && e.Kind == ast.KindNumericLiteral {
+		// 整字面须带小数点（`x = 0` 整寄存器毒化环携带 f64，实锤环第二轮即烂；
+		// `x = 0.0` 即对；十六进制等沿旧路原文）。
+		if t := e.Text(); saIsDecIntLit(t) {
+			return t + ".0", ""
+		}
 		return e.Text(), ""
 	}
 	return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)

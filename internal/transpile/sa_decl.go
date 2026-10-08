@@ -647,7 +647,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
 					return false
 				}
-				w.Write(fmt.Sprintf("  %s = 0\n", name))
+				w.Write(fmt.Sprintf("  %s = 0.0\n", name))
 				scope.types[name] = "f64"
 				saDeclareOwned(scope, name)
 				continue

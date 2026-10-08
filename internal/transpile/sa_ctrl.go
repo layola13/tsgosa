@@ -3023,11 +3023,11 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 			// `x = <i32>` 赋值形增量（与语句位同门）。
 			if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
 				if k, ok := scope.types[be.Left.Text()]; ok && k == "f64" {
-					// f64 计数器增量分流（R1/R2）：后端 float 寄存器跨回边重定义
-					// 恒错——int 型初值跑一次、float 型转圈或 verifier 拒收，
-					// 上游 279-loop2 同错（m=1 vs 7）实锤。故 R1 整步进
-					// （`i = i ± K`，K 非浮）走 int（上游 `add` 同形；
-					// int 循环携带 sound，浮读自动转换，P1/fc7 实锤）；
+					// f64 计数器增量分流（R1/R2）：旧整步进设计基整毒化初值
+					// （`i = 0` 整寄存器 + 整 `add` 自洽携带）；初值修正 0.0
+					// 后整步进毒化跨回边（440 转圈实锤），故 R1 整步进
+					// （`i = i ± K`，K 非浮）改走浮（`fadd/fsub`，整字面补
+					// .0，i32 变量后端强制转换实锤直传；浮生环携带真机已验）；
 					// R2 余下（浮步进/非常值 RHS）大声拒（上游误编译先例，
 					// X-statread/串展开同例，不移植错值）。
 					ctr := be.Left.Text()
@@ -3041,9 +3041,9 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 							other = rhs.Left
 						}
 						if other != nil && !saIsF64Operand(other, scope) {
-							op := "add"
+							op := "fadd"
 							if rhs.OperatorToken.Kind == ast.KindMinusToken {
-								op = "sub"
+								op = "fsub"
 							}
 							evalSide := func(n *ast.Node) (string, string) {
 								if n != nil && n.Kind == ast.KindIdentifier && n.Text() == ctr {
@@ -3062,6 +3062,16 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 								ln, col := pos(incr.Pos())
 								*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msgR})
 								return false
+							}
+							// 整步进字面补 .0（i32 变量后端强制转换已实锤，直传）。
+							if other != nil && other.Kind == ast.KindNumericLiteral {
+								if ot := other.Text(); saIsDecIntLit(ot) {
+									if rhs.Right == other {
+										r = ot + ".0"
+									} else {
+										l = ot + ".0"
+									}
+								}
 							}
 							t := fmt.Sprintf("t_%d", *nextTemp)
 							*nextTemp++

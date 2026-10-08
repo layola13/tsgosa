@@ -4,9 +4,9 @@
 @import "sa_std/string.sai"
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
-  i = 0
+  i = 0.0
   n = 0
-  i = 0
+  i = 0.0
 L_for_top_1:
   t_1 = fcmp_lt i, 3
   br t_1 -> L_for_body_2, L_for_end_3
@@ -14,7 +14,7 @@ L_for_body_2:
   t_2 = add n, 1
   !n
   n = t_2
-  t_3 = add i, 1
+  t_3 = fadd i, 1.0
   i = t_3
   jmp L_for_top_1
 L_for_end_3:
