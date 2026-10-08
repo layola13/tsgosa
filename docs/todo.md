@@ -164,4 +164,5 @@
 - 同类扩展到裸类型形参：`g<T>(x: T)` 内 `Array.isArray(x)` 同样恒折 0，加 `saIsUnresolvedTypeParam`（`TypeFlagsTypeParameter`）守卫；`id<T>` 等正常泛型复测通行。`typeof x` 裸 T 同洞一并堵（同 helper 一行）。
 - `unknown == "lit"` 上游以指针相等放行实为误编译（不同 `@const` 恒不等，bun 为 1），薄口拒收正确，不移植。
 - `Array.isArray` map 值数组形已锁（`422_isarray_mapval`，串元值经既有值种识数组折真；上游 isArray 全拒）。另核：`!v` 经空判对句柄正确（非零真），无动作；上游 `"a"+v(any)` 落指针加法（`add t_2, v`）误编译，薄口拒收正确，不移植。
+- `Array.from` mapper 形归属修正（`423_from_mapper`）：克隆/预分配新柄入 mapper 前未登记 own，mapper 内链式释放成 no-op，`check` 报 MemoryLeak（上游过）；补 `saOwnTemp(scope, base)` 一行（mapper 释基、decl 收新柄；无 mapper 径不动）。两形（切片/长度+mapper）`check` 全过，node 镜算 `4/20`。
 - H37 部分关闭：`a.length = 0` 字面清零已支持（`419_arr_clear`，len 槽置零 + 清后 push 回写验证；非零字面/变量沿旧门拒——增长需扩容、收缩需静态长度，无依据禁臆测）。

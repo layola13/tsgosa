@@ -2814,6 +2814,9 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 	if mapper == nil {
 		return base, ""
 	}
+	// 克隆/预分配新柄入 mapper 前登记归属（mapper 内链式释放新柄前释基；
+	// 无 mapper 径调用方收基；具名借用基不受影响（本处恒新柄）；R1 同纪律）。
+	saOwnTemp(scope, base)
 	return saHigherOrderMap(w, base, mapper, scope, pos, refusals, needImport, nextLabel, nextTemp)
 }
 
