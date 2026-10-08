@@ -45,7 +45,7 @@ L_ss_top_1:
 L_ss_body_2:
   t_17 = mul t_15, 4
   t_18 = add t_13, t_17
-  t_19 = load t_18 + 0 as ptr
+  t_19 = load t_18 + 0 as i32
   t_20 = load t_19 + 0 as ptr
   t_21 = load t_19 + 8 as u64
   t_22 = call @ts_str_equals(t_20, t_21, t_10, t_11)
@@ -100,7 +100,7 @@ L_ss_top_6:
 L_ss_body_7:
   t_46 = mul t_44, 4
   t_47 = add t_42, t_46
-  t_48 = load t_47 + 0 as ptr
+  t_48 = load t_47 + 0 as i32
   t_49 = load t_48 + 0 as ptr
   t_50 = load t_48 + 8 as u64
   t_51 = call @ts_str_equals(t_49, t_50, t_39, t_40)
@@ -155,7 +155,7 @@ L_ss_top_11:
 L_ss_body_12:
   t_75 = mul t_73, 4
   t_76 = add t_71, t_75
-  t_77 = load t_76 + 0 as ptr
+  t_77 = load t_76 + 0 as i32
   t_78 = load t_77 + 0 as ptr
   t_79 = load t_77 + 8 as u64
   t_80 = call @ts_str_equals(t_78, t_79, t_68, t_69)
@@ -209,7 +209,7 @@ L_ss_top_16:
 L_ss_body_17:
   t_103 = mul t_101, 4
   t_104 = add t_99, t_103
-  t_105 = load t_104 + 0 as ptr
+  t_105 = load t_104 + 0 as i32
   t_106 = load t_105 + 0 as ptr
   t_107 = load t_105 + 8 as u64
   t_108 = call @ts_str_equals(t_106, t_107, t_96, t_97)
@@ -282,7 +282,7 @@ L_ss_top_26:
 L_ss_body_27:
   t_136 = mul t_134, 4
   t_137 = add t_127, t_136
-  t_138 = load t_137 + 0 as ptr
+  t_138 = load t_137 + 0 as i32
   t_139 = load t_138 + 0 as ptr
   t_140 = load t_138 + 8 as u64
   t_141 = call @ts_str_equals(t_139, t_140, t_124, t_125)
@@ -338,7 +338,7 @@ L_ss_top_31:
 L_ss_body_32:
   t_166 = mul t_164, 4
   t_167 = add t_161, t_166
-  t_168 = load t_167 + 0 as ptr
+  t_168 = load t_167 + 0 as i32
   t_169 = load t_168 + 0 as ptr
   t_170 = load t_168 + 8 as u64
   t_171 = call @ts_str_equals(t_169, t_170, t_158, t_159)
@@ -393,7 +393,7 @@ L_ss_top_36:
 L_ss_body_37:
   t_195 = mul t_193, 4
   t_196 = add t_190, t_195
-  t_197 = load t_196 + 0 as ptr
+  t_197 = load t_196 + 0 as i32
   t_198 = load t_197 + 0 as ptr
   t_199 = load t_197 + 8 as u64
   t_200 = call @ts_str_equals(t_198, t_199, t_187, t_188)
@@ -473,7 +473,7 @@ L_ss_top_48:
 L_ss_body_49:
   t_230 = mul t_228, 4
   t_231 = add t_219, t_230
-  t_232 = load t_231 + 0 as ptr
+  t_232 = load t_231 + 0 as i32
   t_233 = load t_232 + 0 as ptr
   t_234 = load t_232 + 8 as u64
   t_235 = call @ts_str_equals(t_233, t_234, t_216, t_217)

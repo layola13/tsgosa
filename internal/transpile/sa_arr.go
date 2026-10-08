@@ -2594,7 +2594,9 @@ func saLowerArrayScanStr(w printer.EmitTextWriter, recv, method string, argNodes
 	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
 	eh := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", eh, addr))
+	// 串元 4 字节槽（句柄截断值；`as ptr` 8 字节读会并入下元，
+	// gdb 实锤 rax=高低元拼接；先 i32 取值再按柄解引用，367 同形）。
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", eh, addr))
 	ep, el := saExpandStr(w, eh, nextTemp)
 	eq := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
