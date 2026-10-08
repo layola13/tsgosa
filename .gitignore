@@ -194,6 +194,9 @@ custom-gcl.hash
 # macOS Finder metadata
 .DS_Store
 
+# sa test run cache
+.sa_cache/
+
 .idea
 
 !testdata/submoduleAccepted.txt
