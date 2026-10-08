@@ -4115,6 +4115,40 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 				}
 			}
 		}
+		// 元素自增（读-改-写回；旧值/新值语义同本地；基址/下标/存回与复合元素臂同形；
+		// 前缀新值先快照后存，防存消费（H24 同理）。
+		if operand != nil && operand.Kind == ast.KindElementAccessExpression {
+			ea := operand.AsElementAccessExpression()
+			if ea.QuestionDotToken == nil {
+				if base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp); msg == "" {
+					if idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp); msg == "" {
+						cur := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+						op := "add"
+						if !up {
+							op = "sub"
+						}
+						if prefix {
+							t := fmt.Sprintf("t_%d", *nextTemp)
+							*nextTemp++
+							w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, cur))
+							nt := fmt.Sprintf("t_%d", *nextTemp)
+							*nextTemp++
+							w.Write(fmt.Sprintf("  %s = add %s, 0\n", nt, t))
+							saLowerElementStore(w, base, idx, t, nextTemp)
+							return nt, ""
+						}
+						old := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = add %s, 0\n", old, cur))
+						t := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, cur))
+						saLowerElementStore(w, base, idx, t, nextTemp)
+						return old, ""
+					}
+				}
+			}
+		}
 		if op, msg, handled := saLowerFieldIncDec(w, operand, up, prefix, scope, nextTemp); handled {
 			return op, msg
 		}
