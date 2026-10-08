@@ -781,6 +781,22 @@ finish:
 	return out, false, ""
 }
 
+// saJSONFieldIsBool 报告 JSON 填充位字段是否为布尔（fkinds 归一 i32
+// 后仍需原始注解判定，否则 `flag: boolean` 走 get_i64 在真值上恒失败
+// （391 实锤）；fdefs 存原始 TypeNode，无注解沿旧口径。
+func saJSONFieldIsBool(def *saClassDef, fname string) bool {
+	if def == nil {
+		return false
+	}
+	if def.fkinds[fname] == "bool" {
+		return true
+	}
+	if fd := def.fdefs[fname]; fd != nil && fd.Kind == ast.KindBooleanKeyword {
+		return true
+	}
+	return false
+}
+
 // saIsJSONParseCall 识别 `JSON.parse(x)` 单参调用（与 stringify 分发同形）。
 func saIsJSONParseCall(ce *ast.CallExpression) (*ast.Node, bool) {
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
@@ -1296,7 +1312,7 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 			}
 			continue
 		}
-		if def.fkinds[f.name] == "bool" {
+		if saJSONFieldIsBool(def, f.name) {
 			// 布尔字段（get_bool 给 u8，zext 入 i32 槽；缺键预零即 false，
 			// 与缺省可选同律）。
 			kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
