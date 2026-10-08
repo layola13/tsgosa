@@ -3603,6 +3603,12 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 	// arr 形参走句柄值；实例须同类相授；arr/str 句柄标识符直传；
 	// 其余走 bool 兼容求值。
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "str" {
+		// 空字面量即 0 句柄（`string|null` 形参接 null/undefined；被调 `ne a, 0`
+		// 空分支同形；上游 lowerExpr:2731 全集映射 null/undefined→0，实例形参位
+		// 同例；saIsNullLit 口径，禁另立空判定）。
+		if saIsNullLit(a, scope) {
+			return "0", ""
+		}
 		return saEvalStr(w, a, scope, pos, refusals, nextTemp)
 	}
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "arr" {
