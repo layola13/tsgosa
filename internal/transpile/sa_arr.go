@@ -2805,8 +2805,12 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		if msg != "" {
 			return "", msg
 		}
-		h := saNewEmptyArray(w, nextTemp)
-		saAppendSlice(w, h, src, scope, nextTemp)
+		// R1-18 回迁映射：切片克隆由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_clone_flat` 实现（新柄新缓冲、同槽宽浅拷；标记透传保留本侧）。
+		scope.addImport("sa_std/ts_array.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", h, src))
 		saPropArrNest(scope, src, h)
 		saPropArrStr(scope, src, h)
 		base = h

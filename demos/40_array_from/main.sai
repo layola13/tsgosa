@@ -15,10 +15,7 @@
   store t_1 + 8, 2 as u64
   !t_2
   a = t_1
-  t_5 = alloc 16
-  store t_5 + 0, 0 as ptr
-  store t_5 + 8, 0 as u64
-  call @ts_arr_append_slice(t_5, a)
+  t_5 = call @ts_arr_clone_flat(a)
   b = t_5
   t_6 = load b + 8 as u64
   t_7 = alloc 8

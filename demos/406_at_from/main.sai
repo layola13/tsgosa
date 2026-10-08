@@ -89,10 +89,7 @@ L_idx_end_4:
   store t_42 + 0, t_43 as ptr
   store t_42 + 8, 2 as u64
   !t_43
-  t_46 = alloc 16
-  store t_46 + 0, 0 as ptr
-  store t_46 + 8, 0 as u64
-  call @ts_arr_append_slice(t_46, t_42)
+  t_46 = call @ts_arr_clone_flat(t_42)
   b = t_46
   t_47 = load b + 8 as u64
   t_48 = alloc 8
