@@ -1772,10 +1772,10 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				if arg != nil && arg.Kind == ast.KindIdentifier {
 					if k, ok := scope.types[arg.Text()]; ok && (k == "i32" || k == "bool") {
-						// checker 真 any/unknown 擦除种禁折叠（`unknown` 形参可持数组柄，
-						// 折 0 即静默错码；与 saTypeofKind 同 `saIsAnyOrUnknown` 口径；
+						// checker 真 any/unknown 或未消解裸形参禁折叠（`unknown`/裸 `T`
+						// 形参可持数组柄，折 0 即静默错码；与 saTypeofKind 同口径；
 						// 无 ctx 回退既有种逻辑，零行为变）。
-						if saIsAnyOrUnknown(scope.tcx, arg) {
+						if saIsAnyOrUnknown(scope.tcx, arg) || saIsUnresolvedTypeParam(scope.tcx, arg) {
 							return "", false, "Array.isArray needs a statically known array or primitive"
 						}
 						if _, msg := saEvalI32(w, arg, scope, pos, refusals, nextTemp); msg != "" {
@@ -2086,6 +2086,22 @@ func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
 		defer func() { _ = recover() }()
 		if sym := tcx.check.GetSymbolAtLocation(n); sym != nil {
 			found = true
+		}
+	}()
+	return found
+}
+
+// saIsUnresolvedTypeParam 报告 checker 下该节点是否为未消解裸类型形参
+// （与 saIsAnyOrUnknown 同 nil 安全口径；调用方回退既有 scope 种逻辑）。
+func saIsUnresolvedTypeParam(tcx *saTypeCtx, n *ast.Node) bool {
+	if tcx == nil || tcx.check == nil || n == nil {
+		return false
+	}
+	found := false
+	func() {
+		defer func() { _ = recover() }()
+		if ty := tcx.check.GetTypeAtLocation(n); ty != nil {
+			found = ty.Flags()&checker.TypeFlagsTypeParameter != 0
 		}
 	}()
 	return found
