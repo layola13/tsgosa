@@ -462,13 +462,20 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			}
 			if ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 静态字面量折叠记表（不占实例槽；封存 recordClassNamed:9703-9711）；
-				// 非字面静态走 legacy 实例槽（封存 s2 形；i32 恒 4 字节，见 step48）。
+				// 非字面静态初值记表期大声拒（旧路落实例槽但无 finit 登记，实例读静默
+				// 得零，如 `static y = C.x+10` 读零 vs node 11；类名读已拒，实例径同
+				// 立场；无初值静态沿旧路实例槽，与无初值实例域同形）。
 				if text, kind, ok := saStaticLiteral(pd.Initializer); ok {
 					if def.statics == nil {
 						def.statics = map[string]saStaticVal{}
 					}
 					def.statics[fkey] = saStaticVal{text: text, kind: kind}
 					continue
+				}
+				if pd.Initializer != nil {
+					ln, col := pos(m.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "static field " + fkey + " initializer must be a literal (non-literal statics are not lowerable)"})
+					return false
 				}
 			}
 			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
