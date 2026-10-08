@@ -644,9 +644,9 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			if len(argNodes) != 0 {
 				return "", "", "Map." + method + " needs 0 arguments"
 			}
-			sym := "sa_btree_map_keys_set"
+			sym := "sa_btree_map_keys_vec"
 			if method == "values" {
-				sym = "sa_btree_map_values_vec"
+				sym = "sa_btree_map_values_word_vec"
 			} else if method == "entries" {
 				sym = "sa_btree_map_iter_vec"
 			}
