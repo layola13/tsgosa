@@ -292,6 +292,36 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 				}
 			}
 		}
+		// 实例字段复合赋值（`o.f op= v`；读-改-写回；i32 独占；基/域/存与字段自增核同形）。
+		if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+			lpa := be.Left.AsPropertyAccessExpression()
+			if lpa.QuestionDotToken == nil && lpa.Name() != nil && saCouldBeInst(lpa.Expression, scope) {
+				if h, def, msg := saInstBase(lpa.Expression, scope); msg == "" && def != nil {
+					if field, msg := saPrivResolve(def, lpa.Name().Text(), scope.thisClass); msg == "" {
+						if _, ok := def.offsets[field]; ok {
+							if k := def.fkinds[field]; k == "" || k == "i32" {
+								cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+								if msg == "" {
+									r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+									if msg == "" {
+										if msg := saCheckI32Value(scope, r); msg == "" {
+											op, _ := saCompoundOp(saBinaryOpKind(be))
+											cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
+											t := fmt.Sprintf("t_%d", *nextTemp)
+											*nextTemp++
+											w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+											if msg := saLowerClassFieldStore(w, h, def, field, t); msg == "" {
+												return true
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 		ln, col := pos(where.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "compound assignment to unknown/non-i32 variable"})
 		return false
