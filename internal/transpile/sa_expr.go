@@ -5183,9 +5183,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		// `>>>` 先 ToUint32（`and x, 0xFFFFFFFF`；后端整数 64 位，
-		// 裸 `lshr -8, 1` 得 0x7FFFFFFFFFFFFFFC，node 应 2147483644，
-		// 372 实锤；`>>/<<` 的超 32 位分叉另案，sci 宽度回归未决）。
+		// 移位计数 JS 取低 5 位（`and r, 31`；后端整数 64 位，裸大计数即错：
+		// `8>>33` 原生得 0/`1<<33` 得 8589934592/`-8>>33` 得 -1，node 应
+		// 4/2/-4；`>>>` 大计数同病（左值 ToUint32 掩码不管计数位）；
+		// 负计数按补码低 5 位，与 ToUint32 再掩码一致。
+		if op == "shl" || op == "ashr" || op == "lshr" {
+			mc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = and %s, 31\n", mc, r))
+			r = mc
+		}
 		if op == "lshr" {
 			m := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++

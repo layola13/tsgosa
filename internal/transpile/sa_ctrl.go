@@ -35,6 +35,25 @@ func saCompoundOp(op ast.Kind) (string, bool) {
 	return mapped, ok
 }
 
+// saMaskShiftCount 移位计数取低 5 位 + `>>>=` 左值 ToUint32（与二元发射位同形；
+// 后端 64 位裸大计数即错：`8>>33` 原生得 0，node 应 4）。
+func saMaskShiftCount(w printer.EmitTextWriter, op, l, r string, nextTemp *int) (string, string) {
+	if op != "shl" && op != "ashr" && op != "lshr" {
+		return l, r
+	}
+	mc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, 31\n", mc, r))
+	r = mc
+	if op == "lshr" {
+		m := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m, l))
+		l = m
+	}
+	return l, r
+}
+
 // saLowerElementAssign lowering `a[i] = v`（仅 plain `=`；下标/右值走 i32 求值）。
 func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
 	ea := be.Left.AsElementAccessExpression()
@@ -144,6 +163,7 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 			return false
 		}
 		op, _ := saCompoundOp(saBinaryOpKind(be))
+		cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
@@ -225,6 +245,7 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 						return false
 					}
 					op, _ := saCompoundOp(saBinaryOpKind(be))
+					cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
@@ -252,6 +273,7 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 						return false
 					}
 					op, _ := saCompoundOp(saBinaryOpKind(be))
+					cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
@@ -287,9 +309,10 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 		return false
 	}
 	op, _ := saCompoundOp(saBinaryOpKind(be))
+	ml, r := saMaskShiftCount(w, op, target, r, nextTemp)
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, target, r))
+	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, ml, r))
 	saStoreLocal(w, target, t, scope, nextTemp)
 	return true
 }
