@@ -30,6 +30,7 @@
   t_12 = load t_10 + 8 as u64
   t_13 = call @ts_str_char_at(t_11, 0)
   t_14 = load t_13 + 8 as u64
+  !t_13
   t_15 = sext t_14 as i64
   t_16 = alloc 64
   t_17 = alloc 8
@@ -52,7 +53,6 @@
   !t_23
   !t_17
   !t_16
-  !t_13
   !t_10
   !t_1
   ret 0
