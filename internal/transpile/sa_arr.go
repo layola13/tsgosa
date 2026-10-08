@@ -138,6 +138,11 @@ func saLiteralIsStrArray(n *ast.Node, scope *saScope) bool {
 }
 
 func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if el.Kind == ast.KindOmittedExpression {
+		// 空穴按 0 入槽（`[1,,3]` 中洞读 0；与 `new Array(n)` 未初始化读、
+		// 缺键/缺省归零同律；`length` 照计，尾逗号无洞节点天然正确）。
+		return "0", ""
+	}
 	if el.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, el, scope, pos, refusals, nextTemp)
 		if msg != "" {
