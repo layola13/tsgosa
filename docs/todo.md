@@ -231,3 +231,39 @@
 - XL（史诗）：富类型全擦除（泛型/联合/Record/函数类型/unknown/void/Promise，1189 次之根）；async/await+事件循环（88 文件）；node/bun 运行时全系绑定；f64 数组布局；闭包透传。
 ### 分期
 - P-A 快赢（S 项逐个锁仓）；P-B 中坚（M 项逐个设计+锁仓）；P-C 史诗（XL 项立项制，每项先 sci/运行时语义再回迁）。
+
+
+## P4c 缺口全表（频率×难度×分期；170 文件双边扫，521 去重行）
+| # | 缺口 | 频率 | 难度 | 分期 | 备注 |
+|---|------|------|------|------|------|
+| 1 | 富类型注解擦除（泛型/联合/Record/函数类型/unknown/void/Promise/async） | 1189 | XL | P-C | 1189 次之根；async 88 文件 |
+| 2 | 顶层变量语句 kind244（顶层 const/对象字面量/导出联动） | 428 | L | P-B1 | 模块初始化序 |
+| 3 | 非直接调用（链式/计算名/?.调用/switch 判别） | ~150 | M | P-B2 | 分形逐个 |
+| 4 | typeof 收窄（字面量类型/Array联动/计算值） | ~120 | M | P-B2 |  |
+| 5 | 串比较/条件位（>＜===/length 门/串值入 i32/三元臂分歧） | ~150 | S-M | P-A3 | 部分走现货串比较 |
+| 6 | replace /g→replaceAll 自动改调 | 49 | S | P-A1 | 与 replaceAll 同核 |
+| 7 | 多文件链接 import 警告群（本地 100+、node 100+、npm） | 警告非拒 | XL | P-C | program-link+插件面 |
+| 8 | Array.isArray 动态 | 25 | M | P-B3 | 运行时种标 |
+| 9 | instanceof | 23 | M | P-B3 | 类标比对 |
+| 10 | for-of 非数组（Set/Map/迭代器） | 17 | M | P-B3 | 布局遍历 |
+| 11 | 对象字面量绑定（需接口布局/方法拒） | ~16 | M | P-B2 | 部分已有 |
+| 12 | 富字段类（bool/f64 入布局） | 13 | M | P-B3 |  |
+| 13 | fs.existsSync/statSync 等插件面 | ~15 | S | P-A1 | 补投影 |
+| 14 | RegExp 组/转义（lookahead/named/\s） | ~15 | M | P-B3 | ERE 改写 |
+| 15 | 未声明先调用（require/spawn/stat…，提升序） | ~15 | S-M | P-A2 | 声明序/hoist |
+| 16 | unknown class（Map/URL/AbortController/Promise） | ~10 | M | P-B3 | Web 面 |
+| 17 | return-in-void | 7 | S | P-A1 | 弃值或收紧 |
+| 18 | Array 字面量子集 | 9 | S | P-A1 |  |
+| 19 | string+ 拼接（显式 String(x)） | 18 | S | P-A2 |  |
+| 20 | 对象解构（需 struct 布局） | 5 | M | P-B2 |  |
+| 21 | 非字面缺省参数 | 5 | M | P-B2 | 短调用重放 |
+| 22 | struct 返回/调用配对 | ~10 | M | P-B2 |  |
+| 23 | JSON.stringify 数组/对象 | 3 | M | P-B3 | 序列化器 |
+| 24 | 回调体 lowering | 3 | M | P-B2 |  |
+| 25 | f64 入 i32 式（cursor 等） | 5 | S | P-A2 | 强制转换 |
+| 26 | switch 非直接调用判别 | 2 | S | P-A2 |  |
+| 27 | throw in try（panic 恢复语义） | 2 | L | P-C |  |
+| 28 | 数组赋值/复合赋值未知柄 | 8 | S-M | P-A2 |  |
+| 29 | .length 基非数组串 | ~9 | S | P-A2 | 门放宽或拒 |
+| 30 | async/Promise 事件循环 | 88 文件 | XL | P-C | 见 #1 |
+分期顺序：P-A1（6/13/17/18）→ P-A2（15/19/25/26/28/29）→ P-A3（5）→ P-B1（2）→ P-B2（3/4/11/20/21/22/24）→ P-B3（8/9/10/12/14/16/23）→ P-C（1/7/27/30）。
