@@ -309,7 +309,7 @@ func saStrCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	switch pa.Name().Text() {
-	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith", "includes":
+	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith", "includes", "search":
 		return saIsStrExpr(pa.Expression, scope)
 	}
 	return false

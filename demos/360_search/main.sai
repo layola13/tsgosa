@@ -22,130 +22,190 @@
   t_5 = load t_4 + 0 as ptr
   t_6 = load t_4 + 8 as u64
   t_7 = call @sa_string_index_of(t_2, t_3, t_5, t_6, 0)
-  t_8 = load t_7 + 0 as ptr
-  t_9 = load t_7 + 8 as u64
-  call @sa_print_bytes(&t_8, t_9)
-  !t_7
-  t_10 = alloc 16
-  store t_10 + 0, &str_const_2 as ptr
-  store t_10 + 8, 1 as u64
-  t_11 = load t_10 + 0 as ptr
-  t_12 = load t_10 + 8 as u64
-  call @sa_print_bytes(&t_11, t_12)
-  !t_10
-  t_13 = load s + 0 as ptr
-  t_14 = load s + 8 as u64
-  t_15 = alloc 16
-  store t_15 + 0, &str_const_3 as ptr
-  store t_15 + 8, 1 as u64
-  t_16 = load t_15 + 0 as ptr
-  t_17 = load t_15 + 8 as u64
-  t_18 = call @sa_string_index_of(t_13, t_14, t_16, t_17, 0)
-  t_19 = load t_18 + 0 as ptr
-  t_20 = load t_18 + 8 as u64
-  call @sa_print_bytes(&t_19, t_20)
-  !t_18
+  t_8 = sext t_7 as i64
+  t_9 = alloc 64
+  t_10 = alloc 8
+  t_11 = call @sa_fmt_i64_into(t_8, 10, t_9, 64, &t_10)
+  t_12 = load t_10 + 0 as u64
+  t_13 = alloc 16
+  store t_13 + 0, t_9 as ptr
+  store t_13 + 8, t_12 as u64
+  !t_11
+  t_14 = load t_13 + 0 as ptr
+  t_15 = load t_13 + 8 as u64
+  call @sa_print_bytes(&t_14, t_15)
+  !t_13
+  t_16 = alloc 16
+  store t_16 + 0, &str_const_2 as ptr
+  store t_16 + 8, 1 as u64
+  t_17 = load t_16 + 0 as ptr
+  t_18 = load t_16 + 8 as u64
+  call @sa_print_bytes(&t_17, t_18)
+  !t_16
+  t_19 = load s + 0 as ptr
+  t_20 = load s + 8 as u64
   t_21 = alloc 16
-  store t_21 + 0, &str_const_2 as ptr
+  store t_21 + 0, &str_const_3 as ptr
   store t_21 + 8, 1 as u64
   t_22 = load t_21 + 0 as ptr
   t_23 = load t_21 + 8 as u64
-  call @sa_print_bytes(&t_22, t_23)
-  !t_21
-  t_24 = load s + 0 as ptr
-  t_25 = load s + 8 as u64
-  t_26 = alloc 16
-  store t_26 + 0, &str_const_4 as ptr
-  store t_26 + 8, 2 as u64
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  t_29 = call @sa_string_index_of(t_24, t_25, t_27, t_28, 0)
-  t_30 = load t_29 + 0 as ptr
-  t_31 = load t_29 + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  !t_29
-  t_32 = alloc 16
-  store t_32 + 0, &str_const_2 as ptr
-  store t_32 + 8, 1 as u64
-  t_33 = load t_32 + 0 as ptr
-  t_34 = load t_32 + 8 as u64
-  call @sa_print_bytes(&t_33, t_34)
-  !t_32
-  t_35 = call @sa_regex_compile(&str_const_5, 1, 1)
-  re = t_35
+  t_24 = call @sa_string_index_of(t_19, t_20, t_22, t_23, 0)
+  t_25 = sext t_24 as i64
+  t_26 = alloc 64
+  t_27 = alloc 8
+  t_28 = call @sa_fmt_i64_into(t_25, 10, t_26, 64, &t_27)
+  t_29 = load t_27 + 0 as u64
+  t_30 = alloc 16
+  store t_30 + 0, t_26 as ptr
+  store t_30 + 8, t_29 as u64
+  !t_28
+  t_31 = load t_30 + 0 as ptr
+  t_32 = load t_30 + 8 as u64
+  call @sa_print_bytes(&t_31, t_32)
+  !t_30
+  t_33 = alloc 16
+  store t_33 + 0, &str_const_2 as ptr
+  store t_33 + 8, 1 as u64
+  t_34 = load t_33 + 0 as ptr
+  t_35 = load t_33 + 8 as u64
+  call @sa_print_bytes(&t_34, t_35)
+  !t_33
   t_36 = load s + 0 as ptr
   t_37 = load s + 8 as u64
-  t_38 = load s + 0 as ptr
-  t_39 = load s + 8 as u64
-  t_40 = call @sa_regex_match(re, &t_38, t_39)
-  t_41 = ne t_40, 0
-  t_45 = alloc 8
-  br t_41 -> L_srch_hit_42, L_srch_miss_43
-L_srch_hit_42:
-  t_46 = call @sa_regex_group_start(t_40, 0)
-  store t_45 + 0, t_46 as i32
-  !t_46
-  t_47 = call @sa_regex_match_free(^t_40)
-  !t_47
-  jmp L_srch_end_44
-L_srch_miss_43:
-  store t_45 + 0, -1 as i32
-  t_48 = call @sa_regex_match_free(^t_40)
-  !t_48
-  jmp L_srch_end_44
-L_srch_end_44:
-  t_49 = load t_45 + 0 as i32
+  t_38 = alloc 16
+  store t_38 + 0, &str_const_4 as ptr
+  store t_38 + 8, 2 as u64
+  t_39 = load t_38 + 0 as ptr
+  t_40 = load t_38 + 8 as u64
+  t_41 = call @sa_string_index_of(t_36, t_37, t_39, t_40, 0)
+  t_42 = sext t_41 as i64
+  t_43 = alloc 64
+  t_44 = alloc 8
+  t_45 = call @sa_fmt_i64_into(t_42, 10, t_43, 64, &t_44)
+  t_46 = load t_44 + 0 as u64
+  t_47 = alloc 16
+  store t_47 + 0, t_43 as ptr
+  store t_47 + 8, t_46 as u64
   !t_45
-  t_50 = load t_49 + 0 as ptr
-  t_51 = load t_49 + 8 as u64
-  call @sa_print_bytes(&t_50, t_51)
-  !t_49
-  t_52 = alloc 16
-  store t_52 + 0, &str_const_2 as ptr
-  store t_52 + 8, 1 as u64
-  t_53 = load t_52 + 0 as ptr
-  t_54 = load t_52 + 8 as u64
-  call @sa_print_bytes(&t_53, t_54)
-  !t_52
-  t_55 = load s + 0 as ptr
-  t_56 = load s + 8 as u64
-  t_57 = call @sa_regex_compile(&str_const_3, 1, 1)
-  t_58 = load s + 0 as ptr
-  t_59 = load s + 8 as u64
-  t_60 = call @sa_regex_match(t_57, &t_58, t_59)
-  t_61 = ne t_60, 0
-  t_65 = alloc 8
-  br t_61 -> L_srch_hit_62, L_srch_miss_63
-L_srch_hit_62:
-  t_66 = call @sa_regex_group_start(t_60, 0)
-  store t_65 + 0, t_66 as i32
-  !t_66
-  t_67 = call @sa_regex_match_free(^t_60)
-  !t_67
-  jmp L_srch_end_64
-L_srch_miss_63:
-  store t_65 + 0, -1 as i32
-  t_68 = call @sa_regex_match_free(^t_60)
-  !t_68
-  jmp L_srch_end_64
-L_srch_end_64:
-  t_69 = load t_65 + 0 as i32
+  t_48 = load t_47 + 0 as ptr
+  t_49 = load t_47 + 8 as u64
+  call @sa_print_bytes(&t_48, t_49)
+  !t_47
+  t_50 = alloc 16
+  store t_50 + 0, &str_const_2 as ptr
+  store t_50 + 8, 1 as u64
+  t_51 = load t_50 + 0 as ptr
+  t_52 = load t_50 + 8 as u64
+  call @sa_print_bytes(&t_51, t_52)
+  !t_50
+  t_53 = call @sa_regex_compile(&str_const_5, 1, 1)
+  re = t_53
+  t_54 = load s + 0 as ptr
+  t_55 = load s + 8 as u64
+  t_56 = load s + 0 as ptr
+  t_57 = load s + 8 as u64
+  t_58 = call @sa_regex_match(re, &t_56, t_57)
+  t_59 = ne t_58, 0
+  t_63 = alloc 8
+  br t_59 -> L_srch_hit_60, L_srch_miss_61
+L_srch_hit_60:
+  t_64 = call @sa_regex_group_start(t_58, 0)
+  store t_63 + 0, t_64 as i32
+  !t_64
+  t_65 = call @sa_regex_match_free(^t_58)
   !t_65
-  t_70 = load t_69 + 0 as ptr
-  t_71 = load t_69 + 8 as u64
-  call @sa_print_bytes(&t_70, t_71)
+  jmp L_srch_end_62
+L_srch_miss_61:
+  store t_63 + 0, -1 as i32
+  t_66 = call @sa_regex_match_free(^t_58)
+  !t_66
+  jmp L_srch_end_62
+L_srch_end_62:
+  t_67 = load t_63 + 0 as i32
+  !t_63
+  t_68 = sext t_67 as i64
+  t_69 = alloc 64
+  t_70 = alloc 8
+  t_71 = call @sa_fmt_i64_into(t_68, 10, t_69, 64, &t_70)
+  t_72 = load t_70 + 0 as u64
+  t_73 = alloc 16
+  store t_73 + 0, t_69 as ptr
+  store t_73 + 8, t_72 as u64
+  !t_71
+  t_74 = load t_73 + 0 as ptr
+  t_75 = load t_73 + 8 as u64
+  call @sa_print_bytes(&t_74, t_75)
+  !t_73
+  t_76 = alloc 16
+  store t_76 + 0, &str_const_2 as ptr
+  store t_76 + 8, 1 as u64
+  t_77 = load t_76 + 0 as ptr
+  t_78 = load t_76 + 8 as u64
+  call @sa_print_bytes(&t_77, t_78)
+  !t_76
+  t_79 = load s + 0 as ptr
+  t_80 = load s + 8 as u64
+  t_81 = call @sa_regex_compile(&str_const_3, 1, 1)
+  t_82 = load s + 0 as ptr
+  t_83 = load s + 8 as u64
+  t_84 = call @sa_regex_match(t_81, &t_82, t_83)
+  t_85 = ne t_84, 0
+  t_89 = alloc 8
+  br t_85 -> L_srch_hit_86, L_srch_miss_87
+L_srch_hit_86:
+  t_90 = call @sa_regex_group_start(t_84, 0)
+  store t_89 + 0, t_90 as i32
+  !t_90
+  t_91 = call @sa_regex_match_free(^t_84)
+  !t_91
+  jmp L_srch_end_88
+L_srch_miss_87:
+  store t_89 + 0, -1 as i32
+  t_92 = call @sa_regex_match_free(^t_84)
+  !t_92
+  jmp L_srch_end_88
+L_srch_end_88:
+  t_93 = load t_89 + 0 as i32
+  !t_89
+  t_94 = sext t_93 as i64
+  t_95 = alloc 64
+  t_96 = alloc 8
+  t_97 = call @sa_fmt_i64_into(t_94, 10, t_95, 64, &t_96)
+  t_98 = load t_96 + 0 as u64
+  t_99 = alloc 16
+  store t_99 + 0, t_95 as ptr
+  store t_99 + 8, t_98 as u64
+  !t_97
+  t_100 = load t_99 + 0 as ptr
+  t_101 = load t_99 + 8 as u64
+  call @sa_print_bytes(&t_100, t_101)
+  !t_99
+  t_102 = alloc 16
+  store t_102 + 0, &str_const_2 as ptr
+  store t_102 + 8, 1 as u64
+  t_103 = load t_102 + 0 as ptr
+  t_104 = load t_102 + 8 as u64
+  call @sa_print_bytes(&t_103, t_104)
+  !t_102
+  !t_96
+  !t_95
+  !t_93
+  !t_81
+  !t_70
   !t_69
-  t_72 = alloc 16
-  store t_72 + 0, &str_const_2 as ptr
-  store t_72 + 8, 1 as u64
-  t_73 = load t_72 + 0 as ptr
-  t_74 = load t_72 + 8 as u64
-  call @sa_print_bytes(&t_73, t_74)
-  !t_72
-  !t_57
+  !t_67
   !re
+  !t_44
+  !t_43
+  !t_41
+  !t_38
+  !t_27
   !t_26
-  !t_15
+  !t_24
+  !t_21
+  !t_10
+  !t_9
+  !t_7
   !t_4
   !s
   ret 0
