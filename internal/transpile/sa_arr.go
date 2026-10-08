@@ -687,6 +687,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	// 调用结果基（`s.split(",").length` 经调用求句柄；saArrValueOf 已识
 	// split/数组返回调用，失败沿旧路落串门；见 step375）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
+		// `Object.keys(o).length` 已知布局字段数静态折叠（与 hasOwn 同门；
+		// 仅数据槽计数，存取器在场保守拒；未知布局沿旧门）。
+		if ce := pa.Expression.AsCallExpression(); ce != nil {
+			if n, ok := saLayoutKeyCount(ce, scope); ok {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %d\n", t, n))
+				return t, ""
+			}
+		}
 		if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++

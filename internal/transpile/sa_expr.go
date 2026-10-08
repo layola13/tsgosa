@@ -5116,6 +5116,39 @@ func saLayoutHasKey(key, objName string, scope *saScope) (string, bool) {
 	return "0", true
 }
 
+// saLayoutKeyCount 取已知布局实例槽数（`Object.keys(o).length` 静态折叠；
+// 仅 offsets 数据槽，存取器/方法在薄口模型中非实例槽（有则保守拒）；
+// 未知布局/非标识实参一律 false 沿旧门；与 saLayoutHasKey 同口径，禁另立）。
+func saLayoutKeyCount(ce *ast.CallExpression, scope *saScope) (int, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return 0, false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier ||
+		pa.Expression.Text() != "Object" || pa.Name() == nil || pa.Name().Text() != "keys" {
+		return 0, false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 || argNodes[0] == nil || argNodes[0].Kind != ast.KindIdentifier {
+		return 0, false
+	}
+	k, ok := scope.types[argNodes[0].Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return 0, false
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil {
+		return 0, false
+	}
+	if len(def.getters) > 0 || len(def.setters) > 0 {
+		return 0, false
+	}
+	return len(def.offsets), true
+}
+
 // saLowerNullish `??` 空合槽（左非零直通，否则右惰性求值；子集 null 即 0；
 // i32 位；形状证据：封存 lowerBinary:3182-3206）。
 func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
