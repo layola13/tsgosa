@@ -532,6 +532,11 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
 				return false
 			}
+			// `const p: P = JSON.parse(s)` 进布局具化（平 i32 接口；
+			// 与 stringify 同域，见 sa_expr.go；余形另步）。
+			if _, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression()); ok {
+				return saLowerJSONParseDecl(w, vd, name, vkind, scope, pos, refusals, nextTemp)
+			}
 			got, ok := saCallRetKind(vd.Initializer.AsCallExpression(), scope)
 			if !ok || got != vkind {
 				ln, col := pos(d.Pos())

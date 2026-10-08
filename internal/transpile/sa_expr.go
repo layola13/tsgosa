@@ -781,6 +781,104 @@ finish:
 	return out, false, ""
 }
 
+// saIsJSONParseCall 识别 `JSON.parse(x)` 单参调用（与 stringify 分发同形）。
+func saIsJSONParseCall(ce *ast.CallExpression) (*ast.Node, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return nil, false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier ||
+		pa.Expression.Text() != "JSON" || pa.Name() == nil || pa.Name().Text() != "parse" {
+		return nil, false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 || argNodes[0] == nil {
+		return nil, false
+	}
+	return argNodes[0], true
+}
+
+// saLowerJSONParseDecl `const p: P = JSON.parse(s)` 进平布局接口（parse 节点
+// 逐字段类型化 getter 具化；缺键/类型失配沿子集运行时策略归零（OOB→0、
+// null→0、缺省可选→0 同律，无 trap 原语）；串/嵌套字段另步大声拒）。
+func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration, name, vkind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	refuse := func(n *ast.Node, msg string) bool {
+		ln, col := pos(n.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	iname := strings.TrimPrefix(vkind, "inst:")
+	def, ok := scope.classes[iname]
+	if !ok || def == nil {
+		return refuse(vd.Name(), "JSON.parse needs a recorded interface layout (declare the interface first)")
+	}
+	if len(def.fields) == 0 {
+		return refuse(vd.Name(), "JSON.parse needs an interface with at least one field")
+	}
+	for _, f := range def.fields {
+		fk := def.fkinds[f.name]
+		if fk == "i32" {
+			continue
+		}
+		if def.fopt[f.name] {
+			continue
+		}
+		return refuse(vd.Name(), "JSON.parse takes flat i32 interfaces (field "+f.name+" is not lowerable yet)")
+	}
+	arg, ok := saIsJSONParseCall(vd.Initializer.AsCallExpression())
+	if !ok {
+		return refuse(vd.Name(), "JSON.parse takes one argument")
+	}
+	ah, msg := saEvalStr(w, arg, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return refuse(arg, msg)
+	}
+	scope.addImport("sa_std/encoding/json.sai")
+	sp, sl := saExpandStr(w, ah, nextTemp)
+	node := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_parse(&%s, %s)\n", node, sp, sl))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "i32" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+			continue
+		}
+		kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+		kp, kl := saExpandStr(w, kh, nextTemp)
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as i64\n", slot))
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_i64(%s, &%s, %s, &%s)\n", st, node, kp, kl, slot))
+		w.Write(fmt.Sprintf("  !%s\n", st))
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		v32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v32, v))
+		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v32))
+	}
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_free(^%s)\n", fr, node))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+	scope.types[name] = vkind
+	saConsumeOwn(scope, h)
+	saDeclareOwned(scope, name)
+	return true
+}
+
 // saLowerBooleanArg `Boolean(x)` 真值（字面量折叠 + 具名读；调用形返
 // done=false 由调用方拒；读无副作用形不落字直接折叠）。
 func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, nextTemp *int) (string, bool, string) {
