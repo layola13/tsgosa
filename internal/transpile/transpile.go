@@ -2629,14 +2629,14 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				}
 				if pd.Type.Kind == ast.KindUnionType {
 					// 单类+空联合形参记实例句柄（`b: Box|null` 即 Box 布局，
-					// 空吸收为 0 句柄；封存 union 首个已知布局同形；其余仍缺省 i32）。
+					// 空吸收为 0 句柄；封存 union 首个已知布局同形；其余大声拒——
+					// 缺省 i32 会把串/数组备选擦成整数（`typeof` 恒折真即实证），
+					// 禁静默错码；上游同位对未知联合拒收）。
 					if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), classes); ok {
 						kinds[name] = inst
 						continue
 					}
-					// 非折叠联合形参缺省 i32（cf tUnknown signature default；可折叠已由 saAnnotKind 办）。
-					kinds[name] = "i32"
-					continue
+					return nil, nil, nil, false
 				}
 				// 标量别名经顶层别名表消解（`c: Count`；封存 annotationType
 				// 别名词消解同形；inst 别名/未知沿旧门拒）。
