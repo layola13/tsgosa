@@ -169,6 +169,8 @@
 - H37 部分关闭：`a.length = 0` 字面清零已支持（`419_arr_clear`，len 槽置零 + 清后 push 回写验证；非零字面/变量沿旧门拒——增长需扩容、收缩需静态长度，无依据禁臆测）。
 - 回调下标形继续锁定（`431_idx_callbacks`：findLastIndex + 双参 map/filter；`432_reduce_some_idx`：三参 reduce + 双参 some；皆既有路径，node 镜算一致）。
 - 解构缺省做对（`438_destructure_defaults`）：数组 OOB 存 0、对象缺省静默丢皆曾静默错码；现字面量源编译期折叠（界内/键在走元，越界/缺键按种求值缺省式），标识源/形参源沿旧门大声拒。`272` 死缺省源已清（同字节）。
+- 标识源数组解构锁定（`439_arr_ident_destructure`，零改码）：字面量源早有 19/438 覆盖，标识源无聚焦锁；`const a=[10,20,30]; const [x,y]=a` 双边同过，SAI 越界守卫+槽装载同形（归一化后仅 `!` 释放位方言差），node 镜算 `10/20/30`，`sa check` 160 指令 ok，真机待 LLVM。
+- 静态初始化序实例径双边值错（deferred，不 blocking 439）：`static y = C.x+10` 非字面静态落实例槽但构造期无存入，`c.y` 双边同形（`load c+0`，check ok）读零 vs node 11；修法须定点（记表期求值依赖静态或构造期回填），另立修复项。
 - R-track 排期：串数组无参 `sort`/`toSorted` 拒收理由已过期（`@ts_str_compare` 现货已落地），需 sci 新增 `@ts_arr_sort_str`（数值插入同骨架，比较位换字典序）+ tsgosa 改调，下轮做。
 - R1-19 已闭环：sci `@ts_arr_sort_str`（f9612144）+ tsgosa 串 sort 直调/toSorted 克隆后排，`433_str_sort` 锁定原地/拷贝两形。
 - 补充横扫（R1-19 回归教训）：`sa check` 逐个跑全量 committed `main.sai`（--check 只比对字节，不验语义），377/384 直接通过；7 例（203-208 node/deno、289 hash）为 `bare node.sai` 插件装置，需 harness `--project-root`（run.sh:349），本环境裸 check 不可用，step305 后未动，与本轮改动无关。
@@ -180,12 +182,12 @@
 - 双拒对齐（诚实一致，不做，25 项）：bigint 字面量/运算、regexp 字面量、`delete`、this 形参、计算方法名调用、索引签名、`typeof` 查询、`Object.assign`/`fromEntries`/`create`/`defineProperty`、`matchAll`/`normalize`、Math.hypot/clz32、WeakMap、Symbol、Proxy、私有方法、具名 tag 形参、JSON.parse、`.bind`、嵌套/剩余解构、`for-of entries`、D11 链式 `?.`、B23 `?.()`、H37 非零、H57、F01 闭包捕获。
 - 分歧已修：对象解构缺省（C1 门 + C2 折叠，438）。
 - 分歧 open：串展开 `[..."ab"]`（上游通，薄口拒）→ 已复核：上游按 4 字节步长取 UTF-8 流并装入 i32 元（元值与元种“应为单字串”双错），属误编译；正确实现需逐字柄构造（新机制），暂不做，薄口拒收正确。
-- 分歧已决（类名直读非字面静态，零改码）：`static y: i32 = 1 + 2` / `static y: i32 = C.x + 10` 配 `console.log(C.y)`——上游 verdict 过但产物悬空 `load C + 0 as i32`（`sa check` 报 `UnknownRegister`，exit 0 + 无效 SAI 最坏类）；封存 `staticLiteralText` 只折字面量、非字面走实例槽 legacy，类名直读无实例可依故悬空。薄口大声拒正确，不移植。对侧皆通：字面静态类名读（折叠立即数）与实例读（含非字面，`load c + 0` 同形，check ok）。静态初始化序锁仓仅剩实例径核值。
+- 分歧已决（类名直读非字面静态，零改码，`672ffbcac`）：`static y: i32 = 1 + 2` / `static y: i32 = C.x + 10` 配 `console.log(C.y)`——上游 verdict 过但产物悬空 `load C + 0 as i32`（`sa check` 报 `UnknownRegister`，exit 0 + 无效 SAI 最坏类）；封存 `staticLiteralText` 只折字面量、非字面走实例槽 legacy，类名直读无实例可依故悬空。薄口大声拒正确，不移植。对侧皆通：字面静态类名读（折叠立即数）与实例读（含非字面，`load c + 0` 同形，check ok）。静态初始化序锁仓仅剩实例径核值。
 - 通过待锁仓（薄口通、无 demo，逐项核值后锁）：iface 继承/readonly、getter+setter 对、静态初始化序、箭头 this 嵌套、satisfies 串形、`Number()/String()/Boolean()` 构造、`new Array(n)`、`Set/Map` 构造对、`...rest` 形参、数组解构位。
 
 ## 待办清单（优先级序）
 
-- P0（静默错码类，见一修一）：串展开移植；复查 `==` 混合臂、算术 any 串形（已知双边错码，记限不限修）。
-- P1（覆盖锁仓）：上段通过待锁仓逐项核值建 demo。
+- P0（静默错码类，见一修一）：V05 stringify 运行时误编译；366 右值串元 `call()[i]`；H35 除零 SIGFPE（语义边界待裁决）；复查 `==` 混合臂、算术 any 串形（已知双边错码，记限不限修）；静态初始化序实例径双边值错（`c.y` 读零 vs node 11，见同步，待修）。（串展开已定案不移植，见分歧已决。）
+- P1（覆盖锁仓）：上段通过待锁仓逐项核值建 43x 式聚焦 demo（多项已有早期 broad 覆盖：95/98/314/321/359/357/47/310；静态初始化序类名径已定案不锁）。439 已锁数组标识源解构（`const [x,y]=a`，node 10/20/30，`sa check` 160 指令 ok，真机待 LLVM）；静态初始化序实例径改延期（见同步，双边值错待修）。
 - P2（回迁）：串扫描 `@ts_arr_scan_str`（约 170 行手写，sci 新符号 + 改调）。
-- P3（基建）：探针归档收仓；FFI 清单（Hono/better-sqlite3 拒收矩阵）；LLVM 原生复验（V05/366/H35）；npm 支持；单元测试框架全覆盖；`lib.d.ts` 经 sa_std 全量回迁。
+- P3（基建）：探针归档收仓（`/tmp/opencode` 源在本环境已失，须重建探针，生成器即文档）；FFI 清单（Hono/better-sqlite3 拒收矩阵）；LLVM 原生复验（V05/366/H35，本环境仅解释器后端）；npm 支持；单元测试框架全覆盖；`lib.d.ts` 经 sa_std 全量回迁。
