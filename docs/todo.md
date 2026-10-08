@@ -169,8 +169,9 @@
 - H37 部分关闭：`a.length = 0` 字面清零已支持（`419_arr_clear`，len 槽置零 + 清后 push 回写验证；非零字面/变量沿旧门拒——增长需扩容、收缩需静态长度，无依据禁臆测）。
 - 回调下标形继续锁定（`431_idx_callbacks`：findLastIndex + 双参 map/filter；`432_reduce_some_idx`：三参 reduce + 双参 some；皆既有路径，node 镜算一致）。
 - 解构缺省做对（`438_destructure_defaults`）：数组 OOB 存 0、对象缺省静默丢皆曾静默错码；现字面量源编译期折叠（界内/键在走元，越界/缺键按种求值缺省式），标识源/形参源沿旧门大声拒。`272` 死缺省源已清（同字节）。
-- 标识源数组解构锁定（`439_arr_ident_destructure`，零改码）：字面量源早有 19/438 覆盖，标识源无聚焦锁；`const a=[10,20,30]; const [x,y]=a` 双边同过，SAI 越界守卫+槽装载同形（归一化后仅 `!` 释放位方言差），node 镜算 `10/20/30`，`sa check` 160 指令 ok，真机待 LLVM。
+- 标识源数组解构锁定（`439_arr_ident_destructure`，零改码）：字面量源早有 19/438 覆盖，标识源无聚焦锁；`const a=[10,20,30]; const [x,y]=a` 双边同过，SAI 越界守卫+槽装载同形（归一化后仅 `!` 释放位方言差），node 镜算 `10/20/30`，`sa check` 160 指令 ok，真机 PASS（本环境 LLVM-14 后端实测 exit 0，stdout 逐字节一致）。
 - 静态初始化序实例径双边值错（deferred，不 blocking 439）：`static y = C.x+10` 非字面静态落实例槽但构造期无存入，`c.y` 双边同形（`load c+0`，check ok）读零 vs node 11；修法须定点（记表期求值依赖静态或构造期回填），另立修复项。
+- 全机真跑矩阵（本环境首跑，Zig 0.14.1 + LLVM-14 后端，`run.sh -j8`）：400 PASS / 39 FAIL；tsgosa 侧 Go 零改动（`internal/ cmd/` 与 `3af04664d` 零 diff，`--check` 439/439 + `--corpus` 286 agree 全绿），失败归因 sci 侧：sci 检出已新于 expected 生成时（含 `d90beedb` 及后改动）且工作树脏（`src/cli.zig/verifier.zig` 等本地修改）；抽查：376 浮点格式+末值漂移（实测 `7.000000/42.000000/0` vs 预期 `7/42/1`）、384 布尔打印漂移（实测 `1/0` vs 预期 `true/false`）、426 SIGSEGV（exit 139 空输出）、203 系 `PackageNotResolved`（插件未装）；39 名单逐个定因待原环境复核，V05/366/H35 转入此矩阵复核。
 - R-track 排期：串数组无参 `sort`/`toSorted` 拒收理由已过期（`@ts_str_compare` 现货已落地），需 sci 新增 `@ts_arr_sort_str`（数值插入同骨架，比较位换字典序）+ tsgosa 改调，下轮做。
 - R1-19 已闭环：sci `@ts_arr_sort_str`（f9612144）+ tsgosa 串 sort 直调/toSorted 克隆后排，`433_str_sort` 锁定原地/拷贝两形。
 - 补充横扫（R1-19 回归教训）：`sa check` 逐个跑全量 committed `main.sai`（--check 只比对字节，不验语义），377/384 直接通过；7 例（203-208 node/deno、289 hash）为 `bare node.sai` 插件装置，需 harness `--project-root`（run.sh:349），本环境裸 check 不可用，step305 后未动，与本轮改动无关。
@@ -188,6 +189,6 @@
 ## 待办清单（优先级序）
 
 - P0（静默错码类，见一修一）：V05 stringify 运行时误编译；366 右值串元 `call()[i]`；H35 除零 SIGFPE（语义边界待裁决）；复查 `==` 混合臂、算术 any 串形（已知双边错码，记限不限修）；静态初始化序实例径双边值错（`c.y` 读零 vs node 11，见同步，待修）。（串展开已定案不移植，见分歧已决。）
-- P1（覆盖锁仓）：上段通过待锁仓逐项核值建 43x 式聚焦 demo（多项已有早期 broad 覆盖：95/98/314/321/359/357/47/310；静态初始化序类名径已定案不锁）。439 已锁数组标识源解构（`const [x,y]=a`，node 10/20/30，`sa check` 160 指令 ok，真机待 LLVM）；静态初始化序实例径改延期（见同步，双边值错待修）。
+- P1（覆盖锁仓）：上段通过待锁仓逐项核值建 43x 式聚焦 demo（多项已有早期 broad 覆盖：95/98/314/321/359/357/47/310；静态初始化序类名径已定案不锁）。439 已锁数组标识源解构（`const [x,y]=a`，node 10/20/30，`sa check` 160 指令 ok，真机 PASS（LLVM-14 后端））；静态初始化序实例径改延期（见同步，双边值错待修）。
 - P2（回迁）：串扫描 `@ts_arr_scan_str`（约 170 行手写，sci 新符号 + 改调）。
 - P3（基建）：探针归档收仓（`/tmp/opencode` 源在本环境已失，须重建探针，生成器即文档）；FFI 清单（Hono/better-sqlite3 拒收矩阵）；LLVM 原生复验（V05/366/H35，本环境仅解释器后端）；npm 支持；单元测试框架全覆盖；`lib.d.ts` 经 sa_std 全量回迁。
