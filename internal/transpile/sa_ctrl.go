@@ -2998,19 +2998,58 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 		be := incr.AsBinaryExpression()
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
 			// `x = <i32>` 赋值形增量（与语句位同门）。
-			// f64 计数器增量直写（语句位 f64 分支同形；`i = i + 1.0` 经
-			// saEvalF64 得 fadd，整/小数量化皆 f64 世界自洽，条件位既有
-			// fcmp 通路配套；plain 永不归属，无释放）。
 			if be.Left != nil && be.Left.Kind == ast.KindIdentifier {
 				if k, ok := scope.types[be.Left.Text()]; ok && k == "f64" {
-					r, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
-					if msg != "" {
-						ln, col := pos(incr.Pos())
-						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msg})
-						return false
+					// f64 计数器增量分流（R1/R2）：后端 float 寄存器跨回边重定义
+					// 恒错——int 型初值跑一次、float 型转圈或 verifier 拒收，
+					// 上游 279-loop2 同错（m=1 vs 7）实锤。故 R1 整步进
+					// （`i = i ± K`，K 非浮）走 int（上游 `add` 同形；
+					// int 循环携带 sound，浮读自动转换，P1/fc7 实锤）；
+					// R2 余下（浮步进/非常值 RHS）大声拒（上游误编译先例，
+					// X-statread/串展开同例，不移植错值）。
+					ctr := be.Left.Text()
+					rhs := be.Right.AsBinaryExpression()
+					if rhs != nil && rhs.OperatorToken != nil &&
+						(rhs.OperatorToken.Kind == ast.KindPlusToken || rhs.OperatorToken.Kind == ast.KindMinusToken) {
+						var other *ast.Node
+						if rhs.Left != nil && rhs.Left.Kind == ast.KindIdentifier && rhs.Left.Text() == ctr {
+							other = rhs.Right
+						} else if rhs.Right != nil && rhs.Right.Kind == ast.KindIdentifier && rhs.Right.Text() == ctr {
+							other = rhs.Left
+						}
+						if other != nil && !saIsF64Operand(other, scope) {
+							op := "add"
+							if rhs.OperatorToken.Kind == ast.KindMinusToken {
+								op = "sub"
+							}
+							evalSide := func(n *ast.Node) (string, string) {
+								if n != nil && n.Kind == ast.KindIdentifier && n.Text() == ctr {
+									return ctr, ""
+								}
+								return saEvalI32(w, n, scope, pos, refusals, nextTemp)
+							}
+							l, msgL := evalSide(rhs.Left)
+							if msgL != "" {
+								ln, col := pos(incr.Pos())
+								*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msgL})
+								return false
+							}
+							r, msgR := evalSide(rhs.Right)
+							if msgR != "" {
+								ln, col := pos(incr.Pos())
+								*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for incrementor: " + msgR})
+								return false
+							}
+							t := fmt.Sprintf("t_%d", *nextTemp)
+							*nextTemp++
+							w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
+							w.Write(fmt.Sprintf("  %s = %s\n", ctr, t))
+							return true
+						}
 					}
-					w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), r))
-					return true
+					ln, col := pos(incr.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float for-loop step is not lowerable (loop-carried float miscompiles; cf. 279)"})
+					return false
 				}
 			}
 			target, okT := saBoundI32(scope, be.Left)
