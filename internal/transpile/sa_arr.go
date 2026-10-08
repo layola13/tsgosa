@@ -802,12 +802,16 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		return false
 	}
 	var arr string
+	litLen := -1
 	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, vd.Initializer, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array literal: " + msg})
 			return false
+		}
+		if vd.Initializer.AsArrayLiteralExpression().Elements != nil {
+			litLen = len(vd.Initializer.AsArrayLiteralExpression().Elements.Nodes)
 		}
 		arr = h
 	} else if base, ok := saArrBase(scope, vd.Initializer); ok {
@@ -829,13 +833,6 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 			return false
 		}
-		// 缺省值暂大声拒（OOB 存 0 而非缺省值即静默错码；字面量源下标编译期
-		// 已知，下步按界折叠；标识源长度未知，沿旧门）。
-		if be.Initializer != nil {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
-			return false
-		}
 		nm := be.Name()
 		if nm == nil {
 			idx++
@@ -851,6 +848,26 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			ln, col := pos(el.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
 			return false
+		}
+		// 缺省折叠（字面量源下标编译期已知：界内缺省恒死走元，
+		// 越界按 i32 求值缺省式；标识源长度未知沿旧门大声拒）。
+		if be.Initializer != nil && (litLen < 0 || idx >= litLen) {
+			if litLen < 0 {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+				return false
+			}
+			op, msg := saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = "i32"
+			saDeclareInitOwn(scope, name, op)
+			idx++
+			continue
 		}
 		v := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 		w.Write(fmt.Sprintf("  %s = %s\n", name, v))
@@ -973,6 +990,30 @@ func saLowerNsDestructuringDecl(d *ast.Node, pat *ast.Node, src string, scope *s
 	return true
 }
 
+// saLiteralKeySet 取对象字面量静态键集（解构缺省折叠用；方法/展开跳过；
+// 原始与去引号双记，调用点字段取法不一，按任一命中）。
+func saLiteralKeySet(lit *ast.Node) map[string]bool {
+	out := map[string]bool{}
+	if lit == nil || lit.Kind != ast.KindObjectLiteralExpression {
+		return out
+	}
+	for _, p := range lit.AsObjectLiteralExpression().Properties.Nodes {
+		if p == nil {
+			continue
+		}
+		if p.Kind != ast.KindPropertyAssignment && p.Kind != ast.KindShorthandPropertyAssignment {
+			continue
+		}
+		if nm := p.Name(); nm != nil {
+			out[nm.Text()] = true
+		}
+		if fn, ok := saObjPropName(p); ok {
+			out[fn] = true
+		}
+	}
+	return out
+}
+
 // saLowerObjDestructuringDecl lowering 对象解构声明（`const {x, y: z} = src`；
 // 布局源：声明注解 TypeReference 优先，次之源标识符绑定的 `inst:` 布局；
 // 串域头指针读记 str，其余 i32；rest/缺省/嵌套/计算键/未知域/重名一律大声拒。
@@ -1086,6 +1127,9 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 		return false
 	}
 	hid := src
+	// 字面量源键集（缺省折叠用；标识源存在性未知不折，litKeys 为空即全拒）。
+	isLitSrc := vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression
+	litKeys := saLiteralKeySet(vd.Initializer)
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
 		if el.Kind != ast.KindBindingElement {
 			continue
@@ -1094,13 +1138,6 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 		if be.DotDotDotToken != nil {
 			ln, col := pos(el.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
-			return false
-		}
-		// 缺省值暂大声拒（静默丢弃曾致缺字段读 0 而非缺省值；字面量源键集
-		// 编译期已知，下步按有无键折叠；标识源存在性未知，沿旧门）。
-		if be.Initializer != nil {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
 			return false
 		}
 		nm := be.Name()
@@ -1130,6 +1167,31 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			ln, col := pos(el.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
 			return false
+		}
+		// 缺省折叠（字面量源键集编译期已知：键在则缺省恒死走字段，
+		// 缺则按域种求值缺省式；标识源存在性未知沿旧门大声拒）。
+		if be.Initializer != nil && (!isLitSrc || !litKeys[field]) {
+			if !isLitSrc || litKeys[field] {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+				return false
+			}
+			var op, msg string
+			kind := "i32"
+			if def.fkinds[field] == "str" {
+				kind = "str"
+				op, msg = saEvalStr(w, be.Initializer, scope, pos, refusals, nextTemp)
+			} else {
+				op, msg = saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+			}
+			if msg != "" {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			scope.types[name] = kind
+			continue
 		}
 		if def.fkinds[field] == "str" {
 			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", name, hid, off))
