@@ -4754,6 +4754,20 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						}
 					}
 				}
+				// 数组清零（`a.length = 0` 即 len 槽置零；非零/非字面沿旧门拒——
+				// 增长需扩容、收缩需静态长度，两者皆无依据，禁臆测）。
+				if be.Left != nil && be.Left.Kind == ast.KindPropertyAccessExpression {
+					lpa := be.Left.AsPropertyAccessExpression()
+					if lpa.Expression != nil && lpa.Expression.Kind == ast.KindIdentifier && lpa.Name() != nil &&
+						lpa.Name().Kind == ast.KindIdentifier && lpa.Name().Text() == "length" {
+						if k, ok := scope.types[lpa.Expression.Text()]; ok && (k == "arr" || k == "arrStr") {
+							if be.Right != nil && be.Right.Kind == ast.KindNumericLiteral && be.Right.Text() == "0" {
+								w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", lpa.Expression.Text()))
+								return "0", ""
+							}
+						}
+					}
+				}
 				return "", "assignment to unknown/non-i32 variable"
 			}
 			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
