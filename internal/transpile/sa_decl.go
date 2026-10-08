@@ -47,6 +47,41 @@ func saQualifiedTypeName(tn *ast.TypeNode) (string, bool) {
 	return qn.Left.Text() + "_" + qn.Right.Text(), true
 }
 
+// saUnionNullBase 识别 `T | null`/`T | undefined` 二元可空注解（T 限
+// i32/str/bool；余元沿旧门；B02）。
+func saUnionNullBase(ut *ast.UnionTypeNode) (string, bool) {
+	if ut == nil || ut.Types == nil || len(ut.Types.Nodes) != 2 {
+		return "", false
+	}
+	base := ""
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+			return "", false
+		}
+		if base != "" {
+			return "", false
+		}
+		k, ok := saAnnotKind(m)
+		if !ok || (k != "i32" && k != "str" && k != "bool") {
+			return "", false
+		}
+		base = k
+	}
+	if base == "" {
+		return "", false
+	}
+	return base, true
+}
+
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 		// `using`/`await using` 同旗（后者 NodeFlagsAwaitUsing 含 Using 位）；
@@ -442,6 +477,24 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 封存 saNameOfType:197-199 用户类型皆 ptr 句柄 + instantiateLayout:227-230
 			// 未知模板回退裸布局；本仓句柄种为 arr，宽 8 对齐 8 与 widthOf 默认 8,8 同形）。
 			vkind, ok = saGenericHandleKind(vd.Type, scope)
+		}
+		// `T | null`/`T | undefined` 二元可空注解配空初值按 T 建种（null 即
+		// T 零值：i32/str/bool 零槽；余元/余初值沿旧门；B02）。
+		if vd.Type != nil && vd.Type.Kind == ast.KindUnionType {
+			if base, ok := saUnionNullBase(vd.Type.AsUnionTypeNode()); ok {
+				if vd.Initializer == nil && isConst {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
+					return false
+				}
+				if vd.Initializer == nil || vd.Initializer.Kind == ast.KindNullKeyword ||
+					vd.Initializer.Kind == ast.KindUndefinedKeyword {
+					w.Write(fmt.Sprintf("  %s = 0\n", name))
+					scope.types[name] = base
+					saDeclarePlain(scope, name)
+					continue
+				}
+			}
 		}
 		// 非折叠联合、typeof 声明、typeof 别名、泛型别名及函数类型注解按初值种绑定
 		//（cf any 擦除；可折叠已由 saAnnotKind 办；别名链终点 typeof 经上
