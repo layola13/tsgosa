@@ -3165,87 +3165,94 @@ func saLinkCallee(scope *saScope, name string) (string, bool) {
 // 别名（`fn:<gen>` → 转 @gen）共用同一条定向求值/补参/元数门。
 // 形状证据：封存 lowerCall:1414-1520（形参种定向、spread、default 补参、
 // 元数精确匹配、void 句用值返 nil）。
+// saEvalCallArg 形参种导向实参求值（自 saEvalFuncCall 内联闭包原样抽出，
+// 零语义变，供标签模板脱糖复用：str 形参走串求值，arr 形参走句柄值，
+// 实例须同类相授，余下走 bool 兼容求值）。
+func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
+	// arr 形参走句柄值；实例须同类相授；arr/str 句柄标识符直传；
+	// 其余走 bool 兼容求值。
+	if len(sig.paramKinds) == total && sig.paramKinds[i] == "str" {
+		return saEvalStr(w, a, scope, pos, refusals, nextTemp)
+	}
+	if len(sig.paramKinds) == total && sig.paramKinds[i] == "arr" {
+		// handle position: array values go through the handle bus; scalar values
+		// (enum instantiations as i32, etc.) pass through; cf lowerCall handle positions.
+		if op, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg == "" {
+			return op, ""
+		}
+		return saEvalI32(w, a, scope, pos, refusals, nextTemp)
+	}
+	// f64 params evaluate as floats.
+	if len(sig.paramKinds) == total && sig.paramKinds[i] == "f64" {
+		return saEvalF64(w, a, scope, pos, refusals, nextTemp)
+	}
+	// map 形参走句柄直传（Record 字典柄；与 arr/str 句柄位同形，
+	// 值种由被调注解 `saSeedParamMapVals` 自定，调用方只传柄）。
+	if len(sig.paramKinds) == total && sig.paramKinds[i] == "map" {
+		if a != nil && a.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a.Text()]; ok && k == "map" {
+				return a.Text(), ""
+			}
+		}
+		return "", "map argument needs a bound map"
+	}
+	if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
+		if a != nil && a.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
+				return a.Text(), ""
+			}
+			// 基类形参接派生实参多态（实参类为形参类本身或派生即直传句柄；与声明位 step395 同规：绑定跟初值，用点取决；无关/反向沿旧门）。
+			if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if saIsDerivedFrom(scope.classes, k[5:], sig.paramKinds[i][5:]) {
+					return a.Text(), ""
+				}
+			}
+		}
+		// 空字面量即 0 句柄（与 `Box|null` 空吸收同形；封存上游实发
+		// `call @f(0)`；错类沿旧门）。
+		if a != nil && (a.Kind == ast.KindNullKeyword ||
+			(a.Kind == ast.KindIdentifier && a.Text() == "undefined")) {
+			return "0", ""
+		}
+		// 接口形参配对象字面量实参：按注解布局现场具化（声明位
+		// saLowerObjectLiteral 同核；键集精确匹配，多/缺键沿其旧门；
+		// 类形参仍拒——上游字面量直传跳过构造 wiring，禁照抄）。
+		if a != nil && a.Kind == ast.KindObjectLiteralExpression {
+			if inm := sig.paramKinds[i][5:]; inm != "" {
+				if d, ok := scope.classes[inm]; ok && d != nil && d.isIface {
+					h, _, msg := saLowerObjectLiteral(w, a, inm, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return h, ""
+				}
+			}
+		}
+		return "", "instance argument needs matching class"
+	}
+	if a != nil && a.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
+			return a.Text(), ""
+		}
+	}
+	op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	// 非标识符实参的结果记种检查（串/实例句柄禁入 i32 位；标识符直传
+	// 沿上口径；读位只建种不验种，验种在此；铁律 4）。
+	if msg := saCheckI32Value(scope, op); msg != "" {
+		return "", msg
+	}
+	return op, ""
+}
+
 func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	callName := callee
 	var args []string
 	evalOne := func(i int, a *ast.Node, total int) (string, string) {
-		// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
-		// arr 形参走句柄值；实例须同类相授；arr/str 句柄标识符直传；
-		// 其余走 bool 兼容求值。
-		if len(sig.paramKinds) == total && sig.paramKinds[i] == "str" {
-			return saEvalStr(w, a, scope, pos, refusals, nextTemp)
-		}
-		if len(sig.paramKinds) == total && sig.paramKinds[i] == "arr" {
-			// handle position: array values go through the handle bus; scalar values
-			// (enum instantiations as i32, etc.) pass through; cf lowerCall handle positions.
-			if op, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg == "" {
-				return op, ""
-			}
-			return saEvalI32(w, a, scope, pos, refusals, nextTemp)
-		}
-		// f64 params evaluate as floats.
-		if len(sig.paramKinds) == total && sig.paramKinds[i] == "f64" {
-			return saEvalF64(w, a, scope, pos, refusals, nextTemp)
-		}
-		// map 形参走句柄直传（Record 字典柄；与 arr/str 句柄位同形，
-		// 值种由被调注解 `saSeedParamMapVals` 自定，调用方只传柄）。
-		if len(sig.paramKinds) == total && sig.paramKinds[i] == "map" {
-			if a != nil && a.Kind == ast.KindIdentifier {
-				if k, ok := scope.types[a.Text()]; ok && k == "map" {
-					return a.Text(), ""
-				}
-			}
-			return "", "map argument needs a bound map"
-		}
-		if len(sig.paramKinds) == total && len(sig.paramKinds[i]) > 5 && sig.paramKinds[i][:5] == "inst:" {
-			if a != nil && a.Kind == ast.KindIdentifier {
-				if k, ok := scope.types[a.Text()]; ok && k == sig.paramKinds[i] {
-					return a.Text(), ""
-				}
-				// 基类形参接派生实参多态（实参类为形参类本身或派生即直传句柄；与声明位 step395 同规：绑定跟初值，用点取决；无关/反向沿旧门）。
-				if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-					if saIsDerivedFrom(scope.classes, k[5:], sig.paramKinds[i][5:]) {
-						return a.Text(), ""
-					}
-				}
-			}
-			// 空字面量即 0 句柄（与 `Box|null` 空吸收同形；封存上游实发
-			// `call @f(0)`；错类沿旧门）。
-			if a != nil && (a.Kind == ast.KindNullKeyword ||
-				(a.Kind == ast.KindIdentifier && a.Text() == "undefined")) {
-				return "0", ""
-			}
-			// 接口形参配对象字面量实参：按注解布局现场具化（声明位
-			// saLowerObjectLiteral 同核；键集精确匹配，多/缺键沿其旧门；
-			// 类形参仍拒——上游字面量直传跳过构造 wiring，禁照抄）。
-			if a != nil && a.Kind == ast.KindObjectLiteralExpression {
-				if inm := sig.paramKinds[i][5:]; inm != "" {
-					if d, ok := scope.classes[inm]; ok && d != nil && d.isIface {
-						h, _, msg := saLowerObjectLiteral(w, a, inm, scope, pos, refusals, nextTemp)
-						if msg != "" {
-							return "", msg
-						}
-						return h, ""
-					}
-				}
-			}
-			return "", "instance argument needs matching class"
-		}
-		if a != nil && a.Kind == ast.KindIdentifier {
-			if k, ok := scope.types[a.Text()]; ok && (k == "arr" || k == "str") {
-				return a.Text(), ""
-			}
-		}
-		op, msg := saEvalBool(w, a, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return "", msg
-		}
-		// 非标识符实参的结果记种检查（串/实例句柄禁入 i32 位；标识符直传
-		// 沿上口径；读位只建种不验种，验种在此；铁律 4）。
-		if msg := saCheckI32Value(scope, op); msg != "" {
-			return "", msg
-		}
-		return op, ""
+		return saEvalCallArg(w, sig, i, a, total, scope, pos, refusals, nextTemp)
 	}
 	if ce.Arguments != nil {
 		nodes := ce.Arguments.Nodes
@@ -4589,6 +4596,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saEvalI32(w, e.AsAwaitExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindObjectLiteralExpression:
 		return "", "object literal needs a declaration binding (const p: Iface = {...})"
+	case ast.KindTaggedTemplateExpression:
+		// 用户标签调用脱糖（`String.raw` 另走串位；余标签本口径）。
+		return saLowerTaggedCall(w, e, scope, pos, refusals, nextTemp)
 	default:
 		return "", fmt.Sprintf("expression %s is not in the SA-lowerable subset", e.Kind.String())
 	}

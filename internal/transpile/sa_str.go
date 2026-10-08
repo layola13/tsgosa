@@ -2174,6 +2174,107 @@ func saRawTemplateText(n *ast.Node) string {
 	}
 }
 
+// saLowerTaggedCall lowering 用户标签模板脱糖；
+// tag 数组调用：首参须 string[]，插值按被调形参种求值
+// （与 saEvalFuncCall 同核）；`String.raw` 另走；数组标识每次求值新鲜
+// （JS 站点缓存同一数组恒等，子集值语义，差已记）；`?.` 标签/余参/默认
+// 参数/非 i32 返回（本口径）沿旧门大声拒）。
+func saLowerTaggedCall(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	tt := n.AsTaggedTemplateExpression()
+	if tt == nil || tt.Tag == nil || tt.Tag.Kind != ast.KindIdentifier {
+		return "", "tagged templates need a direct function tag (String.raw is the only supported member tag)"
+	}
+	tag := tt.Tag.Text()
+	sig, ok := scope.funcs[tag]
+	if !ok {
+		return "", "call to unknown function " + tag + " (declare it before use)"
+	}
+	var parts []string
+	var spans []*ast.Node
+	if tpl := tt.Template; tpl != nil {
+		switch tpl.Kind {
+		case ast.KindNoSubstitutionTemplateLiteral:
+			parts = append(parts, tpl.Text())
+		case ast.KindTemplateExpression:
+			tp := tpl.AsTemplateExpression()
+			if tp.Head != nil {
+				parts = append(parts, tp.Head.Text())
+			} else {
+				parts = append(parts, "")
+			}
+			if tp.TemplateSpans != nil {
+				for _, sp := range tp.TemplateSpans.Nodes {
+					span := sp.AsTemplateSpan()
+					if span == nil || span.Expression == nil {
+						return "", "tagged template interpolation is not lowerable"
+					}
+					spans = append(spans, span.Expression.AsNode())
+					tail := ""
+					if span.Literal != nil {
+						tail = span.Literal.Text()
+					}
+					parts = append(parts, tail)
+				}
+			}
+		default:
+			return "", "tagged template shape is not lowerable"
+		}
+	}
+	if sig.hasRest {
+		return "", "tagged calls with rest parameters are not lowerable yet"
+	}
+	if sig.params != 1+len(spans) {
+		return "", fmt.Sprintf("arity mismatch for tag %s: want %d, got %d", tag, sig.params, 1+len(spans))
+	}
+	if len(sig.paramKinds) != sig.params || sig.paramKinds[0] != "arr" {
+		return "", "tagged first parameter must be string[]"
+	}
+	if sig.retKind != "number" {
+		return "", "tagged call returns non-i32 value in i32 position"
+	}
+	var elems []string
+	for _, p := range parts {
+		elems = append(elems, saLowerStringLiteral(w, p, scope, nextTemp))
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(elems)*4))
+	for i, v := range elems {
+		pp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %d\n", pp, buf, i*4))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", pp, v))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
+	w.Write(fmt.Sprintf("  !%s\n", buf))
+	saOwnTemp(scope, h)
+	saMarkArrStr(scope, h)
+	args := []string{h}
+	for j, a := range spans {
+		op, msg := saEvalCallArg(w, sig, 1+j, a, sig.params, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		args = append(args, op)
+	}
+	args = append(args, sig.arrowCaps...)
+	if sig.arrowThis {
+		if scope.thisSelf == "" {
+			return "", "this capture outside a method is not lowerable"
+		}
+		args = append(args, scope.thisSelf)
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", t, tag, strings.Join(args, ", ")))
+	saOwnTemp(scope, t)
+	return t, ""
+}
+
 // saLowerTaggedTemplate lowering 标签模板（`String.raw` 不煮：raw 片 +
 // 常规渲染插值逐片拼接；其余标签大声拒；形状证据：封存 lowerTaggedTemplate:8772-8783）。
 func saLowerTaggedTemplate(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
