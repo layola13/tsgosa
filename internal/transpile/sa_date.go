@@ -662,6 +662,25 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	gl := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", gl, m))
+	// 组数据先拷出（group_ptr 指向 match 内部文本，match_free 后悬垂；
+	// 经 concat 空串拷入自有缓冲，`+` 路 saConcatSlices 同形）。
+	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/fmt.sai")
+	eb := saLowerStringLiteral(w, "", scope, nextTemp)
+	ebp, ebl := saExpandStr(w, eb, nextTemp)
+	cb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", cb, gp, gl, ebp, ebl))
+	saReleaseOwnedTemp(w, scope, eb)
+	cptr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", cptr, cb))
+	clen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", clen, cb))
+	saOwnTemp(scope, cptr)
+	saOwnTemp(scope, clen)
+	saOwnTemp(scope, cb)
 	fr := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
@@ -669,14 +688,19 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	gh := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, gp))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, gl))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, cptr))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, clen))
+	saReleaseOwnedTemp(w, scope, cptr)
+	saReleaseOwnedTemp(w, scope, clen)
+	saReleaseOwnedTemp(w, scope, cb)
 	saOwnTemp(scope, gh)
 	h := saNewEmptyArray(w, nextTemp)
 	saOwnTemp(scope, h)
 	saLowerArrayPush(w, h, gh, scope, nextTemp)
-	// gh 分支内具化分支内释放（drain 不可见分支内 alloc）。
-	saReleaseOwnedTemp(w, scope, gh)
+	// gh 移交数组持有（分支内 alloc 在 join 后不可见，`!gh` 即释放数组
+	// 仍引用的结构体、读出堆垃圾；记 consumed 跳过释放，16 字节随数组
+	// 存活，drain 跳过已消费，match 同例实锤）。
+	saConsumeOwn(scope, gh)
 	hp := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, h))
@@ -695,7 +719,7 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
 	ol := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ol, slot))
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ol, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
