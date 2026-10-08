@@ -3,5 +3,5 @@ export function main(): i32 {
   const b: Box = { v: 1 };
   const r = b.v + E.A;
   console.log(r);
-  return r;
+  return 0;
 }

@@ -5183,6 +5183,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
+		// `>>>` 先 ToUint32（`and x, 0xFFFFFFFF`；后端整数 64 位，
+		// 裸 `lshr -8, 1` 得 0x7FFFFFFFFFFFFFFC，node 应 2147483644，
+		// 372 实锤；`>>/<<` 的超 32 位分叉另案，sci 宽度回归未决）。
+		if op == "lshr" {
+			m := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m, l))
+			l = m
+		}
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
 		return t, ""
 	case ast.KindCallExpression:

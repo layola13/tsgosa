@@ -29,8 +29,7 @@
   t_13 = load t_11 + 8 as u64
   call @sa_print_bytes(&t_12, t_13)
   !t_11
-  t_14 = load b + 0 as i32
   !t_5
   !t_4
   !b
-  ret t_14
+  ret 0
