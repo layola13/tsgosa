@@ -11,7 +11,6 @@
 @const str_const_3 = utf8:"\n\0"
 @const str_const_4 = utf8:"z\0"
 @const str_const_5 = utf8:"1\0"
-@const str_const_6 = utf8:"\0"
 @main() -> i32:
   t_1 = alloc 16
   store t_1 + 0, &str_const_0 as ptr
@@ -81,7 +80,7 @@ L_rpl_hit_7:
   jmp L_rpl_end_9
 L_rpl_end_9:
   t_37 = load t_10 + 0 as ptr
-  t_38 = load t_10 + 0 as u64
+  t_38 = load t_10 + 8 as u64
   !t_10
   t_39 = alloc 16
   store t_39 + 0, t_37 as ptr
@@ -161,7 +160,7 @@ L_rpl_hit_50:
   jmp L_rpl_end_52
 L_rpl_end_52:
   t_80 = load t_53 + 0 as ptr
-  t_81 = load t_53 + 0 as u64
+  t_81 = load t_53 + 8 as u64
   !t_53
   t_82 = alloc 16
   store t_82 + 0, t_80 as ptr
@@ -274,24 +273,18 @@ L_rs_cont_142:
   jmp L_rs_top_114
 L_rs_end_115:
   !t_108
-  t_146 = alloc 16
-  store t_146 + 0, &str_const_6 as ptr
-  store t_146 + 8, 0 as u64
+  t_146 = call @ts_arr_join_strs(t_111)
   t_147 = load t_146 + 0 as ptr
   t_148 = load t_146 + 8 as u64
-  t_149 = call @ts_arr_join_vals(t_111, t_147, t_148)
+  call @sa_print_bytes(&t_147, t_148)
   !t_146
+  t_149 = alloc 16
+  store t_149 + 0, &str_const_3 as ptr
+  store t_149 + 8, 1 as u64
   t_150 = load t_149 + 0 as ptr
   t_151 = load t_149 + 8 as u64
   call @sa_print_bytes(&t_150, t_151)
   !t_149
-  t_152 = alloc 16
-  store t_152 + 0, &str_const_3 as ptr
-  store t_152 + 8, 1 as u64
-  t_153 = load t_152 + 0 as ptr
-  t_154 = load t_152 + 8 as u64
-  call @sa_print_bytes(&t_153, t_154)
-  !t_152
   !t_111
   !t_107
   !t_91

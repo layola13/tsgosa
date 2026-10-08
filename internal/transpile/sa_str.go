@@ -1643,14 +1643,12 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	if isRA {
 		saReleaseOwnedTemp(w, scope, rph)
-		// 段间插值已在循环内完成，此处空分隔 join 组装成串。
-		eph := saLowerStringLiteral(w, "", scope, nextTemp)
-		ep, el := saExpandStr(w, eph, nextTemp)
+		// 段组装经串元直拼（`@ts_arr_join_vals` 只懂 i32 元，会把段柄
+		// 当整数格式化；串段须 `@ts_arr_join_strs`）。
 		scope.addImport("sa_std/ts_string.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @ts_arr_join_vals(%s, %s, %s)\n", out, h, ep, el))
-		saReleaseOwnedTemp(w, scope, eph)
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_join_strs(%s)\n", out, h))
 		saOwnTemp(scope, out)
 		return [2]string{out, ""}
 	}
@@ -1953,10 +1951,10 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			w.Write(fmt.Sprintf("%s:\n", endL))
 			oh := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
 			ol := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", ol, slot))
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oh, slot))
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ol, slot))
 			w.Write(fmt.Sprintf("  !%s\n", slot))
 			out := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
