@@ -4153,3 +4153,47 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		return "", "", "unsupported array method " + method
 	}
 }
+
+// saLowerArrIn 数组下标 `in`（`k in arr` ⟺ 0<=k<len；稠密子集恒成立：
+// 空穴字面量拒收、非零 `length=` 截断沿旧门，故无洞可言；`?.` 沿旧门）。
+// 键守卫：null/undefined/布尔/串键/void 在 JS 下标语义下恒 false 或另义，
+// 子集 i32 求值会误折为 0/1，一律大声拒；具名须 i32 种（bool/f64/句柄禁入）。
+// 发射与 checked-index 同形（`load +8 as u64` 长槽 + `slt`/`sge` + `and`）。
+func saLowerArrIn(w printer.EmitTextWriter, be *ast.BinaryExpression, base string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	left := be.Left
+	if left == nil {
+		return "", "in operator needs a literal key and a known-layout object"
+	}
+	switch left.Kind {
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword,
+		ast.KindTrueKeyword, ast.KindFalseKeyword,
+		ast.KindVoidExpression,
+		ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindTemplateExpression, ast.KindTaggedTemplateExpression:
+		return "", "array 'in' needs an integer index (string keys and non-index values are not lowerable)"
+	case ast.KindIdentifier:
+		if k, ok := scope.types[left.Text()]; !ok || k != "i32" {
+			return "", "array 'in' needs an integer index (string keys and non-index values are not lowerable)"
+		}
+	}
+	kop, msg := saEvalI32(w, left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckI32Value(scope, kop); msg != "" {
+		return "", msg
+	}
+	lnT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lnT, base))
+	c1 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sge %s, 0\n", c1, kop))
+	c2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c2, kop, lnT))
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", t, c1, c2))
+	return t, ""
+}

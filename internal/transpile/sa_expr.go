@@ -1574,6 +1574,19 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saCallRetFn 取同文件函数返回别名目标（`(): Fn` 单 return 箭头直传登记；
+// 本名直调；link/别名被调/定义在后沿旧门）。
+func saCallRetFn(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	sig, ok := scope.funcs[ce.Expression.Text()]
+	if !ok || sig.retKind != "fn" || sig.retFn == "" {
+		return "", false
+	}
+	return sig.retFn, true
+}
+
 // saLowerProjCall lowers builtin-module projected calls (fs.readFile now; other surfaces
 // refuse loudly until their step; cf emitProjCall + StdProjectionTable).
 // saProjTable maps one fs/net surface to its projection contract (cf StdProjectionTable:
@@ -4241,6 +4254,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // 形状证据：封存 lowerBinary:3135-3177。品牌检查/动态键一律拒）。
 func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	verdict := ""
+	// 数组下标 `in` 先行（`k in arr` ⟺ 0<=k<len；对象字面量键臂在后，互斥）。
+	if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[be.Right.Text()]; ok && (k == "arr" || k == "arrStr") {
+			return saLowerArrIn(w, be, be.Right.Text(), scope, pos, refusals, nextTemp)
+		}
+	}
 	// 私有品牌检查（`#x in o` 按属主静态折叠；封存 lowerExpr 私有 `in` 相）。
 	if be.Left != nil && be.Left.Kind == ast.KindPrivateIdentifier {
 		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
