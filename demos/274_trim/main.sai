@@ -16,6 +16,7 @@
   t_3 = load t_1 + 8 as u64
   t_4 = call @ts_str_trim(t_2, t_3, 0)
   t_5 = load t_4 + 8 as u64
+  !t_4
   t_6 = sext t_5 as i64
   t_7 = alloc 64
   t_8 = alloc 8
@@ -43,6 +44,7 @@
   t_19 = load t_17 + 8 as u64
   t_20 = call @ts_str_trim(t_18, t_19, 1)
   t_21 = load t_20 + 8 as u64
+  !t_20
   t_22 = sext t_21 as i64
   t_23 = alloc 64
   t_24 = alloc 8
@@ -70,6 +72,7 @@
   t_35 = load t_33 + 8 as u64
   t_36 = call @ts_str_trim(t_34, t_35, 2)
   t_37 = load t_36 + 8 as u64
+  !t_36
   t_38 = sext t_37 as i64
   t_39 = alloc 64
   t_40 = alloc 8
@@ -97,6 +100,7 @@
   t_51 = load t_49 + 8 as u64
   t_52 = call @ts_str_trim(t_50, t_51, 0)
   t_53 = load t_52 + 8 as u64
+  !t_52
   t_54 = sext t_53 as i64
   t_55 = alloc 64
   t_56 = alloc 8
@@ -124,6 +128,7 @@
   t_67 = load t_65 + 8 as u64
   t_68 = call @ts_str_trim(t_66, t_67, 0)
   t_69 = load t_68 + 8 as u64
+  !t_68
   t_70 = sext t_69 as i64
   t_71 = alloc 64
   t_72 = alloc 8
@@ -151,6 +156,7 @@
   t_83 = load t_81 + 8 as u64
   t_84 = call @ts_str_trim(t_82, t_83, 0)
   t_85 = load t_84 + 8 as u64
+  !t_84
   t_86 = sext t_85 as i64
   t_87 = alloc 64
   t_88 = alloc 8
@@ -173,26 +179,20 @@
   !t_94
   !t_88
   !t_87
-  !t_84
   !t_81
   !t_72
   !t_71
-  !t_68
   !t_65
   !t_56
   !t_55
-  !t_52
   !t_49
   !t_40
   !t_39
-  !t_36
   !t_33
   !t_24
   !t_23
-  !t_20
   !t_17
   !t_8
   !t_7
-  !t_4
   !t_1
   ret 0

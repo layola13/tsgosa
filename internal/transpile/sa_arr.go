@@ -721,6 +721,8 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+	// 调用新柄读后即释（具名/借用基 no-op；join 径 705 同形）。
+	saReleaseOwnedTemp(w, scope, h)
 	return t, ""
 }
 

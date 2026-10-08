@@ -1249,17 +1249,24 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 					hbuf := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = call @%s(%s)\n", hbuf, sym, v))
+					saOwnTemp(scope, hbuf)
 					hptr := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", hptr, hbuf))
+					saOwnTemp(scope, hptr)
 					hlen := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", hlen, hbuf))
+					saOwnTemp(scope, hlen)
+					saReleaseOwnedTemp(w, scope, hbuf)
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = alloc 16\n", t))
+					saOwnTemp(scope, t)
 					w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", t, hptr))
 					w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", t, hlen))
+					saReleaseOwnedTemp(w, scope, hptr)
+					saReleaseOwnedTemp(w, scope, hlen)
 					acc = saConcatSlicesOpt(w, acc, t, scope, nextTemp)
 				}
 				return acc, false, ""

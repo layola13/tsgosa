@@ -66,6 +66,7 @@ L_ms_ok_12:
   store t_21 + 0, &str_const_0 as ptr
   store t_21 + 8, 1 as u64
   t_22 = load t_21 + 8 as u64
+  !t_21
   t_23 = sext t_22 as i64
   t_24 = alloc 64
   t_25 = alloc 8
@@ -93,7 +94,6 @@ L_ms_ok_12:
   !t_34
   !t_25
   !t_24
-  !t_21
   !t_13
   ret t_35
 @main() -> i32:

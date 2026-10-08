@@ -40,6 +40,7 @@ L_node_ok_2:
   !t_9
   !t_7
   t_15 = load t_14 + 8 as u64
+  !t_14
   t_16 = sext t_15 as i64
   t_17 = alloc 64
   t_18 = alloc 8
@@ -73,6 +74,7 @@ L_node_ok_4:
   store t_31 + 8, 16 as u64
   !t_27
   t_32 = load t_31 + 8 as u64
+  !t_31
   t_33 = sext t_32 as i64
   t_34 = alloc 64
   t_35 = alloc 8
@@ -95,11 +97,9 @@ L_node_ok_4:
   !t_41
   !t_35
   !t_34
-  !t_31
   !t_28
   !t_18
   !t_17
-  !t_14
   !t_10
   !t_4
   !t_1

@@ -15,6 +15,7 @@
   store t_6 + 8, t_5 as u64
   !t_4
   t_7 = load t_6 + 8 as u64
+  !t_6
   t_8 = sext t_7 as i64
   t_9 = alloc 64
   t_10 = alloc 8
@@ -64,7 +65,6 @@
   !t_19
   !t_10
   !t_9
-  !t_6
   !t_3
   !t_2
   ret 0

@@ -161,6 +161,7 @@ L_ms_done_25:
   !t_53
   !t_54
   t_56 = load t_55 + 8 as u64
+  !t_55
   t_57 = call @sa_modstate_get_u64(8683142006892504024)
   t_58 = ne t_57, 0
   !t_57
@@ -204,6 +205,7 @@ L_ms_done_33:
   !t_69
   !t_70
   t_72 = load t_71 + 8 as u64
+  !t_71
   t_73 = add t_56, t_72
   t_74 = sext t_73 as i64
   t_75 = alloc 64
@@ -268,6 +270,7 @@ L_ms_done_41:
   !t_97
   !t_98
   t_100 = load t_99 + 8 as u64
+  !t_99
   t_101 = call @sa_modstate_get_u64(8683142006892504024)
   t_102 = ne t_101, 0
   !t_101
@@ -311,13 +314,10 @@ L_ms_done_49:
   !t_113
   !t_114
   t_116 = load t_115 + 8 as u64
-  t_117 = add t_100, t_116
   !t_115
-  !t_99
+  t_117 = add t_100, t_116
   !t_76
   !t_75
-  !t_71
-  !t_55
   !t_33
   !t_13
   ret t_117

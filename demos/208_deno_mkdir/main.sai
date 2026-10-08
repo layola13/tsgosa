@@ -50,6 +50,7 @@ L_node_ok_6:
   !t_14
   !t_15
   t_21 = load t_20 + 8 as u64
+  !t_20
   t_22 = sext t_21 as i64
   t_23 = alloc 64
   t_24 = alloc 8
@@ -72,7 +73,6 @@ L_node_ok_6:
   !t_30
   !t_24
   !t_23
-  !t_20
   !t_16
   !t_11
   !t_9

@@ -28,6 +28,7 @@
   !t_5
   t_8 = call @greet(t)
   t_9 = load t_8 + 8 as u64
+  !t_8
   t_10 = add t_9, q
   t_11 = sext t_10 as i64
   t_12 = alloc 64
@@ -51,11 +52,10 @@
   !t_19
   t_22 = call @greet(t)
   t_23 = load t_22 + 8 as u64
-  t_24 = add t_23, q
   !t_22
+  t_24 = add t_23, q
   !t_13
   !t_12
-  !t_8
   !q
   !t
   ret t_24
