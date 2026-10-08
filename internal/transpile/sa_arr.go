@@ -829,6 +829,13 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 			return false
 		}
+		// 缺省值暂大声拒（OOB 存 0 而非缺省值即静默错码；字面量源下标编译期
+		// 已知，下步按界折叠；标识源长度未知，沿旧门）。
+		if be.Initializer != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+			return false
+		}
 		nm := be.Name()
 		if nm == nil {
 			idx++
@@ -996,8 +1003,10 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			def, _ = scope.classes[scope.thisClass]
 		}
 	}
-	if def == nil && vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression {
-		// 字面量源现场具化（无注解按键集匹配；具名注解须同名，泛型优先
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression &&
+		(def == nil || src == "") {
+		// 字面量源现场具化（注解供布局时亦须物化——旧 `def == nil` 条件跳过
+		// 注解+字面量形致 src 悬空；无注解按键集匹配；具名注解须同名，泛型优先
 		// 具化；封存 destructureObject:5465-5509 + layoutOfLiteral 键集匹配）。
 		want := ""
 		if vd.Type != nil {
@@ -1087,8 +1096,13 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 			return false
 		}
-		// 缺省值直接丢弃（P1-2：记录布局字段恒在，缺省永不触发；
-		// 上游同形忽略，连未定义名亦吞）。
+		// 缺省值暂大声拒（静默丢弃曾致缺字段读 0 而非缺省值；字面量源键集
+		// 编译期已知，下步按有无键折叠；标识源存在性未知，沿旧门）。
+		if be.Initializer != nil {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+			return false
+		}
 		nm := be.Name()
 		if nm == nil || nm.Kind != ast.KindIdentifier {
 			ln, col := pos(el.Pos())

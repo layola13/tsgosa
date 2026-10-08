@@ -2795,7 +2795,13 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 					return false
 				}
-				// 缺省值直接丢弃（P1-2：字段恒在，缺省永不触发；上游同形忽略）。
+				// 缺省值暂大声拒（静默丢弃曾致缺位读 0 而非缺省值；形参源恒为调用方
+				// 运行时值，存在性不可判定，沿旧门）。
+				if be.Initializer != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+					return false
+				}
 				nm := be.Name()
 				if nm == nil {
 					idx++
@@ -2842,7 +2848,13 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
 					return false
 				}
-				// 缺省值直接丢弃（P1-2：字段恒在，缺省永不触发；上游同形忽略）。
+				// 缺省值暂大声拒（静默丢弃曾致缺位读 0 而非缺省值；形参源恒为调用方
+				// 运行时值，存在性不可判定，沿旧门）。
+				if be.Initializer != nil {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
+					return false
+				}
 				nm := be.Name()
 				if nm == nil || nm.Kind != ast.KindIdentifier {
 					ln, col := pos(el.Pos())
