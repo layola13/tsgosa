@@ -172,3 +172,4 @@
 - R1-19 已闭环：sci `@ts_arr_sort_str`（f9612144）+ tsgosa 串 sort 直调/toSorted 克隆后排，`433_str_sort` 锁定原地/拷贝两形。
 - 补充横扫（R1-19 回归教训）：`sa check` 逐个跑全量 committed `main.sai`（--check 只比对字节，不验语义），377/384 直接通过；7 例（203-208 node/deno、289 hash）为 `bare node.sai` 插件装置，需 harness `--project-root`（run.sh:349），本环境裸 check 不可用，step305 后未动，与本轮改动无关。
 - super 实例字段读修正：`super.x`（实例数据字段）读实例槽恒错（JS 原型链不见实例态，应 undefined；双边同病），改诚实拒收；方法调用/存取器内联不动。`429_super_getter` 锁定 super getter 两形（纯值 + this 相关，node 镜算 `7/8`）。
+- 串 switch 双修（`435_str_switch`）：其一 legacy 链（1/4+ 臂）case 值柄只在体臂释放，default/直通径合并冲突，改 br 前即释；其二串-串臂裸 eq 比柄地址恒假（宏路同病），legacy 串臂改内容比较（复用 `saStrContentEq`，混合臂沿 eq 旧 rule），2/3 臂涉串改走 legacy。node 镜算 `9/3`。

@@ -3432,6 +3432,26 @@ func saEvalSwitchVal(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 	return "", imsg
 }
 
+// saSwitchHasStr 报告 switch 判别或任一 case 是否为串值（涉串改走
+// legacy 内容比较链；宏内裸 eq 比柄地址恒假，禁入宏）。
+func saSwitchHasStr(sw *ast.SwitchStatement, parts []saCasePart, scope *saScope) bool {
+	if sw == nil {
+		return false
+	}
+	if sw.Expression != nil && saIsStrExpr(sw.Expression, scope) {
+		return true
+	}
+	for _, p := range parts {
+		if p.node == nil {
+			continue
+		}
+		if e := p.node.AsCaseOrDefaultClause().Expression; e != nil && saIsStrExpr(e, scope) {
+			return true
+		}
+	}
+	return false
+}
+
 // saCasePart 是 switch 一臂（case 子句节点；default 另记）。
 type saCasePart struct {
 	node *ast.Node
@@ -3475,8 +3495,9 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			return false
 		}
 	}
-	// 2/3 臂走宏；余下（1/4+ 臂）保 legacy 链。
-	if len(parts) == 2 || len(parts) == 3 {
+	// 2/3 臂走宏；余下（1/4+ 臂）保 legacy 链。涉串改走 legacy
+	//（宏内裸 eq 比柄地址，串臂恒假；legacy 串-串臂内容比较下补）。
+	if (len(parts) == 2 || len(parts) == 3) && !saSwitchHasStr(sw, parts, scope) {
 		return saLowerSwitchMacro(w, s, disc, parts, defaultNode, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	}
 	endL := fmt.Sprintf("L_endswitch_%d", *nextLabel)
@@ -3506,7 +3527,16 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		}
 		cmp := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = eq %s, %s\n", cmp, disc, val))
+		// 串-串臂内容比较（裸 eq 比柄地址恒假；与 `==` 内容相等同形，
+		// 复用 saStrContentEq；混合臂沿 eq 恒假旧 rule）。
+		if ce := p.node.AsCaseOrDefaultClause().Expression; ce != nil && saIsStrExpr(sw.Expression, scope) && saIsStrExpr(ce, scope) {
+			cmp = saStrContentEq(w, disc, val, scope, nextTemp)
+		} else {
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", cmp, disc, val))
+		}
+		// case 值柄 br 前即释（体臂/跳过臂合并点状态一致；字面量/具名 no-op；
+		// br 后禁落字，否则另起无终结块）。
+		saReleaseOwnedTemp(w, scope, val)
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, bodyLabels[i], testLabels[i+1]))
 		stmts := p.node.AsCaseOrDefaultClause().Statements.Nodes
 		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
