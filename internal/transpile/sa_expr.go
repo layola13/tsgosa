@@ -3501,7 +3501,12 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, 1\n", t, op, target))
 		saStoreLocal(w, target, t, scope, nextTemp)
-		return t, ""
+		// store 已消费 t（move），返回值重读快照（后缀 old 臂同形；
+		// 否则 `++a + a` 外层读已 move 值，H24）。
+		nt := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", nt, target))
+		return nt, ""
 	}
 	old := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
