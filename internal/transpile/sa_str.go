@@ -704,6 +704,11 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 		}
+		// 非 f64 形产 f64 temp（如 f64 `x++` 旧值）按 temp 种纠偏，
+		// 否则经 sext 截断小数（`1.5++` 旧值印 `1`）。
+		if k, ok := scope.types[op]; ok && k == "f64" {
+			return saRenderInterpF64(w, op, scope, nextTemp), ""
+		}
 	}
 	return saRenderInterp(w, op, scope, nextTemp, "10"), ""
 }

@@ -4031,10 +4031,42 @@ func saLowerPostfixUnary(w printer.EmitTextWriter, un *ast.PostfixUnaryExpressio
 	return saLowerIncDec(w, un.Operand, un.Operator == ast.KindPlusPlusToken, false, scope, pos, refusals, nextTemp)
 }
 
-// saLowerIncDec lowering 自增（prefix=true 返回新值，false 返回旧值；仅 i32 绑定）。
+// saLowerIncDec lowering 自增（prefix=true 返回新值，false 返回旧值；i32 绑定 +
+// f64 局部分支，其余沿旧门）。
 func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	target, ok := saBoundI32(scope, operand)
 	if !ok {
+		// f64 局部自增（`fadd/fsub 1.0`；快照经 `fadd x, 0.0` 非移动拷贝，
+		// 与 i32 `add x, 0` 臂同形，H17/H24）。
+		if operand != nil && operand.Kind == ast.KindIdentifier {
+			if k, bound := scope.types[operand.Text()]; bound && k == "f64" {
+				tgt := operand.Text()
+				fop := "fadd"
+				if !up {
+					fop = "fsub"
+				}
+				if prefix {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, 1.0\n", t, fop, tgt))
+					saStoreLocal(w, tgt, t, scope, nextTemp)
+					nt := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = fadd %s, 0.0\n", nt, tgt))
+					scope.types[nt] = "f64"
+					return nt, ""
+				}
+				old := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = fadd %s, 0.0\n", old, tgt))
+				scope.types[old] = "f64"
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, 1.0\n", t, fop, tgt))
+				saStoreLocal(w, tgt, t, scope, nextTemp)
+				return old, ""
+			}
+		}
 		// 顶层可变槽自增（读-改-写回；旧值/新值语义同本地；i32 独占，串槽大声拒；
 		// 形状证据：封存 emitModIncDec:1191-1228）。
 		if operand != nil && operand.Kind == ast.KindIdentifier {
