@@ -174,3 +174,17 @@
 - 补充横扫（R1-19 回归教训）：`sa check` 逐个跑全量 committed `main.sai`（--check 只比对字节，不验语义），377/384 直接通过；7 例（203-208 node/deno、289 hash）为 `bare node.sai` 插件装置，需 harness `--project-root`（run.sh:349），本环境裸 check 不可用，step305 后未动，与本轮改动无关。
 - super 实例字段读修正：`super.x`（实例数据字段）读实例槽恒错（JS 原型链不见实例态，应 undefined；双边同病），改诚实拒收；方法调用/存取器内联不动。`429_super_getter` 锁定 super getter 两形（纯值 + this 相关，node 镜算 `7/8`）。
 - 串 switch 双修（`435_str_switch`）：其一 legacy 链（1/4+ 臂）case 值柄只在体臂释放，default/直通径合并冲突，改 br 前即释；其二串-串臂裸 eq 比柄地址恒假（宏路同病），legacy 串臂改内容比较（复用 `saStrContentEq`，混合臂沿 eq 旧 rule），2/3 臂涉串改走 legacy。node 镜算 `9/3`。
+
+## 全量扫描（77 探针电池，法：双边通拒 + check + demo 覆盖三核对）
+
+- 双拒对齐（诚实一致，不做，25 项）：bigint 字面量/运算、regexp 字面量、`delete`、this 形参、计算方法名调用、索引签名、`typeof` 查询、`Object.assign`/`fromEntries`/`create`/`defineProperty`、`matchAll`/`normalize`、Math.hypot/clz32、WeakMap、Symbol、Proxy、私有方法、具名 tag 形参、JSON.parse、`.bind`、嵌套/剩余解构、`for-of entries`、D11 链式 `?.`、B23 `?.()`、H37 非零、H57、F01 闭包捕获。
+- 分歧已修：对象解构缺省（C1 门 + C2 折叠，438）。
+- 分歧 open：串展开 `[..."ab"]`（上游通，薄口拒）→ 下轮移植。
+- 通过待锁仓（薄口通、无 demo，逐项核值后锁）：iface 继承/readonly、getter+setter 对、静态初始化序、箭头 this 嵌套、satisfies 串形、`Number()/String()/Boolean()` 构造、`new Array(n)`、`Set/Map` 构造对、`...rest` 形参、数组解构位。
+
+## 待办清单（优先级序）
+
+- P0（静默错码类，见一修一）：串展开移植；复查 `==` 混合臂、算术 any 串形（已知双边错码，记限不限修）。
+- P1（覆盖锁仓）：上段通过待锁仓逐项核值建 demo。
+- P2（回迁）：串扫描 `@ts_arr_scan_str`（约 170 行手写，sci 新符号 + 改调）。
+- P3（基建）：探针归档收仓；FFI 清单（Hono/better-sqlite3 拒收矩阵）；LLVM 原生复验（V05/366/H35）；npm 支持；单元测试框架全覆盖；`lib.d.ts` 经 sa_std 全量回迁。
