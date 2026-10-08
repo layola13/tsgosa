@@ -4334,11 +4334,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			if _, ok := bdef.offsets[pa.Name().Text()]; ok {
-				t, msg := saLowerClassFieldLoad(w, h, bdef, pa.Name().Text(), scope, nextTemp)
-				if msg != "" {
-					return "", msg
-				}
-				return t, ""
+				// super 实例数据字段读恒为 undefined（原型链查找不见实例槽；
+				// 薄口 i32 位无 undefined 值，读槽即静默错码，上游同形亦错）——
+				// 大声拒；方法调用/存取器内联另径不动。
+				return "", fmt.Sprintf("super.%s is an instance field (super reads see the prototype, never instance state)", pa.Name().Text())
 			}
 			v, msg := saInlineGetter(w, h, bdef, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {

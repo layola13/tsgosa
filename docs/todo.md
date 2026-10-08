@@ -167,3 +167,4 @@
 - `Array.from` mapper 形归属修正（`423_from_mapper`）：克隆/预分配新柄入 mapper 前未登记 own，mapper 内链式释放成 no-op，`check` 报 MemoryLeak（上游过）；补 `saOwnTemp(scope, base)` 一行（mapper 释基、decl 收新柄；无 mapper 径不动）。两形（切片/长度+mapper）`check` 全过，node 镜算 `4/20`。
 - 串 `.concat()` 归属修正（`426_str_concat`）：逐片折叠中间柄与末柄皆未登记，单/多参全报 MemoryLeak（串 `.concat` 零 demo 覆盖；数组 concat 另径不受影响）；中间柄用后即释、末柄登记（trim/slice 同口径；具名复用与 trim 链复测通过）。node 镜算 `abc/ab/ac`。
 - H37 部分关闭：`a.length = 0` 字面清零已支持（`419_arr_clear`，len 槽置零 + 清后 push 回写验证；非零字面/变量沿旧门拒——增长需扩容、收缩需静态长度，无依据禁臆测）。
+- super 实例字段读修正：`super.x`（实例数据字段）读实例槽恒错（JS 原型链不见实例态，应 undefined；双边同病），改诚实拒收；方法调用/存取器内联不动。`429_super_getter` 锁定 super getter 两形（纯值 + this 相关，node 镜算 `7/8`）。
