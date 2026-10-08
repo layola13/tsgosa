@@ -2105,6 +2105,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 	case "concat":
 		// 逐片折叠 @sa_string_concat（形状证据：封存 lowerStringMethod:7336-7347；
 		// 注意此处直接折叠缓冲柄，与 + 拼接的读回形不同，各守其源）。
+		// 归属：中间柄用后即释、末柄登记（具名/借用基 no-op；trim/slice 同口径）。
 		acc := recv
 		for i := range args {
 			n, msg := strArg(i)
@@ -2116,6 +2117,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", t, abp, abl, np, nl))
+			saReleaseOwnedTemp(w, scope, acc)
+			saOwnTemp(scope, t)
 			acc = t
 		}
 		return acc, false, ""
