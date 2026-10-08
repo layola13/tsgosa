@@ -457,6 +457,124 @@ func saCheckIntIndex(scope *saScope, idx string) string {
 	return ""
 }
 
+// saKeyofBase 解析 keyof 基布局（标识符 inst 绑定/this；余形 false）。
+func saKeyofBase(base *ast.Node, scope *saScope) (string, *saClassDef, bool) {
+	if base == nil {
+		return "", nil, false
+	}
+	if base.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[base.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			if def, ok := scope.classes[k[5:]]; ok && def != nil {
+				return k[5:], def, true
+			}
+		}
+		return "", nil, false
+	}
+	if base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {
+		if def, ok := scope.classes[scope.thisClass]; ok && def != nil {
+			return scope.thisClass, def, true
+		}
+	}
+	return "", nil, false
+}
+
+// saLowerKeyofIndex lowering `p[k]` 动态键读（布局须全 i32；字面量键静态
+// 折叠直读；动态键 strcmp 链命中直读、未知键归零（缺键同律）；`?.` 另步；
+// 非 i32 布局大声拒；上游句柄当下标错译，本仓 correct）。
+func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, layout string, def *saClassDef, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if ea.QuestionDotToken != nil {
+		return "", "optional keyof index reads are not lowerable yet"
+	}
+	key := ea.ArgumentExpression
+	if key != nil && (key.Kind == ast.KindStringLiteral || key.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+		// 字面量键静态折叠（缺键归零；非 i32 字段 loud）。
+		s, ok := saKeyofLitText(key)
+		if !ok {
+			return "", "keyof literal key is not lowerable"
+		}
+		off, ok := def.offsets[s]
+		if !ok {
+			return "0", ""
+		}
+		if def.fkinds[s] != "i32" {
+			return "", "keyof field is not i32"
+		}
+		base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			// 实例基经句柄直读（saArrValueOf 只识数组；实例柄即基）。
+			if h, _, msg2 := saInstBase(ea.Expression, scope); msg2 == "" && h != "" {
+				base = h
+			} else {
+				return "", "keyof base must be a bound instance"
+			}
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, base, off))
+		return t, ""
+	}
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "i32" {
+			return "", "keyof index needs all-i32 layout"
+		}
+	}
+	kh, msg := saEvalStr(w, key, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		if h, _, msg2 := saInstBase(ea.Expression, scope); msg2 == "" && h != "" {
+			base = h
+		} else {
+			return "", "keyof base must be a bound instance"
+		}
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	endL := fmt.Sprintf("L_ki_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	for _, f := range def.fields {
+		fh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+		eq := saStringContentEq(w, kh, fh, false, scope, nextTemp)
+		// 字段头分支内定义，用后（比较后、跳转前）即释；尾 drain 看不见分支域，
+		// 释后置于终结符后即断块（FallthroughForbidden），故先释后跳。
+		saReleaseOwnedTemp(w, scope, fh)
+		hitL := fmt.Sprintf("L_ki_hit_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		nextL := fmt.Sprintf("L_ki_next_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, hitL, nextL))
+		w.Write(fmt.Sprintf("%s:\n", hitL))
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, base, def.offsets[f.name]))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, v))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", nextL))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
+
+// saKeyofLitText 取字面量键文本（串字面量/无替换模板，取煮后文本）。
+func saKeyofLitText(key *ast.Node) (string, bool) {
+	if key == nil {
+		return "", false
+	}
+	if key.Kind != ast.KindStringLiteral && key.Kind != ast.KindNoSubstitutionTemplateLiteral {
+		return "", false
+	}
+	return key.Text(), true
+}
+
 // saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`/`a?.[i]`（基为绑定数组或数组值调用；
 // `?.` 空基归零；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -472,6 +590,11 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 			}
 			return saLowerMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 		}
+	}
+	// keyof 动态键读先行（`p[k]`；实例基非数组，saArrValueOf 不识；字面量
+	// 键静态折叠，动态键 strcmp 链；上游句柄当下标错译，本仓 correct）。
+	if layout, def, ok := saKeyofBase(ea.Expression, scope); ok {
+		return saLowerKeyofIndex(w, ea, layout, def, scope, pos, refusals, nextTemp)
 	}
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
