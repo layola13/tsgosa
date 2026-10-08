@@ -2581,6 +2581,31 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 	if mod != "fs" && mod != "net" {
 		return "", false, mod + "." + remote + " is not a projected surface"
 	}
+	if mod == "fs" && remote == "existsSync" {
+		// existsSync(path) 即状态判零（SA_FS_OK=0；任错皆 false 与 Node 同义；
+		// 与 statSync 等 remain 拒因区分；P-A1）。
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		if len(argNodes) != 1 {
+			return "", false, "fs.existsSync takes 1 argument"
+		}
+		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		scope.addImport("sa_std/fs.sai")
+		bp, bl := saExpandStr(w, h, nextTemp)
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_std_fs_exists(&%s, %s)\n", st, bp, bl))
+		flag := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", flag, st))
+		saReleaseStmtTemp(w, scope, st)
+		return flag, false, ""
+	}
 	symbol, module, extra, strArgs, unwrap, fallible, nargs, ok := saProjTable(remote)
 	if !ok {
 		return "", false, mod + "." + remote + " is not a projected surface"
