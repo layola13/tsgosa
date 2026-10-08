@@ -6,14 +6,14 @@
 @const str_const_0 = utf8:"\n\0"
 @main__user() -> i32:
   s = 0
-  t_1 = sgt 6.5, 6
+  t_1 = fcmp_gt 6.5, 6
   EXPAND IF_TRUE t_1, L_then_1, L_endif_3
 L_then_1:
   t_2 = add s, 1
   !s
   s = t_2
 L_endif_3:
-  t_3 = sgt 2.5, 2
+  t_3 = fcmp_gt 2.5, 2
   EXPAND IF_TRUE t_3, L_then_4, L_endif_6
 L_then_4:
   t_4 = add s, 10

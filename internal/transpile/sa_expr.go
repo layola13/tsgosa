@@ -4171,6 +4171,20 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
 			return true
 		}
+		// 顶层浮点常量折叠值（`const PI2 = 6.5`；须先于 i32 折叠分支，
+		// 否则条件位 `PI2 > 6` 落 sgt 恒错，312 实锤）。
+		if text, ok := scope.topConsts[e.Text()]; ok && !scope.topStr[e.Text()] && saIsFloatLit(text) {
+			return true
+		}
+	}
+	// 命名空间浮点常量（`N.K` 拍扁键；与标识符臂同理）。
+	if e.Kind == ast.KindPropertyAccessExpression {
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			key := pa.Expression.Text() + "." + pa.Name().Text()
+			if text, ok := scope.topConsts[key]; ok && !scope.topStr[key] && saIsFloatLit(text) {
+				return true
+			}
+		}
 	}
 	// 裸调用经返回种（`parseFloat/Number` 回 f64；前缀取负臂同式已覆，
 	// 此处补直接操作数位，否则条件位 `parseFloat(x) > 4` 落 sgt 错值）。
@@ -4230,6 +4244,21 @@ func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
 			}
 		}
+		// 顶层/命名空间浮点常量解折叠（`Text()` 给出的是常量名而非字面量，
+		// 直通即 panic；判定位已由 saIsF64Operand covering）。
+		if e.Kind == ast.KindIdentifier {
+			if text, ok := scope.topConsts[e.Text()]; ok && !scope.topStr[e.Text()] && saIsFloatLit(text) {
+				return text, ""
+			}
+		}
+		if e.Kind == ast.KindPropertyAccessExpression {
+			if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				key := pa.Expression.Text() + "." + pa.Name().Text()
+				if text, ok := scope.topConsts[key]; ok && !scope.topStr[key] && saIsFloatLit(text) {
+					return text, ""
+				}
+			}
+		}
 		return e.Text(), ""
 	}
 	return saEvalI32(w, orig, scope, pos, refusals, nextTemp)
@@ -4262,7 +4291,20 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
 			return e.Text(), ""
 		}
+		// 顶层浮点常量折叠值直传（与 saF64Side 解折叠同形）。
+		if text, ok := scope.topConsts[e.Text()]; ok && !scope.topStr[e.Text()] && saIsFloatLit(text) {
+			return text, ""
+		}
 		return "", e.Text() + " is not a float"
+	case ast.KindPropertyAccessExpression:
+		// 命名空间浮点常量折叠值直传（`N.K`；串/未知键沿旧门）。
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+			key := pa.Expression.Text() + "." + pa.Name().Text()
+			if text, ok := scope.topConsts[key]; ok && !scope.topStr[key] && saIsFloatLit(text) {
+				return text, ""
+			}
+		}
+		return "", "unsupported float expression"
 	case ast.KindParenthesizedExpression:
 		return saEvalF64Strict(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindPrefixUnaryExpression:
