@@ -2734,6 +2734,34 @@ func saLowerFnReturn(w printer.EmitTextWriter, s *ast.Node, expr *ast.Node, scop
 	if expr == nil || (expr.Kind != ast.KindArrowFunction && expr.Kind != ast.KindFunctionExpression) {
 		return refuse(at, "function return needs an arrow or function expression value (named passthrough is Phase 2)"), true
 	}
+	// 有捕获箭头返回大声拒（捕获跨帧无表示，旧路吐无效 SAI，实锤
+	// UnknownRegister；无捕获箭头沿旧路登记 retFn，386 在跑；具名透传沿上门拒）。
+	if expr.Kind == ast.KindArrowFunction || expr.Kind == ast.KindFunctionExpression {
+		if body := expr.Body(); body != nil {
+			if params, ok := saArrowParamNames(expr); ok {
+				capName := ""
+				if expr.Kind == ast.KindFunctionExpression {
+					if fe := expr.AsFunctionExpression(); fe != nil {
+						if nm := fe.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+							capName = nm.Text()
+						}
+					}
+				}
+				caps := saArrowCaptures(body, capName, params, scope)
+				for _, cp := range caps {
+					if strings.HasPrefix(scope.types[cp], "fn:") {
+						return refuse(at, "function value capture "+cp+" is not lowerable"), true
+					}
+				}
+				if len(caps) > 0 {
+					return refuse(at, "function value return needs closure capture across frames (Phase 2)"), true
+				}
+				if scope.thisSelf != "" && scope.thisClass != "" && saArrowUsesThis(body) {
+					return refuse(at, "function value return needs closure capture across frames (Phase 2)"), true
+				}
+			}
+		}
+	}
 	if scope.curFunc == "" {
 		return refuse(at, "function value return outside a named function is not lowerable"), true
 	}

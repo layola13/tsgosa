@@ -1,0 +1,2 @@
+# 有捕获箭头返回大声拒（捕获跨帧无表示，旧路吐无效SAI占位返0+跨帧传参；无捕获箭头沿旧路，386在跑；具名透传沿旧门拒）
+function value return needs closure capture across frames (Phase 2)
