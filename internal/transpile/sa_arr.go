@@ -2785,19 +2785,10 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		}
 		h := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
-		n1 := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = add %s, 1\n", n1, n))
-		nby := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = mul %s, 4\n", nby, n1))
-		buf := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc %s\n", buf, nby))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
-		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, n))
-		w.Write(fmt.Sprintf("  !%s\n", buf))
+		// R1-17 回迁映射：零数组预分配由 `sci/sa_std/ts_array.sa`
+		// `@ts_arr_mkcopy` 实现（多 1 槽位旧形一致，返柄调用方持有）。
+		scope.addImport("sa_std/ts_array.sa")
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_mkcopy(%s)\n", h, n))
 		base = h
 	} else {
 		src, msg := saArrValueOf(w, argNodes[0], scope, pos, refusals, nextTemp)
