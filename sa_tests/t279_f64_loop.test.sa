@@ -1,0 +1,9 @@
+@import "../demos/279_f64_loop/main.sa"
+@import "sa_std/testing/assert.sai"
+
+@test "279_f64_loop"():
+L_ENTRY:
+    v = call @main__user()
+    call @sa_assert_eq_i64(v, 73, 27901)
+    !v
+    return

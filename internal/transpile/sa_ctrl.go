@@ -3028,7 +3028,8 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 					// 后整步进毒化跨回边（440 转圈实锤），故 R1 整步进
 					// （`i = i ± K`，K 非浮）改走浮（`fadd/fsub`，整字面补
 					// .0，i32 变量后端强制转换实锤直传；浮生环携带真机已验）；
-					// R2 余下（浮步进/非常值 RHS）大声拒（上游误编译先例，
+					// 浮步进（K 为浮）亦走浮（它侧经严格求值；小数步进真机已验）；
+					// R2 余下（非 ±/非常值 RHS）大声拒（上游误编译先例，
 					// X-statread/串展开同例，不移植错值）。
 					ctr := be.Left.Text()
 					rhs := be.Right.AsBinaryExpression()
@@ -3040,7 +3041,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 						} else if rhs.Right != nil && rhs.Right.Kind == ast.KindIdentifier && rhs.Right.Text() == ctr {
 							other = rhs.Left
 						}
-						if other != nil && !saIsF64Operand(other, scope) {
+						if other != nil {
 							op := "fadd"
 							if rhs.OperatorToken.Kind == ast.KindMinusToken {
 								op = "fsub"
@@ -3048,6 +3049,9 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 							evalSide := func(n *ast.Node) (string, string) {
 								if n != nil && n.Kind == ast.KindIdentifier && n.Text() == ctr {
 									return ctr, ""
+								}
+								if saIsF64Operand(n, scope) {
+									return saEvalF64Strict(w, n, scope, pos, refusals, nextTemp)
 								}
 								return saEvalI32(w, n, scope, pos, refusals, nextTemp)
 							}

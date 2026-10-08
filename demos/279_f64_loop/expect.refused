@@ -1,2 +1,0 @@
-# f64 循环携带拒收（loop2 浮点步进；后端 float 寄存器跨回边重定义恒错——int 初值跑一次、float 初值转圈或 verifier 拒收；上游同输入 verdict 过但 m=1（应 7），产物无效，薄口大声拒；loop1 整步进形由 440 锁定通过）
-float for-loop step is not lowerable
