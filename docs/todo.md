@@ -267,3 +267,7 @@
 | 29 | .length 基非数组串 | ~9 | S | P-A2 | 门放宽或拒 |
 | 30 | async/Promise 事件循环 | 88 文件 | XL | P-C | 见 #1 |
 分期顺序：P-A1（6/13/17/18）→ P-A2（15/19/25/26/28/29）→ P-A3（5）→ P-B1（2）→ P-B2（3/4/11/20/21/22/24）→ P-B3（8/9/10/12/14/16/23）→ P-C（1/7/27/30）。
+
+## P4d P-A1 进展（existsSync 调研中）
+- replace/g→replaceAll 已推（472）。
+- existsSync：sci 侧现货 `FS_EXISTS` 宏（@sa_std_fs_exists），tsgosa `saProjTable` 加一行即通，待动手+锁仓。
