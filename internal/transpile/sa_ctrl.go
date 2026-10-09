@@ -213,7 +213,16 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported string += rhs: " + msg})
 					return false
 				}
-				out := saConcatSlices(w, be.Left.Text(), h, scope, nextTemp)
+				// 空柄左基先文本化（nullConst 记名零句柄直读即崩；JS `+=` 空臂按 `+` 文本义；505）。
+				leftOp := be.Left.Text()
+				if k, ok := scope.nullConst[be.Left.Text()]; ok {
+					text := "null"
+					if k == "undefined" {
+						text = "undefined"
+					}
+					leftOp = saLowerStringLiteral(w, text, scope, nextTemp)
+				}
+				out := saConcatSlices(w, leftOp, h, scope, nextTemp)
 				// 串重绑先释旧柄（H13：与上游 `!s` 先释同形；saConcatSlices
 				// 已释输入 temps，具名旧值在此释；新柄 consume+复位防双释）。
 				saRebindRelease(w, scope, be.Left.Text())
@@ -4663,6 +4672,14 @@ func saMarkRebound(scope *saScope, dst string) {
 }
 
 // saClearNullConst 直线赋值成功清空调柄记名（右值门已保非空；臂内 depth>0 不清，join 他臂仍空；nil 表 delete 安全；503）。
+// saIsNullConst 报告记名空柄（初值 null/undefined 未重绑；值 "null"/"undefined" 供文本化，存在性供拒收门；505）。
+func saIsNullConst(scope *saScope, name string) bool {
+	if scope == nil {
+		return false
+	}
+	_, ok := scope.nullConst[name]
+	return ok
+}
 func saClearNullConst(scope *saScope, dst string) {
 	if scope == nil || scope.armDepth > 0 {
 		return

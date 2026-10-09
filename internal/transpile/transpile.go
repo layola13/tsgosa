@@ -3382,7 +3382,7 @@ type saScope struct {
 	// nullConst 记 `const/let T|null` 空初值绑定（const 永不重绑；let 由直线赋值成功清除，臂内不清；名下恒零
 	// 句柄；具名头读位（`.length`）凭此大声拒，禁读空柄崩机；`?.`
 	// 守卫径与 let 重绑径不受影响；491）。
-	nullConst map[string]bool
+	nullConst map[string]string
 	// armDepth 计条件臂嵌套（saLowerArm 进出 ++/--；直线 depth0；裸块保守计入；503）。
 	armDepth     int
 	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)

@@ -84,6 +84,19 @@ func saUnionNullBase(ut *ast.UnionTypeNode) (string, bool) {
 	return base, true
 }
 
+// saNullInitKind 空初值种类（`null` 字面即 "null"，缺初值/`undefined` 即 "undefined"；505 文本化用）。
+// saIsUndefinedIdent 报告 `undefined` 标识符初值（TS AST 中 `= undefined` 为 Identifier 非关键字；保留字不可遮蔽，文本判定安全；505）。
+func saIsUndefinedIdent(e *ast.Node) bool {
+	return e != nil && e.Kind == ast.KindIdentifier && e.Text() == "undefined"
+}
+
+func saNullInitKind(vd *ast.VariableDeclaration) string {
+	if vd != nil && vd.Initializer != nil && vd.Initializer.Kind == ast.KindNullKeyword {
+		return "null"
+	}
+	return "undefined"
+}
+
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 		// `using`/`await using` 同旗（后者 NodeFlagsAwaitUsing 含 Using 位）；
@@ -565,15 +578,17 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					return false
 				}
 				if vd.Initializer == nil || vd.Initializer.Kind == ast.KindNullKeyword ||
-					vd.Initializer.Kind == ast.KindUndefinedKeyword {
+					vd.Initializer.Kind == ast.KindUndefinedKeyword || saIsUndefinedIdent(vd.Initializer) {
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = base
+					// saNullInitKind 空初值种类（`null` 字面即 "null"，缺初值/`undefined` 即 "undefined"；505 文本化用）。
+					// 注：vd 类型断言由调用点保证（两记表点皆处 VariableDeclaration 循环内）。
 					// 空初值 const/let 皆记（const 永不重绑；let 由直线赋值成功清除，臂内不清；503）。
 					if base == "str" || base == "arr" {
 						if scope.nullConst == nil {
-							scope.nullConst = map[string]bool{}
+							scope.nullConst = map[string]string{}
 						}
-						scope.nullConst[name] = true
+						scope.nullConst[name] = saNullInitKind(vd)
 					}
 					// const 空柄永不重绑，记名供头读位大声拒（491；let/重绑/余种沿旧门）。
 					saDeclarePlain(scope, name)
@@ -585,7 +600,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 口径；`?.` 守卫读位凭此解析布局，其余联合/初值沿旧门）。
 			if inst, ok := saUnionInstKind(vd.Type.AsUnionTypeNode(), scope.classes); ok {
 				if vd.Initializer == nil || vd.Initializer.Kind == ast.KindNullKeyword ||
-					vd.Initializer.Kind == ast.KindUndefinedKeyword {
+					vd.Initializer.Kind == ast.KindUndefinedKeyword || saIsUndefinedIdent(vd.Initializer) {
 					if vd.Initializer == nil && isConst {
 						ln, col := pos(d.Pos())
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "const declarations must be initialized"})
@@ -596,9 +611,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					// const 空实例永不重绑，记名供成员读/调位大声拒（493；let/重绑沿旧门）。
 					// 空初值 const/let 皆记（493 记 const，503 扩至 let；清除律同上）。
 					if scope.nullConst == nil {
-						scope.nullConst = map[string]bool{}
+						scope.nullConst = map[string]string{}
 					}
-					scope.nullConst[name] = true
+					scope.nullConst[name] = saNullInitKind(vd)
 					saDeclarePlain(scope, name)
 					continue
 				}

@@ -560,7 +560,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// 实例 str 域读（头指针即串值，临时量已记 str）。
 			if saCouldBeInst(pa.Expression, scope) {
 				// const 空实例串域读必崩（`p.s`/`p?.s` 皆读零址；t29a/t29d SIGSEGV 实证；本站无守卫径，一律大声拒；493）。
-				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && saIsNullConst(scope, pa.Expression.Text()) {
 					return "", "const null instance member is not lowerable (definite null dereference)"
 				}
 				h, def, msg := saInstBase(pa.Expression, scope)
@@ -877,14 +877,45 @@ func saUnwrapStrBuf(w printer.EmitTextWriter, buf string, scope *saScope, nextTe
 
 // saConcatStr `+` 拼接（任一臂串位即串拼接；非串臂经文本化，i32/bool/f64
 // 走 interp，实例/数组沿文本化拒因；JS `+` 同义，P-A2 string+）。
-func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	lh, msgL := saToSlice(w, l, scope, pos, refusals, nextTemp)
-	if msgL != "" {
-		return "", msgL
+// saNullTextSlice 空值文本切片（`null`/`undefined` 字面与 nullConst 记名绑定具化 "null"/"undefined"；JS `+` 文本义；余形走 saToSlice；505）。
+func saNullTextSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, nextTemp *int) (string, bool) {
+	if e != nil && (e.Kind == ast.KindNullKeyword || e.Kind == ast.KindUndefinedKeyword) {
+		text := "null"
+		if e.Kind == ast.KindUndefinedKeyword {
+			text = "undefined"
+		}
+		return saLowerStringLiteral(w, text, scope, nextTemp), true
 	}
-	rh, msgR := saToSlice(w, r, scope, pos, refusals, nextTemp)
-	if msgR != "" {
-		return "", msgR
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.nullConst[e.Text()]; ok {
+			text := "null"
+			if k == "undefined" {
+				text = "undefined"
+			}
+			return saLowerStringLiteral(w, text, scope, nextTemp), true
+		}
+	}
+	return "", false
+}
+
+func saConcatStr(w printer.EmitTextWriter, l, r *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// 空臂先行（单次求值；先 saToSlice 再覆盖即双求值落字，禁；505）。
+	var lh, rh, msgL, msgR string
+	if h, ok := saNullTextSlice(w, l, scope, nextTemp); ok {
+		lh = h
+	} else {
+		lh, msgL = saToSlice(w, l, scope, pos, refusals, nextTemp)
+		if msgL != "" {
+			return "", msgL
+		}
+	}
+	if h, ok := saNullTextSlice(w, r, scope, nextTemp); ok {
+		rh = h
+	} else {
+		rh, msgR = saToSlice(w, r, scope, pos, refusals, nextTemp)
+		if msgR != "" {
+			return "", msgR
+		}
 	}
 	return saConcatSlices(w, lh, rh, scope, nextTemp), ""
 }
