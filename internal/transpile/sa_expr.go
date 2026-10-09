@@ -42,11 +42,150 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 	return ""
 }
 
+// saPeelParens 剥括号（条件位逻辑判定只认括号透明；`as`/断言等沿旧门）。
+func saPeelParens(e *ast.Node) *ast.Node {
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		e = e.AsParenthesizedExpression().Expression
+	}
+	return e
+}
+
+// saLowerCondLogic lowering条件位 `&&`/`||`（任一侧串值时；纯 i32 沿既有
+// eager `and/or` 不动，零漂移）。真短路 + 槽汇合（`&&=`/`??` 槽形同源）：
+// 串侧经 `?.length` 空守卫判空（空串 falsy；上游 `and 柄,1` 恒真系误编译实锤，
+// 502 同例，薄口领先），非串侧求值后 `ne 0` 归一（bool 标识直通，纯整数字面
+// 编译期折叠）。形状证据：封存 lowerLogicAssign:3439-3565 + lowerBinary:3182-3206。
+func saLowerCondLogic(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	isAnd := saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken
+	// 真值化一侧为 0/1（立即量或寄存器）。
+	var truthify func(e *ast.Node) (string, string)
+	truthify = func(e *ast.Node) (string, string) {
+		// 括号透明 + 嵌套逻辑递归（ strict 子形，必终止）。
+		if p := saPeelParens(e); p != e {
+			return truthify(p)
+		}
+		struth := func(base string) (string, string) {
+			ln0 := saLowerOptionalLength(w, base, scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+			saReleaseOwnedTemp(w, scope, ln0)
+			return t, ""
+		}
+		if e != nil && e.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[e.Text()]; ok {
+				if k == "str" {
+					return struth(e.Text())
+				}
+				// bool 寄存器恒 0/1，直通（条件位标识符同门）。
+				if k == "bool" {
+					return e.Text(), ""
+				}
+			} else if text, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
+				h := saLowerStringLiteral(w, text, scope, nextTemp)
+				t, _ := struth(h)
+				saReleaseOwnedTemp(w, scope, h)
+				return t, ""
+			}
+		}
+		// 嵌套逻辑递归（ strict 子形，必终止；纯 i32 嵌套仅在串锚顶下可达，
+		// 既有 eager 门不动，零漂移）。
+		if e != nil && e.Kind == ast.KindBinaryExpression {
+			if sub := e.AsBinaryExpression(); sub != nil && (saBinaryOpKind(sub) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(sub) == ast.KindBarBarToken) {
+				return saLowerCondLogic(w, sub, scope, pos, refusals, nextTemp)
+			}
+		}
+		if saIsStrExpr(e, scope) {
+			h, msg := saEvalStr(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			t, _ := struth(h)
+			saReleaseOwnedTemp(w, scope, h)
+			return t, ""
+		}
+		v, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if saIsPureIntText(v) {
+			if v == "0" {
+				return "0", ""
+			}
+			return "1", ""
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, v))
+		return t, ""
+	}
+	lt, msg := truthify(be.Left)
+	if msg != "" {
+		return "", msg
+	}
+	// 分支操作数须为寄存器（裸 `br 1` 真机 UnknownRegister；110_while_break
+	// 实证；`saCondOperandMat` 同形）。
+	if saIsPureIntText(lt) {
+		m := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", m, lt))
+		lt = m
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	firstL := fmt.Sprintf("L_log_first_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	secondL := fmt.Sprintf("L_log_second_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_log_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	if isAnd {
+		// 左假短路 0，否则求右值。
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lt, secondL, firstL))
+	} else {
+		// 左真短路 1，否则求右值。
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lt, firstL, secondL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", firstL))
+	if isAnd {
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, saSnapImm(w, "0", nextTemp)))
+	} else {
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, saSnapImm(w, "1", nextTemp)))
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", secondL))
+	// 右臂基址（臂内新建归属临时量存槽后就地释放，域外落字即 UnknownRegister；
+	// 三元臂 `saReleaseArmTemps` 同形；具名/已释 no-op）。
+	rbase := len(scope.ownOrder)
+	rt, msg := truthify(be.Right)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, saSnapImm(w, rt, nextTemp)))
+	saReleaseArmTemps(w, scope, rbase)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
+
 // saCondOperand 求条件操作数：绑定标识符直接用（形状锁）；真/假折 1/0；
 // 其余走 saEvalI32（比较等先行发射临时量）。失败返回定位信息。
 func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if cond == nil {
 		return "", "missing condition"
+	}
+	// 条件位串侧逻辑先行（括号透明；纯 i32 原形不动，零漂移）。
+	if inner := saPeelParens(cond); inner != nil && inner.Kind == ast.KindBinaryExpression {
+		if be := inner.AsBinaryExpression(); be != nil && (saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(be) == ast.KindBarBarToken) {
+			if saIsStrExpr(be.Left, scope) || saIsStrExpr(be.Right, scope) {
+				return saLowerCondLogic(w, be, scope, pos, refusals, nextTemp)
+			}
+		}
 	}
 	switch cond.Kind {
 	case ast.KindIdentifier:
