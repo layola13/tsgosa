@@ -997,6 +997,33 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	if init.Kind == ast.KindConditionalExpression {
 		// 无注解三元推断（i32/串臂与 return 位同核；分歧沿核拒）。
 		ce := init.AsConditionalExpression()
+		// 数组三元推断（双臂数组位即 arr 句柄；经句柄总线三元臂；
+		// 记种/归属与字面量声明同形；串元臂显式拒（h4/h5 指针当整数，
+		// 上游同错）；未知臂沿旧路大声拒；上游 i32 形实证）。
+		if saIsArrValue(ce.WhenTrue, scope) && saIsArrValue(ce.WhenFalse, scope) {
+			tstr, tok := saTernaryArrArm(ce.WhenTrue, scope)
+			fstr, fok := saTernaryArrArm(ce.WhenFalse, scope)
+			if (tok && tstr) || (fok && fstr) {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: string-element array ternary arms are not lowerable"})
+				return false
+			}
+			if tok && fok {
+				h, msg := saArrValueOf(w, init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(init.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+				scope.types[name] = "arr"
+				saConsumeOwn(scope, h)
+				saDeclareOwned(scope, name)
+				saPropArrNest(scope, h, name)
+				saPropArrStr(scope, h, name)
+				return true
+			}
+		}
 		t, isStr, msg := saLowerTernaryValue(w, ce, init, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 		if msg != "" {
 			ln, col := pos(init.Pos())

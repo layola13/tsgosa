@@ -1,0 +1,2 @@
+# 串元数组三元声明大声拒（槽选柄丢串标，读回指针当整数；h4 真机 284787488 vs ccc，上游同错； i32 三元见 485）
+string-element array ternary arms are not lowerable

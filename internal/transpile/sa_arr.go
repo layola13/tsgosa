@@ -635,6 +635,42 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return out, ""
 }
 
+// saTernaryArrArm reports an array-ternary arm as (str, known): literals by
+// element scan, identifiers by bound marking, wrappers/nested ternaries by
+// recursion; calls and exotic shapes are unknown (loud refusal downstream—no
+// silent handle-kind guess; cf h4/h5 pointer-as-int, UP same-wrong).
+func saTernaryArrArm(e *ast.Node, scope *saScope) (bool, bool) {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindParenthesizedExpression:
+			e = e.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			e = e.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			e = e.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			e = e.AsNonNullExpression().Expression
+		case ast.KindTypeAssertionExpression:
+			e = e.AsTypeAssertion().Expression
+		case ast.KindConditionalExpression:
+			nce := e.AsConditionalExpression()
+			if nce == nil {
+				return false, false
+			}
+			ts, tok := saTernaryArrArm(nce.WhenTrue, scope)
+			fs, fok := saTernaryArrArm(nce.WhenFalse, scope)
+			return ts || fs, tok && fok
+		case ast.KindArrayLiteralExpression:
+			return saLiteralIsStrArray(e, scope), true
+		case ast.KindIdentifier:
+			return scope.arrStr[e.Text()], true
+		default:
+			return false, false
+		}
+	}
+	return false, false
+}
+
 // saLowerOptionalLength lowers `a?.length`（空基读 0，否则头 +8；
 // 与 `a?.[i]` 守卫槽（saLowerOptionalIndex）、`b?.v` 守卫槽同形；
 // 空即 undefined≡0 子集口径；上游同形（eq+槽+load）实证）。
@@ -2137,6 +2173,16 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		tce := e.AsConditionalExpression()
 		if tce == nil {
 			return "", "not an array expression"
+		}
+		// 臂种门：串元/未知臂大声拒（h4/h5 指针当整数，上游同错；
+		// 调用等未验证形沿旧门，日后再展）。
+		tstr, tok := saTernaryArrArm(tce.WhenTrue, scope)
+		fstr, fok := saTernaryArrArm(tce.WhenFalse, scope)
+		if !tok || !fok {
+			return "", "array ternary arm shape is not lowerable"
+		}
+		if tstr || fstr {
+			return "", "string-element array ternary arms are not lowerable"
 		}
 		condOp, msg := saCondOperandMat(w, tce.Condition, scope, pos, refusals, nextTemp)
 		if msg != "" {

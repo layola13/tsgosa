@@ -9,5 +9,8 @@ function main(): i32 {
   console.log(c.length);
   console.log(c[1]);
   console.log(c[2]);
+  const d = true ? [1, 2] : [3];
+  console.log(d.length);
+  console.log(d[0]);
   return 0;
 }
