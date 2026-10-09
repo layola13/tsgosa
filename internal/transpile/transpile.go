@@ -3102,6 +3102,14 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 		// members/labels/optional/rest erased, upstream ignores element shapes;
 		// empty `[]` likewise arr).
 		return "arr", true
+	case ast.KindParenthesizedType:
+		// 括号类型透明（`(T)` 即 T；`(number|null)[]` 元经此解包后走既有
+		// 联合吸收（`i32|null`→i32，空即 0 句柄）；与表达式侧括号解包同律；
+		// 上游同位放行（`(i32|null)[]` exit 0）实证）。
+		if pt := t.AsParenthesizedTypeNode(); pt != nil && pt.Type != nil {
+			return saAnnotKind(pt.Type)
+		}
+		return "", false
 	case ast.KindTypeOperator:
 		// `readonly T[]` unwraps (mutable copy semantics; other operators refuse).
 		to := t.AsTypeOperatorNode()
