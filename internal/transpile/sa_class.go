@@ -3215,16 +3215,18 @@ func saNewStmtClassName(ne *ast.NewExpression) (string, string) {
 	if ne == nil || ne.Expression == nil {
 		return "", "new expression is not lowerable"
 	}
-	if ne.Expression.Kind == ast.KindIdentifier {
-		name := ne.Expression.Text()
+	// 括号被 new 透明（`new (C)()` 即 `new C()`；483 同例）。
+	ex := saUnwrapTransparent(ne.Expression)
+	if ex.Kind == ast.KindIdentifier {
+		name := ex.Text()
 		switch name {
 		case "Date", "Map", "Set", "Array":
 			return "", "new " + name + " needs a binding (statement discard not lowerable yet)"
 		}
 		return name, ""
 	}
-	if ne.Expression.Kind == ast.KindPropertyAccessExpression {
-		pa := ne.Expression.AsPropertyAccessExpression()
+	if ex.Kind == ast.KindPropertyAccessExpression {
+		pa := ex.AsPropertyAccessExpression()
 		if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier {
 			return pa.Expression.Text() + "_" + pa.Name().Text(), ""
 		}

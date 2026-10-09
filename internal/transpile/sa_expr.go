@@ -1925,14 +1925,16 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 			}
 		}
-		// Map/Set 成员调用（基为 map/set 绑定；未知成员由总线定位）。
+		// Map/Set 成员调用（基为 map/set 绑定；括号接收者透明；未知成员由总线定位）。
 		if pa.Name() != nil {
-			if kind, ok := saMapBaseKind(pa.Expression, scope); ok {
-				op, _, msg := saLowerMapCall(w, pa.Expression.Text(), kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return "", false, msg
+			if base := saUnwrapTransparent(pa.Expression); base != nil && base.Kind == ast.KindIdentifier {
+				if kind, ok := saMapBaseKind(base, scope); ok {
+					op, _, msg := saLowerMapCall(w, base.Text(), kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, false, ""
 				}
-				return op, false, ""
 			}
 		}
 		// crypto Hash 累加器调用（`h.update/digest`；声明收养外一律 loud 拒；

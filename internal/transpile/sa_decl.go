@@ -449,10 +449,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// `new N.C()` 经 `N_C` 限定布局，单文件命名空间成员类）。
 			ne := vd.Initializer.AsNewExpression()
 			cname := ""
-			if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
-				cname = ne.Expression.Text()
-			} else if ne.Expression != nil && ne.Expression.Kind == ast.KindPropertyAccessExpression {
-				pa := ne.Expression.AsPropertyAccessExpression()
+			// 括号被 new 透明（`new (C)()` 即 `new C()`；483 同例）。
+			ex := saUnwrapTransparent(ne.Expression)
+			if ex != nil && ex.Kind == ast.KindIdentifier {
+				cname = ex.Text()
+			} else if ex != nil && ex.Kind == ast.KindPropertyAccessExpression {
+				pa := ex.AsPropertyAccessExpression()
 				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier {
 					cname = pa.Expression.Text() + "_" + pa.Name().Text()
 				}

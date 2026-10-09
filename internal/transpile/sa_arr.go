@@ -701,7 +701,8 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
 	}
-	if base, ok := saArrBase(scope, pa.Expression); ok {
+	// 括号数组基透明（`(a).length` 即 `a.length`；483 实例双门同例）。
+	if base, ok := saArrBase(scope, saUnwrapTransparent(pa.Expression)); ok {
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
