@@ -1637,6 +1637,16 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 }
 
 func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	// 括号被调透明（`(f)(…)` 即 `f(…)`；与注解/表达式侧括号解包同律；
+	// 上游同位拒收系过严（`functions are not first-class values`），本仓
+	// thin-lead（step373 同例）；成员接收者括号另步。
+	for ce.Expression != nil && ce.Expression.Kind == ast.KindParenthesizedExpression {
+		pe := ce.Expression.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		ce.Expression = pe.Expression
+	}
 	if m, ok := saMathMethodName(ce.Expression); ok {
 		return saEvalMathMethod(w, m, ce, scope, pos, refusals, nextTemp)
 	}
