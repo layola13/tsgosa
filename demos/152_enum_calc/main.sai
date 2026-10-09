@@ -5,7 +5,7 @@
 @import "sa_std/string.sai"
 @const str_const_0 = utf8:" \0"
 @const str_const_1 = utf8:"\n\0"
-@isWeekend(d: ptr) -> i32:
+@isWeekend(d: i32) -> i32:
   t_1 = eq d, 0
   EXPAND IF_TRUE t_1, L_then_1, L_endif_3
 L_then_1:

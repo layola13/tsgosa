@@ -2601,9 +2601,9 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 							kinds[name] = "inst:" + ref.TypeName.Text()
 							continue
 						}
-						// enum annotations lower as ptr handles (integer-enum equality folds to eq).
+						// enum 形参记 i32（成员整数；传值/返回/比较皆 i32 位；声明位 585 同律；585b）。
 						if _, ok := enums[ref.TypeName.Text()]; ok {
-							kinds[name] = "arr"
+							kinds[name] = "i32"
 							continue
 						}
 						// erased own type parameters default to i32 (cf unannotated params),

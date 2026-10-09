@@ -584,6 +584,17 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			vkind, ok = saResolveAliasKind(vd.Type, scope.aliasOf)
 		}
 		if !ok {
+			// 枚举注解记 i32（成员整数；`const e: E = E.B` 初值成员折叠；585）。
+			if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+				if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+					ref.TypeName.Kind == ast.KindIdentifier {
+					if _, eok := scope.enums[ref.TypeName.Text()]; eok {
+						vkind, ok = "i32", true
+					}
+				}
+			}
+		}
+		if !ok {
 			// 具名接口/类注解记 inst（调用返回与字面量初值核对布局；
 			// 形参与 saSynthParamNodes 类/接口分支同形）。
 			vkind, ok = saAnnotInstKind(vd.Type, scope.classes)

@@ -4,7 +4,7 @@
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
 @const str_const_0 = utf8:"\n\0"
-@f(e: ptr) -> i32:
+@f(e: i32) -> i32:
   t_1 = eq e, 0
   EXPAND SELECT t_2, t_1, 1, 0
   !e
