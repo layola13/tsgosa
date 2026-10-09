@@ -5206,6 +5206,36 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
 				return saLowerStrCompare(w, be, be.OperatorToken.Kind, scope, pos, refusals, nextTemp)
 			}
+			// 空比较（`s === null` 即空句柄判零；null/undefined≡0 子集口径，
+			// 与 `?.` 守卫/`??` 槽同形；具名绑定值位直判（未绑定沿旧门，
+			// 禁 UnknownRegister 无效产物）；非标识沿旧门；上游 `eq s, 0` 实证）。
+			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				op2 := "eq"
+				if neg {
+					op2 = "ne"
+				}
+				if saIsNullLit(be.Right, scope) && be.Left != nil && be.Left.Kind == ast.KindIdentifier {
+					if _, ok := scope.types[be.Left.Text()]; ok {
+						t := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, be.Left.Text()))
+						return t, ""
+					}
+				}
+				if saIsNullLit(be.Left, scope) && be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+					if _, ok := scope.types[be.Right.Text()]; ok {
+						t := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, be.Right.Text()))
+						return t, ""
+					}
+				}
+			}
 			return "", "only +/==/!= operate on strings"
 		}
 		if saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {
