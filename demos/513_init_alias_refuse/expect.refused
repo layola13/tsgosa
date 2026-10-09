@@ -1,0 +1,2 @@
+# 声明初值具名数组别名大声拒（`const r = a`/`const r = a.reverse()` 既往放行致 UseAfterMove；赋值位 H13 同门；注释既有偏离上游自认；513）
+handle copies need an explicit clone (pass the handle directly)

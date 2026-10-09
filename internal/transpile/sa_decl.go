@@ -1201,6 +1201,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		scope.types[name] = "f64"
 		saDeclarePlain(scope, name)
 	} else if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+		// 具名柄直传即别名（赋值位 H13 同门；初值位既往放行致 UseAfterMove 实证；513）。
+		if _, named := scope.types[op]; named && !saIsTempOp(op) {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: handle copies need an explicit clone (pass the handle directly)"})
+			return false
+		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = k
 		saConsumeOwn(scope, op)

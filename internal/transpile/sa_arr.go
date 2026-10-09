@@ -1373,6 +1373,12 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 	}
 	// 绑定句柄与数组返回调用皆直传（slice/concat/map 等新鲜句柄）。
 	if src, msg := saArrValueOf(w, vd.Initializer, scope, pos, refusals, nextTemp); msg == "" {
+		// 具名柄直传即别名（赋值位 H13 同门；`const r = a` 既往放行致 UseAfterMove 实证；注释既有偏离上游自认；513）。
+		if _, named := scope.types[src]; named && !saIsTempOp(src) {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: handle copies need an explicit clone (pass the handle directly)"})
+			return false
+		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, src))
 		scope.types[name] = "arr"
 		// 新鲜 temp 句柄消费（具名直传不碰：名下值仍由名释放，上游同形拒拷贝，
