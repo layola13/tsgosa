@@ -5131,6 +5131,28 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return saEvalI32(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindVoidExpression:
 		// `void expr` 求值为 0，副作用保留（证据：封存 lowerExpr:2739-2743）。
+		// void 调用经调用核直求值丢弃（上游裸 call 同形；值路 void 门禁收 void 柄）。
+		if inner := e.AsVoidExpression().Expression; inner != nil && inner.Kind == ast.KindCallExpression {
+			ceVO := inner.AsCallExpression()
+			voidKnown := false
+			if k, ok := saCallRetKind(ceVO, scope); ok && k == "void" {
+				voidKnown = true
+			}
+			// console.* 方法恒 void（sa_decl.go:2491-2495 同形）。
+			if !voidKnown && ceVO.Expression != nil && ceVO.Expression.Kind == ast.KindPropertyAccessExpression {
+				if pa := ceVO.Expression.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "console" {
+					voidKnown = true
+				}
+			}
+			if voidKnown {
+				if op, _, msg := saEvalCall(w, ceVO, scope, pos, refusals, nextTemp); msg == "" {
+					saReleaseOwnedTemp(w, scope, op)
+					return "0", ""
+				} else {
+					return "", msg
+				}
+			}
+		}
 		if _, msg := saEvalI32(w, e.AsVoidExpression().Expression, scope, pos, refusals, nextTemp); msg != "" {
 			return "", msg
 		}
