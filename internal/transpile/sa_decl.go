@@ -393,6 +393,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					if len(targs) == 2 {
 						if vt := targs[1]; vt != nil && vt.Kind == ast.KindArrayType {
 							saSetMapVal(scope, name, saMapArrValKind(vt))
+						} else if vt := targs[1]; vt != nil && vt.Kind == ast.KindStringKeyword {
+							// `Map<K, string>` 串值记表（set/get 值位凭表走串通道；561b）
+							saSetMapVal(scope, name, "str")
 						}
 					}
 				}

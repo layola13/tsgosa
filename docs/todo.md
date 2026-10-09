@@ -319,3 +319,4 @@
 - for-in 对象键直授已推（541：静态展开键每份新鲜具化，forOfStr 记名+2796 门豁免，540 同律；真机 a 全对；附带六锁仓（542 串域读/543 in/544 接口对象/545 void/546 多声明/547 串下标）；门禁 `--check` 547/547 + `--corpus` 286 agree + 原生 547/547）。typeof null 既定口径（null 即 0 子集义）不锁；delete 静态布局禁删记限。
 - instanceof 同布局折叠+enum 传参锁仓（558/559：`c instanceof C` 编译期折叠 1（异名/子类沿旧门禁误判假）；enum 实参比较得 1/0；门禁 `--check` 559/559 + `--corpus` 286 agree + 原生 559/559）。高阶具名实参（函数类型注解）H 级另步。
 - Record 点读已推（560：`r.k` 按 `.get("k")` 同义（键编译期常量，方法名沿旧门，读回种按 mapVals）；串值形另抓 saToSlice 缺 str 回种纠偏（f64 有 713 同形，串 head 被 sext 误印数字），补后双值形 1/hi 全对；门禁 `--check` 560/560 + `--corpus` 286 agree + 原生 560/560）。
+- 批量九连（561-569）：Map<string,string> 串值记表修（`new` 类型参数忽略致 set 拒）+ 嵌套对象/typeof比较/逗号/sort/split-slice/布尔返回/泛型数组/unknown 九锁仓，真机全对；门禁 `--check` 569/569 + `--corpus` 286 agree + 原生 569/569）。
