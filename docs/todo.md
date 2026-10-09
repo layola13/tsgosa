@@ -322,3 +322,4 @@
 - 批量九连（561-569）：Map<string,string> 串值记表修（`new` 类型参数忽略致 set 拒）+ 嵌套对象/typeof比较/逗号/sort/split-slice/布尔返回/泛型数组/unknown 九锁仓，真机全对；门禁 `--check` 569/569 + `--corpus` 286 agree + 原生 569/569）。
 - 批量六连锁仓（570-575 零代码改动）：幂/位非/进制串/简单模板/PI整数口径/enum返回改i32注解，真机全对；Math.PI 既定折叠 3（`>3` 恒假系子集精度口径）；toFixed/IIFE/delete数组元沿旧门记限。门禁 `--check` 575/575 + `--corpus` 286 agree + 原生 575/575）。
 - 集合构造初值已推（576：`new Set([..])` 逐元 add 去重、`new Map([[k,v]])` 双元逐项 set（值串/i32 双门），余形大声拒禁静默丢；真机 3/1/1 全对；门禁 `--check` 576/576 + `--corpus` 286 agree + 原生 576/576）。
+- 批量六连锁仓（577-582 零代码改动）：const枚举/异构枚举/抽象类/as-const/泛型函数/readonly数组，真机全与 bun 一致；嵌套命名空间/satisfies匿名对象沿既有门记限；门禁 `--check` 582/582 + `--corpus` 286 agree + 原生 582/582）。
