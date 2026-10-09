@@ -204,6 +204,16 @@ func saEvalMathRounding(w printer.EmitTextWriter, method string, ce *ast.CallExp
 	if args[0] != nil && args[0].Kind == ast.KindNumericLiteral && saIsFloatLit(args[0].Text()) {
 		return saLowerMathRoundingFloat(w, method, args[0].Text(), scope, nextTemp), false, ""
 	}
+	// f64 操作数（取负字面量/f64 绑定·调用/表达式；正字面量已在上分支直传，整数形由谓词天然排除，旧路零漂移）经严格求值入运行时取整（497；上游负值按截断误编译，本侧经 @ts_math_rounding 真 floor/ceil）。
+	if args[0] != nil && saIsF64Operand(args[0], scope) {
+		fop, msg := saEvalF64(w, args[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		t := saLowerMathRoundingFloat(w, method, fop, scope, nextTemp)
+		saReleaseOwnedTemp(w, scope, fop)
+		return t, false, ""
+	}
 	v, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", false, msg
