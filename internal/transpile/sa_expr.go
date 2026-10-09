@@ -1759,6 +1759,22 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
 			return t, false, ""
 		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
+			pa.Name() != nil && pa.Name().Text() == "values" {
+			// `Object.values(o)` 已知布局 i32 数据槽具化新数组（存取器/异种槽沿旧门；与 keys 计数同口径；577）。
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "Object.values takes one argument"
+			}
+			h, msg := saLowerObjectValues(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return h, false, ""
+		}
 	}
 	if saIsConsoleLog(ce) {
 		ok, msg := saLowerConsoleLog(w, ce, scope, pos, refusals, nextTemp)

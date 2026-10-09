@@ -717,6 +717,49 @@ func saLowerOptionalLength(w printer.EmitTextWriter, base string, scope *saScope
 	return dest
 }
 
+// saLowerObjectValues `Object.values(o)` 已知布局 i32 数据槽具化新数组（字段声明序；存取器/异种槽/未知布局沿旧门；577）。
+func saLowerObjectValues(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return "", "Object.values needs a bound object"
+	}
+	k, ok := scope.types[e.Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return "", "Object.values needs a known-layout object"
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil {
+		return "", "Object.values needs a known-layout object"
+	}
+	if len(def.getters) > 0 || len(def.setters) > 0 {
+		return "", "Object.values needs data slots"
+	}
+	offs := []int{}
+	for _, f := range def.fields {
+		off, ok := def.offsets[f.name]
+		if !ok || def.fkinds[f.name] != "i32" {
+			return "", "Object.values needs i32 data slots"
+		}
+		offs = append(offs, off)
+	}
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", data, len(offs)*4))
+	for i, off := range offs {
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, e.Text(), off))
+		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", data, i*4, v))
+	}
+	head := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", head))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", head, data))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", head, len(offs)))
+	w.Write(fmt.Sprintf("  !%s\n", data))
+	saOwnTemp(scope, head)
+	return head, ""
+}
+
 // saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
@@ -2099,6 +2142,10 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		case "keys", "values", "entries":
 			return "arr", true
 		}
+	}
+	// `Object.values(o)` 回 i32 数组柄（布局门在求值侧；种判定零落字；577）。
+	if m == "values" && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" {
+		return "arr", true
 	}
 	if !saIsArrMethod(m) {
 		return "", false
