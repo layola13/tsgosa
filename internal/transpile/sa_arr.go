@@ -2131,6 +2131,47 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		return saArrValueOf(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindTypeAssertionExpression:
 		return saArrValueOf(w, e.AsTypeAssertion().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindConditionalExpression:
+		// 数组三元（双臂句柄经槽选柄；与串三元槽汇合 `L_tern_*` 同形；
+		// 条件核与 `saLowerTernaryValue` 同源；上游同形实证 check-clean）。
+		tce := e.AsConditionalExpression()
+		if tce == nil {
+			return "", "not an array expression"
+		}
+		condOp, msg := saCondOperandMat(w, tce.Condition, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		tv, msg := saArrValueOf(w, tce.WhenTrue, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		fv, msg := saArrValueOf(w, tce.WhenFalse, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		tL := fmt.Sprintf("L_tern_t_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		fL := fmt.Sprintf("L_tern_f_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_tern_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+		w.Write(fmt.Sprintf("%s:\n", tL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", fL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		res := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		return res, ""
 	default:
 		return "", "not an array expression"
 	}
