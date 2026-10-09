@@ -305,3 +305,4 @@
 - Map/Set 高频锁仓（508 零代码改动：Map set/get??/has/size/delete 真机 1/1/2/0，Set add/has/size/delete 真机 1/2/1；7 行与 bun 逐字节一致；门禁 `--check` 508/508 + `--corpus` 286 agree + 原生 508/508）。
 - Object/JSON 锁仓（509 零代码改动：`JSON.stringify({x:5})` 得 {"x":5}、spread `{...a,y:2}` 得 1/2、`Object.keys(p).length` 得 2；匿名对象字面量仍须接口注解（既有门），`Object.values(o)[i]` 下标与 keys 具名绑定初值位拒系既有静态门限；门禁 `--check` 509/509 + `--corpus` 286 agree + 原生 509/509）。
 - String 高频 API 锁仓（510 零代码改动：slice/substring/toUpperCase/trim/charCodeAt/repeat/padStart/parseInt 真机 8 行与 bun 逐字节一致；门禁 `--check` 510/510 + `--corpus` 286 agree + 原生 510/510）。
+- Math/整数位锁仓（511 零代码改动：max/min/abs/sqrt/pow 得 7/3/5/4/1024、`Number.isInteger` 判 1、`(3).toString()` 得 3、`715` 得 16/4/3/7；11 行与 bun 逐字节一致；`3.75 | 0` 薄口拒收正确（上游放行但泄漏 f64 打印 3.000000，parity-in-wrong 记限）；门禁 `--check` 511/511 + `--corpus` 286 agree + 原生 511/511）。
