@@ -759,7 +759,7 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	// const 空柄具名直读头必崩（`const t: string|null = null; t.length`
 	// 落 `load t+8` 读零址，真机 SIGSEGV 实证；上游同错 parity-in-wrong，
 	// 薄口大声拒；`?.` 守卫径在上已分流不受影响；491）。
-	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier && scope.nullConst[e.Text()] {
+	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier && saIsNullConst(scope, e.Text()) {
 		if k, ok := scope.types[e.Text()]; ok && (k == "str" || k == "arr") {
 			return "", "const null handle has no .length (definite null dereference)"
 		}
@@ -2102,7 +2102,7 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		pa := e.AsPropertyAccessExpression()
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			// const 空实例数组域读必崩（`q.a` 读零址；t29f SIGSEGV 实证；`?.` 沿既有门；493）。
-			if pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+			if pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && saIsNullConst(scope, pa.Expression.Text()) {
 				return "", "const null instance member is not lowerable (definite null dereference)"
 			}
 			h, def, msg := saInstBase(pa.Expression, scope)
