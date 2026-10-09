@@ -283,3 +283,4 @@
 - 括号基 sweep 补齐（484：`(a).length`/直接、`?.length` 守卫、`?.` Map `(m).get`、声明+语句 `new (C)()`，皆经 `saUnwrapTransparent` 复用；真机 2/2/5/3 PASS；裸语句 new alloc 即释 check-clean；JEV 督促复核抓获同文件并行编辑丢更新一处（`?.length` 分支），已串行补回并以 AST 探针+全门禁复验；教训：同文件编辑永不并行）。
 - 数组三元展开已推（485：`saArrValueOf` 加三元臂（双臂句柄槽选柄，与串三元 `L_tern_*` 汇合同形；条件核同源；上游同形 check-clean 实证）；字面量真臂/绑定假臂真机 2/7/3/8/9 PASS；全量原生 485/485）。
 - 数组三元声明已推 + 串元臂大声拒（485 扩展/486 指纹锁：声明位经 `saIsArrValue` 双臂门 + `saTernaryArrArm` 臂种谓词（字面量扫/标识记种/包装·嵌套递归；调用等未验证形拒）；i32 声明真机 2/1 PASS；串元三元声明·展开皆拒（槽选柄丢串标读回指针，真机 284787488/174363520 vs ccc，上游同错 parity-in-wrong）；全量原生 486/486）。
+- entries/values 取长静态折叠已推（487：`saLayoutKeyCount` 由 keys 扩至三者（数据布局长恒等，存取器守卫沿用；keys 形 399/418 在册 thin-lead）；真机 2/2 PASS；全量原生 487/487）。
