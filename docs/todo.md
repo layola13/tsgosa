@@ -311,3 +311,4 @@
 - 正则全局替换锁仓（514 零代码改动：`/[0-9]/g` 得 a#b#、`aaa`→bbb，真机与 bun 逐字节一致；`split("")` 薄口诚实拒（串元数组超 i32 槽既定架构限），上游放行但生成非法 SAI（`load  + 0` 空操作数，ForbiddenSyntax 实证），parity-in-wrong 记限；门禁 `--check` 514/514 + `--corpus` 286 agree + 原生 514/514）。
 - 语法混合锁仓（515 零代码改动：for-of 累加 6、数组解构 10/20、展开调用 add(...args) 得 7、enum 取 0；5 行与 bun 逐字节一致；门禁 `--check` 515/515 + `--corpus` 286 agree + 原生 515/515）。
 - 流程混合锁仓（516 零代码改动：label-continue 得 3、super 方法链得 111/1、throw 整形 catch 得 1； 实例值位与  未知类沿旧门；门禁 `--check` 516/516 + `--corpus` 286 agree + 原生 516/516）。
+- 批量十连锁仓（517-526 零代码改动）：String(42)/endsWith/??=/默认参数/every-some-find/typeof/解构默认/padEnd/while-true/concat，真机全与 bun 逐字节一致；`Number("13")` 薄口打印 13.000000（f64 泄漏）剔除记限，`slice`/可选链对象形沿既有门；门禁 `--check` 526/526 + `--corpus` 286 agree + 原生 526/526）。
