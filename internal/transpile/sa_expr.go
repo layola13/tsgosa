@@ -164,6 +164,14 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return t, ""
 			}
 		}
+		// `x instanceof C` 同布局恒真折叠（异名/子类/未知沿旧门，禁误判假；558）。
+		if be := cond.AsBinaryExpression(); be != nil && saBinaryOpKind(be) == ast.KindInstanceOfKeyword {
+			if be.Left != nil && be.Left.Kind == ast.KindIdentifier && be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[be.Left.Text()]; ok && len(k) > 5 && k[:5] == "inst:" && k[5:] == be.Right.Text() {
+					return "1", ""
+				}
+			}
+		}
 		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
