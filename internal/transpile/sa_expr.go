@@ -186,6 +186,22 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return saLowerCondLogic(w, be, scope, pos, refusals, nextTemp)
 			}
 		}
+		// 条件位串空合真值（括号透明；实例臂在下，串形互斥；串求值取柄后
+		// `?.length` 空守卫判空；上游 `br 柄` 恒真系误编译实锤，502 同例）。
+		if be := inner.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindQuestionQuestionToken && saIsStrExpr(inner, scope) {
+			h, msg := saEvalStr(w, inner, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			ln0 := saLowerOptionalLength(w, h, scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+			saReleaseOwnedTemp(w, scope, ln0)
+			saReleaseOwnedTemp(w, scope, h)
+			return t, ""
+		}
 	}
 	switch cond.Kind {
 	case ast.KindIdentifier:
@@ -244,8 +260,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		return "", "unknown condition variable " + nm
 	case ast.KindPrefixUnaryExpression:
 		if un := cond.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindExclamationToken && un.Operand != nil {
-			// `!x`/`!!x` 条件取反（操作数经真值门递归；"0"翻1、余纯数字翻0、temp 补 eq；539）。
-			op, msg := saCondOperand(w, un.Operand, scope, pos, refusals, nextTemp)
+			// `!x`/`!!x` 条件取反（操作数经真值门递归；"0"翻1、余纯数字翻0、temp 补 eq；539；
+			// 括号透明（求值侧括号本纯透传，剥离零发射差；串 `??`/`&&` 等借此外达真值门）。
+			op, msg := saCondOperand(w, saPeelParens(un.Operand), scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
