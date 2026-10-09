@@ -20,7 +20,7 @@ import (
 func saIsMapMethod(m string) bool {
 	switch m {
 	case "set", "get", "has", "delete", "clear", "size", "getSize",
-		"keys", "values", "entries":
+		"keys", "values", "entries", "forEach":
 		return true
 	}
 	return false
@@ -708,6 +708,75 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			// 调用结果归属(返前释放；上游 declareOwned 同形).
 			saOwnTemp(scope, t)
 			return t, "arr", ""
+		case "forEach":
+			// Map.forEach 快照向量巡回（`sa_btree_map_iter_vec` 三 u64 一组；回调 `(v[, k])`，v 种按建表（i32 缺省/串 head 借用）；k 串 head 每轮具化即释；587）。
+			if len(argNodes) != 1 || argNodes[0] == nil {
+				return "", "", "Map.forEach needs 1 argument"
+			}
+			vec := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_iter_vec(&%s)\n", vec, recv))
+			saOwnTemp(scope, vec)
+			vkind := scope.mapVals[recv]
+			if vkind == "" {
+				vkind = "i32"
+			}
+			nlen := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", nlen, vec))
+			cnt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = div %s, 3\n", cnt, nlen))
+			base := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", base, vec))
+			idx := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", idx))
+			topL := fmt.Sprintf("L_mfe_top_%d", *nextTemp)
+			*nextTemp++
+			bodyL := fmt.Sprintf("L_mfe_body_%d", *nextTemp)
+			*nextTemp++
+			endL := fmt.Sprintf("L_mfe_end_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("%s:\n", topL))
+			cT := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, cnt))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
+			w.Write(fmt.Sprintf("%s:\n", bodyL))
+			voff := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = mul %s, 24\n", voff, idx))
+			vptr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %s\n", vptr, base, voff))
+			kval := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 16 as u64\n", kval, vptr))
+			kh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", kh))
+			kparr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", kparr, vptr))
+			klen := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", klen, vptr))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", kh, kparr))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", kh, klen))
+			if _, msg := saCallbackValue(w, argNodes[0], []string{kval, kh}, false, vkind, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp, true, []string{vkind, "str"}); msg != "" {
+				return "", "", msg
+			}
+			saReleaseOwnedTemp(w, scope, kh)
+			inext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, idx))
+			w.Write(fmt.Sprintf("  %s = %s\n", idx, inext))
+			w.Write(fmt.Sprintf("  jmp %s\n", topL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			saReleaseOwnedTemp(w, scope, vec)
+			return "0", "i32", ""
 		default:
 			return "", "", "Map." + method + " is not a projected surface"
 		}
