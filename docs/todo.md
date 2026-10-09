@@ -310,3 +310,4 @@
 - 声明初值数组别名大声拒（513：`const r = a`/`const r = a.reverse()` 既往放行，原生 UseAfterMove（函数尾 `!a`）；`saLowerArrDecl` 补赋值位 H13 同门（注释自认偏离上游）；串元 reverse 体经异构探针实证正确（`["a","ccccc"]` 反转 `ccccc/a` 全对），`a.reverse()` 语句形 `3/3` 全对；门禁 `--check` 513/513 + `--corpus` 286 agree + 原生 513/513）。
 - 正则全局替换锁仓（514 零代码改动：`/[0-9]/g` 得 a#b#、`aaa`→bbb，真机与 bun 逐字节一致；`split("")` 薄口诚实拒（串元数组超 i32 槽既定架构限），上游放行但生成非法 SAI（`load  + 0` 空操作数，ForbiddenSyntax 实证），parity-in-wrong 记限；门禁 `--check` 514/514 + `--corpus` 286 agree + 原生 514/514）。
 - 语法混合锁仓（515 零代码改动：for-of 累加 6、数组解构 10/20、展开调用 add(...args) 得 7、enum 取 0；5 行与 bun 逐字节一致；门禁 `--check` 515/515 + `--corpus` 286 agree + 原生 515/515）。
+- 流程混合锁仓（516 零代码改动：label-continue 得 3、super 方法链得 111/1、throw 整形 catch 得 1； 实例值位与  未知类沿旧门；门禁 `--check` 516/516 + `--corpus` 286 agree + 原生 516/516）。
