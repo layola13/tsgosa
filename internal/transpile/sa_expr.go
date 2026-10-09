@@ -4156,13 +4156,37 @@ func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression,
 		w.Write(fmt.Sprintf("  %s = xor %s, -1\n", t, arg))
 		return t, ""
 	case ast.KindExclamationToken:
+		// 串值取反经长度真值（空串得 1；`eq 柄, 0` 恒 0 系误编译，502 同例；
+		// 上游同形恒 0 实锤，薄口领先；局部与折叠同门，具化柄用后即释）。
+		notStr := func(base string) (string, string) {
+			ln0 := saLowerOptionalLength(w, base, scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, ln0))
+			saReleaseOwnedTemp(w, scope, ln0)
+			return t, ""
+		}
 		var arg string
 		if un.Operand != nil && un.Operand.Kind == ast.KindIdentifier {
 			nm := un.Operand.Text()
-			if _, ok := scope.types[nm]; !ok {
+			if k, ok := scope.types[nm]; ok {
+				if k == "str" {
+					return notStr(nm)
+				}
+				arg = nm
+			} else if text, ok := scope.topConsts[nm]; ok {
+				// 顶层折叠量取反（串走长度真值守卫，非串内联文本直判；
+				// 封存 lowerExpr:2775 折叠读同序）。
+				if scope.topStr[nm] {
+					h := saLowerStringLiteral(w, text, scope, nextTemp)
+					t, _ := notStr(h)
+					saReleaseOwnedTemp(w, scope, h)
+					return t, ""
+				}
+				arg = text
+			} else {
 				return "", "unknown variable " + nm
 			}
-			arg = nm
 		} else {
 			var msg string
 			arg, msg = saEvalI32(w, un.Operand, scope, pos, refusals, nextTemp)
@@ -5826,6 +5850,22 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 		}
 		if _, ok := scope.funcs[name]; ok {
 			return "function", ""
+		}
+		// 顶层可变槽种映射（i32→number/str→string；封存 lowerTypeof modStateOf 分支；
+		// 上游 i32 槽误报 "boolean" 系静默错译实锤，薄口按 JS 真值，X-datecmp 同例）。
+		if ms, ok := scope.modVars[name]; ok {
+			if ms.w == "str" {
+				return "string", ""
+			}
+			return "number", ""
+		}
+		// 顶层纯量折叠种映射（串→string，余下→number；封存 lowerTypeof constVals 分支；
+		// bool 折 "1"/"0" 与数字不可分，上游同取 number，逐字节同形）。
+		if _, ok := scope.topConsts[name]; ok {
+			if scope.topStr[name] {
+				return "string", ""
+			}
+			return "number", ""
 		}
 		return "", "typeof unknown global " + name + " is not lowerable"
 	}

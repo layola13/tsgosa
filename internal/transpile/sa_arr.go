@@ -774,6 +774,15 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			if k, ok := scope.types[e.Text()]; ok && k == "str" {
 				return saLowerOptionalLength(w, e.Text(), scope, nextTemp), ""
 			}
+			// 顶层折叠串基（具化后走同形守卫，具化柄用后即释；589 同形）。
+			if _, ok := scope.types[e.Text()]; !ok {
+				if text, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
+					h := saLowerStringLiteral(w, text, scope, nextTemp)
+					ln := saLowerOptionalLength(w, h, scope, nextTemp)
+					saReleaseOwnedTemp(w, scope, h)
+					return ln, ""
+				}
+			}
 		}
 		// 调用结果 `?.length`（新鲜非空柄，空臂不可达，等价直读；plain 调用基 868 同形；586）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
