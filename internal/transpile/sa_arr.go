@@ -673,8 +673,8 @@ func saLowerOptionalLength(w printer.EmitTextWriter, base string, scope *saScope
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
 	if pa.QuestionDotToken != nil {
-		// `a?.length` 具名数组基走空守卫 join；其余基沿旧门。
-		if base, ok := saArrBase(scope, pa.Expression); ok {
+		// `a?.length` 具名数组基走空守卫 join；括号基同步解包；其余基沿旧门。
+		if base, ok := saArrBase(scope, saUnwrapTransparent(pa.Expression)); ok {
 			return saLowerOptionalLength(w, base, scope, nextTemp), ""
 		}
 		return "", "optional member access not lowerable"
