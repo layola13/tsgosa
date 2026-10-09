@@ -2608,7 +2608,7 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 	}
 	symbol, module, extra, strArgs, unwrap, fallible, nargs, ok := saProjTable(remote)
 	if !ok {
-		return "", false, mod + "." + remote + " is not a projected surface"
+		return "", false, mod + "." + remote + " is not a projected std surface (see StdProjectionTable)"
 	}
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {

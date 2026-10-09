@@ -272,3 +272,4 @@
 - replace/g→replaceAll 已推（472）。
 - existsSync 已推（478：状态判零 SA_FS_OK=0，hermetic 真机 1/0 PASS）。
 - 括号联合数组注解已推（479：`(number|null)[]` 经 `saAnnotKind` 括号解包走既有联合吸收，null→0 与上游逐行同形，真机 1/3/2 PASS；`Array<number|undefined>` 同门；return-in-void 双边同拒 parity 无活缺口；statSync 需 Stats 对象设计另立）。
+- 可空数组 `?.length` 已推（480：`saUnionNullBase` 收 arr（空初值即 arr 零句柄，与 `inst:P` 同律）+ `saLowerOptionalLength` 空守卫槽（与 `?.[i]`/`b?.v` 同形；空读 0，非空读头 +8；直接空读与上游同暴露 parity 不进仓）；真机 0/3/3/8 PASS；串元可空/重绑边形双边同过；定案：float 索引/复合（上游指针算术/`add n,1.5` 静默错码，T2 同族不移植）、var 提升（上游 UnknownRegister 无效产物不移植）、let TDZ（抛语义不移植）。
