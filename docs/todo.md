@@ -321,3 +321,4 @@
 - Record 点读已推（560：`r.k` 按 `.get("k")` 同义（键编译期常量，方法名沿旧门，读回种按 mapVals）；串值形另抓 saToSlice 缺 str 回种纠偏（f64 有 713 同形，串 head 被 sext 误印数字），补后双值形 1/hi 全对；门禁 `--check` 560/560 + `--corpus` 286 agree + 原生 560/560）。
 - 批量九连（561-569）：Map<string,string> 串值记表修（`new` 类型参数忽略致 set 拒）+ 嵌套对象/typeof比较/逗号/sort/split-slice/布尔返回/泛型数组/unknown 九锁仓，真机全对；门禁 `--check` 569/569 + `--corpus` 286 agree + 原生 569/569）。
 - 批量六连锁仓（570-575 零代码改动）：幂/位非/进制串/简单模板/PI整数口径/enum返回改i32注解，真机全对；Math.PI 既定折叠 3（`>3` 恒假系子集精度口径）；toFixed/IIFE/delete数组元沿旧门记限。门禁 `--check` 575/575 + `--corpus` 286 agree + 原生 575/575）。
+- 集合构造初值已推（576：`new Set([..])` 逐元 add 去重、`new Map([[k,v]])` 双元逐项 set（值串/i32 双门），余形大声拒禁静默丢；真机 3/1/1 全对；门禁 `--check` 576/576 + `--corpus` 286 agree + 原生 576/576）。

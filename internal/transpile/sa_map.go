@@ -378,7 +378,7 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 // 同布局绑定直传；方法/spread/计算键/错种值沿旧门大声拒）。
 func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	ol := n.AsObjectLiteralExpression()
-	h, msg := saLowerMapNew(w, "Map", nil, scope, nextTemp)
+	h, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(n.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
@@ -465,7 +465,7 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 }
 
 // saLowerMapNew `new Map()`/`new Set()`（参数忽略容忍；形状证据：封存 lowerNew:8579-8592 不看参数）。
-func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, nextTemp *int) (string, string) {
+func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	sym, mod := "sa_btree_map_new", "sa_std/btree_map.sa"
 	kind := "map"
 	if name == "Set" {
@@ -476,7 +476,59 @@ func saLowerMapNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression,
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @%s()\n", t, sym))
 	_ = kind
+	if msg := saLowerMapNewSeeds(w, t, name, ce, scope, pos, refusals, nextTemp); msg != "" {
+		return "", msg
+	}
 	return t, ""
+}
+
+// saLowerMapNewSeeds 构造初值批量插入（`new Set([..])` 逐元 add 去重；`new Map([[k,v]])` 双元逐项 set（值串/i32 双门）；余形大声拒（禁静默丢初值）；576）。
+func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 || ce.Arguments.Nodes[0] == nil {
+		return ""
+	}
+	al := ce.Arguments.Nodes[0].AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil {
+		return "Map/Set constructor takes an array literal"
+	}
+	for _, el := range al.Elements.Nodes {
+		if el == nil {
+			return "Map/Set constructor takes an array literal"
+		}
+		if name == "Set" {
+			ks, kcell, msg := saMapKeySlice(w, el, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", t, ks))
+			saReleaseKeySlice(w, ks, kcell)
+		} else {
+			pair := el.AsArrayLiteralExpression()
+			if pair == nil || pair.Elements == nil || len(pair.Elements.Nodes) != 2 || pair.Elements.Nodes[0] == nil || pair.Elements.Nodes[1] == nil {
+				return "Map constructor takes [[k, v]] entries"
+			}
+			ks, kcell, msg := saMapKeySlice(w, pair.Elements.Nodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			var v string
+			if saIsStrExpr(pair.Elements.Nodes[1], scope) {
+				if v, msg = saEvalStr(w, pair.Elements.Nodes[1], scope, pos, refusals, nextTemp); msg != "" {
+					return msg
+				}
+			} else {
+				if v, msg = saEvalI32(w, pair.Elements.Nodes[1], scope, pos, refusals, nextTemp); msg != "" {
+					return msg
+				}
+				if msg = saCheckI32Value(scope, v); msg != "" {
+					return msg
+				}
+			}
+			w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", t, ks, v))
+			saReleaseKeySlice(w, ks, kcell)
+		}
+	}
+	return ""
 }
 
 // saLowerMapCall Map/Set 调用总线（返回 operand/种/errMsg；Map 值种按建表记

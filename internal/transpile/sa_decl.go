@@ -366,7 +366,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 						return false
 					}
 				}
-				h, msg := saLowerMapNew(w, ne.Expression.Text(), ne, scope, nextTemp)
+				h, msg := saLowerMapNew(w, ne.Expression.Text(), ne, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					ln, col := pos(d.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
