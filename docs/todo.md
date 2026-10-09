@@ -287,3 +287,4 @@
 - 三元调用臂精确放行（485 扩展：`saTernaryArrArm` 加调用臂（唯签名种 `arr`/`arrStr` 可信；内建方法种元模糊如 slice 沿未知拒）；i32 工厂展开·声明真机 3/40、2/40 PASS（上游 sound 一致）；串工厂双边大声拒；全量原生 487/487）。
 - 可空串空守卫判零已推（488：`s === null` 即 `eq s, 0`（null/undefined≡0，与 `?.`/`??` 同形；具名绑定直判，未绑定沿旧门禁无效产物；非标识沿旧门；`!==`/`!=`/换位/`undefined` 同臂）；窄化后使用真机 0/a/1 全对且超上游（上游"a"位打指针，undefined 形产物 check 不过）；家族扩展：i32（-1/42）、实例（-1）、Map 缺键 undefined（-1）三形真机全对；`0 != null` 双边同 0（子集 null≡0 契约 vs node 1，定案记限）；全量原生 488/488）。
 - 正则 match 管道锁仓（489：POSIX 形 `match(/[0-9]+/)` 绑定+取长+取元真机 1/12 全对 thin-lead；`\d` 转义双边同拒 ERE 口径；全量原生 489/489）。
+- startsWith 位点已推（490：`s.startsWith(n, pos)` ≡ `indexOf(n, max(pos,0)) == max(pos,0)`（SELECT 钳零+slt；control.sal 宏随三元先例；轮子负 from 既有缺与 indexOf 同病 sci 侧另立；空针超界残边记窄）；真机 1/0/1/0/1 PASS；全量原生 490/490）。
