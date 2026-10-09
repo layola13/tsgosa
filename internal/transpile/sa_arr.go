@@ -1754,6 +1754,11 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
 				w.Write(fmt.Sprintf("  %s = %s\n", binding, kh))
 				scope.types[binding] = "str"
+				// for-in 键每份新鲜具化，直授 move 安全（for-of 串元素同形；540 律；541）。
+				if scope.forOfStr == nil {
+					scope.forOfStr = map[string]bool{}
+				}
+				scope.forOfStr[binding] = true
 				saConsumeOwn(scope, kh)
 				saDeclareOwned(scope, binding)
 				armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
