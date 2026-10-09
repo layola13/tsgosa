@@ -301,3 +301,4 @@
 - 短路 `&&`/`||` 右臂恒求值记限 Phase2（z9a 实证：`c && hit()`/`c || hit()` 双边皆 `9/0/9/1`，bun `0/9/1`；`and`/`or` 指令形+双臂预求值，无短路；JEV 裁决 defer（98%，parity-in-wrong 先例：f64 数组元截断同例）；短路化需动 saEvalI32 二元核心+br 槽+右臂归属 join，面大量级另步；y29h 串复合空柄崩经 505 左基文本化复验已消（`s += "x"` 空柄得 "nullx"）。
 - P-A2 #15 正式闭环（双边同拒 parity：`require()` 薄口/上游同拒 `call to unknown function require`；`spawn`（`node:child_process` 不在投影表）薄口调用拒、上游 import-warning+调用拒，双边 refused=true 无活缺口；`child_process` 调用门/句柄种/插件 ABI 另立 Phase 2；文件内函数提升 p15a/b 早通实证）。
 - Array 构造子集锁仓（506 零代码改动：`new Array<i32>(3)` 长 3、`Array.isArray` 判 1、`.map(x=>x*2)` 值 4、`.fill(7)` 双 7；真机 `3/1/4/7/7` 与 bun 逐字节一致；链式 `new Array(2).fill(7)` 初值位拒系初值位门限（441 同类），分写即通非缺口；门禁 `--check` 506/506 + `--corpus` 286 agree + 原生 506/506）。
+- Array 高频 API 锁仓（507 零代码改动：`Array.from` 取 3、`filter` 长 2 头 3、`includes`/`indexOf` 判 1/2、`join("-")` 得 5-6-7、`push` 长 3/`pop` 值 3/长 2；真机 9 行与 bun 逐字节一致；门禁 `--check` 507/507 + `--corpus` 286 agree + 原生 507/507）。
