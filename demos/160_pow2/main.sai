@@ -23,6 +23,7 @@ L_for_body_2:
   call @ts_arr_push_word(a, t_3)
   t_4 = load a + 8 as u64
   !t_4
+  !t_3
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:
   t_5 = load a + 8 as u64

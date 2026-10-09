@@ -3417,6 +3417,10 @@ type saScope struct {
 	// armRelease 置位时 saLowerArm 在截断前释本臂新生归属（多臂合并收敛；
 	// 调用点按臂置位并复位，循环体等默认关闭）。
 	armRelease bool
+	// armReleaseTemps 置位时 saLowerArm 在截断前只释本臂新生归属临时量
+	// （具名不动：体声明名可进条件，释之即 UAF；temp 永不复用故恒安全；
+	// 循环回边每轮释放用，上游 while 回边 !t 链同形，for-of 巡后块同口径）。
+	armReleaseTemps bool
 	// crypto Hash 累加器（`createHash/update/digest` 链；命名导入裸调用
 	// 处暂存，声明式收养，非声明式在方法位大声拒；跨块共享表，
 	// 分发以 types==str 守卫防块出残留；形状证据：封存 hashAcc:442/
@@ -3956,8 +3960,12 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 	// 使合并点各入边状态一致；defer 逆序保证先于 saScopeExit 执行。
 	armDepth := len(scope.ownOrder)
 	wantArmRelease := scope.armRelease
+	wantArmTemps := scope.armReleaseTemps
 	terminated := false
 	defer func() {
+		if wantArmTemps && !terminated {
+			saReleaseArmTemps(w, scope, armDepth)
+		}
 		if wantArmRelease && !terminated {
 			saReleaseDeeperThan(w, scope, armDepth)
 		}

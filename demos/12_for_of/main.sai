@@ -53,6 +53,8 @@ L_forof_body_2:
   t_25 = load t_23 + 8 as u64
   call @sa_print_bytes(&t_24, t_25)
   !t_23
+  !t_17
+  !t_16
   !s
   t_26 = add t_7, 1
   t_7 = t_26

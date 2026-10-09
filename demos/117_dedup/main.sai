@@ -48,6 +48,7 @@ L_then_4:
   t_19 = load seen + 8 as u64
   !t_19
 L_endif_6:
+  !t_17
   !x
   t_20 = add t_10, 1
   t_10 = t_20

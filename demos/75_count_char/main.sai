@@ -38,6 +38,8 @@ L_then_4:
   !n
   n = t_14
 L_endif_6:
+  !t_7
+  !t_6
   t_15 = add i, 1
   !i
   i = t_15

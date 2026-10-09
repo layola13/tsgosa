@@ -40,6 +40,7 @@ L_for_body_11:
   t_8 = add c, t_7
   !c
   c = t_8
+  !t_7
   EXPAND FOR_NEXT i, 1, L_for_top_10
 L_for_end_12:
   t_9 = sext c as i64

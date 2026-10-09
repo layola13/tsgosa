@@ -65,6 +65,7 @@ L_forof_body_5:
   t_24 = add n, t_23
   !n
   n = t_24
+  !t_23
   !w
   t_25 = add t_16, 1
   t_16 = t_25

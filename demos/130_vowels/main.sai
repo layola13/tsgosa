@@ -91,6 +91,8 @@ L_for_body_2:
   t_47 = add n, t_46
   !n
   n = t_47
+  !t_46
+  !t_45
   t_48 = add i, 1
   !i
   i = t_48

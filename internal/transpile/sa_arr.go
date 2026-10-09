@@ -1741,7 +1741,11 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		}
 		scope.types[binding] = bindKind
 	}
+	// 体临时量每轮尾释放（行绑定走既有具名释放；体临时量具名不动外全释；同上）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	// 行绑定每轮尾释放(堆存活才落字;break/continue 经深释放,返前经释放全部).
 	if b := saOwnOf(scope, binding); b != nil && b.heap && !b.consumed && !b.released {
 		w.Write(fmt.Sprintf("  !%s\n", binding))
@@ -1893,7 +1897,11 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("  %s = add %s, 0\n", binding, idx))
 	scope.types[binding] = "i32"
 	saDeclarePlain(scope, binding)
+	// 体临时量每轮尾释放（下标绑定为快照具名不动；体临时量全释；同上）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false

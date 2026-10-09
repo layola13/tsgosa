@@ -2885,7 +2885,12 @@ func saLowerWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
+	// 体临时量每轮尾释放（回边复用同寄存器，防跨迭代泄漏；具名不动；
+	// 上游 while 回边 !t 链同形；开关复位防外泄）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
@@ -3422,7 +3427,11 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
+	// 体临时量每轮尾释放（增量在臂外，体临时量已死；具名不动；同上）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
@@ -3469,7 +3478,11 @@ func saLowerForMacro(w printer.EmitTextWriter, s *ast.Node, fs *ast.ForStatement
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: contL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
+	// 体临时量每轮尾释放（宏增量自带回跳，体临时量已死；具名不动；同上）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
@@ -3508,7 +3521,11 @@ func saLowerDoWhile(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *s
 	w.Write(fmt.Sprintf("%s:\n", loopL))
 	scope.loops = append(scope.loops, saLoop{top: loopL, cont: condL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
+	// 体临时量每轮尾释放（条件在体后，体临时量已死；具名不动防条件复用；同上）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	scope.armReleaseTemps = savedArmTemps
 	scope.loops = scope.loops[:len(scope.loops)-1]
 	if !armOK {
 		return false
