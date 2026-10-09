@@ -83,7 +83,16 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		}
 		if text, ok := scope.topConsts[nm]; ok {
 			if scope.topStr[nm] {
-				return "", "string " + nm + " in condition"
+				// 顶层折叠串条件真值（具化后走 502 空守卫 `?.length` + `ne 0`；
+				// 上游 br 句柄恒真、`if ("")` 取 then 臂系误编译实锤，薄口领先）。
+				h := saLowerStringLiteral(w, text, scope, nextTemp)
+				ln0 := saLowerOptionalLength(w, h, scope, nextTemp)
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+				saReleaseOwnedTemp(w, scope, ln0)
+				saReleaseOwnedTemp(w, scope, h)
+				return t, ""
 			}
 			return text, ""
 		}

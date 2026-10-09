@@ -329,3 +329,4 @@
 - 调用结果 `?.length` 已推（586：新鲜非空柄空臂不可达，等价直读（plain 调用基同形）；真机 1 与 bun 一致；门禁 `--check` 586/586 + `--corpus` 286 agree + 原生 586/586）。
 - Map.forEach 已推（587：`sa_btree_map_iter_vec` 快照三元组巡回，回调(v[,k])（值种按建表，键 head 每轮具化即释）；单参累加 12、双参 5/1/7/1 全对；门禁 `--check` 587/587 + `--corpus` 286 agree + 原生 587/587）。
 - 顶层折叠串串判定已推（588：`saIsStrExpr` 标识符分支补 topConsts/topStr 折叠读（与 `saEvalStr` 折叠读位同序，局部遮蔽优先；形状证据：封存 lowerExpr:2774-2781 constVals+constIsStr；被赋值名走 modVars 槽故无交）；const/let 折叠串直打/拼接/取长/比较/串形参真机 hi/hi-sa/2/1/sa! 与 bun 一致；门禁 `--check` 588/588 + `--corpus` 286 agree + 原生 588/588）。
+- 顶层折叠串条件真值已推（589：`saCondOperand` 标识符分支 topConsts/topStr 臂由拒收改具化后走 502 空守卫（`?.length` 槽 + `ne 0`，具化柄用后即释；上游 br 句柄恒真、`if ("")` 取 then 臂系误编译实锤，薄口领先）；hi/空/取反/while 真机 1/0/2/3 与 bun 一致；门禁 `--check` 589/589 + `--corpus` 286 agree + 原生 589/589）。
