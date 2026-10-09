@@ -3378,7 +3378,11 @@ type saScope struct {
 	arrStr map[string]bool
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
-	mapVals      map[string]string
+	mapVals map[string]string
+	// nullConst 记 `const T|null` 空初值绑定（const 永不重绑，名下恒零
+	// 句柄；具名头读位（`.length`）凭此大声拒，禁读空柄崩机；`?.`
+	// 守卫径与 let 重绑径不受影响；491）。
+	nullConst    map[string]bool
 	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)
 	importRemote map[string]string // import alias remote names (local -> remote; cf importedRemote)
 	// 测试 hook pending 表（同域顺序语义：beforeEach/afterEach 注册体按序贴到

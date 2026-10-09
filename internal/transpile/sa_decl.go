@@ -568,6 +568,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					vd.Initializer.Kind == ast.KindUndefinedKeyword {
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = base
+					if isConst && (base == "str" || base == "arr") {
+						if scope.nullConst == nil {
+							scope.nullConst = map[string]bool{}
+						}
+						scope.nullConst[name] = true
+					}
+					// const 空柄永不重绑，记名供头读位大声拒（491；let/重绑/余种沿旧门）。
 					saDeclarePlain(scope, name)
 					continue
 				}

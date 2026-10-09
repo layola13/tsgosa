@@ -725,6 +725,13 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		if base, ok := saArrBase(scope, saUnwrapTransparent(pa.Expression)); ok {
 			return saLowerOptionalLength(w, base, scope, nextTemp), ""
 		}
+		// 可空串 `s?.length` 具名串基走同形空守卫（`string|null` 零句柄；
+		// 空读 0，非空读头 +8；与数组 480 同形；上游同形实证 parity；491）。
+		if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[e.Text()]; ok && k == "str" {
+				return saLowerOptionalLength(w, e.Text(), scope, nextTemp), ""
+			}
+		}
 		return "", "optional member access not lowerable"
 	}
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
@@ -748,6 +755,14 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	}
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
+	}
+	// const 空柄具名直读头必崩（`const t: string|null = null; t.length`
+	// 落 `load t+8` 读零址，真机 SIGSEGV 实证；上游同错 parity-in-wrong，
+	// 薄口大声拒；`?.` 守卫径在上已分流不受影响；491）。
+	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier && scope.nullConst[e.Text()] {
+		if k, ok := scope.types[e.Text()]; ok && (k == "str" || k == "arr") {
+			return "", "const null handle has no .length (definite null dereference)"
+		}
 	}
 	// 括号数组基透明（`(a).length` 即 `a.length`；483 实例双门同例）。
 	if base, ok := saArrBase(scope, saUnwrapTransparent(pa.Expression)); ok {

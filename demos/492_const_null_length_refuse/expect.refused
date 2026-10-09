@@ -1,0 +1,2 @@
+# const 空柄具名直读 `.length` 大声拒（`load t+8` 读零址真机 SIGSEGV；上游同错 parity-in-wrong；`?.` 守卫径见 491）
+const null handle has no .length (definite null dereference)
