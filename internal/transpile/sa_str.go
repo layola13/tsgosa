@@ -1798,7 +1798,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		return call1(sym, np, nl, from), false, ""
 	case "startsWith", "endsWith":
-		if len(args) != 1 {
+		if len(args) != 1 && (method != "startsWith" || len(args) != 2) {
 			return "", false, method + " needs 1 argument"
 		}
 		n, msg := strArg(0)
@@ -1806,6 +1806,31 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			return "", false, msg
 		}
 		np, nl := saExpandStr(w, n, nextTemp)
+		if method == "startsWith" && len(args) == 2 {
+			// 双参即位点前缀（`s.startsWith(n, pos)` ≡ `s.indexOf(n, pos) == pos`；
+			// 位点钳零经 SELECT（负位按 0；轮子负 from 既有缺与 indexOf 同病，
+			// sci 侧另立；空针超界残边记窄）；上游拒收 thin-lead。
+			p, msg := intArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+			// EXPAND SELECT 需控制宏（与三元值位同门）。
+			scope.addImport("sa_std/control.sal")
+			isneg := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", isneg, p))
+			fc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, 0, %s\n", fc, isneg, p))
+			idx := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_string_index_of(%s, %s, %s, %s, %s)\n", idx, bp, bl, np, nl, fc))
+			saOwnTemp(scope, idx)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", t, idx, fc))
+			return t, false, ""
+		}
 		sym := "sa_string_starts_with"
 		if method == "endsWith" {
 			sym = "sa_string_ends_with"
