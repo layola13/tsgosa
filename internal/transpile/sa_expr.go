@@ -56,7 +56,13 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return "", "array " + nm + " in condition"
 			}
 			if k == "str" {
-				return "", "string " + nm + " in condition"
+				// 串真值（空串/零句柄 falsy；头 +8 读长，上游两者恒真系误编译；可空与非空统一守卫，`?.length` 槽复用；502）。
+				ln0 := saLowerOptionalLength(w, nm, scope, nextTemp)
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+				saReleaseOwnedTemp(w, scope, ln0)
+				return t, ""
 			}
 			if k == "map" || k == "set" {
 				return "", k + " " + nm + " in condition"
@@ -88,6 +94,12 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			return "0", ""
 		}
 		return "", "unknown condition variable " + nm
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		// 串字面量条件编译期折叠（空串 falsy；上游恒真系误编译；502）。
+		if cond.Text() == "" {
+			return "0", ""
+		}
+		return "1", ""
 	case ast.KindTrueKeyword:
 		return "1", ""
 	case ast.KindFalseKeyword:
