@@ -83,6 +83,11 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			if ms, ok := scope.modVars[e.Text()]; ok && ms.w == "str" {
 				return true
 			}
+			// 顶层串常量折叠读（与 saEvalStr 折叠读位同序；封存 lowerExpr:2774-2781
+			// constVals+constIsStr；被赋值名永不折叠故与 modVars 无交）。
+			if _, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
+				return true
+			}
 		}
 		return ok && k == "str"
 	case ast.KindCallExpression:

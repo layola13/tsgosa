@@ -328,3 +328,4 @@
 - 枚举注解记 i32 已推（585：声明位+形参位（箭头同核）由泛型句柄 arr 改记 i32（成员整数本色；equality 折叠 eq 同效）；152/559 意图内重生成语义保持；真机 1/0/1 全对；门禁 `--check` 585/585 + `--corpus` 286 agree + 原生 585/585）。
 - 调用结果 `?.length` 已推（586：新鲜非空柄空臂不可达，等价直读（plain 调用基同形）；真机 1 与 bun 一致；门禁 `--check` 586/586 + `--corpus` 286 agree + 原生 586/586）。
 - Map.forEach 已推（587：`sa_btree_map_iter_vec` 快照三元组巡回，回调(v[,k])（值种按建表，键 head 每轮具化即释）；单参累加 12、双参 5/1/7/1 全对；门禁 `--check` 587/587 + `--corpus` 286 agree + 原生 587/587）。
+- 顶层折叠串串判定已推（588：`saIsStrExpr` 标识符分支补 topConsts/topStr 折叠读（与 `saEvalStr` 折叠读位同序，局部遮蔽优先；形状证据：封存 lowerExpr:2774-2781 constVals+constIsStr；被赋值名走 modVars 槽故无交）；const/let 折叠串直打/拼接/取长/比较/串形参真机 hi/hi-sa/2/1/sa! 与 bun 一致；门禁 `--check` 588/588 + `--corpus` 286 agree + 原生 588/588）。
