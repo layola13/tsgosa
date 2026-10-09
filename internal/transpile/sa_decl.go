@@ -1000,7 +1000,19 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// 数组三元推断（双臂数组位即 arr 句柄；经句柄总线三元臂；
 		// 记种/归属与字面量声明同形；串元臂显式拒（h4/h5 指针当整数，
 		// 上游同错）；未知臂沿旧路大声拒；上游 i32 形实证）。
-		if saIsArrValue(ce.WhenTrue, scope) && saIsArrValue(ce.WhenFalse, scope) {
+		// 签名已知调用亦数组位（`cond ? getArr() : [1]`；种由谓词再判）。
+		arrPos := func(e *ast.Node) bool {
+			if saIsArrValue(e, scope) {
+				return true
+			}
+			if e != nil && e.Kind == ast.KindCallExpression {
+				if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && (k == "arr" || k == "arrStr") {
+					return true
+				}
+			}
+			return false
+		}
+		if arrPos(ce.WhenTrue) && arrPos(ce.WhenFalse) {
 			tstr, tok := saTernaryArrArm(ce.WhenTrue, scope)
 			fstr, fok := saTernaryArrArm(ce.WhenFalse, scope)
 			if (tok && tstr) || (fok && fstr) {

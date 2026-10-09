@@ -664,6 +664,18 @@ func saTernaryArrArm(e *ast.Node, scope *saScope) (bool, bool) {
 			return saLiteralIsStrArray(e, scope), true
 		case ast.KindIdentifier:
 			return scope.arrStr[e.Text()], true
+		case ast.KindCallExpression:
+			// 调用臂唯签名种可信（用户函数 `arr`/`arrStr`；内建方法种
+			// `saArrCallRet` 元模糊如 slice，沿未知拒；u1 实证）。
+			if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok {
+				if k == "arr" {
+					return false, true
+				}
+				if k == "arrStr" {
+					return true, true
+				}
+			}
+			return false, false
 		default:
 			return false, false
 		}
