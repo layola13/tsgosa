@@ -480,6 +480,13 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)
 	}
 	if retKind == "string" {
+		// 未绑定 `undefined` 即空柄（关键字臂同律；遮蔽优先；`return undefined`
+		// 进可空串位；值位通用 `undefined` 标识仍沿串门拒）。
+		if e != nil && e.Kind == ast.KindIdentifier && e.Text() == "undefined" {
+			if _, ok := scope.types["undefined"]; !ok {
+				return "0", ""
+			}
+		}
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}
 	// f64 返回位经严格求值（字面量/绑定/纯浮点算术；余形大声拒）。
@@ -5562,6 +5569,25 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						saReleaseOwnedTemp(w, scope, h)
 						return t, ""
 					}
+				}
+				// 空比较通用串臂（调用/拼接等串值表达式具化后空判；标识符形在上
+				// 优先；空≡0 子集口径双边既定，上游 `eq t_2, 0` 同形）。
+				var strSide *ast.Node
+				if saIsNullLit(be.Right, scope) && saIsStrValue(be.Left, scope) {
+					strSide = be.Left
+				} else if saIsNullLit(be.Left, scope) && saIsStrValue(be.Right, scope) {
+					strSide = be.Right
+				}
+				if strSide != nil {
+					h, msg := saEvalStr(w, strSide, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, h))
+					saReleaseOwnedTemp(w, scope, h)
+					return t, ""
 				}
 			}
 			return "", "only +/==/!= operate on strings"

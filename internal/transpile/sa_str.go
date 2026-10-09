@@ -350,6 +350,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		return t, ""
 	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 		return saLowerStringLiteral(w, e.Text(), scope, nextTemp), ""
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		// 空即 0 句柄（与 i32 侧子集 null/undefined 即 0 同律，封存
+		// lowerExpr:2731-2734；可空槽/守卫/`??` 同形；`return null` 进串位）。
+		return "0", ""
 	case ast.KindTemplateExpression:
 		return saLowerTemplate(w, e.AsTemplateExpression(), scope, pos, refusals, nextTemp)
 	case ast.KindTypeOfExpression:
