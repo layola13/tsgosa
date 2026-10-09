@@ -568,7 +568,8 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					vd.Initializer.Kind == ast.KindUndefinedKeyword {
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = base
-					if isConst && (base == "str" || base == "arr") {
+					// 空初值 const/let 皆记（const 永不重绑；let 由直线赋值成功清除，臂内不清；503）。
+					if base == "str" || base == "arr" {
 						if scope.nullConst == nil {
 							scope.nullConst = map[string]bool{}
 						}
@@ -593,12 +594,11 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = inst
 					// const 空实例永不重绑，记名供成员读/调位大声拒（493；let/重绑沿旧门）。
-					if isConst {
-						if scope.nullConst == nil {
-							scope.nullConst = map[string]bool{}
-						}
-						scope.nullConst[name] = true
+					// 空初值 const/let 皆记（493 记 const，503 扩至 let；清除律同上）。
+					if scope.nullConst == nil {
+						scope.nullConst = map[string]bool{}
 					}
+					scope.nullConst[name] = true
 					saDeclarePlain(scope, name)
 					continue
 				}

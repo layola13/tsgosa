@@ -1,0 +1,2 @@
+# let 空初值无重绑直读 `.length` 大声拒（记表期扩至 let，直线赋值成功才清；`?.` 守卫径见 503；与 492 同指纹）
+const null handle has no .length (definite null dereference)

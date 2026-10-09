@@ -4891,6 +4891,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						return "", msg
 					}
 					w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), op))
+					// 值位串赋值成功同清（短路 `and/or` 全求值恒执行；`??`/三元赋值形不可达；503）。
+					saClearNullConst(scope, be.Left.Text())
 					return be.Left.Text(), ""
 				}
 			}

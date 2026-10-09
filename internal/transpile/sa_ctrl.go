@@ -223,6 +223,7 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 					b.heap = true
 				}
 				saMarkRebound(scope, be.Left.Text())
+				saClearNullConst(scope, be.Left.Text())
 				return true
 			}
 		}
@@ -2723,6 +2724,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 						b.heap = true
 					}
 					saMarkRebound(scope, name)
+					saClearNullConst(scope, name)
 					scope.types[name] = "inst:" + ne.Expression.Text()
 					return true
 				}
@@ -2748,6 +2750,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			b.heap = true
 		}
 		saMarkRebound(scope, name)
+		saClearNullConst(scope, name)
 		return true
 	}
 	if k == "arr" {
@@ -2766,6 +2769,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				b.heap = true
 			}
 			saMarkRebound(scope, name)
+			saClearNullConst(scope, name)
 			return true
 		}
 		ln, col := pos(s.Pos())
@@ -2794,6 +2798,7 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			b.heap = true
 		}
 		saMarkRebound(scope, name)
+		saClearNullConst(scope, name)
 		return true
 	}
 	if k == "f64" {
@@ -4655,6 +4660,14 @@ func saMarkRebound(scope *saScope, dst string) {
 		b.released = false
 		b.consumed = false
 	}
+}
+
+// saClearNullConst 直线赋值成功清空调柄记名（右值门已保非空；臂内 depth>0 不清，join 他臂仍空；nil 表 delete 安全；503）。
+func saClearNullConst(scope *saScope, dst string) {
+	if scope == nil || scope.armDepth > 0 {
+		return
+	}
+	delete(scope.nullConst, dst)
 }
 
 // saConsumeTemp 记录 temp 源 move（H-try 深修：裸 `dst = t` 即 move，
