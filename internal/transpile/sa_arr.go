@@ -753,6 +753,26 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			return t, ""
 		}
 	}
+	// Record/map 点读 `r.k` 按 `.get("k")` 同义（键编译期常量；缺键 btree 回 0；方法名沿旧门（无函数值）；读回种按 get 门 mapVals 表；561）。
+	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() != "length" &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && !saIsMapMethod(nm.Text()) {
+		if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" {
+			recv := pa.Expression.Text()
+			scope.addImport("sa_std/btree_map.sa")
+			kh := saLowerStringLiteral(w, nm.Text(), scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, recv, kh))
+			saReleaseOwnedTemp(w, scope, kh)
+			saOwnTemp(scope, t)
+			vkind := scope.mapVals[recv]
+			if vkind == "" {
+				vkind = "i32"
+			}
+			scope.types[t] = vkind
+			return t, ""
+		}
+	}
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
 	}

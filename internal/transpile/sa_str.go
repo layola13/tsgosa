@@ -713,6 +713,10 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if k, ok := scope.types[op]; ok && k == "f64" {
 			return saRenderInterpF64(w, op, scope, nextTemp), ""
 		}
+		// 串 temp 回种纠偏（点读门等产串 head 记种；已是切片头，直返，归属沿调用方；与 f64 纠偏同形；561b）。
+		if k, ok := scope.types[op]; ok && k == "str" {
+			return op, ""
+		}
 	}
 	return saRenderInterp(w, op, scope, nextTemp, "10"), ""
 }
