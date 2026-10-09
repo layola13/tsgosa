@@ -302,3 +302,4 @@
 - P-A2 #15 正式闭环（双边同拒 parity：`require()` 薄口/上游同拒 `call to unknown function require`；`spawn`（`node:child_process` 不在投影表）薄口调用拒、上游 import-warning+调用拒，双边 refused=true 无活缺口；`child_process` 调用门/句柄种/插件 ABI 另立 Phase 2；文件内函数提升 p15a/b 早通实证）。
 - Array 构造子集锁仓（506 零代码改动：`new Array<i32>(3)` 长 3、`Array.isArray` 判 1、`.map(x=>x*2)` 值 4、`.fill(7)` 双 7；真机 `3/1/4/7/7` 与 bun 逐字节一致；链式 `new Array(2).fill(7)` 初值位拒系初值位门限（441 同类），分写即通非缺口；门禁 `--check` 506/506 + `--corpus` 286 agree + 原生 506/506）。
 - Array 高频 API 锁仓（507 零代码改动：`Array.from` 取 3、`filter` 长 2 头 3、`includes`/`indexOf` 判 1/2、`join("-")` 得 5-6-7、`push` 长 3/`pop` 值 3/长 2；真机 9 行与 bun 逐字节一致；门禁 `--check` 507/507 + `--corpus` 286 agree + 原生 507/507）。
+- Map/Set 高频锁仓（508 零代码改动：Map set/get??/has/size/delete 真机 1/1/2/0，Set add/has/size/delete 真机 1/2/1；7 行与 bun 逐字节一致；门禁 `--check` 508/508 + `--corpus` 286 agree + 原生 508/508）。
