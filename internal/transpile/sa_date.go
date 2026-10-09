@@ -50,6 +50,41 @@ func saLowerDateNew(w printer.EmitTextWriter, scope *saScope, nextTemp *int) str
 	return t
 }
 
+// saLowerDateNewArg `new Date(x)` 单参 millis 形（整字面/i32 绑定 sext 入 i64 柄；date 柄值拷（i64 值语义无别名）；f64/串/余形沿旧门大声拒；512；后端 `new Date(createdAt)` 实例）。
+func saLowerDateNewArg(w printer.EmitTextWriter, ne *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if ne == nil || ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 || ne.Arguments.Nodes[0] == nil {
+		return "", "new Date(x) is not lowerable (only arg-less now-shape)"
+	}
+	a := ne.Arguments.Nodes[0]
+	scope.addImport("sa_std/time.sai")
+	if a.Kind == ast.KindNumericLiteral && saIsDecIntLit(a.Text()) {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sext %s as i64\n", t, a.Text()))
+		saOwnTemp(scope, t)
+		return t, ""
+	}
+	if a.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[a.Text()]; ok && k == "date" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", t, a.Text()))
+			saOwnTemp(scope, t)
+			return t, ""
+		}
+	}
+	op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as i64\n", t, op))
+	saOwnTemp(scope, t)
+	saReleaseOwnedTemp(w, scope, op)
+	return t, ""
+}
+
 // saDateStrMethod 串位 Date 方法表（toISOString + format_utc 0..3）。
 func saDateStrMethod(m string) (string, string, bool) {
 	switch m {

@@ -4655,6 +4655,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		ne := e.AsNewExpression()
 		if ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
 			if ne.Expression.Text() == "Date" {
+				// 有参 millis 形值位（512）；无参沿旧门。
+				if !saIsDateNew(e) {
+					h, msg := saLowerDateNewArg(w, ne, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return h, ""
+				}
 				return "", "new Date(x) is not lowerable (only arg-less now-shape)"
 			}
 			if ne.Expression.Text() == "RegExp" {

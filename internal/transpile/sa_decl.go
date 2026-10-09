@@ -403,9 +403,33 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// `new Date()` 绑定为 date 种（millis 不透明；有参形大声拒）。
 			if ne := vd.Initializer.AsNewExpression(); ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Date" {
 				if !saIsDateNew(vd.Initializer) {
-					ln, col := pos(vd.Initializer.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "new Date(x) is not lowerable (only arg-less now-shape)"})
-					return false
+					// 有参 millis 形（512；余形沿旧门）。
+					h, argmsg := saLowerDateNewArg(w, vd.Initializer.AsNewExpression(), scope, pos, refusals, nextTemp)
+					if argmsg != "" {
+						ln, col := pos(vd.Initializer.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: argmsg})
+						return false
+					}
+					if vd.Type != nil {
+						tn := vd.Type
+						if tn.Kind != ast.KindTypeReference {
+							ln, col := pos(d.Pos())
+							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "date annotation must be Date"})
+							return false
+						}
+						ref := tn.AsTypeReferenceNode()
+						if ref == nil || ref.TypeName == nil ||
+							ref.TypeName.Text() != "Date" {
+							ln, col := pos(d.Pos())
+							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "date annotation must be Date"})
+							return false
+						}
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "date"
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					continue
 				}
 				if vd.Type != nil {
 					tn := vd.Type
