@@ -273,3 +273,8 @@
 - existsSync 已推（478：状态判零 SA_FS_OK=0，hermetic 真机 1/0 PASS）。
 - 括号联合数组注解已推（479：`(number|null)[]` 经 `saAnnotKind` 括号解包走既有联合吸收，null→0 与上游逐行同形，真机 1/3/2 PASS；`Array<number|undefined>` 同门；return-in-void 双边同拒 parity 无活缺口；statSync 需 Stats 对象设计另立）。
 - 可空数组 `?.length` 已推（480：`saUnionNullBase` 收 arr（空初值即 arr 零句柄，与 `inst:P` 同律）+ `saLowerOptionalLength` 空守卫槽（与 `?.[i]`/`b?.v` 同形；空读 0，非空读头 +8；直接空读与上游同暴露 parity 不进仓）；真机 0/3/3/8 PASS；串元可空/重绑边形双边同过；定案：float 索引/复合（上游指针算术/`add n,1.5` 静默错码，T2 同族不移植）、var 提升（上游 UnknownRegister 无效产物不移植）、let TDZ（抛语义不移植）。
+- 括号被调解包 thin-lead（481：`(add)(…)` 即直调，与注解/表达式括号同律；上游过严拒收；真机 42/3 PASS；成员接收者括号因分发散在 15 处另步）。
+- fs 投影缺席文案与上游逐字节对齐（`not a projected std surface (see StdProjectionTable)`；statSync 双边同拒 parity，Stats/len 设计需 sci 侧另立）。
+- 工厂调用实例实参已推（482：`use(mk())` 经 `saCallRetKind` 取 `inst:` 返回种直传新柄（含派生 step396 同规；归属经内层调用核自动登记，与 `new` 臂同物；上游 `call @mk()`+双释实证 check-clean）；真机 42/42 PASS）。
+- P0 双项复核实锤（本轮，只记台账不改码）：混合 `==`（`1=="1"` 上游 `eq x,柄` 打印 0 vs node 1；`"a"==97` 恒假偶对；`true==1` 子集恒等正确）与 any 串算术（`f(x:any)+1` 上游 `add 柄,1` 指针加法）上游皆静默错码，薄口大声拒正确（铁律 4）；`?.` 链/D11、T2/H7 同族维持。
+- 本轮全量原生复验：`demos/run.sh -j8` 真机 **482/482 PASS**（插件链 --dev 齐装后 203-208/289 全过）。
