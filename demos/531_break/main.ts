@@ -1,0 +1,7 @@
+function main(): i32 {
+  for (let i = 0; i < 10; i++) {
+    if (i == 2) { break; }
+  }
+  console.log(2);
+  return 0;
+}

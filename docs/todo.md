@@ -312,3 +312,4 @@
 - 语法混合锁仓（515 零代码改动：for-of 累加 6、数组解构 10/20、展开调用 add(...args) 得 7、enum 取 0；5 行与 bun 逐字节一致；门禁 `--check` 515/515 + `--corpus` 286 agree + 原生 515/515）。
 - 流程混合锁仓（516 零代码改动：label-continue 得 3、super 方法链得 111/1、throw 整形 catch 得 1； 实例值位与  未知类沿旧门；门禁 `--check` 516/516 + `--corpus` 286 agree + 原生 516/516）。
 - 批量十连锁仓（517-526 零代码改动）：String(42)/endsWith/??=/默认参数/every-some-find/typeof/解构默认/padEnd/while-true/concat，真机全与 bun 逐字节一致；`Number("13")` 薄口打印 13.000000（f64 泄漏）剔除记限，`slice`/可选链对象形沿既有门；门禁 `--check` 526/526 + `--corpus` 286 agree + 原生 526/526）。
+- 批量十二连（527-538）：模板插值/getter-setter/静态成员/do-while/break/剩余参数/私有字段/as断言/可选参数/数组slice十通过锁（真机全与 bun 一致）；混元元组 `[i32,string]` 串柄截断崩→加 i32 元注解门（全串元组 arrStr 豁免），537 通过+538 拒收双锁；门禁 `--check` 538/538 + `--corpus` 286 agree + 原生 538/538）。

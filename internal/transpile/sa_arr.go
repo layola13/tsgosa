@@ -1335,9 +1335,10 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 			return false
 		}
 		// 显式 i32 元注解收串元拒（4 字节槽截断句柄；串注解/无注解沿既有口径；
-		// 按语法种判定；铁律 4）。
+		// 按语法种判定；铁律 4）。元组同门（`[i32, string]` 混元同崩；全串元组沿 arrStr 口径豁免；537）。
 		if vd.Type != nil && !saIsStringArrayAnnot(vd.Type) &&
-			(vd.Type.Kind == ast.KindArrayType || (vd.Type.Kind == ast.KindTypeReference && vd.Type.AsTypeReferenceNode() != nil)) {
+			!(vd.Type.Kind == ast.KindTupleType && saLiteralIsStrArray(vd.Initializer, scope)) &&
+			(vd.Type.Kind == ast.KindArrayType || vd.Type.Kind == ast.KindTupleType || (vd.Type.Kind == ast.KindTypeReference && vd.Type.AsTypeReferenceNode() != nil)) {
 			if al := vd.Initializer.AsArrayLiteralExpression(); al != nil && al.Elements != nil {
 				for _, el := range al.Elements.Nodes {
 					if el != nil && el.Kind != ast.KindSpreadElement && el.Kind != ast.KindOmittedExpression &&

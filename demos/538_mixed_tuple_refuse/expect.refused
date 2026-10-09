@@ -1,0 +1,2 @@
+# 混元元组大声拒（`[i32, string]` 串柄按 4 字节槽截断，真机垃圾值；全串元组沿 arrStr 口径放行；537）
+array element kind mismatch (non-string array takes i32 values)
