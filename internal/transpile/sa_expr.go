@@ -4890,7 +4890,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					if msg != "" {
 						return "", msg
 					}
+					// 值位串赋值补归属纪律（旧柄先释+move 记 consumed+堆复位；语句位 2789-2795 同形；既往漏记致 UseAfterMove；506）。
+					saRebindRelease(w, scope, be.Left.Text())
 					w.Write(fmt.Sprintf("  %s = %s\n", be.Left.Text(), op))
+					saConsumeOwn(scope, op)
+					if b := saOwnOf(scope, be.Left.Text()); b != nil {
+						b.heap = true
+					}
 					// 值位串赋值成功同清（短路 `and/or` 全求值恒执行；`??`/三元赋值形不可达；503）。
 					saClearNullConst(scope, be.Left.Text())
 					return be.Left.Text(), ""
