@@ -5497,12 +5497,30 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, be.Left.Text()))
 						return t, ""
 					}
+					// 顶层折叠串具化后空判（具化柄用后即释；上游 `eq t_2, 0` 同形）。
+					if text, ok := scope.topConsts[be.Left.Text()]; ok && scope.topStr[be.Left.Text()] {
+						h := saLowerStringLiteral(w, text, scope, nextTemp)
+						t := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, h))
+						saReleaseOwnedTemp(w, scope, h)
+						return t, ""
+					}
 				}
 				if saIsNullLit(be.Left, scope) && be.Right != nil && be.Right.Kind == ast.KindIdentifier {
 					if _, ok := scope.types[be.Right.Text()]; ok {
 						t := fmt.Sprintf("t_%d", *nextTemp)
 						*nextTemp++
 						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, be.Right.Text()))
+						return t, ""
+					}
+					// 顶层折叠串具化后空判（同左臂）。
+					if text, ok := scope.topConsts[be.Right.Text()]; ok && scope.topStr[be.Right.Text()] {
+						h := saLowerStringLiteral(w, text, scope, nextTemp)
+						t := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s %s, 0\n", t, op2, h))
+						saReleaseOwnedTemp(w, scope, h)
 						return t, ""
 					}
 				}
