@@ -48,7 +48,9 @@ func saQualifiedTypeName(tn *ast.TypeNode) (string, bool) {
 }
 
 // saUnionNullBase 识别 `T | null`/`T | undefined` 二元可空注解（T 限
-// i32/str/bool；余元沿旧门；B02）。
+// i32/str/bool/arr；余元沿旧门；B02；arr 臂：`i32[]|null` 配空初值即
+// arr 零句柄，与实例 `inst:P` 零句柄同律（直接读空柄的暴露与上游同形；
+// `?.length`/`?.[i]` 守卫读位凭此解析数组基；上游 `a = 0` 实证）。
 func saUnionNullBase(ut *ast.UnionTypeNode) (string, bool) {
 	if ut == nil || ut.Types == nil || len(ut.Types.Nodes) != 2 {
 		return "", false
@@ -71,7 +73,7 @@ func saUnionNullBase(ut *ast.UnionTypeNode) (string, bool) {
 			return "", false
 		}
 		k, ok := saAnnotKind(m)
-		if !ok || (k != "i32" && k != "str" && k != "bool") {
+		if !ok || (k != "i32" && k != "str" && k != "bool" && k != "arr") {
 			return "", false
 		}
 		base = k

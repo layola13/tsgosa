@@ -635,10 +635,48 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	return out, ""
 }
 
+// saLowerOptionalLength lowers `a?.length`（空基读 0，否则头 +8；
+// 与 `a?.[i]` 守卫槽（saLowerOptionalIndex）、`b?.v` 守卫槽同形；
+// 空即 undefined≡0 子集口径；上游同形（eq+槽+load）实证）。
+func saLowerOptionalLength(w printer.EmitTextWriter, base string, scope *saScope, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	nullL := fmt.Sprintf("L_len_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_len_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_len_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, base))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", v, base))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest
+}
+
 // saLowerLengthExpr lowering `.length`（数组/字符串头 +8 u64；其余成员拒）。
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
 	if pa.QuestionDotToken != nil {
+		// `a?.length` 具名数组基走空守卫 join；其余基沿旧门。
+		if base, ok := saArrBase(scope, pa.Expression); ok {
+			return saLowerOptionalLength(w, base, scope, nextTemp), ""
+		}
 		return "", "optional member access not lowerable"
 	}
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
