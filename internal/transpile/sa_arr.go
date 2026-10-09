@@ -775,6 +775,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 				return saLowerOptionalLength(w, e.Text(), scope, nextTemp), ""
 			}
 		}
+		// 调用结果 `?.length`（新鲜非空柄，空臂不可达，等价直读；plain 调用基 868 同形；586）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
+			if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+				saReleaseOwnedTemp(w, scope, h)
+				return t, ""
+			}
+		}
 		return "", "optional member access not lowerable"
 	}
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
