@@ -1625,6 +1625,13 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			// 串元绑定记 str（1 字柄；求值/拼接经串通道）。
 			bindKind = "str"
 		}
+		if strBase != "" {
+			// for-of 串元素记名（单轮新鲜柄，直授 move 安全；540）。
+			if scope.forOfStr == nil {
+				scope.forOfStr = map[string]bool{}
+			}
+			scope.forOfStr[binding] = true
+		}
 		if be := fo.Expression; be != nil && be.Kind == ast.KindArrayLiteralExpression {
 			if al := be.AsArrayLiteralExpression(); al.Elements != nil {
 				for _, el := range al.Elements.Nodes {

@@ -314,3 +314,4 @@
 - 批量十连锁仓（517-526 零代码改动）：String(42)/endsWith/??=/默认参数/every-some-find/typeof/解构默认/padEnd/while-true/concat，真机全与 bun 逐字节一致；`Number("13")` 薄口打印 13.000000（f64 泄漏）剔除记限，`slice`/可选链对象形沿既有门；门禁 `--check` 526/526 + `--corpus` 286 agree + 原生 526/526）。
 - 批量十二连（527-538）：模板插值/getter-setter/静态成员/do-while/break/剩余参数/私有字段/as断言/可选参数/数组slice十通过锁（真机全与 bun 一致）；混元元组 `[i32,string]` 串柄截断崩→加 i32 元注解门（全串元组 arrStr 豁免），537 通过+538 拒收双锁；门禁 `--check` 538/538 + `--corpus` 286 agree + 原生 538/538）。
 - 条件取反锁仓（539：`!x`/`!!x` 操作数经真值门递归（0翻1/余纯数字翻0/temp补eq），三元/if/while 条件位通用；7 形与 bun 逐字节一致；门禁 `--check` 539/539 + `--corpus` 286 agree + 原生 539/539）。
+- for-of 串元素直授已推（540：`for (c of str) { s = c; }` 单轮新鲜柄 move 移交（forOfStr 记名+2796 门豁免，随块域回滚；循环尾跳释/下轮覆盖闭环），覆盖得 b、复合得 ab；`push(c)` 内容拷贝天然 sound 实证；门禁 `--check` 540/540 + `--corpus` 286 agree + 原生 540/540）。

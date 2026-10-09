@@ -2793,8 +2793,8 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string assignment needs string value: " + msg})
 			return false
 		}
-		if _, named := scope.types[h]; named && !saIsTempOp(h) {
-			// 具名串柄直授即别名，上游同形大声拒（H13 同源；禁别名双释）。
+		if _, named := scope.types[h]; named && !saIsTempOp(h) && !scope.forOfStr[h] {
+			// 具名串柄直授即别名，上游同形大声拒（H13 同源；禁别名双释；for-of 串元素单轮新鲜柄豁免，下行 consume 移交；540）。
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "handle copies need an explicit clone (pass the handle directly)"})
 			return false
@@ -4839,8 +4839,9 @@ func saIsTempOp(op string) bool {
 // saScopeSaved 块域快照（种表 + 归属表截断点；归属旗标沿上游持久化，
 // 不回滚——封存 releaseScope 释后标 released 跨早返仍有效 :11352-11356）。
 type saScopeSaved struct {
-	types map[string]string
-	owned int
+	types    map[string]string
+	owned    int
+	forOfStr map[string]bool
 }
 
 func saScopeEnter(scope *saScope) saScopeSaved {
@@ -4848,7 +4849,11 @@ func saScopeEnter(scope *saScope) saScopeSaved {
 	for k, v := range scope.types {
 		saved[k] = v
 	}
-	return saScopeSaved{types: saved, owned: len(scope.ownOrder)}
+	savedStr := make(map[string]bool, len(scope.forOfStr))
+	for k, v := range scope.forOfStr {
+		savedStr[k] = v
+	}
+	return saScopeSaved{types: saved, owned: len(scope.ownOrder), forOfStr: savedStr}
 }
 
 // saScopeExit 闭块域：丢弃块内新登记的名字，还原被遮蔽名的外层种（封存
@@ -4864,6 +4869,17 @@ func saScopeExit(scope *saScope, saved saScopeSaved) {
 	}
 	for k, v := range saved.types {
 		scope.types[k] = v
+	}
+	if scope.forOfStr == nil && len(saved.forOfStr) > 0 {
+		scope.forOfStr = map[string]bool{}
+	}
+	for k := range scope.forOfStr {
+		if _, ok := saved.forOfStr[k]; !ok {
+			delete(scope.forOfStr, k)
+		}
+	}
+	for k, v := range saved.forOfStr {
+		scope.forOfStr[k] = v
 	}
 	// 归属表截断：块内新登记名出块即除名（种表同命；旗标不回滚）。
 	for _, name := range scope.ownOrder[saved.owned:] {

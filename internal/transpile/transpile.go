@@ -3384,7 +3384,9 @@ type saScope struct {
 	// 守卫径与 let 重绑径不受影响；491）。
 	nullConst map[string]string
 	// armDepth 计条件臂嵌套（saLowerArm 进出 ++/--；直线 depth0；裸块保守计入；503）。
-	armDepth     int
+	armDepth int
+	// forOfStr 记 for-of 串元素绑定（单轮新鲜柄，直授 move 安全；随块域回滚；540）。
+	forOfStr     map[string]bool
 	imports      map[string]string // builtin-module named imports (local -> module; single-file direct calls)
 	importRemote map[string]string // import alias remote names (local -> remote; cf importedRemote)
 	// 测试 hook pending 表（同域顺序语义：beforeEach/afterEach 注册体按序贴到
