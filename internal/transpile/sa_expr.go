@@ -5507,7 +5507,12 @@ func saLayoutKeyCount(ce *ast.CallExpression, scope *saScope) (int, bool) {
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()
 	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier ||
-		pa.Expression.Text() != "Object" || pa.Name() == nil || pa.Name().Text() != "keys" {
+		pa.Expression.Text() != "Object" || pa.Name() == nil {
+		return 0, false
+	}
+	// keys/entries/values 同数折叠（数据布局三者长恒等；存取器在场保守拒由下；
+	// keys 形 399/418 在册，entries/values 同门 thin-lead）。
+	if mn := pa.Name().Text(); mn != "keys" && mn != "entries" && mn != "values" {
 		return 0, false
 	}
 	var argNodes []*ast.Node
