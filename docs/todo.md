@@ -304,3 +304,4 @@
 - Array 高频 API 锁仓（507 零代码改动：`Array.from` 取 3、`filter` 长 2 头 3、`includes`/`indexOf` 判 1/2、`join("-")` 得 5-6-7、`push` 长 3/`pop` 值 3/长 2；真机 9 行与 bun 逐字节一致；门禁 `--check` 507/507 + `--corpus` 286 agree + 原生 507/507）。
 - Map/Set 高频锁仓（508 零代码改动：Map set/get??/has/size/delete 真机 1/1/2/0，Set add/has/size/delete 真机 1/2/1；7 行与 bun 逐字节一致；门禁 `--check` 508/508 + `--corpus` 286 agree + 原生 508/508）。
 - Object/JSON 锁仓（509 零代码改动：`JSON.stringify({x:5})` 得 {"x":5}、spread `{...a,y:2}` 得 1/2、`Object.keys(p).length` 得 2；匿名对象字面量仍须接口注解（既有门），`Object.values(o)[i]` 下标与 keys 具名绑定初值位拒系既有静态门限；门禁 `--check` 509/509 + `--corpus` 286 agree + 原生 509/509）。
+- String 高频 API 锁仓（510 零代码改动：slice/substring/toUpperCase/trim/charCodeAt/repeat/padStart/parseInt 真机 8 行与 bun 逐字节一致；门禁 `--check` 510/510 + `--corpus` 286 agree + 原生 510/510）。
