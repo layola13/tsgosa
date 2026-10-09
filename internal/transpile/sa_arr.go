@@ -3986,25 +3986,30 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	}
 	switch method {
 	case "push":
-		if len(argNodes) != 1 {
+		if len(argNodes) < 1 {
 			return "", "", "push needs 1 argument"
 		}
-		v, msg := saArrayLiteralElem(w, argNodes[0], scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return "", "", msg
-		}
-		// 已知 i32 数组收串/实例值拒（4 字节槽截断句柄；串标数组沿既有串元口径；
-		// 按语法种判定（字面量未必记种）；铁律 4）。
-		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
-			if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
-				if scope.arrStr == nil || !scope.arrStr[pa.Expression.Text()] {
-					if saIsStrValue(argNodes[0], scope) || saCouldBeInst(argNodes[0], scope) {
-						return "", "", "array element kind mismatch (non-string array takes i32 values)"
+		// 多参逐元压栈（返末次新长；JS 同义；584）。
+		last := ""
+		for _, an := range argNodes {
+			v, msg := saArrayLiteralElem(w, an, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			// 已知 i32 数组收串/实例值拒（4 字节槽截断句柄；串标数组沿既有串元口径；
+			// 按语法种判定（字面量未必记种）；铁律 4）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
+					if scope.arrStr == nil || !scope.arrStr[pa.Expression.Text()] {
+						if saIsStrValue(an, scope) || saCouldBeInst(an, scope) {
+							return "", "", "array element kind mismatch (non-string array takes i32 values)"
+						}
 					}
 				}
 			}
+			last = saLowerArrayPush(w, recv, v, scope, nextTemp)
 		}
-		return saLowerArrayPush(w, recv, v, scope, nextTemp), "i32", ""
+		return last, "i32", ""
 	case "pop":
 		if len(argNodes) != 0 {
 			return "", "", "pop needs 0 arguments"
