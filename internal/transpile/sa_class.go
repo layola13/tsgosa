@@ -1282,6 +1282,15 @@ func saRefuseNsBareCapture(m *ast.Node, names map[string]bool, pos func(int) (in
 
 // saCouldBeInst 判定表达式是否可能为实例基（绑定实例名或方法内 this）。
 func saCouldBeInst(e *ast.Node, scope *saScope) bool {
+	// 括号接收者透明（`(c).m()` 即 `c.m()`；与 saInstBase 同步解包，
+	// 双门同律；481 被调解包同例 thin-lead。
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		e = pe.Expression.AsNode()
+	}
 	if e != nil && e.Kind == ast.KindThisKeyword {
 		return scope.thisSelf != ""
 	}
@@ -3131,6 +3140,15 @@ func saIsInstOperandSyntax(e *ast.Node, scope *saScope) bool {
 }
 
 func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
+	// 括号接收者透明（`(c).m()` 即 `c.m()`；与被调/注解/表达式侧括号
+	// 解包同律；上游同位拒收系过严，本仓 thin-lead（481 同例）。
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		e = pe.Expression.AsNode()
+	}
 	if e != nil && e.Kind == ast.KindThisKeyword {
 		if scope.thisSelf == "" {
 			return "", nil, "this outside a class method is not lowerable"
