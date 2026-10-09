@@ -94,6 +94,26 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			return "0", ""
 		}
 		return "", "unknown condition variable " + nm
+	case ast.KindPrefixUnaryExpression:
+		if un := cond.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindExclamationToken && un.Operand != nil {
+			// `!x`/`!!x` 条件取反（操作数经真值门递归；"0"翻1、余纯数字翻0、temp 补 eq；539）。
+			op, msg := saCondOperand(w, un.Operand, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if op == "0" {
+				return "1", ""
+			}
+			if saIsPureIntText(op) {
+				return "0", ""
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, op))
+			saReleaseOwnedTemp(w, scope, op)
+			return t, ""
+		}
+		return saEvalI32(w, cond, scope, pos, refusals, nextTemp)
 	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 		// 串字面量条件编译期折叠（空串 falsy；上游恒真系误编译；502）。
 		if cond.Text() == "" {
@@ -334,6 +354,25 @@ func saIsFloatLit(text string) bool {
 
 // saIsDecIntLit 判纯十进制整数字面（`this.x = 3` 接线位；十六进制/浮点/
 // 负号沿旧门，禁 SA 立即数进制歧义）。
+
+// saIsPureIntText 报告纯十进制整数文本（可选首负；供 `!x` 条件翻转；539）。
+func saIsPureIntText(text string) bool {
+	if text == "" {
+		return false
+	}
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if i == 0 && c == '-' && len(text) > 1 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func saIsDecIntLit(text string) bool {
 	if len(text) == 0 {
 		return false
