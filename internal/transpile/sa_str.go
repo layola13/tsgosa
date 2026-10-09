@@ -559,6 +559,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			// 实例 str 域读（头指针即串值，临时量已记 str）。
 			if saCouldBeInst(pa.Expression, scope) {
+				// const 空实例串域读必崩（`p.s`/`p?.s` 皆读零址；t29a/t29d SIGSEGV 实证；本站无守卫径，一律大声拒；493）。
+				if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+					return "", "const null instance member is not lowerable (definite null dereference)"
+				}
 				h, def, msg := saInstBase(pa.Expression, scope)
 				// map 索引实例基（`m[k].f`；saInstBase 只认标识符/this；
 				// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。

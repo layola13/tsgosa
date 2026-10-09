@@ -1,0 +1,2 @@
+# const 空实例成员直读/直调大声拒（零址解引用四形全崩实证；`?.` 守卫径不受影响；493）
+const null instance member is not lowerable (definite null dereference)

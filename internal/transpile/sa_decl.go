@@ -592,6 +592,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					}
 					w.Write(fmt.Sprintf("  %s = 0\n", name))
 					scope.types[name] = inst
+					// const 空实例永不重绑，记名供成员读/调位大声拒（493；let/重绑沿旧门）。
+					if isConst {
+						if scope.nullConst == nil {
+							scope.nullConst = map[string]bool{}
+						}
+						scope.nullConst[name] = true
+					}
 					saDeclarePlain(scope, name)
 					continue
 				}

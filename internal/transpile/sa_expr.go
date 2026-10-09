@@ -1848,6 +1848,10 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return op, false, ""
 		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			// const 空实例直调必崩（`c.m()` this 零址；t29c SIGSEGV 实证；`?.` 守卫径不受影响；493）。
+			if pa.QuestionDotToken == nil && ce.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+				return "", false, "const null instance member is not lowerable (definite null dereference)"
+			}
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {
 				return "", false, msg
@@ -4705,6 +4709,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "this outside a class method is not lowerable"
 		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			// const 空实例直读必崩（`const p: P|null = null; p.x` 读零址；s29f SIGSEGV 实证；`?.` 守卫径不受影响；493）。
+			if pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+				return "", "const null instance member is not lowerable (definite null dereference)"
+			}
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {
 				return "", msg

@@ -2101,6 +2101,10 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		// 实例 arr 字段基（`this.a`/`c.a` 读句柄；私名/静态/存取器沿既有门）。
 		pa := e.AsPropertyAccessExpression()
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			// const 空实例数组域读必崩（`q.a` 读零址；t29f SIGSEGV 实证；`?.` 沿既有门；493）。
+			if pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.nullConst[pa.Expression.Text()] {
+				return "", "const null instance member is not lowerable (definite null dereference)"
+			}
 			h, def, msg := saInstBase(pa.Expression, scope)
 			// map 索引实例基（`m[k].a`；saInstBase 只认标识符/this；
 			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
