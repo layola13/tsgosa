@@ -1862,9 +1862,24 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			return true
 		}
 	}
-	arrVal, ok := saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-in")
-	if !ok {
-		return false
+	// 串 for-in（索引巡回 0..len-1，绑定 i32；16 字节 {ptr,len} 头与数组同形，
+	// 下同数组骨架；串判定先行，免数组门误记拒因；上游 `k = add idx, 0` 同形）。
+	// 求柄各臂自带归属，巡后块统一释放（具名直传 no-op）。
+	var arrVal string
+	if saIsStrExpr(fo.Expression, scope) {
+		h, msg := saEvalStr(w, fo.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported for-in base: %s", msg)})
+			return false
+		}
+		arrVal = h
+	} else {
+		var ok bool
+		arrVal, ok = saForArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s, "for-in")
+		if !ok {
+			return false
+		}
 	}
 	bodyStmts, ok := saEmbeddedBlock(fo.Statement)
 	if !ok {
