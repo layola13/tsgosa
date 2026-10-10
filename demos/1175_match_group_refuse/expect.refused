@@ -1,0 +1,2 @@
+# 非 g 字面量捕获组大声拒（结果含组，单元素设计装不下；/g 只收整体不受影响；绑定模式不可见沿旧行）
+String.match with capture groups is not lowerable yet

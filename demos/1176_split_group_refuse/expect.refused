@@ -1,0 +1,2 @@
+# 含组分隔符大声拒（组入结果，切分只收段；match 同门）
+String.split with capture groups is not lowerable yet

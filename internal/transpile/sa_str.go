@@ -1826,6 +1826,12 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		// 正则分隔（`sa_regex_match` 循环切分；空匹配推进一步；limit 达数即停）。
+		// 含组分隔符大声拒（组入结果，现有切分只收段：1168 h1 实证 length 2 vs 3；
+		// 字面量可判定，绑定沿旧行；match 同门）。
+		if len(args) >= 1 && args[0] != nil && args[0].Kind == ast.KindRegularExpressionLiteral &&
+			!saRegexPatternHasNoGroup(args[0]) {
+			return "", "String.split with capture groups is not lowerable yet"
+		}
 		if rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp, nil); rms[0] != "" || rms[1] != "" {
 			if rms[1] != "" {
 				return "", rms[1]
@@ -2357,6 +2363,13 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 				return "", false, msg
 			}
 			return saLowerRegexMatchGlobal(w, rh, bp, bl, scope, nextTemp), false, ""
+		}
+		// 非 g 字面量捕获组大声拒（结果含组，单元素设计装不下：1168 f2 实证
+		// length 1 vs 3；绑定模式不可见沿旧行；/g 全局只收整体不受影响；
+		// replaceAll 同门）。
+		if args[0] != nil && args[0].Kind == ast.KindRegularExpressionLiteral &&
+			!saRegexPatternHasNoGroup(args[0]) {
+			return "", false, "String.match with capture groups is not lowerable yet"
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
