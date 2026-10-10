@@ -257,6 +257,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		if nm == "undefined" {
 			return "0", ""
 		}
+		// 顶层数组恒真值（空数组亦真；768）。
+		if _, ok := scope.topArrs[nm]; ok {
+			return "1", ""
+		}
 		return "", "unknown condition variable " + nm
 	case ast.KindPrefixUnaryExpression:
 		if un := cond.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindExclamationToken && un.Operand != nil {
@@ -4357,6 +4361,9 @@ func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression,
 					return t, ""
 				}
 				arg = text
+			} else if _, ok := scope.topArrs[nm]; ok {
+				// 顶层数组恒真值，取反恒 0（空数组亦真；768）。
+				return "0", ""
 			} else {
 				return "", "unknown variable " + nm
 			}
@@ -4899,6 +4906,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// 未绑定 `undefined` 即 0（子集 null 即 0；遮蔽/顶层量优先上）。
 		if nm == "undefined" {
 			return "0", ""
+		}
+		// 顶层数组快照非 i32 值（逐元直读；758/768）。
+		if _, ok := scope.topArrs[nm]; ok {
+			return "", "top-level const array " + nm + " is not an i32 value (read elements directly)"
 		}
 		return "", "unknown variable " + nm
 	case ast.KindThisKeyword:
@@ -6099,6 +6110,10 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 			}
 			return "number", ""
 		}
+		// 顶层数组快照恒为 object（768）。
+		if _, ok := scope.topArrs[name]; ok {
+			return "object", ""
+		}
 		return "", "typeof unknown global " + name + " is not lowerable"
 	}
 	switch op.Kind {
@@ -6153,6 +6168,13 @@ func saLowerTypeofCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 	if lit == "undefined" && inner != nil && inner.Kind == ast.KindIdentifier {
 		nm := inner.Text()
 		if _, ok := scope.types[nm]; !ok {
+			// 顶层数组快照恒有定义（object 非空；768）。
+			if _, ok := scope.topArrs[nm]; ok {
+				if neg {
+					return "1", ""
+				}
+				return "0", ""
+			}
 			return "", "typeof unknown global " + nm + " is not lowerable"
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)

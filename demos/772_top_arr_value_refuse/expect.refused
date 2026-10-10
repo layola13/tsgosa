@@ -1,0 +1,2 @@
+# 整柄作值位大声拒（精确拒因；逐元直读）
+top-level const array A is not an i32 value (read elements directly)

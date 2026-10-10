@@ -487,6 +487,10 @@ func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExp
 	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 || ce.Arguments.Nodes[0] == nil {
 		return ""
 	}
+	// 直接断言 panic 改 kind 门（`new Set(a)` 绑定数组实参旧路崩溃；0 崩溃铁律；768）。
+	if ce.Arguments.Nodes[0].Kind != ast.KindArrayLiteralExpression {
+		return "Map/Set constructor takes an array literal"
+	}
 	al := ce.Arguments.Nodes[0].AsArrayLiteralExpression()
 	if al == nil || al.Elements == nil {
 		return "Map/Set constructor takes an array literal"
@@ -503,6 +507,10 @@ func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExp
 			w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", t, ks))
 			saReleaseKeySlice(w, ks, kcell)
 		} else {
+			// pair 断言 panic 改 kind 门（同上；768）。
+			if el.Kind != ast.KindArrayLiteralExpression {
+				return "Map constructor takes [[k, v]] entries"
+			}
 			pair := el.AsArrayLiteralExpression()
 			if pair == nil || pair.Elements == nil || len(pair.Elements.Nodes) != 2 || pair.Elements.Nodes[0] == nil || pair.Elements.Nodes[1] == nil {
 				return "Map constructor takes [[k, v]] entries"

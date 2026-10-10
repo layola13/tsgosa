@@ -1,0 +1,2 @@
+# 集合构造须字面量（绑定数组实参旧路 panic 已改拒收；0 崩溃铁律回归锁）
+Map/Set constructor takes an array literal

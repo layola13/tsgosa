@@ -1,0 +1,2 @@
+# 数组 JSON 序列化另步（精确拒因）
+JSON.stringify takes an i32/string/bool/null value (arrays/objects are not lowerable yet)

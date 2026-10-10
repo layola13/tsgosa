@@ -1,0 +1,4 @@
+# 语句位变异大声拒（自增目标/删除/长度存储）
+incdec target must be bound i32 variable
+delete operator is not lowerable
+assignment to unknown/non-i32 variable

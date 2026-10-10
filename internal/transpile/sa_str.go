@@ -395,6 +395,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if nm == "undefined" {
 			return "", "not a string expression"
 		}
+		// 顶层数组快照非串值（逐元直读；758/768）。
+		if _, ok := scope.topArrs[nm]; ok {
+			return "", "top-level const array " + nm + " is not a string value (read elements directly)"
+		}
 		return "", "unknown variable " + nm
 	case ast.KindCallExpression:
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
