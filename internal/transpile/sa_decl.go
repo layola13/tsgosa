@@ -1807,6 +1807,41 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 			consts[nm.Text()] = init.Text()
 			strs[nm.Text()] = true
+		case ast.KindTemplateExpression:
+			// 模板串文本折叠（头/尾煮后文本直拼 + 全孔可煮；孔须字面量/已折纯量
+			// （"0"/"1" 与 bool 折叠歧义故拒）；串量记 strs；余形整句不收；828）。
+			tp := init.AsTemplateExpression()
+			if tp == nil {
+				return false
+			}
+			var sb strings.Builder
+			if tp.Head != nil {
+				sb.WriteString(tp.Head.Text())
+			}
+			tplOk := true
+			if tp.TemplateSpans != nil {
+				for _, sp := range tp.TemplateSpans.Nodes {
+					span := sp.AsTemplateSpan()
+					if span == nil || span.Expression == nil {
+						tplOk = false
+						break
+					}
+					ht, ok := saTplHoleText(span.Expression, consts, strs)
+					if !ok {
+						tplOk = false
+						break
+					}
+					sb.WriteString(ht)
+					if span.Literal != nil {
+						sb.WriteString(span.Literal.Text())
+					}
+				}
+			}
+			if !tplOk {
+				return false
+			}
+			consts[nm.Text()] = sb.String()
+			strs[nm.Text()] = true
 		case ast.KindTrueKeyword:
 			consts[nm.Text()] = "1"
 		case ast.KindFalseKeyword:

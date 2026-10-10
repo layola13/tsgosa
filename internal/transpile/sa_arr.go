@@ -268,6 +268,83 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	return h, ""
 }
 
+// saTplNumText 报告文本是否为模板孔安全数字形（可选 ± 号 + 1~15 位十进制
+// 整数（2^53 内精确；小数/指数/十六进制/下划线沿旧门，JS 串化另有指数律）；828）。
+func saTplNumText(t string) bool {
+	if t == "" {
+		return false
+	}
+	i := 0
+	if t[0] == '+' || t[0] == '-' {
+		i = 1
+	}
+	digits := 0
+	for ; i < len(t); i++ {
+		c := t[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		digits++
+	}
+	if digits == 0 || digits > 15 {
+		return false
+	}
+	return true
+}
+
+// saTplHoleText 煮模板孔文本（十进制整/浮字面量原样、`-`/`+` 号折叠、true/false
+// 即文本、串字面量煮后文本、已折串量煮后文本、已折数值量（"0"/"1" 与 bool 折叠
+// 歧义故拒；十六进制等非十进制沿旧门）；方法别名/mod 槽/快照沿旧门；余形 false。
+func saTplHoleText(e *ast.Node, consts map[string]string, strs map[string]bool) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		if saTplNumText(e.Text()) {
+			return e.Text(), true
+		}
+		return "", false
+	case ast.KindTrueKeyword:
+		return "true", true
+	case ast.KindFalseKeyword:
+		return "false", true
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return e.Text(), true
+	case ast.KindPrefixUnaryExpression:
+		un := e.AsPrefixUnaryExpression()
+		if un == nil || un.Operand == nil || un.Operand.Kind != ast.KindNumericLiteral {
+			return "", false
+		}
+		if !saTplNumText(un.Operand.Text()) {
+			return "", false
+		}
+		if un.Operator == ast.KindMinusToken {
+			return "-" + un.Operand.Text(), true
+		}
+		if un.Operator == ast.KindPlusToken {
+			return un.Operand.Text(), true
+		}
+		return "", false
+	case ast.KindIdentifier:
+		nm := e.Text()
+		if t, ok := consts[nm]; ok {
+			if strs[nm] {
+				return t, true
+			}
+			if t == "0" || t == "1" {
+				return "", false
+			}
+			if saTplNumText(t) {
+				return t, true
+			}
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
 // saTopArrElemText 取顶层数组元直接量文本（整字面直通、`-`/`+` 号折叠、
 // true/false 化 1/0、空穴归 0；与 saEvalI32 字面量臂 + saLowerPrefixUnary
 // 正负折叠 + saArrayLiteralElem 空穴口径同律；浮/串/余形 false 交旧门）。
