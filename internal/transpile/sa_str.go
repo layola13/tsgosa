@@ -129,6 +129,25 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
 			return true
 		}
+		// 可选串下标基（具名串/折叠串/可变串槽/串调用；括号透明；空守卫在求值侧；878）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken != nil {
+			if be := saUnwrapTransparent(ea.Expression); be != nil {
+				if be.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[be.Text()]; ok && k == "str" {
+						return true
+					}
+					if ms, ok := scope.modVars[be.Text()]; ok && ms.w == "str" {
+						return true
+					}
+					if _, ok := scope.topConsts[be.Text()]; ok && scope.topStr[be.Text()] {
+						return true
+					}
+				}
+				if be.Kind == ast.KindCallExpression && saCallIsStr(be.AsCallExpression(), scope) {
+					return true
+				}
+			}
+		}
 		return false
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
@@ -517,6 +536,21 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			return saLowerOptionalIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
+		}
+		// 可选串下标读（具名/调用串基经串求值，空基归零柄；878）。
+		if ea.QuestionDotToken != nil {
+			if h, msg := saEvalStr(w, ea.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if msg := saCheckIntIndex(scope, idx); msg != "" {
+					return "", msg
+				}
+				out := saLowerOptionalStrIndex(w, h, idx, scope, nextTemp)
+				saReleaseOwnedTemp(w, scope, h)
+				return out, ""
+			}
 		}
 		if ea.QuestionDotToken == nil && saIsStrExpr(ea.Expression, scope) {
 			h, msg := saEvalStr(w, ea.Expression, scope, pos, refusals, nextTemp)
@@ -1838,6 +1872,39 @@ func saLowerStrIndexChar(w printer.EmitTextWriter, bp, sel string, scope *saScop
 	// 取字柄归属(返前释放；上游同形).
 	saOwnTemp(scope, out)
 	return out
+}
+
+// saLowerOptionalStrIndex lowers `s?.[i]`（空基归零柄，undefined≡0；非空取字；
+// 空守卫 join 与三元串臂同纪律（存即移交，槽不释）；878）。
+func saLowerOptionalStrIndex(w printer.EmitTextWriter, base, idx string, scope *saScope, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	nullL := fmt.Sprintf("L_sidx_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_sidx_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_sidx_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, base))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	bp, _ := saExpandStr(w, base, nextTemp)
+	v := saLowerStrIndexChar(w, bp, idx, scope, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	saConsumeTemp(scope, v)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest
 }
 
 func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {

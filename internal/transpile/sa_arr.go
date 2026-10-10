@@ -1416,6 +1416,12 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 				saReleaseOwnedTemp(w, scope, h)
 				return t, ""
 			}
+			// 串调用 `?.length`（串求值柄经空守卫，空读 0；与具名串基同形；878）。
+			if sh, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				ln := saLowerOptionalLength(w, sh, scope, nextTemp)
+				saReleaseOwnedTemp(w, scope, sh)
+				return ln, ""
+			}
 		}
 		return "", "optional member access not lowerable"
 	}
