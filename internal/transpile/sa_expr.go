@@ -6187,11 +6187,20 @@ func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *s
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", fL))
+	// 右臂快照点（串空合核同律：臂内惰性求值新建的归属临时量随槽消费，
+	// 否则返前释放在直通臂上引用未定义寄存器（1338 实证 UnknownRegister）；
+	// 左值无条件求值，无此问题）。
+	mark := len(scope.ownOrder)
 	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
+	for _, nm := range scope.ownOrder[mark:] {
+		if saIsTempOp(nm) {
+			saConsumeOwn(scope, nm)
+		}
+	}
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	out := fmt.Sprintf("t_%d", *nextTemp)
