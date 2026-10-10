@@ -3521,6 +3521,79 @@ func saLowerPushSpread(w printer.EmitTextWriter, recv string, pa *ast.PropertyAc
 	return last, ""
 }
 
+// saLowerUnshiftSpread unshift 展开形（`a.unshift(x, ...b, y)`；全参按序中转
+// 新鲜暂存（标量逐元压栈、展开整片合并），再逆序单步前插（push + rotr1）；
+// 暂存读后无条件释放（新鲜内柄，checked-index 槽同律）；返压后新长；
+// 元种门：i32 绑定数组收串/嵌套源沿 push 同律拒；1398）。
+func saLowerUnshiftSpread(w printer.EmitTextWriter, recv string, pa *ast.PropertyAccessExpression, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	i32Recv := false
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
+			i32Recv = scope.arrStr == nil || !scope.arrStr[pa.Expression.Text()]
+		}
+	}
+	tmp := saNewEmptyArray(w, nextTemp)
+	for _, a := range args {
+		if a != nil && a.Kind == ast.KindSpreadElement {
+			src, msg := saArrValueOf(w, a.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if i32Recv && ((scope.arrStr != nil && scope.arrStr[src]) || (scope.arrNest != nil && scope.arrNest[src])) {
+				return "", "array element kind mismatch (non-string array takes i32 values)"
+			}
+			saAppendSlice(w, tmp, src, scope, nextTemp)
+			saReleaseOwnedTemp(w, scope, src)
+			continue
+		}
+		v, msg := saArrayLiteralElem(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if i32Recv && (saIsStrValue(a, scope) || saCouldBeInst(a, scope)) {
+			return "", "array element kind mismatch (non-string array takes i32 values)"
+		}
+		saLowerArrayPush(w, tmp, v, scope, nextTemp)
+	}
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	lenT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, tmp))
+	w.Write(fmt.Sprintf("  %s = %s\n", idx, lenT))
+	topL := fmt.Sprintf("L_unshsp_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_unshsp_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_unshsp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sgt %s, 0\n", cT, idx))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, 1\n", inext, idx))
+	w.Write(fmt.Sprintf("  %s = %s\n", idx, inext))
+	v := saLowerCheckedIndex(w, tmp, idx, scope.nextLabel, nextTemp)
+	_ = saLowerArrayPush(w, recv, v, scope, nextTemp)
+	scope.addImport("sa_std/ts_array.sa")
+	w.Write(fmt.Sprintf("  call @ts_arr_rotr1(%s)\n", recv))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", data, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  !%s\n", tmp))
+	last := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", last, recv))
+	return last, ""
+}
+
 // saLowerArraySlice 拷贝 [start, end) 到新数组（钳位；空域单路径分配；
 // 形状证据：封存 lowerArraySlice:6559-6638）。
 func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope *saScope, nextTemp *int) string {
@@ -5026,6 +5099,16 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		saOwnTemp(scope, out)
 		return out, "i32", ""
 	case "unshift":
+		// 展开形（`a.unshift(0, ...b)`；中转暂存保序 + 逆序单步前插；1398）。
+		for _, an := range argNodes {
+			if an != nil && an.Kind == ast.KindSpreadElement {
+				nlen, msg := saLowerUnshiftSpread(w, recv, pa, argNodes, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				return nlen, "i32", ""
+			}
+		}
 		if len(argNodes) != 1 {
 			return "", "", "unshift needs 1 argument"
 		}
