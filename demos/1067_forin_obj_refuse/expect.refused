@@ -1,0 +1,2 @@
+# for-in 仅收绑定数组下标巡回（对象键巡回另域）
+for-in base must be bound array
