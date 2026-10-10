@@ -1,0 +1,4 @@
+# 内层柄禁作值/存储/别名（句柄当整数即静默错码；双下标/内层取长另行）
+index base must be bound array
+index store base must be bound array
+unsupported initializer: index base must be bound array
