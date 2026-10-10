@@ -1,0 +1,2 @@
+# toFixed 系 f64 定点格式，子集外，大声拒
+only direct function calls lowerable

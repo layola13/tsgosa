@@ -1,0 +1,2 @@
+# Math.hypot 无封存 lowering 证据，禁原创，大声拒（step20-24 方法集之外）
+only direct function calls lowerable
