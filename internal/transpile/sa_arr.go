@@ -2822,6 +2822,9 @@ func saIsArrValue(e *ast.Node, scope *saScope) bool {
 	switch e.Kind {
 	case ast.KindArrayLiteralExpression:
 		return true
+	case ast.KindNewExpression:
+		// 新鲜数组构造即数组值（`new Array(n)` 链式接收者/下标基；1288）。
+		return saIsArrayCtor(e)
 	case ast.KindIdentifier:
 		k, ok := scope.types[e.Text()]
 		return ok && k == "arr"
@@ -3107,6 +3110,17 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
 		w.Write(fmt.Sprintf("  !%s\n", slot))
 		return res, ""
+	case ast.KindNewExpression:
+		// 新鲜数组构造具化（链式接收者/下标基；归属登记、消费位即释，与字面量同律；1288）。
+		if saIsArrayCtor(e) {
+			h, msg := saLowerArrayCtor(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			saOwnTemp(scope, h)
+			return h, ""
+		}
+		return "", "not an array expression"
 	default:
 		return "", "not an array expression"
 	}
