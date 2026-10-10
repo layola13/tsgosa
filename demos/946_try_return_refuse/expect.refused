@@ -1,0 +1,2 @@
+# try 体静态终结 + finally 并存大声拒（abrupt 路径跳 finally，且直排 finally 成无标号死码触 FallthroughForbidden；直落形 54 不动）
+abrupt exit inside try with finally is not lowerable

@@ -4179,6 +4179,16 @@ func saLowerTry(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "throw inside try is not lowerable (catch cannot resume after panic)"})
 		return false, true
 	}
+	// try 体静态终结（return/break/continue）+ 非空 finally 并存时大声拒：
+	// abrupt 路径跳过后随 finally（4168 局限），且直排 finally 会成无标号死码
+	// 触发 FallthroughForbidden（938 v3 实证：try 内 return；直落精确形 54 不受影响）。
+	if ts.TryBlock != nil && ts.FinallyBlock != nil &&
+		len(ts.FinallyBlock.AsBlock().Statements.Nodes) > 0 &&
+		saArmTerminates(ts.TryBlock.AsBlock().Statements.Nodes) {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "abrupt exit inside try with finally is not lowerable (finally runs on fallthrough path only)"})
+		return false, true
+	}
 	if ts.TryBlock != nil {
 		savedArmRelease := scope.armRelease
 		scope.armRelease = true
