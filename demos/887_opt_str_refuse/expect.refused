@@ -1,0 +1,3 @@
+# 可选串非 length 成员大声拒（879 补丁：saLowerLengthExpr 加成员名守卫；曾误将 s?.foo 折为取长）
+optional member access not lowerable
+optional member call not lowerable

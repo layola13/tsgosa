@@ -1379,6 +1379,10 @@ func saLowerObjectValues(w printer.EmitTextWriter, e *ast.Node, scope *saScope, 
 func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_ = refusals
 	if pa.QuestionDotToken != nil {
+		// 可选链仅 ?.length 走空守卫；其余成员大声拒（879 补丁：曾误将任意 ?.member 折为取长）。
+		if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
+			return "", "optional member access not lowerable"
+		}
 		// `a?.length` 具名数组基走空守卫 join；括号基同步解包；其余基沿旧门。
 		if base, ok := saArrBase(scope, saUnwrapTransparent(pa.Expression)); ok {
 			return saLowerOptionalLength(w, base, scope, nextTemp), ""
