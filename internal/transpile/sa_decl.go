@@ -769,6 +769,32 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					init = init.AsNonNullExpression().Expression
 				}
 			}
+			// 实例注解配 ?? 初值（同布局双实例/空右臂；核与无注解推断同源；
+			// 布局须与注解同名，异布局大声拒；1398）。
+			if init != nil && init.Kind == ast.KindBinaryExpression {
+				if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+					be.OperatorToken.Kind == ast.KindQuestionQuestionToken &&
+					saIsInstOperandSyntax(be.Left, scope) &&
+					(saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
+					h, msg := saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+						return false
+					}
+					if k, ok := scope.types[h]; !ok || k != vkind {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "instance nullish layout mismatch for " + name})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = vkind
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					saCopyInstFn(scope, h, name)
+					continue
+				}
+			}
 			if init == nil || init.Kind != ast.KindCallExpression {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
