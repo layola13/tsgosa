@@ -102,18 +102,19 @@ L_len_end_6:
   !t_41
   t_44 = load u + 0 as ptr
   t_45 = load u + 8 as u64
-  t_46 = call @ts_str_char_at(t_44, 1)
-  t_47 = load t_46 + 0 as ptr
-  t_48 = load t_46 + 8 as u64
-  call @sa_print_bytes(&t_47, t_48)
-  !t_46
-  t_49 = alloc 16
-  store t_49 + 0, &str_const_0 as ptr
-  store t_49 + 8, 1 as u64
-  t_50 = load t_49 + 0 as ptr
-  t_51 = load t_49 + 8 as u64
-  call @sa_print_bytes(&t_50, t_51)
-  !t_49
+  t_46 = add 1, 1
+  t_47 = call @ts_str_slice(t_44, t_45, 1, t_46, 0)
+  t_48 = load t_47 + 0 as ptr
+  t_49 = load t_47 + 8 as u64
+  call @sa_print_bytes(&t_48, t_49)
+  !t_47
+  t_50 = alloc 16
+  store t_50 + 0, &str_const_0 as ptr
+  store t_50 + 8, 1 as u64
+  t_51 = load t_50 + 0 as ptr
+  t_52 = load t_50 + 8 as u64
+  call @sa_print_bytes(&t_51, t_52)
+  !t_50
   !t_35
   !t_34
   !t_23

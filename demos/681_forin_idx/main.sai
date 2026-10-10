@@ -21,21 +21,22 @@ L_forin_body_2:
   store t_5 + 8, 3 as u64
   t_6 = load t_5 + 0 as ptr
   t_7 = load t_5 + 8 as u64
-  t_8 = call @ts_str_char_at(t_6, k)
-  t_9 = load t_8 + 0 as ptr
-  t_10 = load t_8 + 8 as u64
-  call @sa_print_bytes(&t_9, t_10)
-  !t_8
-  t_11 = alloc 16
-  store t_11 + 0, &str_const_1 as ptr
-  store t_11 + 8, 1 as u64
-  t_12 = load t_11 + 0 as ptr
-  t_13 = load t_11 + 8 as u64
-  call @sa_print_bytes(&t_12, t_13)
-  !t_11
+  t_8 = add k, 1
+  t_9 = call @ts_str_slice(t_6, t_7, k, t_8, 0)
+  t_10 = load t_9 + 0 as ptr
+  t_11 = load t_9 + 8 as u64
+  call @sa_print_bytes(&t_10, t_11)
+  !t_9
+  t_12 = alloc 16
+  store t_12 + 0, &str_const_1 as ptr
+  store t_12 + 8, 1 as u64
+  t_13 = load t_12 + 0 as ptr
+  t_14 = load t_12 + 8 as u64
+  call @sa_print_bytes(&t_13, t_14)
+  !t_12
   !t_5
-  t_14 = add t_2, 1
-  t_2 = t_14
+  t_15 = add t_2, 1
+  t_2 = t_15
   jmp L_forin_top_1
 L_forin_end_3:
   !t_1

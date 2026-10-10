@@ -71,18 +71,19 @@
   !t_33
   t_36 = load s + 0 as ptr
   t_37 = load s + 8 as u64
-  t_38 = call @ts_str_char_at(t_36, 2)
-  t_39 = load t_38 + 0 as ptr
-  t_40 = load t_38 + 8 as u64
-  call @sa_print_bytes(&t_39, t_40)
-  !t_38
-  t_41 = alloc 16
-  store t_41 + 0, &str_const_4 as ptr
-  store t_41 + 8, 1 as u64
-  t_42 = load t_41 + 0 as ptr
-  t_43 = load t_41 + 8 as u64
-  call @sa_print_bytes(&t_42, t_43)
-  !t_41
+  t_38 = add 2, 1
+  t_39 = call @ts_str_slice(t_36, t_37, 2, t_38, 0)
+  t_40 = load t_39 + 0 as ptr
+  t_41 = load t_39 + 8 as u64
+  call @sa_print_bytes(&t_40, t_41)
+  !t_39
+  t_42 = alloc 16
+  store t_42 + 0, &str_const_4 as ptr
+  store t_42 + 8, 1 as u64
+  t_43 = load t_42 + 0 as ptr
+  t_44 = load t_42 + 8 as u64
+  call @sa_print_bytes(&t_43, t_44)
+  !t_42
   !t_27
   !t_26
   !t_24

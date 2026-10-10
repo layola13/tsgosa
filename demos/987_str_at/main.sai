@@ -15,31 +15,33 @@
   t_4 = slt -1, 0
   t_5 = mul t_3, t_4
   t_6 = add -1, t_5
-  t_7 = call @ts_str_char_at(t_2, t_6)
-  t_8 = load t_7 + 0 as ptr
-  t_9 = load t_7 + 8 as u64
-  call @sa_print_bytes(&t_8, t_9)
-  !t_7
-  t_10 = alloc 16
-  store t_10 + 0, &str_const_1 as ptr
-  store t_10 + 8, 1 as u64
-  t_11 = load t_10 + 0 as ptr
-  t_12 = load t_10 + 8 as u64
-  call @sa_print_bytes(&t_11, t_12)
-  !t_10
-  t_13 = load s + 0 as ptr
-  t_14 = load s + 8 as u64
-  t_15 = call @ts_str_char_at(t_13, 0)
-  t_16 = load t_15 + 0 as ptr
-  t_17 = load t_15 + 8 as u64
-  call @sa_print_bytes(&t_16, t_17)
-  !t_15
-  t_18 = alloc 16
-  store t_18 + 0, &str_const_1 as ptr
-  store t_18 + 8, 1 as u64
-  t_19 = load t_18 + 0 as ptr
-  t_20 = load t_18 + 8 as u64
-  call @sa_print_bytes(&t_19, t_20)
-  !t_18
+  t_7 = add t_6, 1
+  t_8 = call @ts_str_slice(t_2, t_3, t_6, t_7, 0)
+  t_9 = load t_8 + 0 as ptr
+  t_10 = load t_8 + 8 as u64
+  call @sa_print_bytes(&t_9, t_10)
+  !t_8
+  t_11 = alloc 16
+  store t_11 + 0, &str_const_1 as ptr
+  store t_11 + 8, 1 as u64
+  t_12 = load t_11 + 0 as ptr
+  t_13 = load t_11 + 8 as u64
+  call @sa_print_bytes(&t_12, t_13)
+  !t_11
+  t_14 = load s + 0 as ptr
+  t_15 = load s + 8 as u64
+  t_16 = add 0, 1
+  t_17 = call @ts_str_slice(t_14, t_15, 0, t_16, 0)
+  t_18 = load t_17 + 0 as ptr
+  t_19 = load t_17 + 8 as u64
+  call @sa_print_bytes(&t_18, t_19)
+  !t_17
+  t_20 = alloc 16
+  store t_20 + 0, &str_const_1 as ptr
+  store t_20 + 8, 1 as u64
+  t_21 = load t_20 + 0 as ptr
+  t_22 = load t_20 + 8 as u64
+  call @sa_print_bytes(&t_21, t_22)
+  !t_20
   !s
   ret 0

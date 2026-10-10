@@ -12,17 +12,18 @@
   s = t_1
   t_2 = load s + 0 as ptr
   t_3 = load s + 8 as u64
-  t_4 = call @ts_str_char_at(t_2, 1)
-  t_5 = load t_4 + 0 as ptr
-  t_6 = load t_4 + 8 as u64
-  call @sa_print_bytes(&t_5, t_6)
-  !t_4
-  t_7 = alloc 16
-  store t_7 + 0, &str_const_1 as ptr
-  store t_7 + 8, 1 as u64
-  t_8 = load t_7 + 0 as ptr
-  t_9 = load t_7 + 8 as u64
-  call @sa_print_bytes(&t_8, t_9)
-  !t_7
+  t_4 = add 1, 1
+  t_5 = call @ts_str_slice(t_2, t_3, 1, t_4, 0)
+  t_6 = load t_5 + 0 as ptr
+  t_7 = load t_5 + 8 as u64
+  call @sa_print_bytes(&t_6, t_7)
+  !t_5
+  t_8 = alloc 16
+  store t_8 + 0, &str_const_1 as ptr
+  store t_8 + 8, 1 as u64
+  t_9 = load t_8 + 0 as ptr
+  t_10 = load t_8 + 8 as u64
+  call @sa_print_bytes(&t_9, t_10)
+  !t_8
   !s
   ret 0

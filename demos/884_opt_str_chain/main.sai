@@ -53,38 +53,39 @@ L_sidx_null_4:
 L_sidx_ok_5:
   t_19 = load s + 0 as ptr
   t_20 = load s + 8 as u64
-  t_21 = call @ts_str_char_at(t_19, 0)
-  store t_17 + 0, t_21 as ptr
+  t_21 = add 0, 1
+  t_22 = call @ts_str_slice(t_19, t_20, 0, t_21, 0)
+  store t_17 + 0, t_22 as ptr
   jmp L_sidx_end_6
 L_sidx_end_6:
-  t_22 = load t_17 + 0 as i32
+  t_23 = load t_17 + 0 as i32
   !t_17
-  t_23 = alloc 8
-  t_24 = ne t_22, 0
-  br t_24 -> L_null_t_7, L_null_f_8
+  t_24 = alloc 8
+  t_25 = ne t_23, 0
+  br t_25 -> L_null_t_7, L_null_f_8
 L_null_t_7:
-  store t_23 + 0, t_22 as ptr
+  store t_24 + 0, t_23 as ptr
   jmp L_null_end_9
 L_null_f_8:
-  t_25 = alloc 16
-  store t_25 + 0, &str_const_2 as ptr
-  store t_25 + 8, 1 as u64
-  store t_23 + 0, t_25 as ptr
+  t_26 = alloc 16
+  store t_26 + 0, &str_const_2 as ptr
+  store t_26 + 8, 1 as u64
+  store t_24 + 0, t_26 as ptr
   jmp L_null_end_9
 L_null_end_9:
-  t_26 = load t_23 + 0 as ptr
-  !t_23
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  call @sa_print_bytes(&t_27, t_28)
-  !t_26
-  t_29 = alloc 16
-  store t_29 + 0, &str_const_1 as ptr
-  store t_29 + 8, 1 as u64
-  t_30 = load t_29 + 0 as ptr
-  t_31 = load t_29 + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  !t_29
+  t_27 = load t_24 + 0 as ptr
+  !t_24
+  t_28 = load t_27 + 0 as ptr
+  t_29 = load t_27 + 8 as u64
+  call @sa_print_bytes(&t_28, t_29)
+  !t_27
+  t_30 = alloc 16
+  store t_30 + 0, &str_const_1 as ptr
+  store t_30 + 8, 1 as u64
+  t_31 = load t_30 + 0 as ptr
+  t_32 = load t_30 + 8 as u64
+  call @sa_print_bytes(&t_31, t_32)
+  !t_30
   !t_8
   !t_7
   !s

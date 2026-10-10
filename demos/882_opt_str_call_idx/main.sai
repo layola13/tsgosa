@@ -21,21 +21,22 @@ L_sidx_null_1:
 L_sidx_ok_2:
   t_5 = load t_2 + 0 as ptr
   t_6 = load t_2 + 8 as u64
-  t_7 = call @ts_str_char_at(t_5, 1)
-  store t_3 + 0, t_7 as ptr
+  t_7 = add 1, 1
+  t_8 = call @ts_str_slice(t_5, t_6, 1, t_7, 0)
+  store t_3 + 0, t_8 as ptr
   jmp L_sidx_end_3
 L_sidx_end_3:
-  t_8 = load t_3 + 0 as i32
+  t_9 = load t_3 + 0 as i32
   !t_3
   !t_2
-  t_9 = load t_8 + 0 as ptr
-  t_10 = load t_8 + 8 as u64
-  call @sa_print_bytes(&t_9, t_10)
-  t_11 = alloc 16
-  store t_11 + 0, &str_const_1 as ptr
-  store t_11 + 8, 1 as u64
-  t_12 = load t_11 + 0 as ptr
-  t_13 = load t_11 + 8 as u64
-  call @sa_print_bytes(&t_12, t_13)
-  !t_11
+  t_10 = load t_9 + 0 as ptr
+  t_11 = load t_9 + 8 as u64
+  call @sa_print_bytes(&t_10, t_11)
+  t_12 = alloc 16
+  store t_12 + 0, &str_const_1 as ptr
+  store t_12 + 8, 1 as u64
+  t_13 = load t_12 + 0 as ptr
+  t_14 = load t_12 + 8 as u64
+  call @sa_print_bytes(&t_13, t_14)
+  !t_12
   ret 0

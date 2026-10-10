@@ -569,8 +569,9 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if msg != "" {
 				return "", msg
 			}
-			bp, _ := saExpandStr(w, h, nextTemp)
-			return saLowerStrIndexChar(w, bp, idx, scope, nextTemp), ""
+			// 越界归空（直读野字节实证；1428）。
+			bp, bl := saExpandStr(w, h, nextTemp)
+			return saLowerStrIndexChecked(w, bp, bl, idx, scope, nextTemp), ""
 		}
 		return "", "not a string expression"
 	case ast.KindBinaryExpression:
@@ -1948,6 +1949,23 @@ func saLowerStrIndexChar(w printer.EmitTextWriter, bp, sel string, scope *saScop
 	return out
 }
 
+// saLowerStrIndexChecked 越界归空取字（改走钳位 slice(sel, sel+1)；
+// charAt/at/s[i]/s?.[i] 直读皆野字节实证（at(2) 读 NUL/at(10) 读邻常量/s[10]
+// 读 A）；分支槽形触 verifier PhiStateConflict + 分支 alloc 泄漏两连坑，
+// 单字 slice 无分支无槽（负值/超界由运行时钳位归空，slice(-2)/substring(-1)
+// 实证在先）；归属与 slice 同律；for-of 热径界内沿旧路；1428）。
+func saLowerStrIndexChecked(w printer.EmitTextWriter, bp, bl, sel string, scope *saScope, nextTemp *int) string {
+	end := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", end, sel))
+	scope.addImport("sa_std/ts_string.sa")
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_str_slice(%s, %s, %s, %s, 0)\n", out, bp, bl, sel, end))
+	saOwnTemp(scope, out)
+	return out
+}
+
 // saLowerOptionalStrIndex lowers `s?.[i]`（空基归零柄，undefined≡0；非空取字；
 // 空守卫 join 与三元串臂同纪律（存即移交，槽不释）；878）。
 func saLowerOptionalStrIndex(w printer.EmitTextWriter, base, idx string, scope *saScope, nextTemp *int) string {
@@ -1968,8 +1986,9 @@ func saLowerOptionalStrIndex(w printer.EmitTextWriter, base, idx string, scope *
 	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", okL))
-	bp, _ := saExpandStr(w, base, nextTemp)
-	v := saLowerStrIndexChar(w, bp, idx, scope, nextTemp)
+	bp, bl := saExpandStr(w, base, nextTemp)
+	// 越界归空（直读野字节实证；外层空守卫 join 不变；1428）。
+	v := saLowerStrIndexChecked(w, bp, bl, idx, scope, nextTemp)
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
 	saConsumeTemp(scope, v)
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
@@ -2464,7 +2483,8 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = add %s, %s\n", sel, a, adj))
 		}
-		return saLowerStrIndexChar(w, bp, sel, scope, nextTemp), false, ""
+		// 越界归空（直读野字节实证；1428）。
+		return saLowerStrIndexChecked(w, bp, bl, sel, scope, nextTemp), false, ""
 	case "trim", "trimStart", "trimEnd":
 		// R2-6 回迁映射：修剪语义由 `sci/sa_std/ts_string.sa` `@ts_str_trim`
 		// 实现（mode 由调用点按方法折叠；trimEnd 不计前导只切尾；全空串下溢

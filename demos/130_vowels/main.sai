@@ -130,41 +130,42 @@ L_for_top_1:
 L_for_body_2:
   t_63 = load s + 0 as ptr
   t_64 = load s + 8 as u64
-  t_65 = call @ts_str_char_at(t_63, i)
-  t_66 = call @isVowel(t_65)
-  t_67 = add n, t_66
+  t_65 = add i, 1
+  t_66 = call @ts_str_slice(t_63, t_64, i, t_65, 0)
+  t_67 = call @isVowel(t_66)
+  t_68 = add n, t_67
   !n
-  n = t_67
+  n = t_68
+  !t_67
   !t_66
-  !t_65
-  t_68 = add i, 1
+  t_69 = add i, 1
   !i
-  i = t_68
+  i = t_69
   jmp L_for_top_1
 L_for_end_3:
   !i
-  t_69 = sext n as i64
-  t_70 = alloc 64
-  t_71 = alloc 8
-  t_72 = call @sa_fmt_i64_into(t_69, 10, t_70, 64, &t_71)
-  t_73 = load t_71 + 0 as u64
-  t_74 = alloc 16
-  store t_74 + 0, t_70 as ptr
-  store t_74 + 8, t_73 as u64
+  t_70 = sext n as i64
+  t_71 = alloc 64
+  t_72 = alloc 8
+  t_73 = call @sa_fmt_i64_into(t_70, 10, t_71, 64, &t_72)
+  t_74 = load t_72 + 0 as u64
+  t_75 = alloc 16
+  store t_75 + 0, t_71 as ptr
+  store t_75 + 8, t_74 as u64
+  !t_73
+  t_76 = load t_75 + 0 as ptr
+  t_77 = load t_75 + 8 as u64
+  call @sa_print_bytes(&t_76, t_77)
+  !t_75
+  t_78 = alloc 16
+  store t_78 + 0, &str_const_6 as ptr
+  store t_78 + 8, 1 as u64
+  t_79 = load t_78 + 0 as ptr
+  t_80 = load t_78 + 8 as u64
+  call @sa_print_bytes(&t_79, t_80)
+  !t_78
   !t_72
-  t_75 = load t_74 + 0 as ptr
-  t_76 = load t_74 + 8 as u64
-  call @sa_print_bytes(&t_75, t_76)
-  !t_74
-  t_77 = alloc 16
-  store t_77 + 0, &str_const_6 as ptr
-  store t_77 + 8, 1 as u64
-  t_78 = load t_77 + 0 as ptr
-  t_79 = load t_77 + 8 as u64
-  call @sa_print_bytes(&t_78, t_79)
-  !t_77
   !t_71
-  !t_70
   !n
   !s
   ret 0
