@@ -33,117 +33,128 @@ L_ms_done_4:
   t_9 = trunc t_8 as i32
   !t_8
   t_10 = sgt t_9, 0
-  t_11 = alloc 16
-  store t_11 + 0, &str_const_0 as ptr
-  store t_11 + 8, 2 as u64
-  t_12 = ne t_11, 0
-  !t_11
-  t_13 = and t_10, t_12
-  br t_13 -> L_while_body_2, L_while_end_3
+  t_11 = ne t_10, 0
+  t_12 = alloc 4
+  br t_11 -> L_lg_r_14, L_lg_l_13
+L_lg_l_13:
+  store t_12 + 0, t_10 as i32
+  jmp L_lg_end_15
+L_lg_r_14:
+  t_16 = alloc 16
+  store t_16 + 0, &str_const_0 as ptr
+  store t_16 + 8, 2 as u64
+  t_17 = ne t_16, 0
+  !t_16
+  store t_12 + 0, t_17 as i32
+  jmp L_lg_end_15
+L_lg_end_15:
+  t_18 = load t_12 + 0 as i32
+  !t_12
+  br t_18 -> L_while_body_2, L_while_end_3
 L_while_body_2:
-  t_14 = call @sa_modstate_get_u64(3684888137706409394)
-  t_15 = ne t_14, 0
-  !t_14
-  br t_15 -> L_ms_done_10, L_ms_init_11
+  t_19 = call @sa_modstate_get_u64(3684888137706409394)
+  t_20 = ne t_19, 0
+  !t_19
+  br t_20 -> L_ms_done_10, L_ms_init_11
 L_ms_init_11:
-  t_16 = trunc 2 as u64
-  t_17 = call @sa_modstate_set_u64(155081894893572913, t_16)
-  t_18 = ne t_17, 0
-  !t_17
-  br t_18 -> L_ms_bad_12, L_ms_ok_13
+  t_21 = trunc 2 as u64
+  t_22 = call @sa_modstate_set_u64(155081894893572913, t_21)
+  t_23 = ne t_22, 0
+  !t_22
+  br t_23 -> L_ms_bad_12, L_ms_ok_13
 L_ms_bad_12:
   panic(1403)
 L_ms_ok_13:
-  t_19 = call @sa_modstate_set_u64(3684888137706409394, 1)
-  t_20 = ne t_19, 0
-  !t_19
-  br t_20 -> L_ms_bad_14, L_ms_ok_15
+  t_24 = call @sa_modstate_set_u64(3684888137706409394, 1)
+  t_25 = ne t_24, 0
+  !t_24
+  br t_25 -> L_ms_bad_14, L_ms_ok_15
 L_ms_bad_14:
   panic(1403)
 L_ms_ok_15:
   jmp L_ms_done_10
 L_ms_done_10:
-  t_21 = call @sa_modstate_get_u64(155081894893572913)
-  t_22 = trunc t_21 as i32
-  !t_21
-  t_23 = sext t_22 as i64
-  t_24 = alloc 64
-  t_25 = alloc 8
-  t_26 = call @sa_fmt_i64_into(t_23, 10, t_24, 64, &t_25)
-  t_27 = load t_25 + 0 as u64
-  t_28 = alloc 16
-  store t_28 + 0, t_24 as ptr
-  store t_28 + 8, t_27 as u64
+  t_26 = call @sa_modstate_get_u64(155081894893572913)
+  t_27 = trunc t_26 as i32
   !t_26
-  t_29 = load t_28 + 0 as ptr
-  t_30 = load t_28 + 8 as u64
-  call @sa_print_bytes(&t_29, t_30)
-  !t_28
-  t_31 = alloc 16
-  store t_31 + 0, &str_const_1 as ptr
-  store t_31 + 8, 1 as u64
-  t_32 = load t_31 + 0 as ptr
-  t_33 = load t_31 + 8 as u64
-  call @sa_print_bytes(&t_32, t_33)
+  t_28 = sext t_27 as i64
+  t_29 = alloc 64
+  t_30 = alloc 8
+  t_31 = call @sa_fmt_i64_into(t_28, 10, t_29, 64, &t_30)
+  t_32 = load t_30 + 0 as u64
+  t_33 = alloc 16
+  store t_33 + 0, t_29 as ptr
+  store t_33 + 8, t_32 as u64
   !t_31
-  t_34 = call @sa_modstate_get_u64(3684888137706409394)
-  t_35 = ne t_34, 0
-  !t_34
-  br t_35 -> L_ms_done_16, L_ms_init_17
+  t_34 = load t_33 + 0 as ptr
+  t_35 = load t_33 + 8 as u64
+  call @sa_print_bytes(&t_34, t_35)
+  !t_33
+  t_36 = alloc 16
+  store t_36 + 0, &str_const_1 as ptr
+  store t_36 + 8, 1 as u64
+  t_37 = load t_36 + 0 as ptr
+  t_38 = load t_36 + 8 as u64
+  call @sa_print_bytes(&t_37, t_38)
+  !t_36
+  t_39 = call @sa_modstate_get_u64(3684888137706409394)
+  t_40 = ne t_39, 0
+  !t_39
+  br t_40 -> L_ms_done_16, L_ms_init_17
 L_ms_init_17:
-  t_36 = trunc 2 as u64
-  t_37 = call @sa_modstate_set_u64(155081894893572913, t_36)
-  t_38 = ne t_37, 0
-  !t_37
-  br t_38 -> L_ms_bad_18, L_ms_ok_19
+  t_41 = trunc 2 as u64
+  t_42 = call @sa_modstate_set_u64(155081894893572913, t_41)
+  t_43 = ne t_42, 0
+  !t_42
+  br t_43 -> L_ms_bad_18, L_ms_ok_19
 L_ms_bad_18:
   panic(1403)
 L_ms_ok_19:
-  t_39 = call @sa_modstate_set_u64(3684888137706409394, 1)
-  t_40 = ne t_39, 0
-  !t_39
-  br t_40 -> L_ms_bad_20, L_ms_ok_21
+  t_44 = call @sa_modstate_set_u64(3684888137706409394, 1)
+  t_45 = ne t_44, 0
+  !t_44
+  br t_45 -> L_ms_bad_20, L_ms_ok_21
 L_ms_bad_20:
   panic(1403)
 L_ms_ok_21:
   jmp L_ms_done_16
 L_ms_done_16:
-  t_41 = call @sa_modstate_get_u64(155081894893572913)
-  t_42 = trunc t_41 as i32
-  !t_41
-  t_43 = sub t_42, 1
-  t_44 = trunc t_43 as u64
-  t_45 = call @sa_modstate_get_u64(3684888137706409394)
-  t_46 = ne t_45, 0
-  !t_45
-  br t_46 -> L_ms_done_22, L_ms_init_23
+  t_46 = call @sa_modstate_get_u64(155081894893572913)
+  t_47 = trunc t_46 as i32
+  !t_46
+  t_48 = sub t_47, 1
+  t_49 = trunc t_48 as u64
+  t_50 = call @sa_modstate_get_u64(3684888137706409394)
+  t_51 = ne t_50, 0
+  !t_50
+  br t_51 -> L_ms_done_22, L_ms_init_23
 L_ms_init_23:
-  t_47 = trunc 2 as u64
-  t_48 = call @sa_modstate_set_u64(155081894893572913, t_47)
-  t_49 = ne t_48, 0
-  !t_48
-  br t_49 -> L_ms_bad_24, L_ms_ok_25
+  t_52 = trunc 2 as u64
+  t_53 = call @sa_modstate_set_u64(155081894893572913, t_52)
+  t_54 = ne t_53, 0
+  !t_53
+  br t_54 -> L_ms_bad_24, L_ms_ok_25
 L_ms_bad_24:
   panic(1403)
 L_ms_ok_25:
-  t_50 = call @sa_modstate_set_u64(3684888137706409394, 1)
-  t_51 = ne t_50, 0
-  !t_50
-  br t_51 -> L_ms_bad_26, L_ms_ok_27
+  t_55 = call @sa_modstate_set_u64(3684888137706409394, 1)
+  t_56 = ne t_55, 0
+  !t_55
+  br t_56 -> L_ms_bad_26, L_ms_ok_27
 L_ms_bad_26:
   panic(1403)
 L_ms_ok_27:
   jmp L_ms_done_22
 L_ms_done_22:
-  t_52 = call @sa_modstate_set_u64(155081894893572913, t_44)
-  t_53 = ne t_52, 0
-  !t_52
-  br t_53 -> L_ms_bad_28, L_ms_ok_29
+  t_57 = call @sa_modstate_set_u64(155081894893572913, t_49)
+  t_58 = ne t_57, 0
+  !t_57
+  br t_58 -> L_ms_bad_28, L_ms_ok_29
 L_ms_bad_28:
   panic(1403)
 L_ms_ok_29:
-  !t_25
-  !t_24
+  !t_30
+  !t_29
   jmp L_while_top_1
 L_while_end_3:
   ret 0

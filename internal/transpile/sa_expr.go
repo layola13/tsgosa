@@ -2577,6 +2577,52 @@ func saLowerTernaryLazyI32(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 	return res, ""
 }
 
+// saLowerLogicValue lowering 逻辑值（`&&` 回左假值/右值、`||` 回左真值/右值；
+// 短路分支（右部副作用按 e1 锁跳过）；槽+臂释放与三元惰性形同律；归 i32）。
+func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	isAnd := saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken
+	l, msg := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, l))
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 4\n", slot))
+	lL := fmt.Sprintf("L_lg_l_%d", *nextTemp)
+	*nextTemp++
+	rL := fmt.Sprintf("L_lg_r_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_lg_end_%d", *nextTemp)
+	*nextTemp++
+	if isAnd {
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, rL, lL))
+	} else {
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", t, lL, rL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", lL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", rL))
+	base := len(scope.ownOrder)
+	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, r))
+	// 右值入槽即消费，右臂新建临时量就地释放（三元惰性形同律）。
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res, ""
+}
+
 // saDeclaredAt 报告 binder 是否在该位置解出名字（值/类型/import 统算可见；
 // 无 ctx 一律 false。形状证据：封存 declaredAt:205-219）。
 func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
@@ -5759,6 +5805,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			saReleaseOwnedTemp(w, scope, lop)
 			return saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 		}
+		// 逻辑值语义（`&&`/`||` 回操作数非按位：`3&&4`→4、`3||4`→3；短路跳右部；
+		// 条件位同源消费真值；旧按位映射于非 0/1 操作数静默错值（1208 m1/m2/n1
+		// 实证）；分支+槽+臂释放与三元惰性形同律（`saLowerTernaryLazyI32`）。
+		if saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(be) == ast.KindBarBarToken {
+			return saLowerLogicValue(w, be, scope, pos, refusals, nextTemp)
+		}
 		op, ok := map[ast.Kind]string{
 			ast.KindPlusToken: "add", ast.KindMinusToken: "sub",
 			ast.KindAsteriskToken: "mul", ast.KindSlashToken: "div",
@@ -5772,7 +5824,6 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			ast.KindExclamationEqualsToken: "ne", ast.KindExclamationEqualsEqualsToken: "ne",
 			ast.KindLessThanToken: "slt", ast.KindLessThanEqualsToken: "sle",
 			ast.KindGreaterThanToken: "sgt", ast.KindGreaterThanEqualsToken: "sge",
-			ast.KindAmpersandAmpersandToken: "and", ast.KindBarBarToken: "or",
 		}[saBinaryOpKind(be)]
 		if !ok {
 			if saBinaryOpKind(be) == ast.KindAsteriskAsteriskToken {

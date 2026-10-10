@@ -2,41 +2,33 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
-@import "sa_std/control.sal"
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
-  t = 0
-  t_2 = ne 0, 0
-  t_3 = alloc 4
-  br t_2 -> L_lg_r_5, L_lg_l_4
-L_lg_l_4:
-  store t_3 + 0, 0 as i32
-  jmp L_lg_end_6
-L_lg_r_5:
-  t_7 = call @__arrow_1(t)
-  store t_3 + 0, t_7 as i32
-  !t_7
-  jmp L_lg_end_6
-L_lg_end_6:
-  t_8 = load t_3 + 0 as i32
-  !t_3
-  r1 = t_8
-  t_9 = ne 1, 0
-  t_10 = alloc 4
-  br t_9 -> L_lg_l_11, L_lg_r_12
-L_lg_l_11:
-  store t_10 + 0, 1 as i32
-  jmp L_lg_end_13
-L_lg_r_12:
-  t_14 = call @__arrow_1(t)
-  store t_10 + 0, t_14 as i32
-  !t_14
-  jmp L_lg_end_13
-L_lg_end_13:
-  t_15 = load t_10 + 0 as i32
-  !t_10
-  r2 = t_15
-  t_16 = sext t as i64
+  t_1 = sub 10, 3
+  t_2 = sub t_1, 2
+  t_3 = sext t_2 as i64
+  t_4 = alloc 64
+  t_5 = alloc 8
+  t_6 = call @sa_fmt_i64_into(t_3, 10, t_4, 64, &t_5)
+  t_7 = load t_5 + 0 as u64
+  t_8 = alloc 16
+  store t_8 + 0, t_4 as ptr
+  store t_8 + 8, t_7 as u64
+  !t_6
+  t_9 = load t_8 + 0 as ptr
+  t_10 = load t_8 + 8 as u64
+  call @sa_print_bytes(&t_9, t_10)
+  !t_8
+  t_11 = alloc 16
+  store t_11 + 0, &str_const_0 as ptr
+  store t_11 + 8, 1 as u64
+  t_12 = load t_11 + 0 as ptr
+  t_13 = load t_11 + 8 as u64
+  call @sa_print_bytes(&t_12, t_13)
+  !t_11
+  t_14 = mul 2, 3
+  t_15 = add t_14, 4
+  t_16 = sext t_15 as i64
   t_17 = alloc 64
   t_18 = alloc 8
   t_19 = call @sa_fmt_i64_into(t_16, 10, t_17, 64, &t_18)
@@ -56,7 +48,7 @@ L_lg_end_13:
   t_26 = load t_24 + 8 as u64
   call @sa_print_bytes(&t_25, t_26)
   !t_24
-  EXPAND SELECT t_27, r1, 1, 0
+  t_27 = div 20, 4
   t_28 = sext t_27 as i64
   t_29 = alloc 64
   t_30 = alloc 8
@@ -77,7 +69,7 @@ L_lg_end_13:
   t_38 = load t_36 + 8 as u64
   call @sa_print_bytes(&t_37, t_38)
   !t_36
-  EXPAND SELECT t_39, r2, 1, 0
+  t_39 = srem 17, 5
   t_40 = sext t_39 as i64
   t_41 = alloc 64
   t_42 = alloc 8
@@ -104,12 +96,6 @@ L_lg_end_13:
   !t_29
   !t_18
   !t_17
-  !r2
-  !r1
+  !t_5
+  !t_4
   ret 0
-@__arrow_1(t: i32) -> i32:
-  t_1 = add t, 1
-  !t
-  t = t_1
-  !t
-  ret 1
