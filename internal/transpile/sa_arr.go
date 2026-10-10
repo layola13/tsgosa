@@ -3819,8 +3819,14 @@ func saLowerArrayFlat(w printer.EmitTextWriter, recv string, depth int, scope *s
 // （start/del 求值 + 插入项 plain 门）+ del 缺省物化 + items 临时数组 +
 // import + 归属/标记透传；形状证据：封存 lowerSplice 全形）。
 func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// 空参即空删（`a.splice()` 删零元返空数组，原数组不动，JS 同义；
+	// 标记透传与常径一致；1478）。
 	if len(args) < 1 {
-		return "", "splice takes a start and an optional delete count"
+		h := saNewEmptyArray(w, nextTemp)
+		saPropArrNest(scope, recv, h)
+		saPropArrStr(scope, recv, h)
+		saOwnTemp(scope, h)
+		return h, ""
 	}
 	scope.addImport("sa_std/ts_array.sa")
 	start, msg := saEvalI32(w, args[0], scope, pos, refusals, nextTemp)
