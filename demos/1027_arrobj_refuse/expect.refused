@@ -1,0 +1,2 @@
+# 数组字面量内联对象字面量大声拒（须先声明绑定再入组）
+object literal needs a declaration binding
