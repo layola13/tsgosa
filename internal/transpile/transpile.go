@@ -3393,6 +3393,10 @@ type saScope struct {
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
 	mapVals map[string]string
+	// setVals records Set handle element kinds ("i32"/"str", seeded at
+	// `new Set<T>`/first add; mixed adds delete the entry back to unknown;
+	// for-of iteration gates on "i32", mirroring mapVals policy).
+	setVals map[string]string
 	// nullConst 记 `const/let T|null` 空初值绑定（const 永不重绑；let 由直线赋值成功清除，臂内不清；名下恒零
 	// 句柄；具名头读位（`.length`）凭此大声拒，禁读空柄崩机；`?.`
 	// 守卫径与 let 重绑径不受影响；491）。

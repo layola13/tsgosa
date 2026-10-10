@@ -398,6 +398,27 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 							saSetMapVal(scope, name, "str")
 						}
 					}
+					// Set 元种记表（显式 `Set<i32>/Set<string>` 注解/for-of 迭代门凭此；
+					// 无注解沿 add 首元播种，见 sa_map.go）。
+					if kind == "set" {
+						var sargs []*ast.Node
+						if ne.TypeArguments != nil {
+							sargs = ne.TypeArguments.Nodes
+						} else if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+							if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+								ref.TypeName.Text() == "Set" && ref.TypeArguments != nil {
+								sargs = ref.TypeArguments.Nodes
+							}
+						}
+						if len(sargs) == 1 && sargs[0] != nil {
+							switch sargs[0].Kind {
+							case ast.KindNumberKeyword:
+								saSeedSetVal(scope, name, "i32")
+							case ast.KindStringKeyword:
+								saSeedSetVal(scope, name, "str")
+							}
+						}
+					}
 				}
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)

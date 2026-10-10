@@ -219,6 +219,20 @@ func saSetMapVal(scope *saScope, name, vkind string) {
 	scope.mapVals[name] = vkind
 }
 
+// saSeedSetVal records a Set handle element kind (first add wins; a
+// conflicting later add deletes the entry back to unknown; for-of gates
+// on "i32", mirroring mapVals policy; nil-safe reads).
+func saSeedSetVal(scope *saScope, name, ekind string) {
+	if scope.setVals == nil {
+		scope.setVals = map[string]string{}
+	}
+	if old, ok := scope.setVals[name]; !ok {
+		scope.setVals[name] = ekind
+	} else if old != ekind {
+		delete(scope.setVals, name)
+	}
+}
+
 // saMapArrValKind 判 Map 数组值元种（`string[]`/`Array<string>` 即串元 "arrStr"，
 // 其余数组即 "arr"；调用方建表记种，读侧凭此透传串元标记，禁静默错码）。
 func saMapArrValKind(vt *ast.Node) string {
@@ -859,6 +873,13 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		}
 		w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", recv, ks))
 		saReleaseKeySlice(w, ks, kcell)
+		// Set 元种播种（串键 cell 为空即串元，否则 i32 元；混元删表回未知，
+		// for-of 迭代门凭表，禁静默错读）。
+		if kcell == "" {
+			saSeedSetVal(scope, recv, "str")
+		} else {
+			saSeedSetVal(scope, recv, "i32")
+		}
 		return "0", "i32", ""
 	case "has":
 		if len(argNodes) != 1 {

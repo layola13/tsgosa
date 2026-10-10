@@ -2427,7 +2427,30 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			return false
 		}
 	}
-	arrVal, strBase, ok := saForStrOrArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s)
+	setVec := ""
+	// Set 具名巡回（i32 元经 `sa_btree_set_iter_vec` 物化快照向量后索引巡回，
+	// 与 Map.forEach 三字组巡回同形；串元/未知元大声拒，禁静默错读；
+	// 快照长口径与数组环预读同形；上游 n2 扁平直读已烂（`+8` 取长，
+	// 现头 `+16`），禁照抄；先于数组门判定，免旧拒因残留）。
+	if be := fo.Expression; be != nil && be.Kind == ast.KindIdentifier {
+		if k, kok := scope.types[be.Text()]; kok && k == "set" {
+			if scope.setVals[be.Text()] != "i32" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "for-of over Set needs i32 elements (string-element sets are not flat-iterable)"})
+				return false
+			}
+			scope.addImport("sa_std/btree_set.sa")
+			vec := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_set_iter_vec(&%s)\n", vec, be.Text()))
+			saOwnTemp(scope, vec)
+			setVec = vec
+		}
+	}
+	arrVal, strBase, ok := setVec, "", setVec != ""
+	if setVec == "" {
+		arrVal, strBase, ok = saForStrOrArrHandle(w, fo.Expression, scope, pos, refusals, nextTemp, s)
+	}
 	if !ok {
 		return false
 	}
@@ -2449,19 +2472,42 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	lenT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, arrVal))
+	// Set 快照向量长为字数（元为键指针/键长双字），计数折半。
+	boundT := lenT
+	if setVec != "" {
+		cntT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = div %s, 2\n", cntT, lenT))
+		boundT = cntT
+	}
 	scope.loops = append(scope.loops, saLoop{top: topL, cont: topL, end: endL, depth: len(scope.ownOrder)})
 	saBindPendingLabels(scope, false)
 	w.Write(fmt.Sprintf("%s:\n", topL))
 	cT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, lenT))
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, boundT))
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
 	baseT := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", baseT, arrVal))
 	elemT := ""
-	if strBase != "" {
+	if setVec != "" {
+		// Set 快照元为键指针/键长双字（16 字节步进），i32 元经键单元读回
+		//（8 字节 cell 首字；与 saMapKeySlice 槽形同源）。
+		offT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		pairPtr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		keyPtr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		elemT = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = mul %s, 16\n", offT, idx))
+		w.Write(fmt.Sprintf("  %s = add %s, %s\n", pairPtr, baseT, offT))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", keyPtr, pairPtr))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", elemT, keyPtr))
+	} else if strBase != "" {
 		// 串元取字（字节精确 1 字柄，复用 saLowerStrIndexChar，与 s[i] 同形）。
 		elemT = saLowerStrIndexChar(w, baseT, idx, scope, nextTemp)
 	} else {
