@@ -1,0 +1,2 @@
+# super 实参仅收形参/字面量（表达式须先绑局部；双参直传见 1042）
+super() arguments must be constructor parameters or literals
