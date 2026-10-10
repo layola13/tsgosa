@@ -2346,7 +2346,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string][]string, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())

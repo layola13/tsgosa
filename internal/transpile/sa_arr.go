@@ -200,11 +200,13 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 			if el.Kind == ast.KindSpreadElement {
 				sv, msg := saArrValueOf(w, el.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
 				if msg != "" {
-					// 顶层 const 数组展开（快照物化后整片合并；728）。
-					var ok bool
-					if sv, ok = saTopArrSnapshot(w, el.AsSpreadElement().Expression.AsNode(), scope, nextTemp); !ok {
+					// 顶层 const 数组展开（i32 快照物化后整片合并；串元展开本地
+					// 同形破碎，沿旧门；728/758）。
+					arr, ok := saTopArrLookup(scope, el.AsSpreadElement().Expression.AsNode())
+					if !ok || arr.str {
 						return "", msg
 					}
+					sv = saMaterializeTopArr(w, arr, scope, nextTemp)
 				}
 				saAppendSlice(w, h, sv, scope, nextTemp)
 				continue
@@ -305,13 +307,30 @@ func saTopArrElemText(el *ast.Node) (string, bool) {
 	}
 }
 
-// saTopArrPrescan 收顶层 `const A = [1,2,...]` i32 直接量数组（名→元文本；
-// 全 declarator 须同为 const 数组字面量（混合语句整句不收，沿旧 kind244 门，
-// 零行为变）；注解须 arr 种；重名/函数类重名不收（用点沿旧门大声拒）；
-// 用点按需物化本地副本（快照语义；变异位无臂）；与 saFoldTopLevelConst 纯量
-// 折叠同律（数组字面量彼本即拒，无交）；698）。
-func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string][]string, map[*ast.Node]bool) {
-	out := map[string][]string{}
+// saTopArrStrText 取顶层数组串元源文本（串字面量/无替换模板原样；余形 false）。
+func saTopArrStrText(el *ast.Node) (string, bool) {
+	if el == nil {
+		return "", false
+	}
+	if el.Kind == ast.KindStringLiteral || el.Kind == ast.KindNoSubstitutionTemplateLiteral {
+		return el.Text(), true
+	}
+	return "", false
+}
+
+// saTopArr 快照（i32 直接量文本或串字面量源文本；str 为真即全串元）。
+type saTopArr struct {
+	elems []string
+	str   bool
+}
+
+// saTopArrPrescan 收顶层 `const A = [...]` 直接量数组（名→快照；全 declarator
+// 须同为 const 数组字面量（混合语句整句不收，沿旧 kind244 门，零行为变）；
+// 注解须 arr 种；重名/函数类重名不收（用点沿旧门大声拒）；元须全 i32 直接量或
+// 全串字面量（混元不收），空数组凭 `string[]` 注解记串元；用点按需物化本地副本
+// （快照语义；变异位无臂）；与 saFoldTopLevelConst 纯量折叠同律；698/758）。
+func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string]saTopArr, map[*ast.Node]bool) {
+	out := map[string]saTopArr{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
 		if st == nil || st.Kind != ast.KindVariableStatement {
@@ -326,8 +345,8 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			continue
 		}
 		type pend struct {
-			name  string
-			elems []string
+			name string
+			arr  saTopArr
 		}
 		var pends []pend
 		okAll := true
@@ -362,50 +381,86 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				okAll = false
 				break
 			}
+			strAnnot := false
 			if vd.Type != nil {
 				if k, ok := saAnnotKind(vd.Type); !ok || k != "arr" {
 					okAll = false
 					break
 				}
+				strAnnot = saIsStringArrayAnnot(vd.Type)
 			}
 			al := init.AsArrayLiteralExpression()
 			if al == nil {
 				okAll = false
 				break
 			}
-			var elems []string
+			var i32s, strs []string
 			eleOk := true
 			if al.Elements != nil {
 				for _, el := range al.Elements.Nodes {
-					t, elok := saTopArrElemText(el)
-					if !elok {
-						eleOk = false
-						break
+					if t, elok := saTopArrElemText(el); elok {
+						i32s = append(i32s, t)
+						continue
 					}
-					elems = append(elems, t)
+					if t, elok := saTopArrStrText(el); elok {
+						strs = append(strs, t)
+						continue
+					}
+					eleOk = false
+					break
 				}
 			}
-			if !eleOk {
+			if !eleOk || (len(i32s) > 0 && len(strs) > 0) {
 				okAll = false
 				break
 			}
-			pends = append(pends, pend{name: name, elems: elems})
+			arr := saTopArr{elems: i32s}
+			if len(strs) > 0 || (len(i32s) == 0 && strAnnot) {
+				arr = saTopArr{elems: strs, str: true}
+			}
+			pends = append(pends, pend{name: name, arr: arr})
 		}
 		if !okAll {
 			continue
 		}
 		for _, p := range pends {
-			out[p.name] = p.elems
+			out[p.name] = p.arr
 		}
 		claimed[st] = true
 	}
 	return out, claimed
 }
 
-// saMaterializeTopArr 按快照物化顶层 const 数组为本地新柄（alloc 16 头 + 4n
-// 缓冲逐元直存 + 头/长回填，与 saLowerArrayLiteral 非 spread 臂同形；新柄归属
-// 登记，调用方读后即释；698）。
-func saMaterializeTopArr(w printer.EmitTextWriter, elems []string, scope *saScope, nextTemp *int) string {
+// saMaterializeTopArr 按快照物化顶层 const 数组为本地新柄（i32 元：alloc 16 头
+// + 4n 缓冲逐元直存 + 头/长回填，与 saLowerArrayLiteral 非 spread 臂同形；串元：
+// 16 字节头逐元具化 + 4 字节槽存柄 + arrStr 标记，与本地串字面量数组同形；新柄
+// 归属登记，调用方读后即释；698/758）。
+func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope, nextTemp *int) string {
+	if arr.str {
+		var hs []string
+		for _, t := range arr.elems {
+			hs = append(hs, saLowerStringLiteral(w, t, scope, nextTemp))
+		}
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		buf := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(hs)*4))
+		for i, v := range hs {
+			p := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+		w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(hs)))
+		w.Write(fmt.Sprintf("  !%s\n", buf))
+		saOwnTemp(scope, h)
+		saMarkArrStr(scope, h)
+		return h
+	}
+	elems := arr.elems
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	buf := fmt.Sprintf("t_%d", *nextTemp)
@@ -423,6 +478,25 @@ func saMaterializeTopArr(w printer.EmitTextWriter, elems []string, scope *saScop
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
 	return h
+}
+
+// saTopArrLookup 查顶层 const 数组快照（标识符直指、无局部/mod 槽遮蔽；不落字）。
+func saTopArrLookup(scope *saScope, e *ast.Node) (saTopArr, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return saTopArr{}, false
+	}
+	name := e.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return saTopArr{}, false
+	}
+	if _, isMod := scope.modVars[name]; isMod {
+		return saTopArr{}, false
+	}
+	arr, ok := scope.topArrs[name]
+	if !ok {
+		return saTopArr{}, false
+	}
+	return arr, true
 }
 
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
@@ -446,67 +520,51 @@ func saTopArrPureMethod(m string) bool {
 	return false
 }
 
-// saTopArrPureCall 纯查表判定是否为顶层 const 数组纯读方法调用（不落字；
-// 门控位调用，局部/mod 槽遮蔽优先；`?.` 调用沿旧门；708）。
+// saTopArrPureCall 纯查表判定是否为顶层 const 数组快照方法调用（不落字；
+// 门控位调用，局部/mod 槽遮蔽优先；`?.` 调用沿旧门；串快照仅 indexOf/includes
+// （余下串方法本地同形破碎或未探，沿旧门）；708/758）。
 func saTopArrPureCall(pa *ast.PropertyAccessExpression, scope *saScope, m string) bool {
 	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.QuestionDotToken != nil {
 		return false
 	}
-	name := pa.Expression.Text()
-	if _, shadowed := scope.types[name]; shadowed {
+	arr, ok := saTopArrLookup(scope, pa.Expression)
+	if !ok {
 		return false
 	}
-	if _, isMod := scope.modVars[name]; isMod {
-		return false
-	}
-	if _, ok := scope.topArrs[name]; !ok {
+	if arr.str && m != "indexOf" && m != "includes" {
 		return false
 	}
 	return saTopArrPureMethod(m)
 }
 
-// saTopArrPureRecv 物化顶层 const 数组纯读方法接收器（纯读性由调用点门控，
+// saTopArrPureRecv 物化顶层 const 数组快照方法接收器（纯读性由调用点门控，
 // 此处复判防未来新调用方；变异/未知方法返回 false 沿旧门；708）。
 func saTopArrPureRecv(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, nextTemp *int) (string, bool) {
 	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
 		return "", false
 	}
-	name := pa.Expression.Text()
-	if _, shadowed := scope.types[name]; shadowed {
-		return "", false
-	}
-	if _, isMod := scope.modVars[name]; isMod {
-		return "", false
-	}
-	elems, ok := scope.topArrs[name]
+	arr, ok := saTopArrLookup(scope, pa.Expression)
 	if !ok {
 		return "", false
 	}
 	if pa.Name() == nil || !saTopArrPureMethod(pa.Name().Text()) {
 		return "", false
 	}
-	return saMaterializeTopArr(w, elems, scope, nextTemp), true
+	if arr.str && pa.Name().Text() != "indexOf" && pa.Name().Text() != "includes" {
+		return "", false
+	}
+	return saMaterializeTopArr(w, arr, scope, nextTemp), true
 }
 
-// saTopArrSnapshot 物化顶层 const 数组快照（标识符直指快照且无局部/mod 槽
-// 遮蔽；用点：for-of/for-in 巡回、spread 字面量展开；调用实参/返回/别名/存储位
-// 禁用（身份语义），沿旧门；728）。
+// saTopArrSnapshot 物化顶层 const 数组快照（用点：for-of/for-in 巡回、spread
+// 字面量展开；i32 与串元皆可（串巡回绑定另臂，spread 串形调用方另判）；调用实参/
+// 返回/别名/存储位禁用（身份语义），沿旧门；728）。
 func saTopArrSnapshot(w printer.EmitTextWriter, e *ast.Node, scope *saScope, nextTemp *int) (string, bool) {
-	if e == nil || e.Kind != ast.KindIdentifier {
-		return "", false
-	}
-	name := e.Text()
-	if _, shadowed := scope.types[name]; shadowed {
-		return "", false
-	}
-	if _, isMod := scope.modVars[name]; isMod {
-		return "", false
-	}
-	elems, ok := scope.topArrs[name]
+	arr, ok := saTopArrLookup(scope, e)
 	if !ok {
 		return "", false
 	}
-	return saMaterializeTopArr(w, elems, scope, nextTemp), true
+	return saMaterializeTopArr(w, arr, scope, nextTemp), true
 }
 
 // saLowerOptionalIndex lowers `a?.[i]` (null base reads 0, otherwise the checked-index
@@ -840,30 +898,26 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	if layout, def, ok := saKeyofBase(ea.Expression, scope); ok {
 		return saLowerKeyofIndex(w, ea, layout, def, scope, pos, refusals, nextTemp)
 	}
-	// 顶层 const 数组下标读（快照物化后走既有越界归零径；局部/mod 槽遮蔽优先；
-	// 写位/方法位/别名位无臂沿旧门大声拒；698）。
+	// 顶层 const 数组下标读（i32 元快照物化后走既有越界归零径；串元走串位，
+	// 此处 i32 位大声拒；局部/mod 槽遮蔽优先；写位/方法位/别名位无臂沿旧门大声拒；698/758）。
 	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
-		if _, shadowed := scope.types[ea.Expression.Text()]; !shadowed {
-			if _, isMod := scope.modVars[ea.Expression.Text()]; !isMod {
-				if elems, ok := scope.topArrs[ea.Expression.Text()]; ok {
-					base := saMaterializeTopArr(w, elems, scope, nextTemp)
-					idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
-					if msg != "" {
-						return "", msg
-					}
-					if msg := saCheckIntIndex(scope, idx); msg != "" {
-						return "", msg
-					}
-					if isOpt {
-						out := saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
-						saReleaseOwnedTemp(w, scope, base)
-						return out, ""
-					}
-					out := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
-					saReleaseOwnedTemp(w, scope, base)
-					return out, ""
-				}
+		if arr, ok := saTopArrLookup(scope, ea.Expression); ok && !arr.str {
+			base := saMaterializeTopArr(w, arr, scope, nextTemp)
+			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
 			}
+			if msg := saCheckIntIndex(scope, idx); msg != "" {
+				return "", msg
+			}
+			if isOpt {
+				out := saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
+				saReleaseOwnedTemp(w, scope, base)
+				return out, ""
+			}
+			out := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+			saReleaseOwnedTemp(w, scope, base)
+			return out, ""
 		}
 	}
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
@@ -1050,16 +1104,13 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 					return ln, ""
 				}
 			}
-			// 顶层 const 数组 `?.length`（快照具化后走同形空守卫；局部/mod 槽遮蔽优先；698）。
-			if _, shadowed := scope.types[e.Text()]; !shadowed {
-				if _, isMod := scope.modVars[e.Text()]; !isMod {
-					if elems, ok := scope.topArrs[e.Text()]; ok {
-						h := saMaterializeTopArr(w, elems, scope, nextTemp)
-						ln := saLowerOptionalLength(w, h, scope, nextTemp)
-						saReleaseOwnedTemp(w, scope, h)
-						return ln, ""
-					}
-				}
+			// 顶层 const 数组 `?.length`（快照具化后走同形空守卫；i32/串元皆可，头 +8；
+			// 局部/mod 槽遮蔽优先；698/758）。
+			if arr, ok := saTopArrLookup(scope, e); ok {
+				h := saMaterializeTopArr(w, arr, scope, nextTemp)
+				ln := saLowerOptionalLength(w, h, scope, nextTemp)
+				saReleaseOwnedTemp(w, scope, h)
+				return ln, ""
 			}
 		}
 		// 调用结果 `?.length`（新鲜非空柄，空臂不可达，等价直读；plain 调用基 868 同形；586）。
@@ -1131,20 +1182,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
 		return t, ""
 	}
-	// 顶层 const 数组取长（快照物化读头 +8，读后即释；局部/mod 槽遮蔽优先；
-	// 589 折叠串臂同形；698）。
+	// 顶层 const 数组取长（快照物化读头 +8，读后即释；i32/串元皆可；
+	// 局部/mod 槽遮蔽优先；589 折叠串臂同形；698/758）。
 	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier {
-		if _, shadowed := scope.types[e.Text()]; !shadowed {
-			if _, isMod := scope.modVars[e.Text()]; !isMod {
-				if elems, ok := scope.topArrs[e.Text()]; ok {
-					h := saMaterializeTopArr(w, elems, scope, nextTemp)
-					t := fmt.Sprintf("t_%d", *nextTemp)
-					*nextTemp++
-					w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
-					saReleaseOwnedTemp(w, scope, h)
-					return t, ""
-				}
-			}
+		if arr, ok := saTopArrLookup(scope, e); ok {
+			h := saMaterializeTopArr(w, arr, scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+			saReleaseOwnedTemp(w, scope, h)
+			return t, ""
 		}
 	}
 	// 链式下标基（`pairs[0].length` 经句柄总线递归求内层句柄；与读位同形）。
@@ -2048,6 +2095,9 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				// 嵌套数组标识符巡回：元为内层句柄，行绑 arr（字面量直巡同形；
 				// 形状证据：封存 for-of 体 `row = t_19` 后 `load row + 8`）。
 				bindKind = "arr"
+			} else if arr, ok := saTopArrLookup(scope, fo.Expression); ok && arr.str {
+				// 顶层串元数组巡回：元为串柄，行绑 str（本地串数组同形；758）。
+				bindKind = "str"
 			}
 		}
 		scope.types[binding] = bindKind
@@ -3053,7 +3103,14 @@ func recvIsStrArray(scope *saScope, pa *ast.PropertyAccessExpression) bool {
 	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
 		return false
 	}
-	return scope.arrStr != nil && scope.arrStr[pa.Expression.Text()]
+	if scope.arrStr != nil && scope.arrStr[pa.Expression.Text()] {
+		return true
+	}
+	// 顶层串元数组快照（758）。
+	if arr, ok := saTopArrLookup(scope, pa.Expression); ok && arr.str {
+		return true
+	}
+	return false
 }
 
 // saLowerArrayScanStr 串元数组内容扫描门面（includes/indexOf 正向 +

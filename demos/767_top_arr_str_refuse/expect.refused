@@ -1,0 +1,3 @@
+# 混元整句不收；串快照 slice/concat/join 等沿旧门（本地同形破碎或未探）
+step2 refuses kind 244 (only top-level functions)
+.length base must be bound array or string

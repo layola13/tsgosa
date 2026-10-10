@@ -111,6 +111,13 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
 			return true
 		}
+		// 顶层串元数组元素读即串值（快照；`?.` 沿旧门；758）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if arr, ok := saTopArrLookup(scope, ea.Expression); ok && arr.str {
+				return true
+			}
+		}
 		// 右值串元数组元素读即串值（`m.get(k)[i]` 柄种由建表透传；`?.` 沿旧门）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
 			saIsStrArrRvalue(ea.Expression, scope) {
@@ -432,6 +439,23 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			return saLowerCheckedIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
+		}
+		// 顶层串元数组元素读（快照物化后走越界归零柄读回，用后即释；`?.` 沿旧门；758）。
+		if ea.QuestionDotToken == nil && ea.Expression != nil &&
+			ea.Expression.Kind == ast.KindIdentifier {
+			if arr, ok := saTopArrLookup(scope, ea.Expression); ok && arr.str {
+				idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if msg := saCheckIntIndex(scope, idx); msg != "" {
+					return "", msg
+				}
+				h := saMaterializeTopArr(w, arr, scope, nextTemp)
+				out := saLowerCheckedIndex(w, h, idx, scope.nextLabel, nextTemp)
+				saReleaseOwnedTemp(w, scope, h)
+				return out, ""
+			}
 		}
 		// 右值串元数组元素读（`m.get(k)[i]`/`get()[i]`；柄经数组求值，元种由建表/
 		// 签名透传标记；具名基沿上分支，`?.` 沿旧门；柄用后即释，与下标读位同形）。

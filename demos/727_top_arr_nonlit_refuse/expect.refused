@@ -1,3 +1,3 @@
-# 非 i32 元/混合声明整句不收，沿旧 kind244 门大声拒
+# 混合声明整句不收（串 as-const 已于 758 转正移出）
 step2 refuses kind 244 (only top-level functions)
-.length base must be bound array or string
+index base must be bound array
