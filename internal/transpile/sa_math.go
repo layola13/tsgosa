@@ -113,6 +113,69 @@ func saEvalMathSign(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	return out, false, ""
 }
 
+// saEvalMathClz32 求 `Math.clz32(x)`（ToUint32 前导零计数；左移探顶位循环最多
+// 32 轮；实参快照保绑定（sqrt 同形）；x<0 按补码计（-1 即 0），0 即 32；1438）。
+func saEvalMathClz32(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 {
+		return "", false, "Math.clz32 needs 1 argument"
+	}
+	x, msg := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	xx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", xx, x))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", c))
+	// 移位量须寄存器（字面量 amount 被误读：`shl x, 1` 空转实证；1438）。
+	// SAI shl 不回绕（u64 语义，`<<` 落字自带掩码+重符号化实证），故不探符号
+	// 位改测顶位（`and` + `ne`，-1 全 1 即中，0 永不中；1438）。
+	one := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 1\n", one))
+	thirtyone := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 31\n", thirtyone))
+	mask := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = shl %s, %s\n", mask, one, thirtyone))
+	topL := fmt.Sprintf("L_clz_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	contL := fmt.Sprintf("L_clz_cont_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_clz_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	topb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", topb, xx, mask))
+	done := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", done, topb))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", done, endL, contL))
+	w.Write(fmt.Sprintf("%s:\n", contL))
+	cnext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", cnext, c))
+	w.Write(fmt.Sprintf("  %s = %s\n", c, cnext))
+	xnext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = shl %s, %s\n", xnext, xx, one))
+	w.Write(fmt.Sprintf("  %s = %s\n", xx, xnext))
+	full := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 32\n", full, c))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", full, endL, topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return c, false, ""
+}
+
 // saEvalMathImul 求 `Math.imul(a, b)`（SA mul 即 i32 wrap，与 imul 低 32 位
 // 语义一致；双操作数经既有 i32 门）。
 func saEvalMathImul(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
@@ -417,7 +480,7 @@ func saMathMethodName(n *ast.Node) (string, bool) {
 		return "", false
 	}
 	switch pa.Name().Text() {
-	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random", "sign", "imul":
+	case "abs", "pow", "floor", "ceil", "round", "trunc", "min", "max", "sqrt", "log10", "random", "sign", "imul", "clz32":
 		return pa.Name().Text(), true
 	}
 	return "", false
@@ -445,6 +508,8 @@ func saEvalMathMethod(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 		return saEvalMathSign(w, ce, scope, pos, refusals, nextTemp)
 	case "imul":
 		return saEvalMathImul(w, ce, scope, pos, refusals, nextTemp)
+	case "clz32":
+		return saEvalMathClz32(w, ce, scope, pos, refusals, nextTemp)
 	}
 	return "", false, "unsupported Math method " + method
 }
