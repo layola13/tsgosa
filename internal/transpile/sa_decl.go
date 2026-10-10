@@ -1812,6 +1812,19 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		case ast.KindFalseKeyword:
 			consts[nm.Text()] = "0"
 		case ast.KindPropertyAccessExpression:
+			// `Math.PI`/`Math.E` 折叠为 3/2（i32 位 saEvalI32:5171-5180 整数子集同形；
+			// 方法别名沿下门；828）。
+			if pa := init.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil &&
+				pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Math" && pa.Name() != nil {
+				if pa.Name().Text() == "PI" {
+					consts[nm.Text()] = "3"
+					break
+				}
+				if pa.Name().Text() == "E" {
+					consts[nm.Text()] = "2"
+					break
+				}
+			}
 			m, ok := saMathMethodName(init)
 			if !ok {
 				return false
