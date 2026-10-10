@@ -1,0 +1,2 @@
+# 函数内函数声明大声拒（顶层/方法体另域；嵌套具名声明未入子集）
+statement KindFunctionDeclaration is not in the SA-lowerable subset

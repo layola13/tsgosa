@@ -1,0 +1,2 @@
+# super 实例字段读大声拒（super 只见原型，不见实例态）
+super.v is an instance field
