@@ -295,6 +295,13 @@ func saIsStrArrRvalue(e *ast.Node, scope *saScope) bool {
 		return false
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()
+	// 串 split 右值（`s.split(sep)[i]`；具名绑定版正确，右值版曾漏认落 i32
+	// 下标误打地址（968 n4 实证：SA 799929152 vs node b）；串基经 saIsStrExpr
+	//（字面量/具名/调用），求值/标记/释放走既有右值分支；`?.` 沿旧门。
+	if pa.Name() != nil && pa.Name().Text() == "split" && pa.QuestionDotToken == nil &&
+		saIsStrExpr(pa.Expression, scope) {
+		return true
+	}
 	if pa.Name() == nil || pa.Name().Text() != "get" || pa.QuestionDotToken != nil {
 		return false
 	}
