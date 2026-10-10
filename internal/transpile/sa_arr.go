@@ -1713,24 +1713,26 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 	}
 	var arr string
 	litLen := -1
-	if vd.Initializer.Kind == ast.KindArrayLiteralExpression {
-		h, msg := saLowerArrayLiteral(w, vd.Initializer, scope, pos, refusals, nextTemp)
+	// 纯类型包装透明（`[] as i32[]` 与字面量同形；483 `(a).length` 同例；1358）。
+	srcInit := saUnwrapTransparent(vd.Initializer)
+	if srcInit.Kind == ast.KindArrayLiteralExpression {
+		h, msg := saLowerArrayLiteral(w, srcInit, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array literal: " + msg})
 			return false
 		}
-		if vd.Initializer.AsArrayLiteralExpression().Elements != nil {
-			litLen = len(vd.Initializer.AsArrayLiteralExpression().Elements.Nodes)
+		if srcInit.AsArrayLiteralExpression().Elements != nil {
+			litLen = len(srcInit.AsArrayLiteralExpression().Elements.Nodes)
 		}
 		arr = h
-	} else if base, ok := saArrBase(scope, vd.Initializer); ok {
+	} else if base, ok := saArrBase(scope, srcInit); ok {
 		arr = base
-	} else if saIsArrayCtor(vd.Initializer) {
+	} else if saIsArrayCtor(srcInit) {
 		// 新鲜构造解构源（`const [x,y] = new Array(9,8)`；现场具化 + 归属登记，
 		// 与字面量源同律；空穴形缺省按未知长大声拒（空穴读 undefined 才走缺省，
 		// 0 口径不可代；无缺省空穴读 0 沿 480/501 口径）；1308）。
-		h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		h, msg := saLowerArrayCtor(w, srcInit, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(d.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array constructor: " + msg})
@@ -1738,8 +1740,8 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		}
 		saOwnTemp(scope, h)
 		arr = h
-		if !saIsHoleArrayCtor(vd.Initializer) {
-			litLen = saCtorElemCount(vd.Initializer)
+		if !saIsHoleArrayCtor(srcInit) {
+			litLen = saCtorElemCount(srcInit)
 		}
 	} else {
 		ln, col := pos(d.Pos())
