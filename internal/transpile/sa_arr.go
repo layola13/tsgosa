@@ -1429,6 +1429,26 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		}
 		return "", "optional member access not lowerable"
 	}
+	// Map/Set 同柄链 `.size` 属性（`m.set(k,v).size`；内层原位变异弃值，
+	// 外层在绑定上读长；与调用链同形；1318）。
+	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
+		if im, recv, k, ok := saMapChainBase(pa.Expression.AsCallExpression(), scope); ok {
+			if _, _, msg := saLowerMapCall(w, recv, k, im, pa.Expression.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
+				return "", msg
+			}
+			if k == "map" {
+				scope.addImport("sa_std/btree_map.sa")
+			} else {
+				scope.addImport("sa_std/btree_set.sa")
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_%s_len(&%s)\n", t, k, recv))
+			saOwnTemp(scope, t)
+			return t, ""
+		}
+	}
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "size" &&
 		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 		// lib.es2015.collection.d.ts `readonly size: number` 属性形：复用

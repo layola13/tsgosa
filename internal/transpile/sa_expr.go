@@ -2196,6 +2196,20 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		}
 		// Map/Set 成员调用（基为 map/set 绑定；括号接收者透明；未知成员由总线定位）。
 		if pa.Name() != nil {
+			// Map/Set 同柄链（`m.set(k,v).get(k)`；内层原位变异返 "0" 字面量，
+			// 求值弃值后以外层在绑定上重分发（求值序与 JS 同）；余链形沿旧门；1318）。
+			if base := saUnwrapTransparent(pa.Expression); base != nil && base.Kind == ast.KindCallExpression {
+				if im, recv, kind, ok := saMapChainBase(base.AsCallExpression(), scope); ok {
+					if _, _, msg := saLowerMapCall(w, recv, kind, im, base.AsCallExpression(), scope, pos, refusals, nextTemp); msg != "" {
+						return "", false, msg
+					}
+					op, _, msg := saLowerMapCall(w, recv, kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, false, ""
+				}
+			}
 			if base := saUnwrapTransparent(pa.Expression); base != nil && base.Kind == ast.KindIdentifier {
 				if kind, ok := saMapBaseKind(base, scope); ok {
 					op, _, msg := saLowerMapCall(w, base.Text(), kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)

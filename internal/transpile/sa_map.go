@@ -562,6 +562,38 @@ func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExp
 // saLowerMapCall Map/Set 调用总线（返回 operand/种/errMsg；Map 值种按建表记
 // （`Record<string,T>` 具化表，无表恒 i32；str/inst 经对应求值；keys 系另行拒）；
 // 形状证据：lowerMapMethod/lowerSetMethod）。
+// saMapChainBase 同柄链内层判定（`m.set(k,v)`/`s.add(v)`；接收者须绑定
+// map/set 标识符（单层，深链沿旧门）；`?.` 沿旧门；仅原位变异返 "0" 字面量
+// 的 set/add（弃值零归属），余形沿旧门；1318）。
+func saMapChainBase(ce *ast.CallExpression, scope *saScope) (method, recv, kind string, ok bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", "", "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+		return "", "", "", false
+	}
+	m := pa.Name().Text()
+	if m != "set" && m != "add" {
+		return "", "", "", false
+	}
+	base := saUnwrapTransparent(pa.Expression)
+	if base == nil || base.Kind != ast.KindIdentifier {
+		return "", "", "", false
+	}
+	k, ok := saMapBaseKind(base, scope)
+	if !ok {
+		return "", "", "", false
+	}
+	if k == "map" && m != "set" {
+		return "", "", "", false
+	}
+	if k == "set" && m != "add" {
+		return "", "", "", false
+	}
+	return m, base.Text(), k, true
+}
+
 func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
