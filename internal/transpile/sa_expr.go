@@ -2315,6 +2315,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return saLowerAllocCall(w, ce, scope, pos, refusals, nextTemp)
 		}
 	}
+	// IIFE 立即调用（箭头/函数表达式直调；括号透明；`?.()` 沿旧门；无帧捕获，
+	// 单帧内联同回调；858）。
+	if ce.QuestionDotToken == nil {
+		if fn := saIIFEArrow(ce); fn != nil {
+			return saLowerIIFE(w, fn, ce, scope, pos, refusals, nextTemp)
+		}
+	}
 	if ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		if ce.Expression != nil && ce.Expression.Kind == ast.KindSuperKeyword {
 			return "", false, "super() is only lowerable inside a subclass constructor"
@@ -2322,6 +2329,82 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "only direct function calls lowerable"
 	}
 	return saEvalNamedCall(w, ce.Expression.Text(), ce, scope, pos, refusals, nextTemp)
+}
+
+// saIIFEArrow 取调用表达式的立即调用箭头/函数表达式被调（括号透明；
+// 具名/成员沿旧门，返回 nil）。
+func saIIFEArrow(ce *ast.CallExpression) *ast.Node {
+	if ce == nil || ce.Expression == nil {
+		return nil
+	}
+	e := ce.Expression
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			return nil
+		}
+		e = pe.Expression
+	}
+	if e != nil && (e.Kind == ast.KindArrowFunction || e.Kind == ast.KindFunctionExpression) {
+		return e
+	}
+	return nil
+}
+
+// saLowerIIFE lowering 立即调用（无帧捕获，单帧内联同回调；形参种按注解，
+// 缺省 i32；元数须精确；块体经 inlineRet 槽，表达式体直求值；结果恒 i32 位
+// （非 i32 体沿既有门大声拒）；858）。
+func saLowerIIFE(w printer.EmitTextWriter, fn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	params := fn.Parameters()
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != len(params) {
+		return "", false, "IIFE arity mismatch"
+	}
+	var kinds []string
+	for _, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			return "", false, "IIFE parameter shape is not lowerable"
+		}
+		nm := pd.Name()
+		if nm == nil || (nm.Kind != ast.KindIdentifier && nm.Kind != ast.KindArrayBindingPattern) {
+			return "", false, "IIFE parameter shape is not lowerable"
+		}
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+			return "", false, "IIFE parameter shape is not lowerable"
+		}
+		k := "i32"
+		if pd.Type != nil {
+			kk, ok := saAnnotKind(pd.Type)
+			if !ok || (kk != "i32" && kk != "bool" && kk != "str") {
+				return "", false, "IIFE parameter needs an i32/string annotation"
+			}
+			k = kk
+		}
+		kinds = append(kinds, k)
+	}
+	sig := saFuncSig{params: len(params), paramKinds: kinds}
+	var argVals []string
+	for i := range params {
+		op, msg := saEvalCallArg(w, sig, i, argNodes[i], len(params), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		argVals = append(argVals, op)
+	}
+	// 体归属按臂纪律释放（for-of 体同形；块体臂出口释临时量，值结果非堆柄；
+	// 形参种透传（串/数组绑定）；858）。
+	savedArmTemps := scope.armReleaseTemps
+	scope.armReleaseTemps = true
+	op, msg := saCallbackValue(w, fn, argVals, false, "i32", scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp, false, kinds)
+	scope.armReleaseTemps = savedArmTemps
+	if msg != "" {
+		return "", false, msg
+	}
+	return op, false, ""
 }
 
 // saLowerTernaryValue 求三元值（i32 臂 SELECT / 串臂槽汇合；

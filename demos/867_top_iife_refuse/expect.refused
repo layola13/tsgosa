@@ -1,0 +1,5 @@
+# 元数/跨帧捕获/串体沿旧门大声拒（柯里化系 Phase 2 显式边界）
+function value return needs closure capture across frames (Phase 2)
+IIFE arity mismatch
+only direct function calls lowerable
+expression KindStringLiteral is not in the SA-lowerable subset
