@@ -2591,6 +2591,46 @@ func saLowerTernaryLazyI32(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 	return res, ""
 }
 
+// saLowerTernaryLazyStr 副作用串臂三元分支惰性形（惰性 i32 形同骨架；
+// 槽宽按 ptr，臂内求值、入槽即消费、臂临时就地释放；纯臂沿既有急切径
+// 零漂移；副作用臂急切双执行与 JS 单臂语义分叉（1338 实证 x/1 vs x/0）；1338）。
+func saLowerTernaryLazyStr(w printer.EmitTextWriter, ce *ast.ConditionalExpression, condOp string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+	*nextLabel++
+	fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	base := len(scope.ownOrder)
+	tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+	if msgA != "" {
+		return "", msgA
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	base = len(scope.ownOrder)
+	fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+	if msgB != "" {
+		return "", msgB
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res, ""
+}
+
 // saLowerLogicValue lowering 逻辑值（`&&` 回左假值/右值、`||` 回左真值/右值；
 // 短路分支（右部副作用按 e1 锁跳过）；槽+臂释放与三元惰性形同律；归 i32）。
 func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -2760,6 +2800,15 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms disagree (string vs non-string)"})
 			return "", false, "ternary arms disagree (string vs non-string)"
+		}
+		// 副作用臂走分支惰性形（纯臂沿急切径零漂移；急切双执行与 JS 单臂
+		// 语义分叉，i32 侧同律；1338）。
+		if saArmHasEffect(ce.WhenTrue) || saArmHasEffect(ce.WhenFalse) {
+			t, msg := saLowerTernaryLazyStr(w, ce, condOp, scope, pos, refusals, nextLabel, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return t, true, ""
 		}
 		tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
 		fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
