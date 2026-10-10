@@ -1,0 +1,2 @@
+# 嵌套解构大声拒（单层见 19/231/272/438/955/956）
+nested destructuring shape is not lowerable

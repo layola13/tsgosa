@@ -1,0 +1,2 @@
+# Map for-of 解构大声拒（for-of 仅收绑定数组；迭代器另域）
+for-of base must be bound array
