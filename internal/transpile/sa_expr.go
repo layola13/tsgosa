@@ -173,6 +173,114 @@ func saLowerCondLogic(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 	return out, ""
 }
 
+// saFoldInstanceOf 静态折叠条件位 `x instanceof C`（JEV(a) 落件+P-B3 #9）。
+// 1 臂 sound：R（x 运行时类）恒为静态种 X 自身或其子类，X 与 C 同名或 X
+// 经 parent 链命中 C，则 R 亦命中（checker 以 instanceof 收窄为 guard 的
+// 语法子集；运行时无类标可验）。0 臂 sound：基元（i32/str/bool/f64/null
+// 及字面量）永非实例；arr 与类布局、map/set/date 与类布局分属不交句柄族；
+// 无关已记录类之间：单继承链线性，R 须同时为 X 下、C 上（或 C 本身）则
+// X、C 必相关，矛盾，故 miss 即 0。接口作 RHS 系 TS 非法，拒；接口类型
+// LHS 遇异类（多继承展平可兼具）拒；未知名/未知种一律拒，禁误判。
+func saFoldInstanceOf(be *ast.BinaryExpression, scope *saScope) (string, bool) {
+	if be == nil || be.Left == nil || be.Right == nil || be.Right.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	rhs := be.Right.Text()
+	lhsKind := ""
+	switch be.Left.Kind {
+	case ast.KindIdentifier:
+		if k, ok := scope.types[be.Left.Text()]; ok {
+			lhsKind = k
+		} else if saIsNullConst(scope, be.Left.Text()) {
+			lhsKind = "null"
+		} else {
+			return "", false
+		}
+	case ast.KindNumericLiteral:
+		lhsKind = "i32"
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		lhsKind = "str"
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		lhsKind = "bool"
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		lhsKind = "null"
+	case ast.KindArrayLiteralExpression:
+		lhsKind = "arr"
+	default:
+		return "", false
+	}
+	isPrim := lhsKind == "i32" || lhsKind == "str" || lhsKind == "bool" || lhsKind == "f64" || lhsKind == "null"
+	isInst := len(lhsKind) > 5 && lhsKind[:5] == "inst:"
+	known := isPrim || isInst || lhsKind == "arr" || lhsKind == "map" || lhsKind == "set" || lhsKind == "date" || lhsKind == "regex"
+	// RHS Object：堆句柄恒真，基元恒假。
+	if rhs == "Object" {
+		if isPrim {
+			return "0", true
+		}
+		if isInst || lhsKind == "arr" || lhsKind == "map" || lhsKind == "set" || lhsKind == "date" || lhsKind == "regex" {
+			return "1", true
+		}
+		return "", false
+	}
+	// RHS Array：唯数组柄为真。
+	if rhs == "Array" {
+		if lhsKind == "arr" {
+			return "1", true
+		}
+		if known {
+			return "0", true
+		}
+		return "", false
+	}
+	// RHS Map/Set/Date/RegExp 内建：同族柄为真。
+	if rhs == "Map" || rhs == "Set" || rhs == "Date" || rhs == "RegExp" {
+		want := map[string]string{"Map": "map", "Set": "set", "Date": "date", "RegExp": "regex"}[rhs]
+		if lhsKind == want {
+			return "1", true
+		}
+		if known {
+			return "0", true
+		}
+		return "", false
+	}
+	// RHS 已记录类：同名/祖先链命中即 1，无关即 0（线性论证见上）；
+	// RHS 接口（TS 非法）与接口类型 LHS（多继承可兼具）一律拒。
+	rdef, rok := scope.classes[rhs]
+	if !rok || rdef.isIface {
+		return "", false
+	}
+	if isInst {
+		xname := lhsKind[5:]
+		if xname == rhs {
+			return "1", true
+		}
+		xdef, xok := scope.classes[xname]
+		if !xok || xdef.isIface {
+			return "", false
+		}
+		seen := map[string]bool{xname: true}
+		for c := xdef.parent; c != ""; {
+			if c == rhs {
+				return "1", true
+			}
+			if seen[c] {
+				break
+			}
+			seen[c] = true
+			pd, pok := scope.classes[c]
+			if !pok {
+				break
+			}
+			c = pd.parent
+		}
+		return "0", true
+	}
+	if known {
+		return "0", true
+	}
+	return "", false
+}
+
 // saCondOperand 求条件操作数：绑定标识符直接用（形状锁）；真/假折 1/0；
 // 其余走 saEvalI32（比较等先行发射临时量）。失败返回定位信息。
 func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -343,6 +451,13 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				if k, ok := scope.types[be.Left.Text()]; ok && len(k) > 5 && k[:5] == "inst:" && k[5:] == be.Right.Text() {
 					return "1", ""
 				}
+			}
+			// 静态 instanceof 折叠（JEV(a) 落件：同类/祖先链命中即 1，
+			// 无关已记录类即 0（单继承链线性，见注），基元恒 0，
+			// arr 对 Array/Object 即 1，map/set/date 对本名/Object 即 1，
+			// 实例对 Object 即 1；余形大声拒，禁误判）。
+			if res, ok := saFoldInstanceOf(be, scope); ok {
+				return res, ""
 			}
 		}
 		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
