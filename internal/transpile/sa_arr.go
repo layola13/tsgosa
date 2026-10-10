@@ -3470,6 +3470,57 @@ func saLowerArrayPush(w printer.EmitTextWriter, arr, val string, scope *saScope,
 	return nlen
 }
 
+// saLowerPushSpread push 展开形（`a.push(...src)`；源长循环逐元原位压栈，
+// 空源零次；返压后新长（直读 recv 头 +8）；源柄读后即释（具名 no-op）；
+// 元种门：i32 绑定数组收串/嵌套源沿标量臂同律拒；自展（`a.push(...a)`）长预读
+// 语义与 JS 先求值一致；1388）。
+func saLowerPushSpread(w printer.EmitTextWriter, recv string, pa *ast.PropertyAccessExpression, se *ast.SpreadElement, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	src, msg := saArrValueOf(w, se.Expression.AsNode(), scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[pa.Expression.Text()]; ok && k == "arr" {
+			if scope.arrStr == nil || !scope.arrStr[pa.Expression.Text()] {
+				if (scope.arrStr != nil && scope.arrStr[src]) || (scope.arrNest != nil && scope.arrNest[src]) {
+					return "", "array element kind mismatch (non-string array takes i32 values)"
+				}
+			}
+		}
+	}
+	idx := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", idx))
+	topL := fmt.Sprintf("L_pushsp_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_pushsp_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_pushsp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	lenT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", lenT, src))
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	cT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", cT, idx, lenT))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cT, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	v := saLowerCheckedIndex(w, src, idx, scope.nextLabel, nextTemp)
+	_ = saLowerArrayPush(w, recv, v, scope, nextTemp)
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, idx))
+	w.Write(fmt.Sprintf("  %s = %s\n", idx, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	saReleaseOwnedTemp(w, scope, src)
+	last := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", last, recv))
+	return last, ""
+}
+
 // saLowerArraySlice 拷贝 [start, end) 到新数组（钳位；空域单路径分配；
 // 形状证据：封存 lowerArraySlice:6559-6638）。
 func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope *saScope, nextTemp *int) string {
@@ -4923,6 +4974,15 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		// 多参逐元压栈（返末次新长；JS 同义；584）。
 		last := ""
 		for _, an := range argNodes {
+			// 展开形（`a.push(...src)`；逐元原位压栈，与多参同律；1388）。
+			if an != nil && an.Kind == ast.KindSpreadElement {
+				var msg string
+				last, msg = saLowerPushSpread(w, recv, pa, an.AsSpreadElement(), scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				continue
+			}
 			v, msg := saArrayLiteralElem(w, an, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
