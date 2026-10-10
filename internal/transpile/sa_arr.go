@@ -3818,7 +3818,7 @@ func saLowerArrayFlat(w printer.EmitTextWriter, recv string, depth int, scope *s
 // `sci/sa_std/ts_array.sa` `@ts_arr_splice` 实现，本侧只做种门禁
 // （start/del 求值 + 插入项 plain 门）+ del 缺省物化 + items 临时数组 +
 // import + 归属/标记透传；形状证据：封存 lowerSplice 全形）。
-func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+func saLowerArraySplice(w printer.EmitTextWriter, recv string, pa *ast.PropertyAccessExpression, args []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	// 空参即空删（`a.splice()` 删零元返空数组，原数组不动，JS 同义；
 	// 标记透传与常径一致；1478）。
 	if len(args) < 1 {
@@ -3851,8 +3851,20 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, args []*ast.Node,
 			if it == nil {
 				return "", "splice items must be plain values"
 			}
+			// 展开项（`splice(1, 0, ...b)`；中转 items 保序，元种门沿 push 同律；
+			// 非 i32 绑定数组标量亦不可插串，沿旧门；1478）。
 			if it.Kind == ast.KindSpreadElement {
-				return "", "splice items must be plain values"
+				if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+					return "", "splice spread into non-i32 array is not lowerable yet"
+				}
+				if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "arr" ||
+					(scope.arrStr != nil && scope.arrStr[pa.Expression.Text()]) {
+					return "", "splice spread into non-i32 array is not lowerable yet"
+				}
+				if _, msg := saLowerPushSpread(w, items, pa, it.AsSpreadElement(), scope, pos, refusals, nextTemp); msg != "" {
+					return "", msg
+				}
+				continue
 			}
 			if it.Kind == ast.KindArrowFunction || it.Kind == ast.KindFunctionExpression {
 				return "", "splice items must be plain values"
@@ -5563,7 +5575,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		return h, "arr", ""
 	case "splice":
-		h, msg := saLowerArraySplice(w, recv, argNodes, scope, pos, refusals, nextTemp)
+		h, msg := saLowerArraySplice(w, recv, pa, argNodes, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
