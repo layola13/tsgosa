@@ -3723,6 +3723,7 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	*nextLabel++
 	lowered := true
 	dispatch := saSwitchDispatch(s, parts, bodyLabels, testLabels[len(parts)], endL)
+	fall, defaultFall := saSwitchFallthrough(s, parts, bodyLabels, testLabels[len(parts)], endL)
 	for i, p := range parts {
 		w.Write(fmt.Sprintf("%s:\n", testLabels[i]))
 		val, vmsg := saEvalSwitchVal(w, p.node.AsCaseOrDefaultClause().Expression, scope, pos, refusals, nextTemp)
@@ -3760,8 +3761,9 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			lowered = false
 			break
 		}
+		// 非终结臂源码序穿透（JS fallthrough；旧形一律落 endL 系静默错码；1378）。
 		if !saArmTerminates(stmts) {
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("  jmp %s\n", fall[i]))
 		}
 	}
 	if !lowered {
@@ -3779,7 +3781,7 @@ func saLowerSwitch(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			return false
 		}
 		if !saArmTerminates(defaultNode.AsCaseOrDefaultClause().Statements.Nodes) {
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("  jmp %s\n", defaultFall))
 		}
 	} else {
 		w.Write(fmt.Sprintf("  jmp %s\n", endL))
@@ -3833,11 +3835,51 @@ func saSwitchDispatch(s *ast.Node, parts []saCasePart, bodyLabels []string, defa
 	return dispatch
 }
 
+// saSwitchFallthrough 解源码序穿透目标（非空非终结臂落下子句体标；
+// default 体落其源码后继；末子句落 endL；与空臂堆叠 dispatch 同序同律；1378）。
+func saSwitchFallthrough(s *ast.Node, parts []saCasePart, bodyLabels []string, defaultL, endL string) ([]string, string) {
+	fall := make([]string, len(parts))
+	for i := range parts {
+		fall[i] = endL
+	}
+	defaultFall := endL
+	if s == nil {
+		return fall, defaultFall
+	}
+	sw := s.AsSwitchStatement()
+	if sw == nil || sw.CaseBlock == nil {
+		return fall, defaultFall
+	}
+	clauses := sw.CaseBlock.AsCaseBlock().Clauses.Nodes
+	partIndex := make(map[*ast.Node]int, len(parts))
+	for i, p := range parts {
+		partIndex[p.node] = i
+	}
+	next := endL
+	for k := len(clauses) - 1; k >= 0; k-- {
+		cl := clauses[k]
+		if cl == nil {
+			continue
+		}
+		if cl.Kind == ast.KindDefaultClause {
+			defaultFall = next
+			next = defaultL
+			continue
+		}
+		j, ok := partIndex[cl]
+		if !ok {
+			continue
+		}
+		fall[j] = next
+		next = bodyLabels[j]
+	}
+	return fall, defaultFall
+}
+
 // saLowerSwitchMacro lowering 2/3 臂 switch（上游 SWITCH_2/3 分发宏；
 // 体/break/default/域/终结纪律镜 legacy，唯 test 链（eq+br）入宏；
 // 无 default 时宏 default 臂落空到 end；形状证据：封存 tryLowerSwitchMacro:2502-2588）。
 func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, parts []saCasePart, defaultNode *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
-	_ = s
 	// case 值前置求值（legacy 与体交错，运行时序由标号固定；两形各求值一次）。
 	vals := make([]string, len(parts))
 	for i, p := range parts {
@@ -3867,7 +3909,7 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	} else {
 		w.Write(fmt.Sprintf("  EXPAND SWITCH_3 %s, %s, %s, %s, %s, %s, %s, %s\n", disc, vals[0], bodyLabels[0], vals[1], bodyLabels[1], vals[2], bodyLabels[2], defaultL))
 	}
-	lowerBody := func(stmts []*ast.Node) bool {
+	lowerBody := func(stmts []*ast.Node, fallTarget string) bool {
 		savedArmRelease := scope.armRelease
 		scope.armRelease = true
 		armOK := saLowerArm(w, stmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
@@ -3875,12 +3917,14 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 		if !armOK {
 			return false
 		}
+		// 非终结臂源码序穿透（legacy 同律；1378）。
 		if !saArmTerminates(stmts) {
-			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("  jmp %s\n", fallTarget))
 		}
 		return true
 	}
 	lowered := true
+	fall, defaultFall := saSwitchFallthrough(s, parts, bodyLabels, defaultL, endL)
 	for i, p := range parts {
 		stmts := p.node.AsCaseOrDefaultClause().Statements.Nodes
 		w.Write(fmt.Sprintf("%s:\n", bodyLabels[i]))
@@ -3891,7 +3935,7 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 			w.Write(fmt.Sprintf("  jmp %s\n", dispatch[i]))
 			continue
 		}
-		if !lowerBody(stmts) {
+		if !lowerBody(stmts, fall[i]) {
 			lowered = false
 			break
 		}
@@ -3902,7 +3946,7 @@ func saLowerSwitchMacro(w printer.EmitTextWriter, s *ast.Node, disc string, part
 	}
 	w.Write(fmt.Sprintf("%s:\n", defaultL))
 	if defaultNode != nil {
-		if !lowerBody(defaultNode.AsCaseOrDefaultClause().Statements.Nodes) {
+		if !lowerBody(defaultNode.AsCaseOrDefaultClause().Statements.Nodes, defaultFall) {
 			scope.loops = scope.loops[:len(scope.loops)-1]
 			return false
 		}
