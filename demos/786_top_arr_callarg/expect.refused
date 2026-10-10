@@ -1,0 +1,2 @@
+# 快照无共享柄，调用实参禁传（被调变异即分歧；精确拒因）
+top-level const array A is not an i32 value (read elements directly)

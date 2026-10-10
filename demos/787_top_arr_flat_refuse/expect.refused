@@ -1,0 +1,3 @@
+# 具名回调不内联；变异 fill 沿旧门
+pass the arrow inline (named callbacks do not inline)
+unsupported call statement: only direct function calls lowerable
