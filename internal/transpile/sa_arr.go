@@ -1596,6 +1596,17 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			}
 		}
 	}
+	// 新鲜构造取长（`new Array(n).length` 经构造求句柄；读后即释；
+	// 调用式 `Array(n).length` 经调用臂已通；1298）。
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindNewExpression {
+		if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+			saReleaseOwnedTemp(w, scope, h)
+			return t, ""
+		}
+	}
 	// Map/Set 用 `.size()` 方法（属性形大声拒）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[pa.Expression.Text()]; ok && (k == "map" || k == "set") {
@@ -2240,7 +2251,47 @@ func saForStrOrArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, 
 	return h, "", ok
 }
 
+// saIsHoleArrayCtor 识别空穴构造式（单长 `new Array(n)`/`Array(n)`；
+// 空穴在 for-in 被跳过（计数分叉）、for-of 读 undefined（值分叉），
+// 巡回位须大声拒；直接下标读 0 沿 480/501 既定口径不管；1298）。
+func saIsHoleArrayCtor(e *ast.Node) bool {
+	if e == nil || !saIsArrayCtor(e) {
+		return false
+	}
+	var argNodes []*ast.Node
+	isOf := false
+	if e.Kind == ast.KindCallExpression {
+		ce := e.AsCallExpression()
+		if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			isOf = pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" &&
+				pa.Name() != nil && pa.Name().Text() == "of"
+		}
+		if isOf {
+			return false
+		}
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		return len(argNodes) == 1
+	}
+	if e.Kind == ast.KindNewExpression {
+		if ne := e.AsNewExpression(); ne.Arguments != nil {
+			argNodes = ne.Arguments.Nodes
+		}
+		return len(argNodes) == 1
+	}
+	return false
+}
+
 func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node, what string) (string, bool) {
+	// 空穴构造巡回大声拒（for-in 跳过空穴计数分叉、for-of 空穴值 undefined
+	// 与 0 分叉；直接下标读 0 沿 480/501 口径不管；1298）。
+	if saIsHoleArrayCtor(e) {
+		ln, col := pos(where.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("%s base over hole array is not lowerable (holes skip for-in and read undefined for-of)", what)})
+		return "", false
+	}
 	if e != nil && e.Kind == ast.KindArrayLiteralExpression {
 		h, msg := saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -2252,6 +2303,18 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	}
 	if base, ok := saArrBase(scope, e); ok {
 		return base, true
+	}
+	// 新鲜数组构造巡回（`for (v of new Array(n))`；现场具化 + 归属登记，
+	// 巡后释与字面量柄同律；1298）。
+	if e != nil && e.Kind == ast.KindNewExpression && saIsArrayCtor(e) {
+		h, msg := saLowerArrayCtor(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported %s base: %s", what, msg)})
+			return "", false
+		}
+		saOwnTemp(scope, h)
+		return h, true
 	}
 	// 顶层 const 数组巡回（快照物化后走既有索引巡回；巡后释与字面量柄同律；
 	// 体内变异沿既有存储/方法门大声拒；728）。
@@ -3047,6 +3110,16 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 				}
 				return op, ""
 			}
+		}
+		// 调用式数组构造具化（`Array(n)`/`Array.of(..)` 下标基；归属登记、
+		// 消费位即释，与 New 式同律；1298）。
+		if saIsArrayCtor(e) {
+			h, msg := saLowerArrayCtor(w, e, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			saOwnTemp(scope, h)
+			return h, ""
 		}
 		return "", "not an array expression"
 	case ast.KindParenthesizedExpression:
