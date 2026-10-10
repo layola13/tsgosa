@@ -2056,8 +2056,18 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				arg := argNodes[0]
 				if saIsArrValue(arg, scope) {
-					if _, msg := saArrValueOf(w, arg, scope, pos, refusals, nextTemp); msg != "" {
+					h, msg := saArrValueOf(w, arg, scope, pos, refusals, nextTemp)
+					if msg != "" {
 						return "", false, msg
+					}
+					// 可空联合（`T[]|null`：注解核吸收空臂记 arr，
+					// 恒折 1 即静默错码（null 实参得 1）；空即 0 句柄，
+					// 运行时判空（与 488 `=== null` 即 `eq 0` 同律）。
+					if saIsNullableAt(scope.tcx, arg) {
+						res := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, h))
+						return res, false, ""
 					}
 					return "1", false, ""
 				}
@@ -2725,6 +2735,36 @@ func saIsAnyOrUnknown(tcx *saTypeCtx, n *ast.Node) bool {
 				return
 			}
 			found = !tcx.check.IsErrorType(ty)
+		}
+	}()
+	return found
+}
+
+// saIsNullableAt 报告 checker 下该节点类型是否为含 null/undefined 臂的
+// 联合（`T[]|null` 形参经注解核记 arr，空吸收须运行时判空；
+// binder→checker 同源，无 ctx/异常/nil 一律 false，调用方回退既有折叠）。
+func saIsNullableAt(tcx *saTypeCtx, n *ast.Node) bool {
+	if tcx == nil || tcx.check == nil || n == nil {
+		return false
+	}
+	found := false
+	func() {
+		defer func() { _ = recover() }()
+		ty := tcx.check.GetTypeAtLocation(n)
+		if ty == nil {
+			return
+		}
+		if ty.Flags()&checker.TypeFlagsUnionOrIntersection == 0 {
+			return
+		}
+		for _, m := range ty.Types() {
+			if m == nil {
+				continue
+			}
+			if m.Flags()&checker.TypeFlagsNullable != 0 {
+				found = true
+				return
+			}
 		}
 	}()
 	return found
