@@ -262,6 +262,158 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	return h, ""
 }
 
+// saTopArrElemText 取顶层数组元直接量文本（整字面直通、`-`/`+` 号折叠、
+// true/false 化 1/0、空穴归 0；与 saEvalI32 字面量臂 + saLowerPrefixUnary
+// 正负折叠 + saArrayLiteralElem 空穴口径同律；浮/串/余形 false 交旧门）。
+func saTopArrElemText(el *ast.Node) (string, bool) {
+	if el == nil {
+		return "", false
+	}
+	switch el.Kind {
+	case ast.KindOmittedExpression:
+		return "0", true
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(el.Text()) {
+			return "", false
+		}
+		return el.Text(), true
+	case ast.KindTrueKeyword:
+		return "1", true
+	case ast.KindFalseKeyword:
+		return "0", true
+	case ast.KindPrefixUnaryExpression:
+		un := el.AsPrefixUnaryExpression()
+		if un == nil || un.Operand == nil || un.Operand.Kind != ast.KindNumericLiteral {
+			return "", false
+		}
+		if saIsFloatLit(un.Operand.Text()) {
+			return "", false
+		}
+		if un.Operator == ast.KindMinusToken {
+			return "-" + un.Operand.Text(), true
+		}
+		if un.Operator == ast.KindPlusToken {
+			return un.Operand.Text(), true
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// saTopArrPrescan 收顶层 `const A = [1,2,...]` i32 直接量数组（名→元文本；
+// 全 declarator 须同为 const 数组字面量（混合语句整句不收，沿旧 kind244 门，
+// 零行为变）；注解须 arr 种；重名/函数类重名不收（用点沿旧门大声拒）；
+// 用点按需物化本地副本（快照语义；变异位无臂）；与 saFoldTopLevelConst 纯量
+// 折叠同律（数组字面量彼本即拒，无交）；698）。
+func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string][]string, map[*ast.Node]bool) {
+	out := map[string][]string{}
+	claimed := map[*ast.Node]bool{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		type pend struct {
+			name  string
+			elems []string
+		}
+		var pends []pend
+		okAll := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil || vd.Initializer.Kind != ast.KindArrayLiteralExpression {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			name := nm.Text()
+			if _, dup := out[name]; dup {
+				okAll = false
+				break
+			}
+			if _, dup := funcs[name]; dup {
+				okAll = false
+				break
+			}
+			if _, dup := classes[name]; dup {
+				okAll = false
+				break
+			}
+			if vd.Type != nil {
+				if k, ok := saAnnotKind(vd.Type); !ok || k != "arr" {
+					okAll = false
+					break
+				}
+			}
+			al := vd.Initializer.AsArrayLiteralExpression()
+			if al == nil {
+				okAll = false
+				break
+			}
+			var elems []string
+			eleOk := true
+			if al.Elements != nil {
+				for _, el := range al.Elements.Nodes {
+					t, elok := saTopArrElemText(el)
+					if !elok {
+						eleOk = false
+						break
+					}
+					elems = append(elems, t)
+				}
+			}
+			if !eleOk {
+				okAll = false
+				break
+			}
+			pends = append(pends, pend{name: name, elems: elems})
+		}
+		if !okAll {
+			continue
+		}
+		for _, p := range pends {
+			out[p.name] = p.elems
+		}
+		claimed[st] = true
+	}
+	return out, claimed
+}
+
+// saMaterializeTopArr 按快照物化顶层 const 数组为本地新柄（alloc 16 头 + 4n
+// 缓冲逐元直存 + 头/长回填，与 saLowerArrayLiteral 非 spread 臂同形；新柄归属
+// 登记，调用方读后即释；698）。
+func saMaterializeTopArr(w printer.EmitTextWriter, elems []string, scope *saScope, nextTemp *int) string {
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(elems)*4))
+	for i, v := range elems {
+		p := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
+	w.Write(fmt.Sprintf("  !%s\n", buf))
+	saOwnTemp(scope, h)
+	return h
+}
+
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
 // 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
@@ -599,6 +751,32 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	if layout, def, ok := saKeyofBase(ea.Expression, scope); ok {
 		return saLowerKeyofIndex(w, ea, layout, def, scope, pos, refusals, nextTemp)
 	}
+	// 顶层 const 数组下标读（快照物化后走既有越界归零径；局部/mod 槽遮蔽优先；
+	// 写位/方法位/别名位无臂沿旧门大声拒；698）。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+		if _, shadowed := scope.types[ea.Expression.Text()]; !shadowed {
+			if _, isMod := scope.modVars[ea.Expression.Text()]; !isMod {
+				if elems, ok := scope.topArrs[ea.Expression.Text()]; ok {
+					base := saMaterializeTopArr(w, elems, scope, nextTemp)
+					idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, idx); msg != "" {
+						return "", msg
+					}
+					if isOpt {
+						out := saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
+						saReleaseOwnedTemp(w, scope, base)
+						return out, ""
+					}
+					out := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+					saReleaseOwnedTemp(w, scope, base)
+					return out, ""
+				}
+			}
+		}
+	}
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", "index base must be bound array"
@@ -783,6 +961,17 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 					return ln, ""
 				}
 			}
+			// 顶层 const 数组 `?.length`（快照具化后走同形空守卫；局部/mod 槽遮蔽优先；698）。
+			if _, shadowed := scope.types[e.Text()]; !shadowed {
+				if _, isMod := scope.modVars[e.Text()]; !isMod {
+					if elems, ok := scope.topArrs[e.Text()]; ok {
+						h := saMaterializeTopArr(w, elems, scope, nextTemp)
+						ln := saLowerOptionalLength(w, h, scope, nextTemp)
+						saReleaseOwnedTemp(w, scope, h)
+						return ln, ""
+					}
+				}
+			}
 		}
 		// 调用结果 `?.length`（新鲜非空柄，空臂不可达，等价直读；plain 调用基 868 同形；586）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
@@ -852,6 +1041,22 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, base))
 		return t, ""
+	}
+	// 顶层 const 数组取长（快照物化读头 +8，读后即释；局部/mod 槽遮蔽优先；
+	// 589 折叠串臂同形；698）。
+	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindIdentifier {
+		if _, shadowed := scope.types[e.Text()]; !shadowed {
+			if _, isMod := scope.modVars[e.Text()]; !isMod {
+				if elems, ok := scope.topArrs[e.Text()]; ok {
+					h := saMaterializeTopArr(w, elems, scope, nextTemp)
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, h))
+					saReleaseOwnedTemp(w, scope, h)
+					return t, ""
+				}
+			}
+		}
 	}
 	// 链式下标基（`pairs[0].length` 经句柄总线递归求内层句柄；与读位同形）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
@@ -1480,6 +1685,18 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 			}
 		}
 		return true
+	}
+	// 顶层 const 数组别名大声拒（注解形；快照无共享柄；698）。
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindIdentifier {
+		if _, shadowed := scope.types[vd.Initializer.Text()]; !shadowed {
+			if _, isMod := scope.modVars[vd.Initializer.Text()]; !isMod {
+				if _, ok := scope.topArrs[vd.Initializer.Text()]; ok {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "top-level const array alias is not lowerable (snapshots have no shared handle; read elements directly)"})
+					return false
+				}
+			}
+		}
 	}
 	ln, col := pos(d.Pos())
 	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array initializer must be literal or array"})

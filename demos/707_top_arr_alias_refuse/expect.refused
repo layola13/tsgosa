@@ -1,0 +1,4 @@
+# 顶层 const 数组别名/返回/for-of 大声拒（快照无共享柄；别名走精确拒因）
+array return needs matching array value
+top-level const array alias is not lowerable
+for-of base must be bound array

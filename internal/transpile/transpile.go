@@ -1899,6 +1899,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 封存 modstate.go:26-28）。
 	assigned := saAssignedNames(sf.AsSourceFile().Statements.Nodes)
 	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
+	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
@@ -1906,6 +1907,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 槽绑定声明无码（封存 tryModState:618-635；注册期拒因已落袋，此处只消费）。
 		if saTryModState(st, assigned) {
+			handledTop[st] = true
+			continue
+		}
+		// 顶层 const 数组快照声明无码（用点物化；698）。
+		if topArrStmts[st] {
 			handledTop[st] = true
 			continue
 		}
@@ -2245,7 +2251,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
 					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
-					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 					restore()
 				}
 				continue
@@ -2310,7 +2316,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -2337,12 +2343,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 		saScopeLinkFill(escope, link)
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
@@ -3355,6 +3361,7 @@ type saScope struct {
 	classes     map[string]*saClassDef
 	topConsts   map[string]string
 	topStr      map[string]bool
+	topArrs     map[string][]string // 顶层 const i32 数组快照（名→元直接量文本；用点物化；698）
 	modVars     map[string]*saModState
 	thisSelf    string
 	thisClass   string
@@ -3555,7 +3562,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string][]string, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -3638,7 +3645,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve

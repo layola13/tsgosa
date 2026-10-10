@@ -1,0 +1,3 @@
+# 顶层 const 数组变异形大声拒（快照无共享柄；push 走调用门，元存储走下标存储门）
+only direct function calls lowerable
+index store base must be bound array
