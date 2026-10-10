@@ -1,0 +1,2 @@
+# 联合类型形参大声拒（XL 富类型域；当前只收 i32/bool/arr/str/inst 单种）
+unsupported parameter annotation
