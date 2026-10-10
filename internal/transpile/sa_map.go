@@ -706,16 +706,14 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			// 调用结果归属(返前释放；上游 ownTemp 同形).
 			saOwnTemp(scope, t)
 			return t, "i32", ""
-		case "keys", "values", "entries":
-			// lib.d.ts Map 迭代器具化（移植封存 lowerMapMethod:4785-4798；符号逐字核对 sci/sa_std/btree_map.sa:1027/1062/1138，本侧只做 @import + 符号调用，禁手写轮子）。
+		case "keys", "values":
+			// lib.d.ts Map 迭代器具化（移植封存 lowerMapMethod:4785-4798；符号逐字核对 sci/sa_std/btree_map.sa:1027/1062，本侧只做 @import + 符号调用，禁手写轮子）。
 			if len(argNodes) != 0 {
 				return "", "", "Map." + method + " needs 0 arguments"
 			}
 			sym := "sa_btree_map_keys_vec"
 			if method == "values" {
 				sym = "sa_btree_map_values_word_vec"
-			} else if method == "entries" {
-				sym = "sa_btree_map_iter_vec"
 			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
@@ -723,6 +721,14 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 			// 调用结果归属(返前释放；上游 declareOwned 同形).
 			saOwnTemp(scope, t)
 			return t, "arr", ""
+		case "entries":
+			// `m.entries()` 三 u64 一组快照向量非扁平数组：for-of 按单字长误巡回
+			// 3 倍并解构越界崩（1098 t5 实证 segfault；t6 计数亦错）；forEach 自有
+			// div3 巡回走直调不受影响；此处大声拒，需遍历用 forEach/keys()/values()。
+			if len(argNodes) != 0 {
+				return "", "", "Map.entries needs 0 arguments"
+			}
+			return "", "", "Map.entries() snapshot needs forEach (3-word groups are not flat arrays)"
 		case "forEach":
 			// Map.forEach 快照向量巡回（`sa_btree_map_iter_vec` 三 u64 一组；回调 `(v[, k])`，v 种按建表（i32 缺省/串 head 借用）；k 串 head 每轮具化即释；587）。
 			if len(argNodes) != 1 || argNodes[0] == nil {

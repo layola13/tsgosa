@@ -1,0 +1,2 @@
+# 数组字面量内联实例大声拒（先绑局部再入组；工厂见 1021）
+instance in i32 expression (bind it first)

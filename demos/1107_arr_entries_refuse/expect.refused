@@ -1,0 +1,2 @@
+# 数组 entries for-of 大声拒（迭代器非数组；与 1106 同门）
+for-of base over .entries() iterator needs forEach (entry groups are not flat arrays)

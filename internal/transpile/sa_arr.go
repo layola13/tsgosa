@@ -2263,6 +2263,20 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
 			return h, true
 		}
+		// `.entries()` 迭代器非扁平数组：Map 侧三 u64 一组误巡回 3 倍并解构
+		// 越界崩（1098 t5 实证 segfault；数组侧沿旧门已拒）；此处点名大声拒，
+		// 其余链形仍落通用门（1067 for-in 等已锁指纹不动）。
+		if e.Kind == ast.KindCallExpression {
+			if ce := e.AsCallExpression(); ce != nil && ce.Expression != nil &&
+				ce.Expression.Kind == ast.KindPropertyAccessExpression {
+				if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil &&
+					pa.Name().Text() == "entries" && pa.QuestionDotToken == nil {
+					ln, col := pos(where.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("%s base over .entries() iterator needs forEach (entry groups are not flat arrays)", what)})
+					return "", false
+				}
+			}
+		}
 	}
 	ln, col := pos(where.Pos())
 	*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("%s base must be bound array", what)})

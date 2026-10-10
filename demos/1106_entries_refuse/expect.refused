@@ -1,0 +1,2 @@
+# Map entries for-of 大声拒（曾静默 segfault：三 u64 一组误作扁平数组；需遍历用 forEach/keys()/values()）
+for-of base over .entries() iterator needs forEach (entry groups are not flat arrays)
