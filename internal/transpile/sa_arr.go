@@ -431,11 +431,15 @@ func saMaterializeTopArr(w printer.EmitTextWriter, elems []string, scope *saScop
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
 // 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
-// saTopArrPureMethod 报告顶层 const 数组纯读方法白名单（slice/indexOf/
-// includes/join/concat；快照物化后走既有方法径；变异方法与未知方法不在此列；708）。
+// saTopArrPureMethod 报告顶层 const 数组快照接收器安全方法（slice/indexOf/
+// includes/join/concat 纯读 + map/filter/find/findIndex/some/every/reduce/
+// reduceRight/forEach 内联回调高阶；快照物化后走既有方法径；回调副作用为用户
+// 语义与本地同律，具名回调沿既有内联门大声拒；变异方法与未知方法不在此列；708/738）。
 func saTopArrPureMethod(m string) bool {
 	switch m {
-	case "slice", "indexOf", "includes", "join", "concat":
+	case "slice", "indexOf", "includes", "join", "concat",
+		"map", "filter", "find", "findIndex", "some", "every",
+		"reduce", "reduceRight", "forEach":
 		return true
 	}
 	return false

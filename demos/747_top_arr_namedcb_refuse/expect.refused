@@ -1,0 +1,3 @@
+# 具名回调不内联（既有内联门；快照接收器已就位，回调须内联书写）
+pass the arrow inline (named callbacks do not inline)
+array initializer must be literal or array
