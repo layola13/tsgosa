@@ -1,0 +1,4 @@
+# 被赋值 let 数组不收快照（重绑即分歧；存储同门）
+step2 refuses kind 244 (only top-level functions)
+assignment to unknown variable R
+index store base must be bound array

@@ -1899,8 +1899,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 封存 modstate.go:26-28）。
 	assigned := saAssignedNames(sf.AsSourceFile().Statements.Nodes)
 	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
-	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes)
-	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes)
+	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
+	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}

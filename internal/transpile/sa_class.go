@@ -2406,7 +2406,7 @@ type saTopObj struct {
 // 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
 // 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
 // 方法余形整句不收，沿旧 kind244 门；788）。
-func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string]saTopObj, map[*ast.Node]bool) {
+func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool) (map[string]saTopObj, map[*ast.Node]bool) {
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -2418,7 +2418,12 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			continue
 		}
 		vdl := vs.DeclarationList.AsVariableDeclarationList()
-		if vdl == nil || vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst == 0 {
+		if vdl == nil {
+			continue
+		}
+		// const 永收；let/var 须全 declarator 未被赋值（等价 const 快照；818）。
+		isConst := vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst != 0
+		if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 			continue
 		}
 		type pend struct {
@@ -2444,6 +2449,11 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				break
 			}
 			if _, dup := funcs[name]; dup {
+				okAll = false
+				break
+			}
+			// 非 const 声明须未被赋值（等价 const 快照；818）。
+			if !isConst && assigned[name] {
 				okAll = false
 				break
 			}

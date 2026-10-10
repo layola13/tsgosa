@@ -388,7 +388,7 @@ func saTopNestKid(el *ast.Node) (saTopArr, bool) {
 // 注解须 arr 种；重名/函数类重名不收（用点沿旧门大声拒）；元须全 i32 直接量或
 // 全串字面量（混元不收），空数组凭 `string[]` 注解记串元；用点按需物化本地副本
 // （快照语义；变异位无臂）；与 saFoldTopLevelConst 纯量折叠同律；698/758）。
-func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string]saTopArr, map[*ast.Node]bool) {
+func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool) (map[string]saTopArr, map[*ast.Node]bool) {
 	out := map[string]saTopArr{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -400,7 +400,13 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			continue
 		}
 		vdl := vs.DeclarationList.AsVariableDeclarationList()
-		if vdl == nil || vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst == 0 {
+		if vdl == nil {
+			continue
+		}
+		// const 永收；let/var 须全 declarator 未被赋值（等价 const 快照；
+		// 被赋值者由 modstate 槽认领在先，此处不碰；`using` 显式释放沿旧门；818）。
+		isConst := vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst != 0
+		if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 			continue
 		}
 		type pend struct {
@@ -437,6 +443,11 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				break
 			}
 			if _, dup := classes[name]; dup {
+				okAll = false
+				break
+			}
+			// 非 const 声明须未被赋值（等价 const 快照；818）。
+			if !isConst && assigned[name] {
 				okAll = false
 				break
 			}
