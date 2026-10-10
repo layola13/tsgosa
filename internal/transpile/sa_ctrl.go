@@ -3370,12 +3370,18 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 	// tryLowerForMacro:1968 同形）：两个 `for (let i…)` 各自成域，同名可复用。
 	saved := saScopeEnter(scope)
 	defer saScopeExit(scope, saved)
+	// for 子域归属快照：init 绑定/条件柄出域即除名而不释，末轮残留触
+	// MemoryLeak（1048 g1 条件调用柄 t_1、k1 init 调用柄 x 实证；while 无子域
+	// 故出口 sweep 兜住）；外层名索引在快照前，复用 saReleaseDeeperThan 深度
+	// 隔离不受影响（in-place 更新不增索引）。
+	savedForOwned := len(scope.ownOrder)
 	fs := s.AsForStatement()
 	if !saLowerForInit(w, fs.Initializer, scope, pos, refusals, nextTemp) {
 		return false
 	}
 	// Never-taken C 循环只发射 init（证据：封存 lowerFor:2061-2068）。
 	if fs.Condition != nil && fs.Condition.Kind == ast.KindFalseKeyword {
+		saReleaseDeeperThan(w, scope, savedForOwned)
 		return true
 	}
 	if be := saBoolSideCond(fs.Condition, scope); be != "" {
@@ -3449,6 +3455,9 @@ func saLowerFor(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSco
 		w.Write(fmt.Sprintf("  jmp %s\n", topL))
 	}
 	w.Write(fmt.Sprintf("%s:\n", endL))
+	// 子域新建 owned 落点释放（init 具名柄/条件调用柄；break 直达此处亦覆盖；
+	// 体内已释/具名 plain/外层名由深度与旗标隔离；体臂自有释放纪律）。
+	saReleaseDeeperThan(w, scope, savedForOwned)
 	return true
 }
 

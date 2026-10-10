@@ -18,6 +18,7 @@ L_for_body_2:
   i = t_3
   jmp L_for_top_1
 L_for_end_3:
+  !i
   t_4 = sext t as i64
   t_5 = alloc 64
   t_6 = alloc 8

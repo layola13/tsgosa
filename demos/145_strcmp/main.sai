@@ -38,6 +38,7 @@ L_endif_6:
   i = t_11
   jmp L_for_top_1
 L_for_end_3:
+  !i
   t_12 = load a + 8 as u64
   t_13 = load b + 8 as u64
   t_14 = sub t_12, t_13

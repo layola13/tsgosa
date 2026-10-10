@@ -122,6 +122,7 @@ L_endif_15:
   j = t_52
   jmp L_for_top_4
 L_for_end_6:
+  !j
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:
   t_53 = alloc 8

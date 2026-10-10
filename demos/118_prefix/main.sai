@@ -53,6 +53,7 @@ L_idx_end_4:
   i = t_20
   jmp L_for_top_1
 L_for_end_3:
+  !i
   t_21 = alloc 8
   t_22 = load a + 8 as u64
   t_23 = ult 0, t_22

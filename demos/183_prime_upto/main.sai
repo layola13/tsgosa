@@ -28,6 +28,7 @@ L_endif_9:
   i = t_6
   jmp L_for_top_4
 L_for_end_6:
+  !i
   ret 1
 @main() -> i32:
   c = 0

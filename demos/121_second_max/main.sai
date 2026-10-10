@@ -157,6 +157,7 @@ L_endif_18:
   i = t_63
   jmp L_for_top_7
 L_for_end_9:
+  !i
   t_64 = sext m1 as i64
   t_65 = alloc 64
   t_66 = alloc 8

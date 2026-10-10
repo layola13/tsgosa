@@ -37,6 +37,7 @@ L_endif_6:
   i = t_12
   jmp L_for_top_1
 L_for_end_3:
+  !i
   ret 1
 @main() -> i32:
   t_13 = alloc 16
