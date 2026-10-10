@@ -340,20 +340,29 @@ func saEvalMathRandom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 	if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
 		return "", false, "Math.random needs 0 arguments"
 	}
+	// LCG 状态寄 alloc 8 单元（寄存器模型下具名 int 至多一次重赋：同函数
+	// 第二次 random() 触 RegisterRedefinition、ret 0 尾触 MemoryLeak，988 实证；
+	// 单元经 load/store 流转（store 非重定义），出口由归属机释放；槽形同
+	// saLowerOptionalLength 的 alloc 8 存 i32；序列仍首用 12345 确定性）。
 	if _, ok := scope.types[seed]; !ok {
-		w.Write(fmt.Sprintf("  %s = 12345\n", seed))
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", seed))
+		w.Write(fmt.Sprintf("  store %s + 0, 12345 as i32\n", seed))
 		scope.types[seed] = "i32"
+		saDeclareOwned(scope, seed)
 	}
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", st, seed))
 	rs := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = mul %s, 1103515245\n", rs, seed))
+	w.Write(fmt.Sprintf("  %s = mul %s, 1103515245\n", rs, st))
 	rs2 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, 12345\n", rs2, rs))
-	w.Write(fmt.Sprintf("  %s = %s\n", seed, rs2))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", seed, rs2))
 	ro := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ashr %s, 16\n", ro, seed))
+	w.Write(fmt.Sprintf("  %s = ashr %s, 16\n", ro, rs2))
 	out := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = and %s, 32767\n", out, ro))
