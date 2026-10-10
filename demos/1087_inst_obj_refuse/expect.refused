@@ -1,0 +1,2 @@
+# 异构 instanceof 大声拒（同布局恒真折叠；异名/子类/未知禁误判假，558）
+binary operator KindInstanceOfKeyword not in subset
