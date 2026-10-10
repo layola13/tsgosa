@@ -439,7 +439,8 @@ func saTopArrPureMethod(m string) bool {
 	switch m {
 	case "slice", "indexOf", "includes", "join", "concat",
 		"map", "filter", "find", "findIndex", "some", "every",
-		"reduce", "reduceRight", "forEach":
+		"reduce", "reduceRight", "forEach",
+		"lastIndexOf", "at", "toReversed", "toSorted", "with", "toSpliced":
 		return true
 	}
 	return false
