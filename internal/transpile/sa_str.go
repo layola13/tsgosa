@@ -1975,6 +1975,16 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			if msg != "" {
 				return "", false, msg
 			}
+			// 显式负 from 钳零（u64 形参回绕致误查：1138 n1 实证 indexOf 返 -1 vs 0；
+			// 与 startsWith 双参同门；缺省 "0" 字面沿旧路零漂移）。
+			scope.addImport("sa_std/control.sal")
+			fneg := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", fneg, from))
+			fc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, 0, %s\n", fc, fneg, from))
+			from = fc
 		} else if method == "lastIndexOf" {
 			// 缺省 from 即 +Inf（自末端起；from=0 只查首位，
 			// 1098 b3 实证 "abca".lastIndexOf("a") 返 0 vs 3）。
