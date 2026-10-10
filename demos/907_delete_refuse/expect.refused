@@ -1,0 +1,2 @@
+# delete 静态布局禁删（数组元素/对象字段皆大声拒；Map/Set 用 .delete()）
+delete operator is not lowerable
