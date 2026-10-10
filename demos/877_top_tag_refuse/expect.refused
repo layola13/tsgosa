@@ -1,0 +1,4 @@
+# 标签种错位大声拒（i32 标签串位 / 首参非 string[] / 串标签 i32 位）
+tagged call returns non-string value in string position
+tagged first parameter must be string[]
+tagged call returns non-i32 value in i32 position

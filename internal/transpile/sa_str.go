@@ -168,6 +168,12 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 				return true
 			}
 		}
+		// 用户串标签（首参 string[] + 串返回种；求值见 saEvalStr 用户标签臂；868）。
+		if tt.Tag != nil && tt.Tag.Kind == ast.KindIdentifier {
+			if sig, ok := scope.funcs[tt.Tag.Text()]; ok && !sig.isVoid && sig.retKind == "string" {
+				return true
+			}
+		}
 		return false
 	default:
 		return false
@@ -371,6 +377,17 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		return saLowerStringLiteral(w, kind, scope, nextTemp), ""
 	case ast.KindTaggedTemplateExpression:
+		// 用户标签走标签调用脱糖（首参 string[] + 返回种按调用位匹配，种错位
+		// 精确拒因；String.raw 另走；868）。
+		if tt := e.AsTaggedTemplateExpression(); tt != nil && tt.Tag != nil && tt.Tag.Kind == ast.KindIdentifier {
+			if _, ok := scope.funcs[tt.Tag.Text()]; ok {
+				h, msg := saLowerTaggedCall(w, e, scope, pos, refusals, nextTemp, "str")
+				if msg != "" {
+					return "", msg
+				}
+				return h, ""
+			}
+		}
 		return saLowerTaggedTemplate(w, e, scope, pos, refusals, nextTemp)
 	case ast.KindIdentifier:
 		nm := e.Text()
@@ -2341,8 +2358,8 @@ func saRawTemplateText(n *ast.Node) string {
 // tag 数组调用：首参须 string[]，插值按被调形参种求值
 // （与 saEvalFuncCall 同核）；`String.raw` 另走；数组标识每次求值新鲜
 // （JS 站点缓存同一数组恒等，子集值语义，差已记）；`?.` 标签/余参/默认
-// 参数/非 i32 返回（本口径）沿旧门大声拒）。
-func saLowerTaggedCall(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+// 参数沿旧门大声拒；返回种按调用位匹配（i32 位要 number，串位要 string；868）。
+func saLowerTaggedCall(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, want string) (string, string) {
 	tt := n.AsTaggedTemplateExpression()
 	if tt == nil || tt.Tag == nil || tt.Tag.Kind != ast.KindIdentifier {
 		return "", "tagged templates need a direct function tag (String.raw is the only supported member tag)"
@@ -2392,7 +2409,14 @@ func saLowerTaggedCall(w printer.EmitTextWriter, n *ast.Node, scope *saScope, po
 	if len(sig.paramKinds) != sig.params || sig.paramKinds[0] != "arr" {
 		return "", "tagged first parameter must be string[]"
 	}
-	if sig.retKind != "number" {
+	// 返回种门（i32 位要 number，串位要 string；void/余种沿旧门；868）。
+	if sig.retKind != "number" && sig.retKind != "string" {
+		return "", "tagged call returns non-i32 value in i32 position"
+	}
+	if want == "str" && sig.retKind != "string" {
+		return "", "tagged call returns non-string value in string position"
+	}
+	if want != "str" && sig.retKind != "number" {
 		return "", "tagged call returns non-i32 value in i32 position"
 	}
 	var elems []string

@@ -5937,8 +5937,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindObjectLiteralExpression:
 		return "", "object literal needs a declaration binding (const p: Iface = {...})"
 	case ast.KindTaggedTemplateExpression:
-		// 用户标签调用脱糖（`String.raw` 另走串位；余标签本口径）。
-		return saLowerTaggedCall(w, e, scope, pos, refusals, nextTemp)
+		// 用户标签调用脱糖（`String.raw` 另走串位；i32 位要 number 返回，串标签走串位；余标签本口径）。
+		return saLowerTaggedCall(w, e, scope, pos, refusals, nextTemp, "i32")
 	default:
 		return "", fmt.Sprintf("expression %s is not in the SA-lowerable subset", e.Kind.String())
 	}
