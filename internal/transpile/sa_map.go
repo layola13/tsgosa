@@ -302,6 +302,13 @@ func saIsStrArrRvalue(e *ast.Node, scope *saScope) bool {
 		saIsStrExpr(pa.Expression, scope) {
 		return true
 	}
+	// 串 match 右值（`s.match(re)[i]`；具名绑定版正确（362/489），右值版曾漏认
+	// 落 i32 下标误打地址（1158 d2/f2 实证：SA "P" vs node "123"）；miss 臂产空柄，
+	// 越界沿右值检查归零；`?.` 沿旧门。
+	if pa.Name() != nil && pa.Name().Text() == "match" && pa.QuestionDotToken == nil &&
+		saIsStrExpr(pa.Expression, scope) {
+		return true
+	}
 	if pa.Name() == nil || pa.Name().Text() != "get" || pa.QuestionDotToken != nil {
 		return false
 	}
