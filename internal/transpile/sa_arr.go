@@ -319,11 +319,68 @@ func saTopArrStrText(el *ast.Node) (string, bool) {
 }
 
 // saTopArr 快照（i32 直接量文本或串字面量源文本；str 为真即全串元；
-// nested 非空即嵌套 i32 数组（内层文本表）；三者互斥）。
+// nested 非空即嵌套快照（每元须同为 i32 子树，深度一致；串内层/异构不收）。
+// 三者互斥；深度 = 1 + 子树深（平为 1）。
 type saTopArr struct {
 	elems  []string
 	str    bool
-	nested [][]string
+	nested []saTopArr
+}
+
+// saTopArrDepth 快照深度（平/i32 空为 1；嵌套为子树深 + 1，同构故取 max 即确值）。
+func saTopArrDepth(a saTopArr) int {
+	if a.nested == nil {
+		return 1
+	}
+	d := 0
+	for _, k := range a.nested {
+		if dd := saTopArrDepth(k); dd > d {
+			d = dd
+		}
+	}
+	return d + 1
+}
+
+// saTopNestKid 分类嵌套元（平 i32 叶或 i32 子树；串元/异构 false；758 臂同律）。
+func saTopNestKid(el *ast.Node) (saTopArr, bool) {
+	if el == nil || el.Kind != ast.KindArrayLiteralExpression {
+		return saTopArr{}, false
+	}
+	nl := el.AsArrayLiteralExpression()
+	if nl == nil {
+		return saTopArr{}, false
+	}
+	if nl.Elements == nil {
+		return saTopArr{}, true
+	}
+	var flat []string
+	var subs []saTopArr
+	for _, nel := range nl.Elements.Nodes {
+		if t, ok := saTopArrElemText(nel); ok {
+			flat = append(flat, t)
+			continue
+		}
+		sub, ok := saTopNestKid(nel)
+		if !ok || sub.str {
+			return saTopArr{}, false
+		}
+		subs = append(subs, sub)
+	}
+	if len(flat) > 0 && len(subs) > 0 {
+		return saTopArr{}, false
+	}
+	if len(subs) > 0 {
+		d := -1
+		for _, s := range subs {
+			if dd := saTopArrDepth(s); d >= 0 && dd != d {
+				return saTopArr{}, false
+			} else {
+				d = dd
+			}
+		}
+		return saTopArr{nested: subs}, true
+	}
+	return saTopArr{elems: flat}, true
 }
 
 // saTopArrPrescan 收顶层 `const A = [...]` 直接量数组（名→快照；全 declarator
@@ -397,7 +454,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				break
 			}
 			var i32s, strs []string
-			var subs [][]string
+			var subs []saTopArr
 			eleOk := true
 			if al.Elements != nil {
 				for _, el := range al.Elements.Nodes {
@@ -409,26 +466,10 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 						strs = append(strs, t)
 						continue
 					}
-					// 嵌套 i32 数组元（单层；内层须全 i32 直接量，空内层即空 i32；
-					// 深层嵌套/串元内层整句不收；798）。
-					if el != nil && el.Kind == ast.KindArrayLiteralExpression {
-						nl := el.AsArrayLiteralExpression()
-						var inner []string
-						nestOk := nl != nil
-						if nestOk && nl.Elements != nil {
-							for _, nel := range nl.Elements.Nodes {
-								t, elok := saTopArrElemText(nel)
-								if !elok {
-									nestOk = false
-									break
-								}
-								inner = append(inner, t)
-							}
-						}
-						if nestOk {
-							subs = append(subs, inner)
-							continue
-						}
+					// 嵌套子树（i32 同构；串内层/异构/深浅不一整句不收；808）。
+					if sub, subok := saTopNestKid(el); subok && !sub.str {
+						subs = append(subs, sub)
+						continue
 					}
 					eleOk = false
 					break
@@ -447,6 +488,22 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			if !eleOk || nKinds > 1 {
 				okAll = false
 				break
+			}
+			// 嵌套子树深度一致（808）。
+			if len(subs) > 0 {
+				d := -1
+				for _, s := range subs {
+					if dd := saTopArrDepth(s); d >= 0 && dd != d {
+						eleOk = false
+						break
+					} else {
+						d = dd
+					}
+				}
+				if !eleOk {
+					okAll = false
+					break
+				}
 			}
 			arr := saTopArr{elems: i32s}
 			if len(strs) > 0 || (len(i32s) == 0 && len(subs) == 0 && strAnnot) {
@@ -479,46 +536,16 @@ func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope,
 		for _, t := range arr.elems {
 			hs = append(hs, saLowerStringLiteral(w, t, scope, nextTemp))
 		}
-		h := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		buf := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
-		w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(hs)*4))
-		for i, v := range hs {
-			p := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
-		}
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
-		w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(hs)))
-		w.Write(fmt.Sprintf("  !%s\n", buf))
-		saOwnTemp(scope, h)
+		h := saAssembleHandles(w, hs, scope, nextTemp)
 		saMarkArrStr(scope, h)
 		return h
 	}
 	if arr.nested != nil {
 		var hs []string
-		for _, inner := range arr.nested {
-			hs = append(hs, saBuildI32Array(w, inner, scope, nextTemp))
+		for _, sub := range arr.nested {
+			hs = append(hs, saBuildNestArray(w, sub, scope, nextTemp))
 		}
-		h := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		buf := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
-		w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(hs)*4))
-		for i, v := range hs {
-			p := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
-			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
-		}
-		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
-		w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(hs)))
-		w.Write(fmt.Sprintf("  !%s\n", buf))
-		saOwnTemp(scope, h)
+		h := saAssembleHandles(w, hs, scope, nextTemp)
 		if scope.arrNest == nil {
 			scope.arrNest = map[string]bool{}
 		}
@@ -526,6 +553,45 @@ func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope,
 		return h
 	}
 	return saBuildI32Array(w, arr.elems, scope, nextTemp)
+}
+
+// saBuildNestArray 递归具化嵌套子树（叶走平数组，枝组装内层柄 + arrNest 标记；808）。
+func saBuildNestArray(w printer.EmitTextWriter, sub saTopArr, scope *saScope, nextTemp *int) string {
+	if sub.nested == nil {
+		return saBuildI32Array(w, sub.elems, scope, nextTemp)
+	}
+	var hs []string
+	for _, k := range sub.nested {
+		hs = append(hs, saBuildNestArray(w, k, scope, nextTemp))
+	}
+	h := saAssembleHandles(w, hs, scope, nextTemp)
+	if scope.arrNest == nil {
+		scope.arrNest = map[string]bool{}
+	}
+	scope.arrNest[h] = true
+	return h
+}
+
+// saAssembleHandles 组装句柄数组头（alloc 16 头 + 4n 缓冲存柄 + 头/长回填；
+// 归属登记；串/嵌套物化共用；808）。
+func saAssembleHandles(w printer.EmitTextWriter, hs []string, scope *saScope, nextTemp *int) string {
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	buf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(hs)*4))
+	for i, v := range hs {
+		p := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(hs)))
+	w.Write(fmt.Sprintf("  !%s\n", buf))
+	saOwnTemp(scope, h)
+	return h
 }
 
 // saBuildI32Array 按直接量文本建平数组柄（alloc 16 头 + 4n 缓冲逐元直存 +
@@ -992,13 +1058,13 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 			return out, ""
 		}
 	}
-	// 顶层嵌套数组双下标读（快照物化 + 两级越界归零 join；次级经空守卫读，
+	// 顶层嵌套数组双下标读（深度 2 快照物化 + 两级越界归零 join；次级经空守卫读，
 	// 外层 OOB 空柄归零不崩（本地链式同形崩溃实锤，本仓不扩散）；单下标值位沿旧门
-	// 大声拒（禁句柄当整数）；`?.` 任一级沿旧门；798）。
+	// 大声拒（禁句柄当整数）；`?.` 任一级沿旧门；798/808）。
 	if ea.Expression != nil && ea.Expression.Kind == ast.KindElementAccessExpression && ea.QuestionDotToken == nil {
 		if inner := ea.Expression.AsElementAccessExpression(); inner != nil && inner.QuestionDotToken == nil &&
 			inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier {
-			if arr, ok := saTopArrLookup(scope, inner.Expression); ok && arr.nested != nil {
+			if arr, ok := saTopArrLookup(scope, inner.Expression); ok && saTopArrDepth(arr) == 2 {
 				base := saMaterializeTopArr(w, arr, scope, nextTemp)
 				ii, msg := saEvalI32(w, inner.ArgumentExpression, scope, pos, refusals, nextTemp)
 				if msg != "" {
@@ -1018,6 +1084,45 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 				}
 				out := saLowerOptionalIndex(w, h1, oi, scope.nextLabel, nextTemp)
 				return out, ""
+			}
+		}
+	}
+	// 顶层嵌套数组三下标读（深度 3 快照物化 + 三级越界归零 join；后两级经空守卫读；
+	// 链长须与快照深度相等（短链值位沿旧门，禁句柄当整数）；`?.` 任一级沿旧门；808）。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindElementAccessExpression && ea.QuestionDotToken == nil {
+		if mid := ea.Expression.AsElementAccessExpression(); mid != nil && mid.QuestionDotToken == nil &&
+			mid.Expression != nil && mid.Expression.Kind == ast.KindElementAccessExpression {
+			if inner := mid.Expression.AsElementAccessExpression(); inner != nil && inner.QuestionDotToken == nil &&
+				inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier {
+				if arr, ok := saTopArrLookup(scope, inner.Expression); ok && saTopArrDepth(arr) == 3 {
+					base := saMaterializeTopArr(w, arr, scope, nextTemp)
+					i0, msg := saEvalI32(w, inner.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, i0); msg != "" {
+						return "", msg
+					}
+					h1 := saLowerCheckedIndex(w, base, i0, scope.nextLabel, nextTemp)
+					saReleaseOwnedTemp(w, scope, base)
+					i1, msg := saEvalI32(w, mid.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, i1); msg != "" {
+						return "", msg
+					}
+					h2 := saLowerOptionalIndex(w, h1, i1, scope.nextLabel, nextTemp)
+					i2, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, i2); msg != "" {
+						return "", msg
+					}
+					out := saLowerOptionalIndex(w, h2, i2, scope.nextLabel, nextTemp)
+					return out, ""
+				}
 			}
 		}
 	}
@@ -1319,6 +1424,35 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 				saReleaseOwnedTemp(w, scope, base)
 				ln := saLowerOptionalLength(w, h1, scope, nextTemp)
 				return ln, ""
+			}
+		}
+		// 顶层嵌套数组深层内层取长（`D[i][j].length`，深度 3；各级 OOB 归零；808）。
+		if mid := pa.Expression.AsElementAccessExpression(); mid != nil && mid.QuestionDotToken == nil &&
+			mid.Expression != nil && mid.Expression.Kind == ast.KindElementAccessExpression {
+			if inner := mid.Expression.AsElementAccessExpression(); inner != nil && inner.QuestionDotToken == nil &&
+				inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier {
+				if arr, ok := saTopArrLookup(scope, inner.Expression); ok && saTopArrDepth(arr) == 3 {
+					base := saMaterializeTopArr(w, arr, scope, nextTemp)
+					i0, msg := saEvalI32(w, inner.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, i0); msg != "" {
+						return "", msg
+					}
+					h1 := saLowerCheckedIndex(w, base, i0, scope.nextLabel, nextTemp)
+					saReleaseOwnedTemp(w, scope, base)
+					i1, msg := saEvalI32(w, mid.ArgumentExpression, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					if msg := saCheckIntIndex(scope, i1); msg != "" {
+						return "", msg
+					}
+					h2 := saLowerOptionalIndex(w, h1, i1, scope.nextLabel, nextTemp)
+					ln := saLowerOptionalLength(w, h2, scope, nextTemp)
+					return ln, ""
+				}
 			}
 		}
 	}

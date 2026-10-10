@@ -1,0 +1,2 @@
+# 异构深度/串内层整句不收（快照同构要求；沿旧 kind244 门）
+step2 refuses kind 244 (only top-level functions)
