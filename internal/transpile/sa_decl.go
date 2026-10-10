@@ -955,6 +955,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "top-level const array alias is not lowerable (snapshots have no shared handle; read elements directly)"})
 					return false
 				}
+				// 顶层 const 对象别名大声拒（快照无共享实例；逐域直读；788）。
+				if _, ok := scope.topObjs[init.Text()]; ok {
+					ln, col := pos(d.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "top-level const object alias is not lowerable (snapshots have no shared instance; read fields directly)"})
+					return false
+				}
 			}
 		}
 	}
@@ -2346,7 +2352,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -2410,7 +2416,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	linkPrefix, linkResolve := saLinkDefPrefix(link), saLinkResolveMap(link)
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = saLinkHarvestsMap(link)
@@ -2794,7 +2800,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	buf.Write(":\n")
 	inner := &saScope{types: map[string]string{}, funcs: scope.funcs, enums: scope.enums,
 		enumNonInt: scope.enumNonInt, classes: scope.classes, topConsts: scope.topConsts,
-		topStr: scope.topStr, topArrs: scope.topArrs, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
+		topStr: scope.topStr, topArrs: scope.topArrs, topObjs: scope.topObjs, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
 		nextLabel: scope.nextLabel, retKind: retKind, strPool: scope.strPool, src: scope.src,
 		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq, aliasOf: scope.aliasOf, imports: scope.imports, importRemote: scope.importRemote}
 	saScopeLinkCopy(inner, scope)

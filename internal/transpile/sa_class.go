@@ -2395,6 +2395,151 @@ func saStaticLiteral(n *ast.Node) (string, string, bool) {
 	return "", "", false
 }
 
+// saTopObj 快照（接口布局名 + 字面量初值节点；用点经 saLowerObjectLiteral
+// 现场具化，快照语义）。
+type saTopObj struct {
+	layout string
+	init   *ast.Node
+}
+
+// saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：
+// 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
+// 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
+// 方法余形整句不收，沿旧 kind244 门；788）。
+func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef) (map[string]saTopObj, map[*ast.Node]bool) {
+	out := map[string]saTopObj{}
+	claimed := map[*ast.Node]bool{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		type pend struct {
+			name string
+			obj  saTopObj
+		}
+		var pends []pend
+		okAll := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil || vd.Type == nil {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			name := nm.Text()
+			if _, dup := out[name]; dup {
+				okAll = false
+				break
+			}
+			if _, dup := funcs[name]; dup {
+				okAll = false
+				break
+			}
+			layout := ""
+			if vd.Type.Kind == ast.KindTypeReference {
+				if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+					ref.TypeName.Kind == ast.KindIdentifier {
+					layout = ref.TypeName.Text()
+				}
+			}
+			def, ok := classes[layout]
+			if !ok || def == nil || !def.isIface {
+				okAll = false
+				break
+			}
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+				okAll = false
+				break
+			}
+			ol := init.AsObjectLiteralExpression()
+			if ol == nil || ol.Properties == nil {
+				okAll = false
+				break
+			}
+			seen := map[string]bool{}
+			propOk := true
+			for _, p := range ol.Properties.Nodes {
+				if p == nil || p.Kind != ast.KindPropertyAssignment {
+					propOk = false
+					break
+				}
+				fname, ok := saObjPropName(p)
+				if !ok {
+					propOk = false
+					break
+				}
+				finit := p.AsPropertyAssignment().Initializer
+				litKind := ""
+				if _, iok := saTopArrElemText(finit); iok {
+					litKind = "i32"
+				} else if _, sok := saTopArrStrText(finit); sok {
+					litKind = "str"
+				} else {
+					propOk = false
+					break
+				}
+				fk, ok := def.fkinds[fname]
+				if !ok {
+					propOk = false
+					break
+				}
+				if litKind == "i32" {
+					if fk != "i32" && fk != "bool" {
+						propOk = false
+						break
+					}
+				} else if fk != "str" {
+					propOk = false
+					break
+				}
+				seen[fname] = true
+			}
+			if !propOk || len(seen) != len(def.offsets) {
+				okAll = false
+				break
+			}
+			pends = append(pends, pend{name: name, obj: saTopObj{layout: layout, init: init}})
+		}
+		if !okAll {
+			continue
+		}
+		for _, p := range pends {
+			out[p.name] = p.obj
+		}
+		claimed[st] = true
+	}
+	return out, claimed
+}
+
+// saTopObjLookup 查顶层对象常量快照（标识符直指、无局部遮蔽；不落字）。
+func saTopObjLookup(scope *saScope, e *ast.Node) (saTopObj, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return saTopObj{}, false
+	}
+	name := e.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return saTopObj{}, false
+	}
+	to, ok := scope.topObjs[name]
+	if !ok {
+		return saTopObj{}, false
+	}
+	return to, true
+}
+
 // saIsStrFieldRead 纯判定属性读是否为 str 位（静态串折叠/实例 str 域/
 // str getter；不落字，供串位语法门；求值见 saEvalStr 属性分支）。
 func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
@@ -2447,6 +2592,12 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 		}
 		if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
 			if d, ok := scope.classes[k[5:]]; ok {
+				return atClass(d)
+			}
+		}
+		// 顶层对象常量串域（快照；求值见 saEvalStr 顶层对象臂；788）。
+		if to, ok := saTopObjLookup(scope, base); ok {
+			if d, ok := scope.classes[to.layout]; ok {
 				return atClass(d)
 			}
 		}

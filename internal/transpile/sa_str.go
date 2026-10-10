@@ -399,6 +399,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if _, ok := scope.topArrs[nm]; ok {
 			return "", "top-level const array " + nm + " is not a string value (read elements directly)"
 		}
+		// 顶层对象快照非串值（逐域直读；788）。
+		if _, ok := scope.topObjs[nm]; ok {
+			return "", "top-level const object " + nm + " is not a string value (read fields directly)"
+		}
 		return "", "unknown variable " + nm
 	case ast.KindCallExpression:
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
@@ -591,6 +595,26 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				if _, ok := scope.enums[pa.Expression.Text()]; ok {
 					if msg, bad := saEnumNonIntMsg(pa.Expression.Text(), pa.Name().Text(), scope); bad {
 						return "", msg
+					}
+				}
+			}
+			// 顶层对象常量串域读（快照物化后走既有字段读位；`?.`/私名/未知字段沿旧门；788）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.QuestionDotToken == nil && pa.Name() != nil && !strings.HasPrefix(pa.Name().Text(), "#") {
+				if to, ok := saTopObjLookup(scope, pa.Expression); ok {
+					if def, ok := scope.classes[to.layout]; ok {
+						if fk, ok := def.fkinds[pa.Name().Text()]; ok && fk == "str" {
+							if _, ok := def.offsets[pa.Name().Text()]; ok {
+								h, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								return t, ""
+							}
+						}
 					}
 				}
 			}

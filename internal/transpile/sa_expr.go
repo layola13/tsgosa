@@ -261,6 +261,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		if _, ok := scope.topArrs[nm]; ok {
 			return "1", ""
 		}
+		// 顶层对象恒真值（788）。
+		if _, ok := scope.topObjs[nm]; ok {
+			return "1", ""
+		}
 		return "", "unknown condition variable " + nm
 	case ast.KindPrefixUnaryExpression:
 		if un := cond.AsPrefixUnaryExpression(); un != nil && un.Operator == ast.KindExclamationToken && un.Operand != nil {
@@ -4364,6 +4368,9 @@ func saLowerPrefixUnary(w printer.EmitTextWriter, un *ast.PrefixUnaryExpression,
 			} else if _, ok := scope.topArrs[nm]; ok {
 				// 顶层数组恒真值，取反恒 0（空数组亦真；768）。
 				return "0", ""
+			} else if _, ok := scope.topObjs[nm]; ok {
+				// 顶层对象恒真值，取反恒 0（788）。
+				return "0", ""
 			} else {
 				return "", "unknown variable " + nm
 			}
@@ -4911,6 +4918,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if _, ok := scope.topArrs[nm]; ok {
 			return "", "top-level const array " + nm + " is not an i32 value (read elements directly)"
 		}
+		// 顶层对象快照非 i32 值（逐域直读；788）。
+		if _, ok := scope.topObjs[nm]; ok {
+			return "", "top-level const object " + nm + " is not an i32 value (read fields directly)"
+		}
 		return "", "unknown variable " + nm
 	case ast.KindThisKeyword:
 		if scope.thisSelf == "" {
@@ -5007,6 +5018,29 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// this 置空（静态体内）时成员读即越界，沿裸 this 同门拒。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && scope.thisSelf == "" {
 			return "", "this outside a class method is not lowerable"
+		}
+		// 顶层对象常量字段读（快照物化后走既有字段读位；`?.`/私名沿旧门；
+		// 未知字段沿旧门；串域走串位，此处 i32 位大声拒；788）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.QuestionDotToken == nil && pa.Name() != nil && !strings.HasPrefix(pa.Name().Text(), "#") {
+			if to, ok := saTopObjLookup(scope, pa.Expression); ok {
+				def, ok := scope.classes[to.layout]
+				if !ok {
+					return "", "unknown class " + to.layout
+				}
+				if fk, ok := def.fkinds[pa.Name().Text()]; ok && fk != "str" {
+					if _, ok := def.offsets[pa.Name().Text()]; ok {
+						h, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return t, ""
+					}
+				}
+			}
 		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			// const 空实例直读必崩（`const p: P|null = null; p.x` 读零址；s29f SIGSEGV 实证；`?.` 守卫径不受影响；493）。
@@ -6114,6 +6148,10 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 		if _, ok := scope.topArrs[name]; ok {
 			return "object", ""
 		}
+		// 顶层对象快照恒为 object（788）。
+		if _, ok := scope.topObjs[name]; ok {
+			return "object", ""
+		}
 		return "", "typeof unknown global " + name + " is not lowerable"
 	}
 	switch op.Kind {
@@ -6170,6 +6208,13 @@ func saLowerTypeofCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		if _, ok := scope.types[nm]; !ok {
 			// 顶层数组快照恒有定义（object 非空；768）。
 			if _, ok := scope.topArrs[nm]; ok {
+				if neg {
+					return "1", ""
+				}
+				return "0", ""
+			}
+			// 顶层对象快照恒有定义（788）。
+			if _, ok := scope.topObjs[nm]; ok {
 				if neg {
 					return "1", ""
 				}
