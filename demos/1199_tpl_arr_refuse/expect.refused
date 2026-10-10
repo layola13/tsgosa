@@ -1,0 +1,2 @@
+# 模板嵌入数组大声拒（数组禁文本化；取元/取长/join 另行）
+array a in i32 expression
