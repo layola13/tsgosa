@@ -5470,6 +5470,11 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if _, ok := scope.arrStr[recv]; ok {
 			return "", "", "join on string-element arrays is not lowerable (join formats i32 elements; concat in a loop)"
 		}
+		// 嵌套数组 join 大声拒（内层柄误作 i32 即拼地址：`[[1,2]].join()` 真机
+		// 印句柄（1040470688 vs "1,2"）实证；与串元门同律；1418）。
+		if scope.arrNest != nil && scope.arrNest[recv] {
+			return "", "", "join on nested arrays is not lowerable (join formats flat i32 elements)"
+		}
 		scope.addImport("sa_std/ts_string.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
