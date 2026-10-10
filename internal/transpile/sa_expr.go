@@ -2791,6 +2791,9 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		res := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+		// 槽读后即释（与空合核/数组三元核同形；缺之泄漏，串三元既往无 demo
+		// 走此核故潜伏，1328 实证补齐）。
+		w.Write(fmt.Sprintf("  !%s\n", slot))
 		return res, true, ""
 	}
 	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).

@@ -194,6 +194,14 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			}
 		}
 		return false
+	case ast.KindConditionalExpression:
+		// 串三元（双臂皆串值即串；求值走三元串槽（return/声明位同核）；
+		// 异形臂沿求值门大声拒；1328）。
+		tce := e.AsConditionalExpression()
+		if tce == nil {
+			return false
+		}
+		return saIsStrValue(tce.WhenTrue, scope) && saIsStrValue(tce.WhenFalse, scope)
 	default:
 		return false
 	}
