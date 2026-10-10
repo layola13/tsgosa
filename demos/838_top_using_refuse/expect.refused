@@ -1,0 +1,2 @@
+# 显式释放无 SA 域退出钩子，大声拒
+using declarations are not lowerable (explicit resource disposal has no SA-ASM scope-exit hook)

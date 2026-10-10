@@ -1,0 +1,2 @@
+# 无模块解析底座，大声拒
+import = require() needs module resolution (not lowerable)
