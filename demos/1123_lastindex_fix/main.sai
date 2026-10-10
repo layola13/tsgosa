@@ -2,6 +2,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/control.sal"
 @const str_const_0 = utf8:"abca\0"
 @const str_const_1 = utf8:"a\0"
 @const str_const_2 = utf8:"\n\0"
@@ -111,66 +112,68 @@
   store t_58 + 8, 1 as u64
   t_59 = load t_58 + 0 as ptr
   t_60 = load t_58 + 8 as u64
-  t_61 = call @sa_string_last_index_of(t_56, t_57, t_59, t_60, 2)
-  t_62 = sext t_61 as i64
-  t_63 = alloc 64
-  t_64 = alloc 8
-  t_65 = call @sa_fmt_i64_into(t_62, 10, t_63, 64, &t_64)
-  t_66 = load t_64 + 0 as u64
-  t_67 = alloc 16
-  store t_67 + 0, t_63 as ptr
-  store t_67 + 8, t_66 as u64
-  !t_65
-  t_68 = load t_67 + 0 as ptr
-  t_69 = load t_67 + 8 as u64
-  call @sa_print_bytes(&t_68, t_69)
+  t_61 = slt 2, 0
+  EXPAND SELECT t_62, t_61, 0, 2
+  t_63 = call @sa_string_last_index_of(t_56, t_57, t_59, t_60, t_62)
+  t_64 = sext t_63 as i64
+  t_65 = alloc 64
+  t_66 = alloc 8
+  t_67 = call @sa_fmt_i64_into(t_64, 10, t_65, 64, &t_66)
+  t_68 = load t_66 + 0 as u64
+  t_69 = alloc 16
+  store t_69 + 0, t_65 as ptr
+  store t_69 + 8, t_68 as u64
   !t_67
-  t_70 = alloc 16
-  store t_70 + 0, &str_const_2 as ptr
-  store t_70 + 8, 1 as u64
-  t_71 = load t_70 + 0 as ptr
-  t_72 = load t_70 + 8 as u64
-  call @sa_print_bytes(&t_71, t_72)
-  !t_70
-  t_73 = alloc 16
-  store t_73 + 0, &str_const_0 as ptr
-  store t_73 + 8, 4 as u64
-  t_74 = load t_73 + 0 as ptr
-  t_75 = load t_73 + 8 as u64
-  t_76 = alloc 16
-  store t_76 + 0, &str_const_4 as ptr
-  store t_76 + 8, 2 as u64
-  t_77 = load t_76 + 0 as ptr
-  t_78 = load t_76 + 8 as u64
-  t_79 = call @sa_string_last_index_of(t_74, t_75, t_77, t_78, t_75)
-  t_80 = sext t_79 as i64
-  t_81 = alloc 64
-  t_82 = alloc 8
-  t_83 = call @sa_fmt_i64_into(t_80, 10, t_81, 64, &t_82)
-  t_84 = load t_82 + 0 as u64
-  t_85 = alloc 16
-  store t_85 + 0, t_81 as ptr
-  store t_85 + 8, t_84 as u64
-  !t_83
-  t_86 = load t_85 + 0 as ptr
-  t_87 = load t_85 + 8 as u64
-  call @sa_print_bytes(&t_86, t_87)
+  t_70 = load t_69 + 0 as ptr
+  t_71 = load t_69 + 8 as u64
+  call @sa_print_bytes(&t_70, t_71)
+  !t_69
+  t_72 = alloc 16
+  store t_72 + 0, &str_const_2 as ptr
+  store t_72 + 8, 1 as u64
+  t_73 = load t_72 + 0 as ptr
+  t_74 = load t_72 + 8 as u64
+  call @sa_print_bytes(&t_73, t_74)
+  !t_72
+  t_75 = alloc 16
+  store t_75 + 0, &str_const_0 as ptr
+  store t_75 + 8, 4 as u64
+  t_76 = load t_75 + 0 as ptr
+  t_77 = load t_75 + 8 as u64
+  t_78 = alloc 16
+  store t_78 + 0, &str_const_4 as ptr
+  store t_78 + 8, 2 as u64
+  t_79 = load t_78 + 0 as ptr
+  t_80 = load t_78 + 8 as u64
+  t_81 = call @sa_string_last_index_of(t_76, t_77, t_79, t_80, t_77)
+  t_82 = sext t_81 as i64
+  t_83 = alloc 64
+  t_84 = alloc 8
+  t_85 = call @sa_fmt_i64_into(t_82, 10, t_83, 64, &t_84)
+  t_86 = load t_84 + 0 as u64
+  t_87 = alloc 16
+  store t_87 + 0, t_83 as ptr
+  store t_87 + 8, t_86 as u64
   !t_85
-  t_88 = alloc 16
-  store t_88 + 0, &str_const_2 as ptr
-  store t_88 + 8, 1 as u64
-  t_89 = load t_88 + 0 as ptr
-  t_90 = load t_88 + 8 as u64
-  call @sa_print_bytes(&t_89, t_90)
-  !t_88
-  !t_82
+  t_88 = load t_87 + 0 as ptr
+  t_89 = load t_87 + 8 as u64
+  call @sa_print_bytes(&t_88, t_89)
+  !t_87
+  t_90 = alloc 16
+  store t_90 + 0, &str_const_2 as ptr
+  store t_90 + 8, 1 as u64
+  t_91 = load t_90 + 0 as ptr
+  t_92 = load t_90 + 8 as u64
+  call @sa_print_bytes(&t_91, t_92)
+  !t_90
+  !t_84
+  !t_83
   !t_81
-  !t_79
-  !t_76
-  !t_73
-  !t_64
+  !t_78
+  !t_75
+  !t_66
+  !t_65
   !t_63
-  !t_61
   !t_58
   !t_55
   !t_46
