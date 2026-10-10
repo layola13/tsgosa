@@ -1,0 +1,2 @@
+# 串枚举成员大声拒（仅全整数枚举折叠序号；混杂枚举整数成员照折见 1031）
+string enum member E.B is not lowerable
