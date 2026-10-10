@@ -1706,6 +1706,21 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		arr = h
 	} else if base, ok := saArrBase(scope, vd.Initializer); ok {
 		arr = base
+	} else if saIsArrayCtor(vd.Initializer) {
+		// 新鲜构造解构源（`const [x,y] = new Array(9,8)`；现场具化 + 归属登记，
+		// 与字面量源同律；空穴形缺省按未知长大声拒（空穴读 undefined 才走缺省，
+		// 0 口径不可代；无缺省空穴读 0 沿 480/501 口径）；1308）。
+		h, msg := saLowerArrayCtor(w, vd.Initializer, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported array constructor: " + msg})
+			return false
+		}
+		saOwnTemp(scope, h)
+		arr = h
+		if !saIsHoleArrayCtor(vd.Initializer) {
+			litLen = saCtorElemCount(vd.Initializer)
+		}
 	} else {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring source must be bound array"})
@@ -3242,6 +3257,25 @@ func saIsArrayCtor(e *ast.Node) bool {
 		return ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == "Array"
 	}
 	return false
+}
+
+// saCtorElemCount 元素式构造元数（多元/`of` 即参量；调用方保证非空穴；
+// 单长空穴沿 litLen=-1 未知长门；1308）。
+func saCtorElemCount(e *ast.Node) int {
+	if e == nil {
+		return -1
+	}
+	switch e.Kind {
+	case ast.KindCallExpression:
+		if ce := e.AsCallExpression(); ce != nil && ce.Arguments != nil {
+			return len(ce.Arguments.Nodes)
+		}
+	case ast.KindNewExpression:
+		if ne := e.AsNewExpression(); ne != nil && ne.Arguments != nil {
+			return len(ne.Arguments.Nodes)
+		}
+	}
+	return -1
 }
 
 // saLowerArrayCtor 数组构造式具化（单长分配；多元逐元 push；i32  plain 值；
