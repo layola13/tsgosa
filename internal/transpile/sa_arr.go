@@ -200,7 +200,11 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 			if el.Kind == ast.KindSpreadElement {
 				sv, msg := saArrValueOf(w, el.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
 				if msg != "" {
-					return "", msg
+					// 顶层 const 数组展开（快照物化后整片合并；728）。
+					var ok bool
+					if sv, ok = saTopArrSnapshot(w, el.AsSpreadElement().Expression.AsNode(), scope, nextTemp); !ok {
+						return "", msg
+					}
 				}
 				saAppendSlice(w, h, sv, scope, nextTemp)
 				continue
@@ -474,6 +478,27 @@ func saTopArrPureRecv(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression
 		return "", false
 	}
 	if pa.Name() == nil || !saTopArrPureMethod(pa.Name().Text()) {
+		return "", false
+	}
+	return saMaterializeTopArr(w, elems, scope, nextTemp), true
+}
+
+// saTopArrSnapshot 物化顶层 const 数组快照（标识符直指快照且无局部/mod 槽
+// 遮蔽；用点：for-of/for-in 巡回、spread 字面量展开；调用实参/返回/别名/存储位
+// 禁用（身份语义），沿旧门；728）。
+func saTopArrSnapshot(w printer.EmitTextWriter, e *ast.Node, scope *saScope, nextTemp *int) (string, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	name := e.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return "", false
+	}
+	if _, isMod := scope.modVars[name]; isMod {
+		return "", false
+	}
+	elems, ok := scope.topArrs[name]
+	if !ok {
 		return "", false
 	}
 	return saMaterializeTopArr(w, elems, scope, nextTemp), true
@@ -1824,6 +1849,11 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	}
 	if base, ok := saArrBase(scope, e); ok {
 		return base, true
+	}
+	// 顶层 const 数组巡回（快照物化后走既有索引巡回；巡后释与字面量柄同律；
+	// 体内变异沿既有存储/方法门大声拒；728）。
+	if h, ok := saTopArrSnapshot(w, e, scope, nextTemp); ok {
+		return h, true
 	}
 	// 链基（`pairs[0]`/`q.r.a` 经句柄总线；失败静默下探旧门）。
 	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression || e.Kind == ast.KindCallExpression) {

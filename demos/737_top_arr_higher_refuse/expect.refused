@@ -1,0 +1,3 @@
+# 调用展开/高阶回调沿旧门大声拒（快照无共享柄；spread-call 高阶另波）
+not an array expression
+unsupported call statement: only direct function calls lowerable
