@@ -48,7 +48,7 @@
   store t_21 + 8, 1 as u64
   t_22 = load t_21 + 0 as ptr
   t_23 = load t_21 + 8 as u64
-  t_24 = call @sa_string_last_index_of(t_19, t_20, t_22, t_23, 0)
+  t_24 = call @sa_string_last_index_of(t_19, t_20, t_22, t_23, t_20)
   t_25 = sext t_24 as i64
   t_26 = alloc 64
   t_27 = alloc 8

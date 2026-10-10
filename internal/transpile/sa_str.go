@@ -1975,6 +1975,10 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			if msg != "" {
 				return "", false, msg
 			}
+		} else if method == "lastIndexOf" {
+			// 缺省 from 即 +Inf（自末端起；from=0 只查首位，
+			// 1098 b3 实证 "abca".lastIndexOf("a") 返 0 vs 3）。
+			from = bl
 		}
 		sym := "sa_string_index_of"
 		if method == "lastIndexOf" {
