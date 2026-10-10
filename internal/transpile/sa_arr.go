@@ -5176,6 +5176,11 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			sep = ns
 		}
 		sp, sl := saExpandStr(w, sep, nextTemp)
+		// 串元数组 join 大声拒（`ts_arr_join_vals` 只读 i32 元；串元柄误作 i32
+		// 即拼地址（1188 p2/p4 实证 "1-2" 变双地址）；i32 join 沿旧路；改写循环 concat。
+		if _, ok := scope.arrStr[recv]; ok {
+			return "", "", "join on string-element arrays is not lowerable (join formats i32 elements; concat in a loop)"
+		}
 		scope.addImport("sa_std/ts_string.sa")
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++

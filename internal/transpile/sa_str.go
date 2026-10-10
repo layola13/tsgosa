@@ -735,6 +735,34 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 // saToSlice 任一可文本化操作数转切片（串直通；i32/bool 经 interp；其余拒）。
 // 供模板/console/String() 共用（renderInterpValue 哲学：同 sa_fmt 现货）。
 func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// match/split 回数组禁直打（误判串即打地址垃圾：1188 a1 实证 "P"；
+	// 下标/取长/具名绑定另行处理；模板与 console 共用此口同门；`?.` 沿旧门；
+	// 字面量模式交下游精确门（真捕获组/POSIX，1178/1175/1176 同门），此处只拦
+	// 绑定模式与无组字面量。
+	if e != nil && e.Kind == ast.KindCallExpression {
+		if ce := e.AsCallExpression(); ce != nil && ce.Expression != nil &&
+			ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil &&
+				pa.QuestionDotToken == nil && (pa.Name().Text() == "match" || pa.Name().Text() == "split") &&
+				saIsStrExpr(pa.Expression, scope) {
+				deep := false
+				if ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+					if a0 := ce.Arguments.Nodes[0]; a0 != nil && a0.Kind == ast.KindRegularExpressionLiteral {
+						if pat, _, ok := saRegexSplitLiteral(a0.Text()); ok {
+							if saRegexHasCaptureGroup(a0) || strings.Contains(pat, "(?") {
+								deep = true
+							}
+						} else {
+							deep = true
+						}
+					}
+				}
+				if !deep {
+					return "", "array value in string position (print elements, .length or .join)"
+				}
+			}
+		}
+	}
 	if saIsStrValue(e, scope) {
 		return saEvalStr(w, e, scope, pos, refusals, nextTemp)
 	}

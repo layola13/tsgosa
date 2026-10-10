@@ -1,0 +1,2 @@
+# 串元 join 大声拒（轮子只读 i32 元；改写循环 concat）
+join on string-element arrays is not lowerable (join formats i32 elements; concat in a loop)

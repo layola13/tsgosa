@@ -1,0 +1,2 @@
+# 链式串元 join 大声拒（右值柄同门；与 1189 同门）
+join on string-element arrays is not lowerable (join formats i32 elements; concat in a loop)

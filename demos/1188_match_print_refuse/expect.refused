@@ -1,0 +1,2 @@
+# match 结果直打大声拒（误判串即打地址垃圾；取元/取长/join 另行）
+array value in string position (print elements, .length or .join)
