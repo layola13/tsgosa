@@ -2322,6 +2322,9 @@ func saIsHoleArrayCtor(e *ast.Node) bool {
 }
 
 func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node, what string) (string, bool) {
+	// 纯类型包装透明（`(a)`/`a as T` 与裸形同门；1358 解构源同例；
+	// 先解包再进空穴门，免 `(new Array(n))` 绕过空穴设防；1368）。
+	e = saUnwrapTransparent(e)
 	// 空穴构造巡回大声拒（for-in 跳过空穴计数分叉、for-of 空穴值 undefined
 	// 与 0 分叉；直接下标读 0 沿 480/501 口径不管；1298）。
 	if saIsHoleArrayCtor(e) {

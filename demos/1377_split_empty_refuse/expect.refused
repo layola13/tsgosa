@@ -1,0 +1,2 @@
+# split("") 零步进死循环，真机 OOM 实证；薄口字面量先行大声
+String.split with empty separator is not lowerable
