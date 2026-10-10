@@ -5041,8 +5041,12 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	}
 	switch method {
 	case "push":
+		// 空参即原长（`a.push()` 无操作返长，JS 同义；1468）。
 		if len(argNodes) < 1 {
-			return "", "", "push needs 1 argument"
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, recv))
+			return t, "i32", ""
 		}
 		// 多参逐元压栈（返末次新长；JS 同义；584）。
 		last := ""
@@ -5108,6 +5112,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 				}
 				return nlen, "i32", ""
 			}
+		}
+		// 空参即原长（`a.unshift()` 无操作返长，JS 同义；1468）。
+		if len(argNodes) < 1 {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, recv))
+			return t, "i32", ""
 		}
 		if len(argNodes) != 1 {
 			return "", "", "unshift needs 1 argument"

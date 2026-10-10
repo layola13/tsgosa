@@ -2520,12 +2520,16 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		// R2 回迁映射：钳位子切片语义由 `sci/sa_std/ts_string.sa`
 		// `@ts_str_slice` 实现（缺省 end/ substr 加长由调用点折叠），
 		// 本侧只做 import + 调用 + 归属。
+		var a0 string
 		if len(args) < 1 {
-			return "", false, method + " needs 1 argument"
-		}
-		a0, msg := intArg(0)
-		if msg != "" {
-			return "", false, msg
+			// 零参即全量（`slice()`/`substring()`/`substr()` 皆全串，JS 同义；1468）。
+			a0 = "0"
+		} else {
+			var msg string
+			a0, msg = intArg(0)
+			if msg != "" {
+				return "", false, msg
+			}
 		}
 		end := bl
 		if len(args) > 1 {
