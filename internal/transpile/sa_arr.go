@@ -329,7 +329,14 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 		okAll := true
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			if vd == nil || vd.Initializer == nil || vd.Initializer.Kind != ast.KindArrayLiteralExpression {
+			if vd == nil || vd.Initializer == nil {
+				okAll = false
+				break
+			}
+			// 纯类型包装透明（`as const`/satisfies/括号，非值语义；698 下标臂既有
+			// 解包同律；718）。
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindArrayLiteralExpression {
 				okAll = false
 				break
 			}
@@ -357,7 +364,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					break
 				}
 			}
-			al := vd.Initializer.AsArrayLiteralExpression()
+			al := init.AsArrayLiteralExpression()
 			if al == nil {
 				okAll = false
 				break
