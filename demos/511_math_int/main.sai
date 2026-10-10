@@ -154,51 +154,42 @@
   call @sa_print_bytes(&t_83, t_84)
   !t_82
   t_86 = and 4, 31
-  t_85 = shl 1, t_86
-  t_87 = sext t_85 as i64
-  t_88 = alloc 64
-  t_89 = alloc 8
-  t_90 = call @sa_fmt_i64_into(t_87, 10, t_88, 64, &t_89)
-  t_91 = load t_89 + 0 as u64
-  t_92 = alloc 16
-  store t_92 + 0, t_88 as ptr
-  store t_92 + 8, t_91 as u64
-  !t_90
-  t_93 = load t_92 + 0 as ptr
-  t_94 = load t_92 + 8 as u64
-  call @sa_print_bytes(&t_93, t_94)
-  !t_92
-  t_95 = alloc 16
-  store t_95 + 0, &str_const_0 as ptr
-  store t_95 + 8, 1 as u64
-  t_96 = load t_95 + 0 as ptr
-  t_97 = load t_95 + 8 as u64
-  call @sa_print_bytes(&t_96, t_97)
-  !t_95
-  t_99 = and 2, 31
-  t_98 = ashr 16, t_99
-  t_100 = sext t_98 as i64
-  t_101 = alloc 64
-  t_102 = alloc 8
-  t_103 = call @sa_fmt_i64_into(t_100, 10, t_101, 64, &t_102)
-  t_104 = load t_102 + 0 as u64
-  t_105 = alloc 16
-  store t_105 + 0, t_101 as ptr
-  store t_105 + 8, t_104 as u64
+  t_87 = and 1, 4294967295
+  t_88 = sge t_87, 2147483648
+  t_89 = sub t_87, 4294967296
+  EXPAND SELECT t_90, t_88, t_89, t_87
+  t_85 = shl t_90, t_86
+  t_91 = and t_85, 4294967295
+  t_92 = sge t_91, 2147483648
+  t_93 = sub t_91, 4294967296
+  EXPAND SELECT t_94, t_92, t_93, t_91
+  t_95 = sext t_94 as i64
+  t_96 = alloc 64
+  t_97 = alloc 8
+  t_98 = call @sa_fmt_i64_into(t_95, 10, t_96, 64, &t_97)
+  t_99 = load t_97 + 0 as u64
+  t_100 = alloc 16
+  store t_100 + 0, t_96 as ptr
+  store t_100 + 8, t_99 as u64
+  !t_98
+  t_101 = load t_100 + 0 as ptr
+  t_102 = load t_100 + 8 as u64
+  call @sa_print_bytes(&t_101, t_102)
+  !t_100
+  t_103 = alloc 16
+  store t_103 + 0, &str_const_0 as ptr
+  store t_103 + 8, 1 as u64
+  t_104 = load t_103 + 0 as ptr
+  t_105 = load t_103 + 8 as u64
+  call @sa_print_bytes(&t_104, t_105)
   !t_103
-  t_106 = load t_105 + 0 as ptr
-  t_107 = load t_105 + 8 as u64
-  call @sa_print_bytes(&t_106, t_107)
-  !t_105
-  t_108 = alloc 16
-  store t_108 + 0, &str_const_0 as ptr
-  store t_108 + 8, 1 as u64
-  t_109 = load t_108 + 0 as ptr
-  t_110 = load t_108 + 8 as u64
-  call @sa_print_bytes(&t_109, t_110)
-  !t_108
-  t_111 = and 7, 3
-  t_112 = sext t_111 as i64
+  t_107 = and 2, 31
+  t_108 = and 16, 4294967295
+  t_109 = sge t_108, 2147483648
+  t_110 = sub t_108, 4294967296
+  EXPAND SELECT t_111, t_109, t_110, t_108
+  t_106 = ashr t_111, t_107
+  t_112 = sext t_106 as i64
   t_113 = alloc 64
   t_114 = alloc 8
   t_115 = call @sa_fmt_i64_into(t_112, 10, t_113, 64, &t_114)
@@ -218,7 +209,7 @@
   t_122 = load t_120 + 8 as u64
   call @sa_print_bytes(&t_121, t_122)
   !t_120
-  t_123 = or 5, 2
+  t_123 = and 7, 3
   t_124 = sext t_123 as i64
   t_125 = alloc 64
   t_126 = alloc 8
@@ -239,14 +230,35 @@
   t_134 = load t_132 + 8 as u64
   call @sa_print_bytes(&t_133, t_134)
   !t_132
+  t_135 = or 5, 2
+  t_136 = sext t_135 as i64
+  t_137 = alloc 64
+  t_138 = alloc 8
+  t_139 = call @sa_fmt_i64_into(t_136, 10, t_137, 64, &t_138)
+  t_140 = load t_138 + 0 as u64
+  t_141 = alloc 16
+  store t_141 + 0, t_137 as ptr
+  store t_141 + 8, t_140 as u64
+  !t_139
+  t_142 = load t_141 + 0 as ptr
+  t_143 = load t_141 + 8 as u64
+  call @sa_print_bytes(&t_142, t_143)
+  !t_141
+  t_144 = alloc 16
+  store t_144 + 0, &str_const_0 as ptr
+  store t_144 + 8, 1 as u64
+  t_145 = load t_144 + 0 as ptr
+  t_146 = load t_144 + 8 as u64
+  call @sa_print_bytes(&t_145, t_146)
+  !t_144
+  !t_138
+  !t_137
   !t_126
   !t_125
   !t_114
   !t_113
-  !t_102
-  !t_101
-  !t_89
-  !t_88
+  !t_97
+  !t_96
   !t_76
   !t_75
   !t_65

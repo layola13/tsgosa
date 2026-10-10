@@ -2,6 +2,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sai"
+@import "sa_std/control.sal"
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
   t_2 = and 1, 31
@@ -51,29 +52,33 @@
   call @sa_print_bytes(&t_27, t_28)
   !t_26
   t_30 = and 1, 31
-  t_29 = ashr 8, t_30
-  t_31 = sext t_29 as i64
-  t_32 = alloc 64
-  t_33 = alloc 8
-  t_34 = call @sa_fmt_i64_into(t_31, 10, t_32, 64, &t_33)
-  t_35 = load t_33 + 0 as u64
-  t_36 = alloc 16
-  store t_36 + 0, t_32 as ptr
-  store t_36 + 8, t_35 as u64
-  !t_34
-  t_37 = load t_36 + 0 as ptr
-  t_38 = load t_36 + 8 as u64
-  call @sa_print_bytes(&t_37, t_38)
+  t_31 = and 8, 4294967295
+  t_32 = sge t_31, 2147483648
+  t_33 = sub t_31, 4294967296
+  EXPAND SELECT t_34, t_32, t_33, t_31
+  t_29 = ashr t_34, t_30
+  t_35 = sext t_29 as i64
+  t_36 = alloc 64
+  t_37 = alloc 8
+  t_38 = call @sa_fmt_i64_into(t_35, 10, t_36, 64, &t_37)
+  t_39 = load t_37 + 0 as u64
+  t_40 = alloc 16
+  store t_40 + 0, t_36 as ptr
+  store t_40 + 8, t_39 as u64
+  !t_38
+  t_41 = load t_40 + 0 as ptr
+  t_42 = load t_40 + 8 as u64
+  call @sa_print_bytes(&t_41, t_42)
+  !t_40
+  t_43 = alloc 16
+  store t_43 + 0, &str_const_0 as ptr
+  store t_43 + 8, 1 as u64
+  t_44 = load t_43 + 0 as ptr
+  t_45 = load t_43 + 8 as u64
+  call @sa_print_bytes(&t_44, t_45)
+  !t_43
+  !t_37
   !t_36
-  t_39 = alloc 16
-  store t_39 + 0, &str_const_0 as ptr
-  store t_39 + 8, 1 as u64
-  t_40 = load t_39 + 0 as ptr
-  t_41 = load t_39 + 8 as u64
-  call @sa_print_bytes(&t_40, t_41)
-  !t_39
-  !t_33
-  !t_32
   !t_20
   !t_19
   !t_6

@@ -35,9 +35,11 @@ func saCompoundOp(op ast.Kind) (string, bool) {
 	return mapped, ok
 }
 
-// saMaskShiftCount 移位计数取低 5 位 + `>>>=` 左值 ToUint32（与二元发射位同形；
-// 后端 64 位裸大计数即错：`8>>33` 原生得 0，node 应 4）。
-func saMaskShiftCount(w printer.EmitTextWriter, op, l, r string, nextTemp *int) (string, string) {
+// saMaskShiftCount 移位计数取低 5 位 + `>>>=` 左值 ToUint32 + `<<`/`>>`
+// 左值 ToInt32（与二元发射位同形；后端 64 位裸大计数即错：`8>>33` 原生得 0，
+// node 应 4；裸左值符号即错：`1<<31` 原生得 +2147483648，node 应 -2147483648，
+// 1228 w2 实证；掩码+SELECT 符号扩展，u64 域内比较合法）。
+func saMaskShiftCount(w printer.EmitTextWriter, op, l, r string, scope *saScope, nextTemp *int) (string, string) {
 	if op != "shl" && op != "ashr" && op != "lshr" {
 		return l, r
 	}
@@ -51,7 +53,46 @@ func saMaskShiftCount(w printer.EmitTextWriter, op, l, r string, nextTemp *int) 
 		w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m, l))
 		l = m
 	}
+	if op == "shl" || op == "ashr" {
+		scope.addImport("sa_std/control.sal")
+		m1 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m1, l))
+		isneg := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sge %s, 2147483648\n", isneg, m1))
+		m2 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = sub %s, 4294967296\n", m2, m1))
+		ln := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", ln, isneg, m2, m1))
+		l = ln
+	}
 	return l, r
+}
+
+// saWrapShiftResult `<<` 结果低 32 符号化（JS ToInt32 回绕；后端 64 位裸 shl
+// 得正值：`1<<31` 原生 +2147483648，node -2147483648；1228 w2 实证；`>>` 左值
+// 已归一故结果自洽、`>>>` 非负，均直通；二元/复合共用）。
+func saWrapShiftResult(w printer.EmitTextWriter, op, t string, scope *saScope, nextTemp *int) string {
+	if op != "shl" {
+		return t
+	}
+	scope.addImport("sa_std/control.sal")
+	m := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m, t))
+	isneg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sge %s, 2147483648\n", isneg, m))
+	neg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sub %s, 4294967296\n", neg, m))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", out, isneg, neg, m))
+	return out
 }
 
 // saLowerElementAssign lowering `a[i] = v`（仅 plain `=`；下标/右值走 i32 求值）。
@@ -163,10 +204,11 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 			return false
 		}
 		op, _ := saCompoundOp(saBinaryOpKind(be))
-		cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
+		cur, r = saMaskShiftCount(w, op, cur, r, scope, nextTemp)
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+		t = saWrapShiftResult(w, op, t, scope, nextTemp)
 		saLowerElementStore(w, base, idx, t, nextTemp)
 		return true
 	}
@@ -255,10 +297,11 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 						return false
 					}
 					op, _ := saCompoundOp(saBinaryOpKind(be))
-					cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
+					cur, r = saMaskShiftCount(w, op, cur, r, scope, nextTemp)
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+					t = saWrapShiftResult(w, op, t, scope, nextTemp)
 					saModStoreI32(w, ms, t, scope, nextTemp)
 					return true
 				}
@@ -283,10 +326,11 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 						return false
 					}
 					op, _ := saCompoundOp(saBinaryOpKind(be))
-					cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
+					cur, r = saMaskShiftCount(w, op, cur, r, scope, nextTemp)
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+					t = saWrapShiftResult(w, op, t, scope, nextTemp)
 					saModStoreI32(w, ms, t, scope, nextTemp)
 					return true
 				}
@@ -328,10 +372,11 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 									if msg == "" {
 										if msg := saCheckI32Value(scope, r); msg == "" {
 											op, _ := saCompoundOp(saBinaryOpKind(be))
-											cur, r = saMaskShiftCount(w, op, cur, r, nextTemp)
+											cur, r = saMaskShiftCount(w, op, cur, r, scope, nextTemp)
 											t := fmt.Sprintf("t_%d", *nextTemp)
 											*nextTemp++
 											w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+											t = saWrapShiftResult(w, op, t, scope, nextTemp)
 											if msg := saLowerClassFieldStore(w, h, def, field, t); msg == "" {
 												return true
 											}
@@ -361,10 +406,11 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 		return false
 	}
 	op, _ := saCompoundOp(saBinaryOpKind(be))
-	ml, r := saMaskShiftCount(w, op, target, r, nextTemp)
+	ml, r := saMaskShiftCount(w, op, target, r, scope, nextTemp)
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, ml, r))
+	t = saWrapShiftResult(w, op, t, scope, nextTemp)
 	saStoreLocal(w, target, t, scope, nextTemp)
 	return true
 }
@@ -3214,6 +3260,7 @@ func saLowerIncr(w printer.EmitTextWriter, incr *ast.Node, scope *saScope, pos f
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
 				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, cur, r))
+				t = saWrapShiftResult(w, op, t, scope, nextTemp)
 				saModStoreI32(w, ms, t, scope, nextTemp)
 				return true
 			}

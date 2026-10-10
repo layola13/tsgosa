@@ -5900,23 +5900,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		// 移位计数 JS 取低 5 位（`and r, 31`；后端整数 64 位，裸大计数即错：
-		// `8>>33` 原生得 0/`1<<33` 得 8589934592/`-8>>33` 得 -1，node 应
-		// 4/2/-4；`>>>` 大计数同病（左值 ToUint32 掩码不管计数位）；
-		// 负计数按补码低 5 位，与 ToUint32 再掩码一致。
-		if op == "shl" || op == "ashr" || op == "lshr" {
-			mc := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = and %s, 31\n", mc, r))
-			r = mc
-		}
-		if op == "lshr" {
-			m := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = and %s, 4294967295\n", m, l))
-			l = m
-		}
+		// 移位归一经共享 `saMaskShiftCount`（计数低 5 位 + `>>>` ToUint32 +
+		// `<<`/`>>` ToInt32；与复合赋值位同形，禁双份拷贝）。
+		l, r = saMaskShiftCount(w, op, l, r, scope, nextTemp)
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op, l, r))
+		t = saWrapShiftResult(w, op, t, scope, nextTemp)
 		return t, ""
 	case ast.KindCallExpression:
 		if saCallIsStr(e.AsCallExpression(), scope) {
