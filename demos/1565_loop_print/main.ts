@@ -1,0 +1,4 @@
+function main(): i32 {
+  for (let i = 0; i < 3; i = i + 1) { console.log(i); }
+  return 0;
+}
