@@ -1,0 +1,6 @@
+function main(): i32 {
+  const a: string = "x";
+  console.log(a + "1");
+  console.log(a + "2");
+  return 0;
+}
