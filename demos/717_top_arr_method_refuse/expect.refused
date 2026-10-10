@@ -1,0 +1,5 @@
+# 顶层 const 数组变异方法大声拒（快照不可变；表达式位各走既有门）
+unsupported call statement: only direct function calls lowerable
+unsupported initializer: only direct function calls lowerable
+.length base must be bound array or string
+index base must be bound array

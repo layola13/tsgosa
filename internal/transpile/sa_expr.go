@@ -2018,7 +2018,9 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		// 管线经 scope 内取（addImport/nextLabel 已随 scope 走，无需改签名）。
 		if pa.Name() != nil {
 			m := pa.Name().Text()
-			if saIsArrMethod(m) && saIsArrValue(pa.Expression, scope) {
+			// 顶层 const 数组纯读方法开门（快照物化后走既有方法径；变异/未知
+			// 方法沿旧门大声拒；708）。
+			if (saIsArrMethod(m) && saIsArrValue(pa.Expression, scope)) || saTopArrPureCall(pa, scope, m) {
 				op, kind, msg := saLowerArrCall(w, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 				if msg != "" {
 					return "", false, msg
@@ -2072,6 +2074,14 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 							return "", false, msg
 						}
 						return "0", false, ""
+					}
+					// 顶层 const 数组恒为数组（快照恒真，零落字；局部/mod 槽遮蔽优先；708）。
+					if _, shadowed := scope.types[arg.Text()]; !shadowed {
+						if _, isMod := scope.modVars[arg.Text()]; !isMod {
+							if _, ok := scope.topArrs[arg.Text()]; ok {
+								return "1", false, ""
+							}
+						}
 					}
 				}
 				// 余形试 i32 求值（成则恒非数组即 0；前序判定皆语法级零落字，

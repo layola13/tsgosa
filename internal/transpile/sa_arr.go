@@ -420,6 +420,58 @@ func saMaterializeTopArr(w printer.EmitTextWriter, elems []string, scope *saScop
 // saLowerCheckedIndex lowering 越界归零下标读（形状证据：封存
 // lowerCheckedIndex:8522-8567：alloc 8 join 槽 + len/ult 检查 + data/mul/add
 // 取址 + i32 读回；OOB 得 0；槽 ownTemp + 读后 releaseIfOwnedTemp 同形）。
+// saTopArrPureMethod 报告顶层 const 数组纯读方法白名单（slice/indexOf/
+// includes/join/concat；快照物化后走既有方法径；变异方法与未知方法不在此列；708）。
+func saTopArrPureMethod(m string) bool {
+	switch m {
+	case "slice", "indexOf", "includes", "join", "concat":
+		return true
+	}
+	return false
+}
+
+// saTopArrPureCall 纯查表判定是否为顶层 const 数组纯读方法调用（不落字；
+// 门控位调用，局部/mod 槽遮蔽优先；`?.` 调用沿旧门；708）。
+func saTopArrPureCall(pa *ast.PropertyAccessExpression, scope *saScope, m string) bool {
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.QuestionDotToken != nil {
+		return false
+	}
+	name := pa.Expression.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return false
+	}
+	if _, isMod := scope.modVars[name]; isMod {
+		return false
+	}
+	if _, ok := scope.topArrs[name]; !ok {
+		return false
+	}
+	return saTopArrPureMethod(m)
+}
+
+// saTopArrPureRecv 物化顶层 const 数组纯读方法接收器（纯读性由调用点门控，
+// 此处复判防未来新调用方；变异/未知方法返回 false 沿旧门；708）。
+func saTopArrPureRecv(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression, scope *saScope, nextTemp *int) (string, bool) {
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	name := pa.Expression.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return "", false
+	}
+	if _, isMod := scope.modVars[name]; isMod {
+		return "", false
+	}
+	elems, ok := scope.topArrs[name]
+	if !ok {
+		return "", false
+	}
+	if pa.Name() == nil || !saTopArrPureMethod(pa.Name().Text()) {
+		return "", false
+	}
+	return saMaterializeTopArr(w, elems, scope, nextTemp), true
+}
+
 // saLowerOptionalIndex lowers `a?.[i]` (null base reads 0, otherwise the checked-index
 // join; null is the zero handle).
 func saLowerOptionalIndex(w printer.EmitTextWriter, base, idx string, nextLabel, nextTemp *int) string {
@@ -2409,7 +2461,8 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	if !saIsArrMethod(m) {
 		return "", false
 	}
-	if !saIsArrValue(pa.Expression, scope) {
+	// 顶层 const 数组纯读方法调用种（快照接收器；变异/未知方法沿旧门；708）。
+	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) {
 		return "", false
 	}
 	switch m {
@@ -4227,7 +4280,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	}
 	recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		return "", "", msg
+		// 顶层 const 数组纯读方法接收器（纯读性由调用点门控，此处复判；
+		// 变异/未知方法沿旧门；708）。
+		if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
+			recv = h
+		} else {
+			return "", "", msg
+		}
 	}
 	method := ""
 	if pa.Name() != nil {
