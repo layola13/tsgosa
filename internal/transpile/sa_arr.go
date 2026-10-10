@@ -3871,7 +3871,16 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, pa *ast.PropertyA
 			}
 			v, msg := saEvalI32(w, it, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				return "", msg
+				// 串数组插串值（`s.splice(1, 0, "b")`；i32 门先行保既有拒因，
+				// 串值沿此臂（串基以标记判定）；1498）。
+				if scope.arrStr == nil || !scope.arrStr[recv] {
+					return "", msg
+				}
+				var smsg string
+				v, smsg = saEvalStr(w, it, scope, pos, refusals, nextTemp)
+				if smsg != "" {
+					return "", msg
+				}
 			}
 			saLowerArrayPush(w, items, v, scope, nextTemp)
 		}

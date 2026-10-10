@@ -748,3 +748,10 @@
 - §11 类型：interface/type/泛型别名/keyof/映射/元组/readonly/enum 擦除 ✓；条件类型（纯类型擦除 ✓，作注解另议）/索引访问 ✓（step314，清单过时）/union 形参 ✓（本轮实测 `number|string` PASS，清单过时）。
 - §12 模块：export function/default/namespace/console.log ✓；export default 表达式 ✓（本轮实测 `export default 42` PASS，擦除）/export =（模块域，仍拒）/顶层语句 ✓（step36 入口合成后通，清单过时）/JSON ✗/Object 反射 ✗（`only direct function calls`）。
 - 本轮结论（2026-10-07 复核，26 探针重跑）：清单 45 拒中已转正——`slice` 字面量基/`Array.from`/`s[i]`/`toString-i32`/`Math.sign`/`toMatch`（含正则形）/索引访问/`number|string` 形参/`export default 42`/顶层语句（step314-322 旧功）+ `splice` 全形（step328/329）+ `Set.getSize`（step330）+ `parseInt` 2-36 基数（step334）+ 方言 `str` 注解（step342）+ `toEqual` 对象深比 i32/str/arr/嵌套域（step341-344）；`toFixed` 真测确认拒（f64 格式化无底座，冻结）；`static` 块拒因精确化（step327）；真拒余：f64 无注解/动态键/对象方法/`split`/`match`/`Number()`/`parseFloat`/`m.keys-values-entries`/`WeakMap`/`instanceof`/`export =`/`JSON`/`Object` 反射（冻结或大项，另步立项）。
+
+在 Windows PowerShell 环境中处理包含中文的文件时，必须显式使用 UTF-8 编码。
+
+代码与文本文件读取、统计行数、文本搜索优先使用封装增强工具（read_file, read_lines, count_lines, grep_search 等），避免在终端中使用慢速命令阅读文件或搜索代码
+写入文本文件优先使用 apply_patch；如必须用 PowerShell 写文件，使用 Set-Content -Encoding UTF8 或 Add-Content -Encoding UTF8
+不要用未指定编码的 Set-Content 或 Out-File 处理中文、Markdown、TOML、JSON 等文本文件
+终端输出出现乱码时，先用 UTF-8 重新读取确认，不要直接认定文件内容损坏
