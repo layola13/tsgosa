@@ -1,0 +1,2 @@
+# Set.forEach 未投影（Map.forEach 见 924；Set 巡回用 for-of/keys）
+Set.forEach is not a projected surface

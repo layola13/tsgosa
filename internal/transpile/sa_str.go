@@ -1986,7 +1986,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		return call1(sym, np, nl, from), false, ""
 	case "startsWith", "endsWith":
-		if len(args) != 1 && (method != "startsWith" || len(args) != 2) {
+		if len(args) != 1 && ((method != "startsWith" && method != "endsWith") || len(args) != 2) {
 			return "", false, method + " needs 1 argument"
 		}
 		n, msg := strArg(0)
@@ -2017,6 +2017,49 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", t, idx, fc))
+			return t, false, ""
+		}
+		if method == "endsWith" && len(args) == 2 {
+			// 双参即截断后缀（`s.endsWith(n, pos)` ≡ 前缀 s[0,clamp(pos)] 以 n 结尾
+			// ≡ `lastIndexOf(n, clamped-nlen) == clamped-nlen`；钳位经双 SELECT
+			//（负按 0、超按 len，与 startsWith 双参同门；空针恒真由 lastIndexOf 空臂内聚）。
+			p, msg := intArg(1)
+			if msg != "" {
+				return "", false, msg
+			}
+			// EXPAND SELECT 需控制宏（与 startsWith 双参同门）。
+			scope.addImport("sa_std/control.sal")
+			isneg := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, 0\n", isneg, p))
+			c0 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, 0, %s\n", c0, isneg, p))
+			isover := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", isover, bl, c0))
+			clamped := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  EXPAND SELECT %s, %s, %s, %s\n", clamped, isover, bl, c0))
+			less := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", less, clamped, nl))
+			fits := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fits, less))
+			mp := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = sub %s, %s\n", mp, clamped, nl))
+			li := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_string_last_index_of(%s, %s, %s, %s, %s)\n", li, bp, bl, np, nl, mp))
+			saOwnTemp(scope, li)
+			eqt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, %s\n", eqt, li, mp))
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = and %s, %s\n", t, eqt, fits))
 			return t, false, ""
 		}
 		sym := "sa_string_starts_with"
