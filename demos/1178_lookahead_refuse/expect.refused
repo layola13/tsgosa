@@ -1,0 +1,2 @@
+# 前瞻/具名/非捕获组走引擎 POSIX 门（捕获组门已收窄到真捕获组；match/split 同门）
+RegExp (? groups need POSIX ERE (no lookahead/named/capture-less groups)
