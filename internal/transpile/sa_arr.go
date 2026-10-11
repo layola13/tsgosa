@@ -2437,6 +2437,12 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 	// 断言包装源以解包字面量为准）。
 	isLitSrc := effInit != nil && effInit.Kind == ast.KindObjectLiteralExpression
 	litKeys := saLiteralKeySet(effInit)
+	return saLowerObjPatternElems(w, d, def, hid, isLitSrc, litKeys, pat, scope, pos, refusals, nextTemp)
+}
+
+// saLowerObjPatternElems lowering 对象模式逐元（saLowerObjDestructuringDecl
+// 对象位本体；抽取供嵌套递归复用，零语义差）。
+func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassDef, hid string, isLitSrc bool, litKeys map[string]bool, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
 		if el.Kind != ast.KindBindingElement {
 			continue
