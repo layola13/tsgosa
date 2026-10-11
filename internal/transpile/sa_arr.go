@@ -1806,11 +1806,23 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring source must be bound array"})
 		return false
 	}
-	idx := 0
-	// 串元判向（字面量 `saLowerArrayLiteral` 经 `saLiteralIsStrArray` 记
-	// `arrStr[h]`，绑定经注解/透传同表；元柄即 16 字节串结构指针，
-	// 记 `str` 供串位消费，禁当 i32 打印指针数，p8g 实证）。
+	var srcElems []*ast.Node
+	if srcInit.Kind == ast.KindArrayLiteralExpression && srcInit.AsArrayLiteralExpression().Elements != nil {
+		for _, n := range srcInit.AsArrayLiteralExpression().Elements.Nodes {
+			srcElems = append(srcElems, n)
+		}
+	}
 	elemIsStr := scope.arrStr != nil && scope.arrStr[arr]
+	return saLowerArrayPatternElems(w, d, arr, litLen, srcElems, elemIsStr, pat, scope, pos, refusals, nextTemp)
+}
+
+// saLowerArrayPatternElems lowering 数组模式逐元（saLowerDestructuringDecl
+// 数组位本体；抽取供嵌套递归复用，零语义差）。
+func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string, litLen int, srcElems []*ast.Node, elemIsStr bool, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	idx := 0
+	// 串元判向（调用方按源给定：字面量经 `saLiteralIsStrArray`，
+	// 绑定经注解/透传同表；元柄即 16 字节串结构指针，记 `str`
+	// 供串位消费，禁当 i32 打印指针数，p8g 实证）。
 	elemKind := "i32"
 	if elemIsStr {
 		elemKind = "str"
