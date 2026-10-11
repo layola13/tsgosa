@@ -1,2 +1,0 @@
-# 含名右值沿旧门（形参与 caller 同名影子误值风险，禁求值；纯字面量子集外一律拒）
-constructor wiring right side must be a parameter name

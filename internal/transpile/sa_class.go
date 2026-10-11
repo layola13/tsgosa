@@ -3678,6 +3678,43 @@ func saCtorWiringKinds(ctor *ast.Node, owner string, scope *saScope) map[string]
 	return saCtorWiringKindsDepth(ctor, owner, scope, 0)
 }
 
+// saWiringCollectIdents 收右值纯形中缀名（括号/前缀/算术位二元下钻；调用/成员/
+// 新建等一律止步（接线门同形拒）；供 str 目标 want 扫描。）
+func saWiringCollectIdents(e *ast.Node, out map[string]bool) {
+	if e == nil {
+		return
+	}
+	if e.Kind == ast.KindIdentifier {
+		out[e.Text()] = true
+		return
+	}
+	switch e.Kind {
+	case ast.KindParenthesizedExpression:
+		if pe := e.AsParenthesizedExpression(); pe != nil {
+			saWiringCollectIdents(pe.Expression, out)
+		}
+	case ast.KindPrefixUnaryExpression:
+		if un := e.AsPrefixUnaryExpression(); un != nil && un.Operand != nil {
+			switch un.Operator {
+			case ast.KindMinusToken, ast.KindPlusToken, ast.KindTildeToken, ast.KindExclamationToken:
+				saWiringCollectIdents(un.Operand, out)
+			}
+		}
+	case ast.KindBinaryExpression:
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil {
+			switch be.OperatorToken.Kind {
+			case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindSlashToken,
+				ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
+				ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
+				ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
+				ast.KindGreaterThanGreaterThanGreaterThanToken:
+				saWiringCollectIdents(be.Left, out)
+				saWiringCollectIdents(be.Right, out)
+			}
+		}
+	}
+}
+
 func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth int) map[string]bool {
 	want := map[string]bool{}
 	if depth > 8 {
@@ -3747,15 +3784,23 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {
 			continue
 		}
-		if bin.Right == nil || bin.Right.Kind != ast.KindIdentifier {
+		if bin.Right == nil {
 			continue
 		}
 		fname := pa.Name().Text()
 		if strings.HasPrefix(fname, "#") {
 			fname = saPrivKey(owner, fname)
 		}
+		if bin.Right.Kind == ast.KindIdentifier {
+			if def.fkinds[fname] == "str" {
+				want[bin.Right.Text()] = true
+			}
+			continue
+		}
+		// str 目标计算右值中缀名亦按串求值（`this.s = t + "!"`；中缀收集器
+		// 只下钻纯形，调用等不贡献名（接线门同形拒）；i32/f64 目标沿旧门）。
 		if def.fkinds[fname] == "str" {
-			want[bin.Right.Text()] = true
+			saWiringCollectIdents(bin.Right, want)
 		}
 	}
 	// 参数属性隐式 wiring 的 str 位（无显式 `this.p = p` 语句，但 new 侧实参须按串求值；
@@ -3811,6 +3856,48 @@ func saWiringPureLit(e *ast.Node) bool {
 				ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
 				ast.KindGreaterThanGreaterThanGreaterThanToken:
 				return saWiringPureLit(be.Left) && saWiringPureLit(be.Right)
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// saWiringNamedLit 报告接线右值除名外纯字面量形（名须全在 allow 集（已绑形参）；
+// 名外规则与 saWiringPureLit 同形；调用/成员/new/模板一律否）。
+func saWiringNamedLit(e *ast.Node, allow map[string]bool) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindIdentifier {
+		return allow[e.Text()]
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral, ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword:
+		return true
+	case ast.KindParenthesizedExpression:
+		if pe := e.AsParenthesizedExpression(); pe != nil {
+			return saWiringNamedLit(pe.Expression, allow)
+		}
+		return false
+	case ast.KindPrefixUnaryExpression:
+		if un := e.AsPrefixUnaryExpression(); un != nil && un.Operand != nil {
+			switch un.Operator {
+			case ast.KindMinusToken, ast.KindPlusToken, ast.KindTildeToken, ast.KindExclamationToken:
+				return saWiringNamedLit(un.Operand, allow)
+			}
+		}
+		return false
+	case ast.KindBinaryExpression:
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil {
+			switch be.OperatorToken.Kind {
+			case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindSlashToken,
+				ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
+				ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
+				ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
+				ast.KindGreaterThanGreaterThanGreaterThanToken:
+				return saWiringNamedLit(be.Left, allow) && saWiringNamedLit(be.Right, allow)
 			}
 		}
 		return false
@@ -3889,6 +3976,166 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 	if superIdx < 0 {
 		if !inject() {
 			return false
+		}
+	}
+	// 计算右值预扫（无 `this.f = <非参名右值含名>` 即零发射，存量逐字不动；
+	// 有名右值才进绑定；纯字面量右值沿旧径无绑定）。
+	needWireBind := false
+	for _, ws := range stmts {
+		if ws == nil || ws.Kind != ast.KindExpressionStatement {
+			continue
+		}
+		wex := ws.AsExpressionStatement().Expression
+		if wex == nil || wex.Kind != ast.KindBinaryExpression {
+			continue
+		}
+		wbin := wex.AsBinaryExpression()
+		if wbin.OperatorToken == nil || wbin.OperatorToken.Kind != ast.KindEqualsToken || wbin.Right == nil {
+			continue
+		}
+		if wbin.Right.Kind == ast.KindIdentifier {
+			continue
+		}
+		if saWiringPureLit(wbin.Right) {
+			continue
+		}
+		needWireBind = true
+		break
+	}
+	boundParams := map[string]bool{}
+	type wireSaved struct {
+		typ     string
+		tok     bool
+		alias   string
+		aok     bool
+		own     *saOwn
+		ownOk   bool
+		mv      string
+		mvok    bool
+		save    string
+		hasSave bool
+	}
+	wireKeep := map[string]*wireSaved{}
+	restoreWireTypes := func() {
+		for name, s := range wireKeep {
+			if s.tok {
+				scope.types[name] = s.typ
+			} else {
+				delete(scope.types, name)
+			}
+			if s.aok {
+				scope.mathAlias[name] = s.alias
+			} else {
+				delete(scope.mathAlias, name)
+			}
+			if s.ownOk {
+				scope.ownState[name] = s.own
+			} else {
+				delete(scope.ownState, name)
+			}
+			if s.mvok {
+				if scope.mapVals == nil {
+					scope.mapVals = map[string]string{}
+				}
+				scope.mapVals[name] = s.mv
+			} else if scope.mapVals != nil {
+				delete(scope.mapVals, name)
+			}
+		}
+	}
+	defer restoreWireTypes()
+	if needWireBind {
+		// 具名计算接线形参绑定（`this.n = k + 1`；paramVal 操作数快照拷贝；种按注解，
+		// 无注解按操作数形推断（柄须显式记种，否则不绑）；arr/inst/余种不绑（名单接线
+		// 经 paramVal 旧径）；caller 同名 plain 值快照恢复（live 归属沿方法内联同门拒）；
+		// 恢复放 loop 尾成功径（失败品废弃），记种放 defer 全径）。
+		for _, cp := range ctor.Parameters() {
+			pd := cp.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+				continue
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			pname := nm.Text()
+			op, ok := paramVal[pname]
+			if !ok {
+				continue
+			}
+			kind := ""
+			if pd.Type != nil {
+				if k, ok := saAnnotKind(pd.Type); ok {
+					switch k {
+					case "i32":
+						kind = "i32"
+					case "f64":
+						kind = "f64"
+					case "str":
+						kind = "str"
+					}
+				}
+			}
+			if kind == "" {
+				// 无注解按操作数形（arg 环已检，处置信形断种；柄须显式记种）。
+				switch {
+				case saIsDecIntLit(op):
+					kind = "i32"
+				case saIsFloatLit(op):
+					kind = "f64"
+				case saIsTempOp(op):
+					if k, ok := scope.types[op]; ok && (k == "i32" || k == "f64" || k == "str") {
+						kind = k
+					}
+				default:
+					if k, ok := scope.types[op]; ok && (k == "i32" || k == "f64" || k == "str") {
+						kind = k
+					}
+				}
+			}
+			if kind == "" {
+				continue
+			}
+			ws := &wireSaved{}
+			if oldTyp, ok := scope.types[pname]; ok {
+				if oo, ook := scope.ownState[pname]; ook && oo != nil && oo.heap && !oo.consumed && !oo.released {
+					ln, col := pos(cp.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + pname + " shadows a live binding (rename it)"})
+					return false
+				}
+				ws.typ, ws.tok = oldTyp, true
+				if oo, ook := scope.ownState[pname]; ook && oo != nil {
+					oc := *oo
+					ws.own, ws.ownOk = &oc, true
+				}
+				if oa, aok := scope.mathAlias[pname]; aok {
+					ws.alias, ws.aok = oa, true
+				}
+				if scope.mapVals != nil {
+					if mv, mvok := scope.mapVals[pname]; mvok {
+						ws.mv, ws.mvok = mv, true
+					}
+				}
+				sv := fmt.Sprintf("__wired_save_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s\n", sv, pname))
+				ws.save, ws.hasSave = sv, true
+			}
+			wireKeep[pname] = ws
+			switch kind {
+			case "i32":
+				w.Write(fmt.Sprintf("  %s = add %s, 0\n", pname, op))
+			case "f64":
+				w.Write(fmt.Sprintf("  %s = fadd %s, 0.0\n", pname, op))
+			case "str":
+				w.Write(fmt.Sprintf("  %s = add %s, 0\n", pname, op))
+			}
+			scope.types[pname] = kind
+			saDeclarePlain(scope, pname)
+			boundParams[pname] = true
 		}
 	}
 	for i, s := range stmts {
@@ -3991,7 +4238,7 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			// 纯字面量表达式右值（`this.n = 2 + 3`/`-7`/`"a" + "b"`；无名绑定零作用域
 			// 风险；含名/调用/成员一律沿旧门，禁 caller 影子误值）：i32/f64/串按域种
 			// 求值落存（bool 经 saEvalBool 取 1/0 入 i32 槽）；求值失败透传其声。
-			if saWiringPureLit(bin.Right) {
+			if saWiringPureLit(bin.Right) || saWiringNamedLit(bin.Right, boundParams) {
 				fk := def.fkinds[fname]
 				if fk == "i32" || fk == "" {
 					if br := bin.Right; br != nil && (br.Kind == ast.KindTrueKeyword || br.Kind == ast.KindFalseKeyword) {
@@ -4084,6 +4331,14 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			continue
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
+	}
+	// 形参影子值恢复（成功径内联发射；失败品废弃；记种由 defer 全径恢复）。
+	if len(boundParams) > 0 {
+		for name, s := range wireKeep {
+			if s.hasSave {
+				w.Write(fmt.Sprintf("  %s = %s\n", name, s.save))
+			}
+		}
 	}
 	return true
 }

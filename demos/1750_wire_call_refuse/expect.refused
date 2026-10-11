@@ -1,0 +1,2 @@
+# 调用右值沿旧门（被调名非参即拒，禁 caller 泄漏；纯名位外一律旧门）
+constructor wiring right side must be a parameter name

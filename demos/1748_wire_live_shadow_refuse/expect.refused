@@ -1,0 +1,2 @@
+# 形参影子 live 归属大声拒（沿方法内联同门；plain 影子快照恢复见 1738）
+constructor parameter k shadows a live binding (rename it)
