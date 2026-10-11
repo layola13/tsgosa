@@ -4969,6 +4969,20 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 				return true
 			}
 		}
+		// 实例 f64 字段读（`f.rate` 经布局 load 记 f64 种；求值见严格位同形臂）。
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			if _, def, msg := saInstBase(pa.Expression, scope); msg == "" && def != nil {
+				fname := pa.Name().Text()
+				if strings.HasPrefix(fname, "#") {
+					if key, pmsg := saPrivResolve(def, fname, scope.thisClass); pmsg == "" {
+						fname = key
+					}
+				}
+				if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "f64" {
+					return true
+				}
+			}
+		}
 	}
 	// 裸调用经返回种（`parseFloat/Number` 回 f64；前缀取负臂同式已覆，
 	// 此处补直接操作数位，否则条件位 `parseFloat(x) > 4` 落 sgt 错值）。
@@ -5042,6 +5056,21 @@ func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					return text, ""
 				}
 			}
+			// 实例 f64 字段读经严格求值（`Text()` 给出 `f.rate` 非操作数，
+			// 直通即非法 SAI；与调用核同形走 load）。
+			if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+				if _, def, msg := saInstBase(pa.Expression, scope); msg == "" && def != nil {
+					fname := pa.Name().Text()
+					if strings.HasPrefix(fname, "#") {
+						if key, pmsg := saPrivResolve(def, fname, scope.thisClass); pmsg == "" {
+							fname = key
+						}
+					}
+					if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "f64" {
+						return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+					}
+				}
+			}
 		}
 		return e.Text(), ""
 	}
@@ -5090,6 +5119,23 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 			key := pa.Expression.Text() + "." + pa.Name().Text()
 			if text, ok := scope.topConsts[key]; ok && !scope.topStr[key] && saIsFloatLit(text) {
 				return text, ""
+			}
+		}
+		// 实例 f64 字段读（`f.rate` 经布局 load 记 f64 种；与 i32 读位同形）。
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
+			if h, def, msg := saInstBase(pa.Expression, scope); msg == "" && def != nil {
+				fname := pa.Name().Text()
+				if strings.HasPrefix(fname, "#") {
+					if key, pmsg := saPrivResolve(def, fname, scope.thisClass); pmsg == "" {
+						fname = key
+					}
+				}
+				if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "f64" {
+					t, lmsg := saLowerClassFieldLoad(w, h, def, fname, scope, nextTemp)
+					if lmsg == "" {
+						return t, ""
+					}
+				}
 			}
 		}
 		return "", "unsupported float expression"
@@ -5698,6 +5744,16 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 									return "", msg
 								}
 								return sop, ""
+							}
+							if def.fkinds[fname] == "f64" {
+								fop, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								if msg := saLowerClassFieldStore(w, h, def, fname, fop); msg != "" {
+									return "", msg
+								}
+								return fop, ""
 							}
 							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 							if msg != "" {

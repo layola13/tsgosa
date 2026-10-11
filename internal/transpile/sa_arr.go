@@ -4472,7 +4472,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 	}
 
 	kind := "i32"
-	if wantKind == "str" || wantKind == "arr" || strings.HasPrefix(wantKind, "inst:") {
+	if wantKind == "str" || wantKind == "arr" || wantKind == "f64" || strings.HasPrefix(wantKind, "inst:") {
 		kind = wantKind
 	}
 	slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -4531,6 +4531,13 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
 		saReleaseOwnedTemp(w, scope, slot)
 		saOwnTemp(scope, out)
+		return out, ""
+	}
+	if kind == "f64" {
+		// 块体双精度返回读回（镜像 i32 路径；记 f64 种供下游 f64 位）。
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
+		scope.types[out] = "f64"
 		return out, ""
 	}
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))

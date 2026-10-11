@@ -78,10 +78,10 @@ type saClassDef struct {
 	isSynth       bool
 }
 
-// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst 句柄 8/8；
-// 形状证据：封存 widthOf:268-279 + alignTo:281-289）。
+// saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst/f64 句柄与
+// 双精度 8/8；形状证据：封存 widthOf:268-279 + alignTo:281-289）。
 func saFieldWidth(kind string) (int, int) {
-	if kind == "str" || kind == "arr" || kind == "inst" {
+	if kind == "str" || kind == "arr" || kind == "inst" || kind == "f64" {
 		return 8, 8
 	}
 	return 4, 4
@@ -481,14 +481,16 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 			// 字段初值表达式忽略（布局只记槽位，不求值；封存 recordClassNamed
 			// 9691-9743 不读 Initializer；初值语义随 alloc，见 AGENTS step47）。
 			// 字段种：i32/bool 恒 4 字节槽，string/arr（含函数类型与未记录用户类型）
-			// 为头指针 8 字节槽（封存 widthOf；余下无槽，拒）。
+			// 为头指针 8 字节槽，f64 为双精度 8 字节槽（封存 widthOf；余下无槽，拒）。
 			fkind := "i32"
 			if pd.Type != nil {
-				if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+				if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 					if k == "str" {
 						fkind = "str"
 					} else if k == "arr" {
 						fkind = "arr"
+					} else if k == "f64" {
+						fkind = "f64"
 					}
 				} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 					if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
@@ -854,12 +856,14 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes 
 			return false
 		}
 		k, ok := saAnnotKind(pd.Type)
-		if ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+		if ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 			fkind := "i32"
 			if k == "str" {
 				fkind = "str"
 			} else if k == "arr" {
 				fkind = "arr"
+			} else if k == "f64" {
+				fkind = "f64"
 			}
 			*off = saAlignOff(*off, fkind)
 			def.fields = append(def.fields, saClassField{name: fname, offset: *off})
@@ -1841,11 +1845,13 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(in
 		pd := m.AsPropertySignatureDeclaration()
 		fkind := "i32"
 		if pd.Type != nil {
-			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+			if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 				if k == "str" {
 					fkind = "str"
 				} else if k == "arr" {
 					fkind = "arr"
+				} else if k == "f64" {
+					fkind = "f64"
 				}
 			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 				if sub, ok := classes[pd.Type.AsTypeReferenceNode().TypeName.Text()]; ok {
@@ -3514,6 +3520,16 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 			paramVal[nm.Text()] = v
 			continue
 		}
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); ok && k == "f64" {
+				v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				paramVal[nm.Text()] = v
+				continue
+			}
+		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -3568,6 +3584,12 @@ func saLowerFieldInits(w printer.EmitTextWriter, h string, def *saClassDef, scop
 					return msg
 				}
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
+			case "f64":
+				v, msg := saEvalF64(w, init, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
 			case "arr":
 				if init.Kind != ast.KindArrayLiteralExpression {
 					return "field " + fk + " initializer must be an array literal"
@@ -3788,6 +3810,10 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 				continue
 			}
+			if def.fkinds[pname] == "f64" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
+				continue
+			}
 			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 		}
 		return true
@@ -3897,9 +3923,13 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
 		}
-		// str/arr/inst 域存句柄（右值已按种求值）。
+		// str/arr/inst 域存句柄（右值已按种求值）；f64 域存双精度。
 		if def.fkinds[fname] == "str" || def.fkinds[fname] == "arr" || def.fkinds[fname] == "inst" {
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+			continue
+		}
+		if def.fkinds[fname] == "f64" {
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
 			continue
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
@@ -4322,10 +4352,12 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = thisSelf, className
-	// 返回种按声明注解（str 走串槽；余下走 i32 槽）。
+	// 返回种按声明注解（str 走串槽，f64 走双精度槽；余下走 i32 槽）。
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(mn); ok && k == "str" {
 		wantKind = "str"
+	} else if k, ok := saMethodReturnKind(mn); ok && k == "f64" {
+		wantKind = "f64"
 	} else if ic := saMethodInstReturn(mn, className, scope); ic != "" {
 		wantKind = "inst:" + ic
 	}
@@ -4357,6 +4389,8 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
 		wantKind = "str"
+	} else if k, ok := saMethodReturnKind(gn); ok && k == "f64" {
+		wantKind = "f64"
 	}
 	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
@@ -4387,6 +4421,8 @@ func saInlineStaticGetter(w printer.EmitTextWriter, className string, def *saCla
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(gn); ok && k == "str" {
 		wantKind = "str"
+	} else if k, ok := saMethodReturnKind(gn); ok && k == "f64" {
+		wantKind = "f64"
 	}
 	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
@@ -4461,6 +4497,13 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 		if sub, ok := def.fsub[field]; ok {
 			scope.types[t] = "inst:" + sub
 		}
+		return t, ""
+	}
+	if def.fkinds[field] == "f64" {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", t, h, off))
+		scope.types[t] = "f64"
 		return t, ""
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
@@ -4659,7 +4702,7 @@ func saLowerFieldIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix 
 	return cur, "", true
 }
 
-// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str/arr 存句柄）。
+// saLowerClassFieldStore 写 `o.f = v`（偏移 store；i32 存值，str/arr 存句柄，f64 存双精度）。
 func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef, field, v string) string {
 	off, ok := def.offsets[field]
 	if !ok {
@@ -4667,6 +4710,10 @@ func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef,
 	}
 	if def.fkinds[field] == "str" || def.fkinds[field] == "arr" {
 		w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+		return ""
+	}
+	if def.fkinds[field] == "f64" {
+		w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
 		return ""
 	}
 	w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))

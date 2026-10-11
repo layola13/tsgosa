@@ -3911,6 +3911,18 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 			// 数组域下沉 sa_arr.go（transpile.go 只做种分发，零领域逻辑）。
 			return saLowerInlineArrReturn(w, rs.Expression, scope, pos, refusals, nextTemp, s.Pos())
 		}
+		if scope.inlineRet.kind == "f64" {
+			fop, msg := saEvalF64(w, rs.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", scope.inlineRet.slot, fop))
+			saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
+			w.Write(fmt.Sprintf("  jmp %s\n", scope.inlineRet.end))
+			return true, false
+		}
 		op, msg := saEvalI32(w, rs.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			ln, col := pos(s.Pos())
