@@ -2454,12 +2454,15 @@ func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassD
 			return false
 		}
 		nm := be.Name()
-		if nm == nil || nm.Kind != ast.KindIdentifier {
+		if nm == nil || (nm.Kind != ast.KindIdentifier && nm.Kind != ast.KindObjectBindingPattern) {
 			ln, col := pos(el.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
 			return false
 		}
-		field := nm.Text()
+		field := ""
+		if nm.Kind == ast.KindIdentifier {
+			field = nm.Text()
+		}
 		if be.PropertyName != nil {
 			pn := be.PropertyName.AsNode()
 			if pn.Kind != ast.KindIdentifier && pn.Kind != ast.KindStringLiteral {
@@ -2469,11 +2472,37 @@ func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassD
 			}
 			field = pn.Text()
 		}
+		if nm.Kind != ast.KindIdentifier && field == "" {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
+			return false
+		}
 		off, ok := def.offsets[field]
 		if !ok {
 			ln, col := pos(el.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + field + " is not in the " + def.name + " layout"})
 			return false
+		}
+		if nm.Kind == ast.KindObjectBindingPattern {
+			// 嵌套对象模式（`const {p: {v}} = b`）：外层域读回内层句柄
+			// 再递归逐域（实例布局固定，内外偏移皆静态，读链恒 sound；
+			// 内层布局凭 `fsub` 子布局名消解，非 inst 域作对象解构系
+			// 病态，TS 运行时 TypeError，大声拒；对象内嵌上游拒，
+			// 此处为双 verified-lowering 复合，非自造语义）。
+			sub, ok := def.fsub[field]
+			innerDef, ok2 := scope.classes[sub]
+			if !ok || !ok2 || def.fkinds[field] != "inst" {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested object pattern needs a recorded nested layout"})
+				return false
+			}
+			inner := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", inner, hid, off))
+			if !saLowerObjPatternElems(w, d, innerDef, inner, false, map[string]bool{}, nm.AsNode(), scope, pos, refusals, nextTemp) {
+				return false
+			}
+			continue
 		}
 		name := nm.Text()
 		if _, dup := scope.types[name]; dup {

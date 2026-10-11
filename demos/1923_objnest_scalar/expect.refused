@@ -1,0 +1,2 @@
+# 标量域作对象解构系病态（运行时 TypeError；双边同拒）
+nested object pattern needs a recorded nested layout

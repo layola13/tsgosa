@@ -1,0 +1,2 @@
+# 两步嵌套沿旧门（中间绑定不携布局；双边同拒，已有 1862 数组同例）
+object destructuring needs a recorded struct layout
