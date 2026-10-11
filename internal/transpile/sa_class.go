@@ -4104,7 +4104,7 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 	return false
 }
 
-// saWiringStrRead 报告串接线读形（串字面量/已绑串元下标读/`+` 拼接递归；
+// saWiringStrRead 报告串接线读形（串字面量/已绑串元下标读/串下标取字/`+` 拼接递归；
 // `?.`/链式沿旧门；调用/模板/new 一律否，求值位大声拒）。
 func saWiringStrRead(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 	if e == nil {
@@ -4130,6 +4130,10 @@ func saWiringStrRead(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 			ea.Expression.Kind != ast.KindIdentifier ||
 			!allow[ea.Expression.Text()] {
 			return false
+		}
+		// 串下标读（`t[i]` 取单字柄；基为 str 种，与串元臂同门）。
+		if k, ok := scope.types[ea.Expression.Text()]; ok && k == "str" {
+			return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 		}
 		if scope.arrStr == nil || !scope.arrStr[ea.Expression.Text()] {
 			return false
