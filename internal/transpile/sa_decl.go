@@ -321,6 +321,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "regex"
+			if scope.regexPat == nil {
+				scope.regexPat = map[string]string{}
+			}
+			scope.regexPat[name] = pat
 			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
 			continue
@@ -502,6 +506,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = "regex"
+				if scope.regexPat == nil {
+					scope.regexPat = map[string]string{}
+				}
+				scope.regexPat[name] = saRegexNewPatText(ne)
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)
 				continue

@@ -1,0 +1,2 @@
+# 绑定组 match 大声拒（绑定前不可见致结果截断 length 1 vs 3；regexPat 表消解同拒；match 同门）
+String.match with capture groups is not lowerable yet

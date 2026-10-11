@@ -758,7 +758,7 @@ func saToSlice(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				if ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
 					if a0 := ce.Arguments.Nodes[0]; a0 != nil && a0.Kind == ast.KindRegularExpressionLiteral {
 						if pat, _, ok := saRegexSplitLiteral(a0.Text()); ok {
-							if saRegexHasCaptureGroup(a0) || strings.Contains(pat, "(?") {
+							if saRegexHasCaptureGroup(a0, scope) || strings.Contains(pat, "(?") {
 								deep = true
 							}
 						} else {
@@ -1619,16 +1619,22 @@ func saRegexPatternHasNoGroup(e *ast.Node) bool {
 	return true
 }
 
-// saRegexHasCaptureGroup 报告字面量模式含真捕获组（`(` 后非 `?`；`(?:`/`(?=`/
-// `(?!`/`(?<=`/`(?<!`/`(?P<` 交引擎 POSIX 门精确拒；绑定模式不可见返 false 沿旧行）。
-func saRegexHasCaptureGroup(e *ast.Node) bool {
-	if e == nil || e.Kind != ast.KindRegularExpressionLiteral {
-		return false
+// saRegexNewPatText 取 `new RegExp("pat")` 串字面量源（非字面量即 ""；
+// 含引号无妨，组扫描只认未转义 `(`）。
+func saRegexNewPatText(ne *ast.NewExpression) string {
+	if ne == nil || ne.Arguments == nil || len(ne.Arguments.Nodes) < 1 {
+		return ""
 	}
-	pat, _, ok := saRegexSplitLiteral(e.Text())
-	if !ok {
-		return false
+	a0 := ne.Arguments.Nodes[0]
+	if a0 == nil || a0.Kind != ast.KindStringLiteral {
+		return ""
 	}
+	return a0.Text()
+}
+
+// saRegexGroupInPat 报告模式文本含真捕获组（`(` 后非 `?`；转义跳过；
+// 与字面量门同形，绑定/new 消解共用）。
+func saRegexGroupInPat(pat string) bool {
 	esc := false
 	for i := 0; i < len(pat); i++ {
 		c := pat[i]
@@ -1643,6 +1649,38 @@ func saRegexHasCaptureGroup(e *ast.Node) bool {
 		if c == '(' && (i+1 >= len(pat) || pat[i+1] != '?') {
 			return true
 		}
+	}
+	return false
+}
+
+// saRegexHasCaptureGroup 报告模式含真捕获组（字面量/`new` 串字面量直解；绑定名
+// 经 regexPat 表消解（缺表/空串即不可见返 false 沿旧行）；`(?:`/`(?=`/
+// `(?!`/`(?<=`/`(?<!`/`(?P<` 交引擎 POSIX 门精确拒，非本函数域）。
+func saRegexHasCaptureGroup(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindRegularExpressionLiteral {
+		pat, _, ok := saRegexSplitLiteral(e.Text())
+		if !ok {
+			return false
+		}
+		return saRegexGroupInPat(pat)
+	}
+	if e.Kind == ast.KindNewExpression {
+		ne := e.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier || ne.Expression.Text() != "RegExp" {
+			return false
+		}
+		return saRegexGroupInPat(saRegexNewPatText(ne))
+	}
+	if e.Kind == ast.KindIdentifier {
+		if scope != nil {
+			if pat, ok := scope.regexPat[e.Text()]; ok {
+				return saRegexGroupInPat(pat)
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -1898,7 +1936,7 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 		// 正则分隔（`sa_regex_match` 循环切分；空匹配推进一步；limit 达数即停）。
 		// 含组分隔符大声拒（组入结果，现有切分只收段：1168 h1 实证 length 2 vs 3；
 		// 字面量可判定，绑定沿旧行；match 同门）。
-		if len(args) >= 1 && saRegexHasCaptureGroup(args[0]) {
+		if len(args) >= 1 && saRegexHasCaptureGroup(args[0], scope) {
 			return "", "String.split with capture groups is not lowerable yet"
 		}
 		if rms := saRegexSplitMsg(w, ce, recv, scope, pos, refusals, nextTemp, nil); rms[0] != "" || rms[1] != "" {
@@ -2452,9 +2490,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			return saLowerRegexMatchGlobal(w, rh, bp, bl, scope, nextTemp), false, ""
 		}
 		// 非 g 字面量捕获组大声拒（结果含组，单元素设计装不下：1168 f2 实证
-		// length 1 vs 3；绑定模式不可见沿旧行；/g 全局只收整体不受影响；
+		// length 1 vs 3；绑定/new 经 regexPat 表消解同拒；/g 全局只收整体不受影响；
 		// replaceAll 同门）。
-		if saRegexHasCaptureGroup(args[0]) {
+		if saRegexHasCaptureGroup(args[0], scope) {
 			return "", false, "String.match with capture groups is not lowerable yet"
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)

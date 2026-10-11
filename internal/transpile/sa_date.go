@@ -792,6 +792,10 @@ func saLowerRegexCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		}
 	}
 	if method == "exec" {
+		// 捕获组大声拒（结果单元素设计装不下组；字面量门同形经绑定表消解绑定/new）。
+		if saRegexHasCaptureGroup(pa.Expression, scope) {
+			return "", "", "RegExp.exec with capture groups is not lowerable yet"
+		}
 		th, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg

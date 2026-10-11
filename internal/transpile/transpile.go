@@ -3420,6 +3420,9 @@ type saScope struct {
 	// 数组域元种表（构造期字面量直供逐元判定记 `Iface.field`→i32/str；
 	// 实例深相等按表分流，缺表/混合大声拒）。
 	arrFieldElem map[string]string
+	// 正则绑定模式表（`const re = /pat/flags` 记模式文本，`new RegExp` 记串元文本；
+	// 捕获组判定消解绑定（字面量门同形）；未知/重绑沿旧门保守（缺表即不可见）；#14a）。
+	regexPat map[string]string
 	// 回调域内标记（`saInlineTestUnit` 进置 true；顶层/普通函数内调
 	// assertions 无尾声点，大声拒，禁静默无检查）。
 	expectInTest bool

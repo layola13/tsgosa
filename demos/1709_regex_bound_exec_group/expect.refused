@@ -1,0 +1,2 @@
+# 绑定组 exec 大声拒（exec 旧无组门；结果单元素设计装不下组）
+RegExp.exec with capture groups is not lowerable yet

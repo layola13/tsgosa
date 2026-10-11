@@ -1,0 +1,2 @@
+# 字面量组 exec 大声拒（exec 旧无组门，直通截断；与 match 同门补齐）
+RegExp.exec with capture groups is not lowerable yet
