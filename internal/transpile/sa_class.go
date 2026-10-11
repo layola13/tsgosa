@@ -4064,6 +4064,11 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "arr" {
 			return false
 		}
+		// 串元柄禁入共享门（句柄位与整数槽同宽，误读即指针当整数；
+		// 串域由串元臂另收，此处一律拒）。
+		if scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
+			return false
+		}
 		return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 	case ast.KindPropertyAccessExpression:
 		// 取长/实例字段读（`a.length`/`b.f`；基须已绑 arr/inst 形参；
@@ -4085,6 +4090,41 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 			return true
 		}
 		return false
+	}
+	return false
+}
+
+// saWiringStrRead 报告串接线读形（串字面量/已绑串元下标读/`+` 拼接递归；
+// `?.`/链式沿旧门；调用/模板/new 一律否，求值位大声拒）。
+func saWiringStrRead(e *ast.Node, allow map[string]bool, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return true
+	case ast.KindParenthesizedExpression:
+		if pe := e.AsParenthesizedExpression(); pe != nil {
+			return saWiringStrRead(pe.Expression, allow, scope)
+		}
+		return false
+	case ast.KindBinaryExpression:
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
+			be.OperatorToken.Kind == ast.KindPlusToken {
+			return saWiringStrRead(be.Left, allow, scope) && saWiringStrRead(be.Right, allow, scope)
+		}
+		return false
+	case ast.KindElementAccessExpression:
+		ea := e.AsElementAccessExpression()
+		if ea == nil || ea.QuestionDotToken != nil || ea.Expression == nil ||
+			ea.Expression.Kind != ast.KindIdentifier ||
+			!allow[ea.Expression.Text()] {
+			return false
+		}
+		if scope.arrStr == nil || !scope.arrStr[ea.Expression.Text()] {
+			return false
+		}
+		return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 	}
 	return false
 }
@@ -4202,6 +4242,8 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 		ownOk   bool
 		mv      string
 		mvok    bool
+		smv     bool
+		smvok   bool
 		save    string
 		hasSave bool
 	}
@@ -4230,6 +4272,16 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				scope.mapVals[name] = s.mv
 			} else if scope.mapVals != nil {
 				delete(scope.mapVals, name)
+			}
+			if s.smvok {
+				if s.smv {
+					if scope.arrStr == nil {
+						scope.arrStr = map[string]bool{}
+					}
+					scope.arrStr[name] = true
+				} else if scope.arrStr != nil {
+					delete(scope.arrStr, name)
+				}
 			}
 		}
 	}
@@ -4332,6 +4384,13 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				w.Write(fmt.Sprintf("  %s = add %s, 0\n", pname, op))
 			case "arr":
 				w.Write(fmt.Sprintf("  %s = add %s, 0\n", pname, op))
+				if pd.Type != nil && saIsStringArrayAnnot(pd.Type) {
+					if kept, ok := wireKeep[pname]; ok {
+						kept.smv = scope.arrStr[pname]
+						kept.smvok = true
+					}
+					saMarkArrStr(scope, pname)
+				}
 			default:
 				if strings.HasPrefix(kind, "inst:") {
 					w.Write(fmt.Sprintf("  %s = add %s, 0\n", pname, op))
@@ -4437,6 +4496,19 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 					bv = "0"
 				}
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, bv))
+				continue
+			}
+			// 串元下标读（`this.s = a[i]/a[i]+"!"`；a 须已绑 string[] 形参；
+			// 读形见 saWiringStrRead；i32 位永不经此口，禁句柄当整数；`?.` 沿旧门）。
+			if def.fkinds[fname] == "str" && bin.Right != nil &&
+				saWiringStrRead(bin.Right, boundParams, scope) {
+				v, msg := saEvalStr(w, bin.Right, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(s.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
 				continue
 			}
 			// 纯字面量表达式右值（`this.n = 2 + 3`/`-7`/`"a" + "b"`；无名绑定零作用域
