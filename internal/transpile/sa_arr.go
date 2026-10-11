@@ -966,7 +966,7 @@ func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, 
 // 上游同形 OOB 恒存 0（p8b 实证 bun 5 vs 上游 0，静默错值），薄口按 JS
 // 求值缺省式（字面量越界臂同律），正确优先（铁律 4）；缺省求值失败沿
 // saEvalI32 原拒因上抛（调用方定位）。
-func saLowerCheckedIndexDefault(w printer.EmitTextWriter, base, idx string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int, init *ast.Node) (string, string) {
+func saLowerCheckedIndexDefault(w printer.EmitTextWriter, base, idx string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int, init *ast.Node, isStr bool) (string, string) {
 	freshT := func() string {
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -999,7 +999,12 @@ func saLowerCheckedIndexDefault(w printer.EmitTextWriter, base, idx string, scop
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", oobL))
-	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
+	var op, msg string
+	if isStr {
+		op, msg = saEvalStr(w, init, scope, pos, refusals, nextTemp)
+	} else {
+		op, msg = saEvalI32(w, init, scope, pos, refusals, nextTemp)
+	}
 	if msg != "" {
 		return "", msg
 	}
@@ -1802,6 +1807,14 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		return false
 	}
 	idx := 0
+	// 串元判向（字面量 `saLowerArrayLiteral` 经 `saLiteralIsStrArray` 记
+	// `arrStr[h]`，绑定经注解/透传同表；元柄即 16 字节串结构指针，
+	// 记 `str` 供串位消费，禁当 i32 打印指针数，p8g 实证）。
+	elemIsStr := scope.arrStr != nil && scope.arrStr[arr]
+	elemKind := "i32"
+	if elemIsStr {
+		elemKind = "str"
+	}
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
 		if el.Kind != ast.KindBindingElement {
 			idx++
@@ -1830,38 +1843,43 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			return false
 		}
 		// 缺省折叠（字面量源下标编译期已知：界内缺省恒死走元，
-		// 越界按 i32 求值缺省式；绑定源运行时守卫：界内走元，
-		// 越界臂内惰性求缺省值（JS 语义；上游 OOB 恒存 0 系静默错值，
-		// p8b 实证 bun 5 vs 上游 0，正确优先）。
+		// 越界按元种求缺省式（i32 经 `saEvalI32`，串经 `saEvalStr`）；
+		// 绑定源运行时守卫：界内走元，越界臂内惰性求缺省值（JS 语义；
+		// 上游 OOB 恒存 0 系静默错值，p8b 实证 bun 5 vs 上游 0，正确优先）。
 		if be.Initializer != nil && (litLen < 0 || idx >= litLen) {
 			if litLen >= 0 {
-				op, msg := saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+				var op, msg string
+				if elemIsStr {
+					op, msg = saEvalStr(w, be.Initializer, scope, pos, refusals, nextTemp)
+				} else {
+					op, msg = saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+				}
 				if msg != "" {
 					ln, col := pos(el.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 					return false
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, op))
-				scope.types[name] = "i32"
+				scope.types[name] = elemKind
 				saDeclareInitOwn(scope, name, op)
 				idx++
 				continue
 			}
-			v, msg := saLowerCheckedIndexDefault(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer)
+			v, msg := saLowerCheckedIndexDefault(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer, elemIsStr)
 			if msg != "" {
 				ln, col := pos(el.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 				return false
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, v))
-			scope.types[name] = "i32"
+			scope.types[name] = elemKind
 			saDeclareInitOwn(scope, name, v)
 			idx++
 			continue
 		}
 		v := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 		w.Write(fmt.Sprintf("  %s = %s\n", name, v))
-		scope.types[name] = "i32"
+		scope.types[name] = elemKind
 		saDeclareInitOwn(scope, name, v)
 		idx++
 	}
