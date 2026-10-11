@@ -2147,13 +2147,11 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			return false
 		}
 		// 缺省折叠（字面量源键集编译期已知：键在则缺省恒死走字段，
-		// 缺则按域种求值缺省式；标识源存在性未知沿旧门大声拒）。
-		if be.Initializer != nil && (!isLitSrc || !litKeys[field]) {
-			if !isLitSrc || litKeys[field] {
-				ln, col := pos(el.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
-				return false
-			}
+		// 缺则按域种求值缺省式；绑定源以记录布局为准：键在布局即恒在
+		// （实例布局固定，缺省字段构造期置零，417 同律），缺省恒死走下
+		// 字段读；上游 p1/p2/p7/p9 同形（`load o + off` 直读，缺省丢弃）；
+		// 布局外键已由上门大声拒）。
+		if be.Initializer != nil && isLitSrc && !litKeys[field] {
 			var op, msg string
 			kind := "i32"
 			if def.fkinds[field] == "str" {

@@ -1,0 +1,2 @@
+# 两步嵌套解构沿旧门（双边同拒；直接嵌套见 1853）
+object destructuring needs a recorded struct layout
