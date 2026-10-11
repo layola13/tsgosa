@@ -3993,7 +3993,8 @@ func saWiringPureLit(e *ast.Node) bool {
 
 // saWiringNamedLit 报告接线右值除名外纯字面量形（名须全在 allow 集（已绑形参）；
 // 名外规则与 saWiringPureLit 同形；另收已绑 arr/inst 形参的下标/取长/字段读
-// （`a[0]`/`a.length`/`b.f`，`?.`/链式沿旧门；错种由求值位大声拒）；
+// （`a[0]`/`a.length`/`b.f`，`?.`/链式沿旧门；错种由求值位大声拒）与逻辑值/
+// 三元形（`f && true`/`f ? 10 : 20`，操作数递归同门）；
 // 调用/new/模板一律否）。
 // saIsIdentText reports identifier-shaped text.
 func saIsIdentText(s string) bool {
@@ -4059,9 +4060,24 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 				ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
 				ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
 				ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
-				ast.KindGreaterThanGreaterThanGreaterThanToken:
+				ast.KindGreaterThanGreaterThanGreaterThanToken,
+				ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken,
+				ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken,
+				ast.KindLessThanToken, ast.KindLessThanEqualsToken,
+				ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken:
+				return saWiringNamedLit(be.Left, allow, scope) && saWiringNamedLit(be.Right, allow, scope)
+			case ast.KindAmpersandAmpersandToken, ast.KindBarBarToken:
+				// 逻辑值语义（`f && true`；操作数递归同门；求值经既有逻辑值位短路）。
 				return saWiringNamedLit(be.Left, allow, scope) && saWiringNamedLit(be.Right, allow, scope)
 			}
+		}
+		return false
+	case ast.KindConditionalExpression:
+		// 三元（`f ? 10 : 20`；条件与双臂递归同门；求值经既有三元位）。
+		if ce := e.AsConditionalExpression(); ce != nil {
+			return saWiringNamedLit(ce.Condition, allow, scope) &&
+				saWiringNamedLit(ce.WhenTrue, allow, scope) &&
+				saWiringNamedLit(ce.WhenFalse, allow, scope)
 		}
 		return false
 	case ast.KindElementAccessExpression:
