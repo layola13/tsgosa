@@ -34,6 +34,11 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 		return ""
 	}
 	be := cond.AsBinaryExpression()
+	// 逻辑顶放行（`&&`/`||` 经条件逻辑/逻辑值位短路，具名布尔直通 0/1；
+	// 其余二元顶沿旧门，禁布尔操作数误入比较/算术）。
+	if be != nil && (saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(be) == ast.KindBarBarToken) {
+		return ""
+	}
 	for _, side := range []*ast.Node{be.Left, be.Right} {
 		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
 			return side.Text()
@@ -2784,7 +2789,8 @@ func saLowerTernaryLazyStr(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 // 短路分支（右部副作用按 e1 锁跳过）；槽+臂释放与三元惰性形同律；归 i32）。
 func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	isAnd := saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken
-	l, msg := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+	// 操作数经布尔位（具名布尔直取 0/1 槽；i32 操作数回落同义；串等错种沿 i32 门大声拒）。
+	l, msg := saEvalBool(w, be.Left, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
@@ -2810,7 +2816,7 @@ func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", rL))
 	base := len(scope.ownOrder)
-	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	r, msg := saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}

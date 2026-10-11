@@ -1,0 +1,2 @@
+# 布尔比较位沿旧门（`f == true` 比较臂未收布尔；C7 实证，逻辑顶见 1834-1842）
+unsupported condition kind (boolean f in comparison)
