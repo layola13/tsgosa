@@ -3919,6 +3919,35 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, br.Text()))
 				continue
 			}
+			// f64 字面量直存（`this.r = 2.5`；字段须 f64 种；整字面补 .0
+			// 同 finit 臂；负数/十六进制沿旧门）。
+			if br := bin.Right; br != nil && br.Kind == ast.KindNumericLiteral &&
+				def.fkinds[fname] == "f64" && (saIsFloatLit(br.Text()) || saIsDecIntLit(br.Text())) {
+				fv := br.Text()
+				if saIsDecIntLit(fv) {
+					fv += ".0"
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, fv))
+				continue
+			}
+			// 串字面量直存（`this.s = "hi"`；字段须 str 种；存柄移交实例持有，
+			// 与 finit 串臂同形，不释）。
+			if br := bin.Right; br != nil && br.Kind == ast.KindStringLiteral &&
+				def.fkinds[fname] == "str" {
+				sh := saLowerStringLiteral(w, br.Text(), scope, nextTemp)
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, sh))
+				continue
+			}
+			// 布尔字面量直存（`this.ok = true`；字段为 i32 槽（bool 恒 i32 种）；1/0）。
+			if br := bin.Right; br != nil && (br.Kind == ast.KindTrueKeyword || br.Kind == ast.KindFalseKeyword) &&
+				(def.fkinds[fname] == "i32" || def.fkinds[fname] == "") {
+				bv := "1"
+				if br.Kind == ast.KindFalseKeyword {
+					bv = "0"
+				}
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, bv))
+				continue
+			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor wiring right side must be a parameter name"})
 			return false
