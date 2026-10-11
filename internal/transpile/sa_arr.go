@@ -44,6 +44,28 @@ func saPropArrStr(scope *saScope, from, to string) {
 	}
 }
 
+// saMarkArrInnerStr records a nested string-array handle (map init inline).
+func saMarkArrInnerStr(scope *saScope, name string) {
+	if name == "" {
+		return
+	}
+	if scope.arrInnerStr == nil {
+		scope.arrInnerStr = map[string]bool{}
+	}
+	scope.arrInnerStr[name] = true
+}
+
+// saPropArrInnerStr propagates nested-string-element marking across handle
+// bindings (mirror of saPropArrStr; element kind only, never ownership).
+func saPropArrInnerStr(scope *saScope, from, to string) {
+	if scope.arrInnerStr == nil || to == "" || from == to {
+		return
+	}
+	if scope.arrInnerStr[from] {
+		scope.arrInnerStr[to] = true
+	}
+}
+
 // saSeedParamArrStr 播形参串元标记（`a: string[]` 按注解记 arrStr；
 // 无注解/i32 数组不记，读侧沿旧门；函数/箭头序同形共用，见 saSeedParamMapVals）。
 func saSeedParamArrStr(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
@@ -113,6 +135,60 @@ func saIsStringArrayAnnot(tn *ast.TypeNode) bool {
 	return false
 }
 
+// saIsNestedStrArrayAnnot reports `string[][]` / `readonly string[][]` /
+// `Array<string[]>` annotations (inner-leaf-kind source for the arrInnerStr
+// mark; mirror of saIsStringArrayAnnot one level down; deeper nesting and
+// other generics stay unmarked).
+func saIsNestedStrArrayAnnot(tn *ast.TypeNode) bool {
+	if tn == nil {
+		return false
+	}
+	if tn.Kind == ast.KindTypeOperator {
+		if to := tn.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saIsNestedStrArrayAnnot(to.Type)
+		}
+		return false
+	}
+	if tn.Kind == ast.KindArrayType {
+		if el := tn.AsArrayTypeNode().ElementType; el != nil {
+			return saIsStringArrayAnnot(el)
+		}
+		return false
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Array" {
+			return false
+		}
+		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+			return false
+		}
+		return saIsStringArrayAnnot(ref.TypeArguments.Nodes[0])
+	}
+	return false
+}
+
+// saLiteralIsNestedStrArray pre-scans array literals for all-str inner
+// arrays (each element a non-empty all-string literal; empty/nested-deeper/
+// spread/omitted never mark; bindings propagate at declaration).
+func saLiteralIsNestedStrArray(n *ast.Node, scope *saScope) bool {
+	if n == nil || n.Kind != ast.KindArrayLiteralExpression {
+		return false
+	}
+	al := n.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) == 0 {
+		return false
+	}
+	for _, el := range al.Elements.Nodes {
+		if el == nil || el.Kind != ast.KindArrayLiteralExpression {
+			return false
+		}
+		if !saLiteralIsStrArray(el, scope) {
+			return false
+		}
+	}
+	return true
+}
 // saLiteralIsStrArray pre-scans array literals for all-string elements
 // (empty/spread/nested/omitted never mark; bindings propagate at declaration).
 func saLiteralIsStrArray(n *ast.Node, scope *saScope) bool {
@@ -1878,33 +1954,42 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 			}
 			// 嵌套数组模式（`const [[a]] = [[1]]`）：外层元读回内层句柄
 			// 再递归逐元（上游 m2 同形双守卫；对象内嵌双边同拒沿旧门；
-			// 串元作数组解构系病态，TS 本错，大声拒；绑定源内层种
-			// 不可证（`string[][]` 内叶会静默错值，而等价扁平 m5 系
-			// 拒收），只放行字面量内层，绑定嵌套待叶种标记设计）。
+			// 串元作数组解构系病态，TS 本错，大声拒；绑定源凭 `arrNest`
+			// 存在证明放行（元确为数组），内叶种凭 `arrInnerStr` 标记，
+			// 无标记一律 i32，与扁平未知元同律）。
 			if elemIsStr {
 				ln, col := pos(el.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern over string elements is not lowerable"})
 				return false
 			}
-			if srcElems == nil {
-				ln, col := pos(el.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern over runtime array is not lowerable yet"})
-				return false
-			}
-			if idx >= len(srcElems) || srcElems[idx] == nil || srcElems[idx].Kind != ast.KindArrayLiteralExpression {
-				ln, col := pos(el.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern needs a literal inner array"})
-				return false
-			}
-			innerElems := []*ast.Node{}
-			innerLitLen := 0
-			if elems := srcElems[idx].AsArrayLiteralExpression().Elements; elems != nil {
-				for _, n := range elems.Nodes {
-					innerElems = append(innerElems, n)
+			var innerElems []*ast.Node
+			innerLitLen := -1
+			innerIsStr := false
+			if srcElems != nil {
+				if idx >= len(srcElems) || srcElems[idx] == nil || srcElems[idx].Kind != ast.KindArrayLiteralExpression {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern needs a literal inner array"})
+					return false
 				}
-				innerLitLen = len(elems.Nodes)
+				innerElems = []*ast.Node{}
+				innerLitLen = 0
+				if elems := srcElems[idx].AsArrayLiteralExpression().Elements; elems != nil {
+					for _, n := range elems.Nodes {
+						innerElems = append(innerElems, n)
+					}
+					innerLitLen = len(elems.Nodes)
+				}
+				innerIsStr = saLiteralIsStrArray(srcElems[idx], scope)
+			} else {
+				if scope.arrNest == nil || !scope.arrNest[arr] {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern over runtime array is not lowerable yet"})
+					return false
+				}
+				if scope.arrInnerStr != nil && scope.arrInnerStr[arr] {
+					innerIsStr = true
+				}
 			}
-			innerIsStr := saLiteralIsStrArray(srcElems[idx], scope)
 			inner := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 			if !saLowerArrayPatternElems(w, d, inner, innerLitLen, innerElems, innerIsStr, nm.AsNode(), scope, pos, refusals, nextTemp) {
 				return false
@@ -2384,6 +2469,12 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saDeclareOwned(scope, name)
 		saPropArrNest(scope, h, name)
 		saPropArrStr(scope, h, name)
+		saPropArrInnerStr(scope, h, name)
+		// 嵌套串字面量内叶直记（`const ss = [["x"]]` 无注解亦定种；
+		// 标注形由声明位注解门记，此处只看字面量）。
+		if saLiteralIsNestedStrArray(vd.Initializer, scope) {
+			saMarkArrInnerStr(scope, name)
+		}
 		return true
 	}
 	// 数组构造式（`Array(n)`/`Array(a, b)`；`new Array(n)` 由声明位直办）。
@@ -2418,6 +2509,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saDeclareOwned(scope, name)
 		saPropArrNest(scope, src, name)
 		saPropArrStr(scope, src, name)
+		saPropArrInnerStr(scope, src, name)
 		// 函数串数组返回绑定记串元（`const sv = get()`；调用柄新鲜无标记，
 		// 签名种为准，与右值下标分支同源）。
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
@@ -3864,6 +3956,7 @@ func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope 
 	w.Write(fmt.Sprintf("  %s = call @ts_arr_slice_copy(%s, %s, %s)\n", dest, recv, start, f))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	// 切片柄归属(返前释放；上游同形).
 	saOwnTemp(scope, dest)
 	return dest
@@ -3898,6 +3991,7 @@ func saLowerToReversed(w printer.EmitTextWriter, recv string, scope *saScope, ne
 	w.Write(fmt.Sprintf("  %s = call @ts_arr_toreversed(%s)\n", dest, recv))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	saOwnTemp(scope, dest)
 	return dest
 }
@@ -3912,6 +4006,7 @@ func saLowerToSorted(w printer.EmitTextWriter, recv string, scope *saScope, next
 	w.Write(fmt.Sprintf("  %s = call @ts_arr_tosorted(%s)\n", dest, recv))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	saOwnTemp(scope, dest)
 	return dest
 }
@@ -3928,6 +4023,7 @@ func saLowerArrayWith(w printer.EmitTextWriter, recv, idx, val string, scope *sa
 	w.Write(fmt.Sprintf("  %s = call @ts_arr_with(%s, %s, %s)\n", dest, recv, idx, val))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	saOwnTemp(scope, dest)
 	return dest, ""
 }
@@ -3983,6 +4079,7 @@ func saLowerToSpliced(w printer.EmitTextWriter, recv string, args []*ast.Node, s
 	w.Write(fmt.Sprintf("  !%s\n", items))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	saOwnTemp(scope, dest)
 	return dest, ""
 }
@@ -4077,6 +4174,7 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, pa *ast.PropertyA
 		h := saNewEmptyArray(w, nextTemp)
 		saPropArrNest(scope, recv, h)
 		saPropArrStr(scope, recv, h)
+		saPropArrInnerStr(scope, recv, h)
 		saOwnTemp(scope, h)
 		return h, ""
 	}
@@ -4143,6 +4241,7 @@ func saLowerArraySplice(w printer.EmitTextWriter, recv string, pa *ast.PropertyA
 	w.Write(fmt.Sprintf("  !%s\n", items))
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
+	saPropArrInnerStr(scope, recv, dest)
 	saOwnTemp(scope, dest)
 	return dest, ""
 }
@@ -4270,6 +4369,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", h, src))
 		saPropArrNest(scope, src, h)
 		saPropArrStr(scope, src, h)
+		saPropArrInnerStr(scope, src, h)
 		base = h
 	}
 	if mapper == nil {
@@ -5623,6 +5723,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 				w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", target, recv))
 				saPropArrNest(scope, recv, target)
 				saPropArrStr(scope, recv, target)
+				saPropArrInnerStr(scope, recv, target)
 				saOwnTemp(scope, target)
 			}
 			w.Write(fmt.Sprintf("  call @ts_arr_sort_str(%s)\n", target))
@@ -5894,6 +5995,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if method == "filter" {
 			saPropArrNest(scope, recv, out)
 			saPropArrStr(scope, recv, out)
+			saPropArrInnerStr(scope, recv, out)
 		}
 		return out, kind, ""
 	case "reduce", "reduceRight":

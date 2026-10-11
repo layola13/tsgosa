@@ -3386,6 +3386,10 @@ type saScope struct {
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr map[string]bool
+	// arrInnerStr marks array handles whose elements are arrays of string
+	// handles (nested destructuring inner leaves bind str; mirror of arrStr,
+	// element kind only, never ownership).
+	arrInnerStr map[string]bool
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
 	mapVals map[string]string

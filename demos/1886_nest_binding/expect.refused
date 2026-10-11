@@ -1,2 +1,0 @@
-# 绑定嵌套内层种不可证（`string[][]` 内叶会静默错值；上游过，待叶种标记设计）
-nested array pattern over runtime array is not lowerable yet
