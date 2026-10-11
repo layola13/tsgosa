@@ -4339,6 +4339,14 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			saDeclarePlain(scope, name)
 			continue
 		}
+		// f64 形参快照绑定（`fadd x, 0.0` 拷贝，无 add 截断；直 `=` 即别名，
+		// 具名实参随后释放即 UseAfterMove；与 i32 `add` 快照同形）。
+		if i < len(kinds) && kinds[i] == "f64" {
+			w.Write(fmt.Sprintf("  %s = fadd %s, 0.0\n", name, argVals[i]))
+			bind(name, "f64")
+			saDeclarePlain(scope, name)
+			continue
+		}
 		w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
 		bind(name, saCallbackScalarKind(kinds, i))
 		saDeclarePlain(scope, name)

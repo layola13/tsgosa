@@ -4771,6 +4771,29 @@ func saLowerFieldIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix 
 	if _, ok := def.offsets[field]; !ok {
 		return "", "", false
 	}
+	// f64 域自增（读-改-写回；`fadd/fsub 1.0`；前缀返新值、后缀返旧值
+	// 与 i32 臂同序；新值记 f64 种供值位）。
+	if def.fkinds[field] == "f64" {
+		cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+		if msg != "" {
+			return "", msg, true
+		}
+		fop := "fadd"
+		if !up {
+			fop = "fsub"
+		}
+		nw := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, 1.0\n", nw, fop, cur))
+		if msg := saLowerClassFieldStore(w, h, def, field, nw); msg != "" {
+			return "", msg, true
+		}
+		scope.types[nw] = "f64"
+		if prefix {
+			return nw, "", true
+		}
+		return cur, "", true
+	}
 	if k := def.fkinds[field]; k != "" && k != "i32" {
 		return "", "++/-- on non-i32 field " + field + " is not lowerable", true
 	}

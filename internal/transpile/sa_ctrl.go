@@ -384,6 +384,46 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 									}
 								}
 							}
+							// f64 域复合赋值（读-改-写回；`+-*/` 经 f64 求值（整字面
+							// 补 .0 同局部臂）；余算符沿局部臂同门大声拒）。
+							if k := def.fkinds[field]; k == "f64" {
+								cur, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+								if msg != "" {
+									ln, col := pos(where.Pos())
+									*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound field: " + msg})
+									return false
+								}
+								r, msg := saEvalF64(w, be.Right, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									ln, col := pos(where.Pos())
+									*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound rhs: " + msg})
+									return false
+								}
+								var fop string
+								switch saBinaryOpKind(be) {
+								case ast.KindPlusEqualsToken:
+									fop = "fadd"
+								case ast.KindMinusEqualsToken:
+									fop = "fsub"
+								case ast.KindAsteriskEqualsToken:
+									fop = "fmul"
+								case ast.KindSlashEqualsToken:
+									fop = "fdiv"
+								default:
+									ln, col := pos(where.Pos())
+									*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float compound operator is not lowerable"})
+									return false
+								}
+								t := fmt.Sprintf("t_%d", *nextTemp)
+								*nextTemp++
+								w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, fop, cur, r))
+								if msg := saLowerClassFieldStore(w, h, def, field, t); msg != "" {
+									ln, col := pos(where.Pos())
+									*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported compound field: " + msg})
+									return false
+								}
+								return true
+							}
 						}
 					}
 				}
