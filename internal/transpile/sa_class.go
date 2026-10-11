@@ -1660,14 +1660,16 @@ func saIfaceFieldKind(ftn *ast.TypeNode, fname string, def *saClassDef, classes 
 		return fkind
 	}
 	// i32/bool 恒 4 字节槽（封存 saNameOfType boolean→i32 同形）；
-	// string/arr 为句柄 8 字节槽；已记录接口名（TypeReference）为嵌套
+	// string/arr 为句柄 8 字节槽；f64 为双精度 8 字节槽；已记录接口名（TypeReference）为嵌套
 	// 句柄 8 字节槽（与上游 layoutOfCheckerName 同形）；未记录用户类型
 	// （含泛型形参）落 arr 句柄槽；余下无槽，拒。
-	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 		if k == "str" {
 			fkind = "str"
 		} else if k == "arr" {
 			fkind = "arr"
+		} else if k == "f64" {
+			fkind = "f64"
 		}
 	} else if ftn.Kind == ast.KindTypeReference && ftn.AsTypeReferenceNode() != nil && ftn.AsTypeReferenceNode().TypeName != nil && ftn.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
 		// 类/接口类型嵌套字段皆 8B 句柄（布局表同形；实例与接口对象皆句柄）。
@@ -1915,7 +1917,7 @@ func saAliasReady(st *ast.Node, classes map[string]*saClassDef) bool {
 		if pd == nil || pd.Type == nil {
 			continue
 		}
-		if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+		if k, ok := saAnnotKind(pd.Type); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 			continue
 		}
 		if pd.Type.Kind != ast.KindTypeReference {
@@ -2018,6 +2020,8 @@ func saSubstFieldKind(ftn *ast.TypeNode, pmap map[string]*ast.TypeNode, classes 
 						return "str", ""
 					case "arr":
 						return "arr", ""
+					case "f64":
+						return "f64", ""
 					}
 				}
 				if arg.Kind == ast.KindTypeReference {
@@ -2050,12 +2054,15 @@ func saSubstFieldKind(ftn *ast.TypeNode, pmap map[string]*ast.TypeNode, classes 
 			}
 		}
 	}
-	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr") {
+	if k, ok := saAnnotKind(ftn); ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
 		if k == "str" {
 			return "str", ""
 		}
 		if k == "arr" {
 			return "arr", ""
+		}
+		if k == "f64" {
+			return "f64", ""
 		}
 		return "i32", ""
 	}
@@ -2981,6 +2988,11 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], t))
 					continue
 				}
+				if sk == "f64" {
+					w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", t, src.h, src.def.offsets[f.name]))
+					w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[f.name], t))
+					continue
+				}
 				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, src.h, src.def.offsets[f.name]))
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], t))
 			}
@@ -3057,6 +3069,15 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				continue
 			}
 			return "", "", "nested field " + o.fname + " needs an object literal"
+		}
+		if fk := def.fkinds[o.fname]; fk == "f64" {
+			// f64 域存双精度（字面量/绑定/调用经严格求值；与类 finit 臂同形）。
+			v, msg := saEvalF64(w, o.init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[o.fname], v))
+			continue
 		}
 		v, msg := saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -4586,6 +4607,77 @@ func saLowerGuardedMethodCall(w printer.EmitTextWriter, h string, def *saClassDe
 
 // saChainBase 解对象链基（`q.p`→内层句柄；递归支持多层；
 // 叶子由调用方按表读/存；非 inst 链节一律失败，调用方沿旧门）。
+// saChainLeafDef 纯判定链式成员叶布局（`o.inner.v` 经 inst 域逐级下钻；
+// 不落字（谓词位无发射），发射见 saChainBase；根基限 this/实例绑定/类名
+// （与 saChainBase 前三臂同形；super/调用/元素基沿旧门由发射位拒）。
+func saChainLeafDef(e *ast.Node, scope *saScope) (*saClassDef, string, bool) {
+	pa := e.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return nil, "", false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindPropertyAccessExpression {
+		return nil, "", false
+	}
+	var segs []string
+	cur := e
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		cpa := cur.AsPropertyAccessExpression()
+		if cpa.Name() == nil || cpa.Name().Kind != ast.KindIdentifier {
+			return nil, "", false
+		}
+		segs = append([]string{cpa.Name().Text()}, segs...)
+		cur = cpa.Expression
+	}
+	var def *saClassDef
+	switch {
+	case cur != nil && cur.Kind == ast.KindThisKeyword:
+		if scope.thisSelf == "" {
+			return nil, "", false
+		}
+		d, ok := scope.classes[scope.thisClass]
+		if !ok {
+			return nil, "", false
+		}
+		def = d
+	case cur != nil && cur.Kind == ast.KindIdentifier:
+		nm := cur.Text()
+		if k, ok := scope.types[nm]; ok && len(k) > 5 && k[:5] == "inst:" {
+			d, ok := scope.classes[k[5:]]
+			if !ok {
+				return nil, "", false
+			}
+			def = d
+		} else if d, ok := scope.classes[nm]; ok {
+			if _, shadowed := scope.types[nm]; shadowed {
+				return nil, "", false
+			}
+			if _, shadowed := scope.funcs[nm]; shadowed {
+				return nil, "", false
+			}
+			def = d
+		} else {
+			return nil, "", false
+		}
+	default:
+		return nil, "", false
+	}
+	for _, s := range segs[:len(segs)-1] {
+		if _, ok := def.offsets[s]; !ok || def.fkinds[s] != "inst" {
+			return nil, "", false
+		}
+		sub, ok := scope.classes[def.fsub[s]]
+		if !ok {
+			return nil, "", false
+		}
+		def = sub
+	}
+	leaf := segs[len(segs)-1]
+	if _, ok := def.offsets[leaf]; !ok {
+		return nil, "", false
+	}
+	return def, leaf, true
+}
+
 func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
 	pa := e.AsPropertyAccessExpression()
 	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {

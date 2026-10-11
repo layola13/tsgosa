@@ -468,6 +468,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		if k, ok := scope.types[op]; ok && k == "str" {
 			return "", "string value in condition"
 		}
+		// 浮点值条件禁入（f64 无真值语义；与 f64 绑定 `f64 x in condition` 同门）。
+		if k, ok := scope.types[op]; ok && k == "f64" {
+			return "", "float value in condition"
+		}
 		return op, ""
 	default:
 		op, msg := saEvalI32(w, cond, scope, pos, refusals, nextTemp)
@@ -477,6 +481,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		// 串值条件禁入（空串 falsy 而头指针恒真；与串绑定同门；实例沿直通口径）。
 		if k, ok := scope.types[op]; ok && k == "str" {
 			return "", "string value in condition"
+		}
+		// 浮点值条件禁入（同上）。
+		if k, ok := scope.types[op]; ok && k == "f64" {
+			return "", "float value in condition"
 		}
 		return op, ""
 	}
@@ -4983,6 +4991,10 @@ func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 				}
 			}
 		}
+		// 链式实例 f64 字段读（`o.inner.v` 纯布局下钻；发射见严格位同形臂）。
+		if def, leaf, ok := saChainLeafDef(e, scope); ok && def.fkinds[leaf] == "f64" {
+			return true
+		}
 	}
 	// 裸调用经返回种（`parseFloat/Number` 回 f64；前缀取负臂同式已覆，
 	// 此处补直接操作数位，否则条件位 `parseFloat(x) > 4` 落 sgt 错值）。
@@ -5071,6 +5083,12 @@ func saF64Side(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 				}
 			}
+			// 链式实例 f64 字段读经严格求值（`o.inner.v`；直通 `Text()` 非法，同上）。
+			if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
+				if cdef, leaf, ok := saChainLeafDef(e, scope); ok && cdef.fkinds[leaf] == "f64" {
+					return saEvalF64Strict(w, e, scope, pos, refusals, nextTemp)
+				}
+			}
 		}
 		return e.Text(), ""
 	}
@@ -5132,6 +5150,18 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 				}
 				if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "f64" {
 					t, lmsg := saLowerClassFieldLoad(w, h, def, fname, scope, nextTemp)
+					if lmsg == "" {
+						return t, ""
+					}
+				}
+			}
+		}
+		// 链式实例 f64 字段读（`o.inner.v` 经内层句柄逐级解，与 i32 链读位同形）。
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
+			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				if _, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "f64" {
+					t, lmsg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
 					if lmsg == "" {
 						return t, ""
 					}
@@ -5401,6 +5431,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					if msg != "" {
 						return "", msg
 					}
+					if k, ok := scope.types[t]; ok && k == "f64" {
+						return "", "float field " + pa.Name().Text() + " in i32 expression"
+					}
 					return t, ""
 				}
 				v, msg := saInlineGetter(w, ch, cdef, pa.Name().Text(), scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
@@ -5432,6 +5465,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 						if msg != "" {
 							return "", msg
+						}
+						if k, ok := scope.types[t]; ok && k == "f64" {
+							return "", "float field " + pa.Name().Text() + " in i32 expression"
 						}
 						return t, ""
 					}
@@ -5467,6 +5503,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				if msg != "" {
 					return "", msg
 				}
+				if k, ok := scope.types[t]; ok && k == "f64" {
+					return "", "float field " + pa.Name().Text() + " in i32 expression"
+				}
 				return t, ""
 			}
 			if _, ok := def.offsets[fname]; ok {
@@ -5481,6 +5520,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
+				}
+				if k, ok := scope.types[t]; ok && k == "f64" {
+					return "", "float field " + pa.Name().Text() + " in i32 expression"
 				}
 				return t, ""
 			}
