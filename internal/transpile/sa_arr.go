@@ -1784,6 +1784,30 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			litLen = len(srcInit.AsArrayLiteralExpression().Elements.Nodes)
 		}
 		arr = h
+		// 空字面量断言透传（`[] as string[]`：无元可判种，按断言记串；
+		// 包裹剥离 + 断言取类型名与对象位 1851 同例；1878 残留）。
+		if outer := vd.Initializer; outer != nil {
+			for outer != nil && (outer.Kind == ast.KindParenthesizedExpression || outer.Kind == ast.KindNonNullExpression) {
+				if outer.Kind == ast.KindParenthesizedExpression {
+					outer = outer.AsParenthesizedExpression().Expression
+				} else {
+					outer = outer.AsNonNullExpression().Expression
+				}
+			}
+			var tnode *ast.TypeNode
+			if outer != nil && outer.Kind == ast.KindAsExpression {
+				if ae := outer.AsAsExpression(); ae != nil {
+					tnode = ae.Type
+				}
+			} else if outer != nil && outer.Kind == ast.KindSatisfiesExpression {
+				if se := outer.AsSatisfiesExpression(); se != nil {
+					tnode = se.Type
+				}
+			}
+			if tnode != nil && saIsStringArrayAnnot(tnode) {
+				saMarkArrStr(scope, h)
+			}
+		}
 	} else if base, ok := saArrBase(scope, srcInit); ok {
 		arr = base
 	} else if saIsArrayCtor(srcInit) {

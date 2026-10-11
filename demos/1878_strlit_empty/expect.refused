@@ -1,2 +1,0 @@
-# 空字面量无元种（`as string[]` 断言未透传，另立；上游过但 OOB 丢缺省）
-expression KindStringLiteral is not in the SA-lowerable subset

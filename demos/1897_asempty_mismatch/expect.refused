@@ -1,0 +1,2 @@
+# 断言种与缺省种错配大声拒（TS 本错，整声明拒；1877 同例）
+expression KindStringLiteral is not in the SA-lowerable subset
