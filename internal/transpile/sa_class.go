@@ -3477,6 +3477,8 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 	}
 	// wiring 目标种预扫（`this.f = param` 的 f 种决定实参求值器；str 域走串求值）。
 	wantStr := saCtorWiringKinds(def.ctor, owner, scope)
+	// f64 目标预扫（`this.r = p`/`p * 2` 的 p 走浮求值；str 臂优先，见下）。
+	wantF64 := saCtorWiringKindsF64(def.ctor, owner, scope)
 	paramVal := map[string]string{}
 	fnArgs := map[string]*ast.Node{} // 构造箭头实参（`this.f = k` 捕获位消费）
 	for i, p := range params {
@@ -3535,6 +3537,14 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		}
 		if wantStr[nm.Text()] {
 			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			paramVal[nm.Text()] = v
+			continue
+		}
+		if wantF64[nm.Text()] {
+			v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
@@ -3820,6 +3830,114 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 	return want
 }
 
+// saCtorWiringKindsF64 预扫 f64 目标（`this.r = p` 名形与 `this.r = p * 2` 计算形；
+// super 转发经 f64 位递归；str 版镜像同形；i32 目标沿默认臂）。
+func saCtorWiringKindsF64(ctor *ast.Node, owner string, scope *saScope) map[string]bool {
+	return saCtorWiringKindsF64Depth(ctor, owner, scope, 0)
+}
+
+func saCtorWiringKindsF64Depth(ctor *ast.Node, owner string, scope *saScope, depth int) map[string]bool {
+	want := map[string]bool{}
+	if depth > 8 {
+		return want
+	}
+	body := ctor.Body()
+	if body == nil {
+		return want
+	}
+	def, ok := scope.classes[owner]
+	if !ok {
+		return want
+	}
+	for _, s := range body.Statements() {
+		if !saIsSuperCall(s) {
+			continue
+		}
+		// super 转发：基形参 f64 位透传给外层同名实参。
+		bdef, ok := scope.classes[def.parent]
+		if !ok || def.parent == "" || bdef.ctor == nil {
+			continue
+		}
+		call := s.AsExpressionStatement().Expression.AsCallExpression()
+		var argNodes []*ast.Node
+		if call.Arguments != nil {
+			argNodes = call.Arguments.Nodes
+		}
+		bparams := bdef.ctor.Parameters()
+		if len(argNodes) != len(bparams) {
+			continue
+		}
+		bwant := saCtorWiringKindsF64Depth(bdef.ctor, def.parent, scope, depth+1)
+		for i, p := range bparams {
+			pd := p.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			nm := pd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if !bwant[nm.Text()] {
+				continue
+			}
+			if argNodes[i] != nil && argNodes[i].Kind == ast.KindIdentifier {
+				want[argNodes[i].Text()] = true
+			}
+		}
+	}
+	for _, s := range body.Statements() {
+		if saIsSuperCall(s) {
+			continue
+		}
+		if s == nil || s.Kind != ast.KindExpressionStatement {
+			continue
+		}
+		ex := s.AsExpressionStatement().Expression
+		if ex == nil || ex.Kind != ast.KindBinaryExpression {
+			continue
+		}
+		bin := ex.AsBinaryExpression()
+		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
+			bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression {
+			continue
+		}
+		pa := bin.Left.AsPropertyAccessExpression()
+		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {
+			continue
+		}
+		if bin.Right == nil {
+			continue
+		}
+		fname := pa.Name().Text()
+		if strings.HasPrefix(fname, "#") {
+			fname = saPrivKey(owner, fname)
+		}
+		if def.fkinds[fname] != "f64" {
+			continue
+		}
+		if bin.Right.Kind == ast.KindIdentifier {
+			want[bin.Right.Text()] = true
+			continue
+		}
+		// f64 目标计算右值中缀名（`this.r = p * 2`；收集器只下钻纯形）。
+		saWiringCollectIdents(bin.Right, want)
+	}
+	// 参数属性隐式 wiring 的 f64 位。
+	for _, p := range ctor.Parameters() {
+		if !ast.IsParameterPropertyDeclaration(p, ctor) {
+			continue
+		}
+		nm := p.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		if def.fkinds[nm.Text()] == "f64" {
+			want[nm.Text()] = true
+		}
+	}
+	return want
+}
+
 // saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param` +
 // 参数属性隐式 `this.p = p` 注在顶层 super() 后（无 super 置顶），显式 wiring 优先；
 // 形状证据：封存 wireCtorBody + wireCtorFieldStore + visitConstructorBody/Worker）。
@@ -3865,6 +3983,39 @@ func saWiringPureLit(e *ast.Node) bool {
 
 // saWiringNamedLit 报告接线右值除名外纯字面量形（名须全在 allow 集（已绑形参）；
 // 名外规则与 saWiringPureLit 同形；调用/成员/new/模板一律否）。
+// saIsIdentText reports identifier-shaped text.
+func saIsIdentText(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// saOperandTextKind classifies operand text (literal shapes direct; temps/names
+// strictly via scope table; unmarked yields "" (callers fail loud).
+func saOperandTextKind(op string, scope *saScope) string {
+	if saIsTempOp(op) || saIsIdentText(op) {
+		if k, ok := scope.types[op]; ok && (k == "i32" || k == "f64" || k == "str") {
+			return k
+		}
+		return ""
+	}
+	if saIsDecIntLit(op) {
+		return "i32"
+	}
+	if saIsFloatLit(op) {
+		return "f64"
+	}
+	return ""
+}
+
 func saWiringNamedLit(e *ast.Node, allow map[string]bool) bool {
 	if e == nil {
 		return false
@@ -3906,6 +4057,12 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool) bool {
 }
 
 func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, fnArgs map[string]*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	// 名单接线串实参集合（arg 环已按串求值；串柄入 i32/f64 域即错，见下守卫；
+	// 与 new 侧 wantStr 同源重算（纯扫，零发射）。
+	// 名单接线串/浮实参集合（arg 环已按串/浮求值；错域入即错，见下守卫；
+	// 与 new 侧同源重算（纯扫，零发射）；绑定定种同序优先（串>浮>注解>字面）。
+	wireWantStr := saCtorWiringKinds(ctor, owner, scope)
+	wireWantF64 := saCtorWiringKindsF64(ctor, owner, scope)
 	body := ctor.Body()
 	if body == nil {
 		return true
@@ -4066,10 +4223,17 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			if !ok {
 				continue
 			}
+			// 定种序与 arg 环求值序一致（串>浮>注解>字面；arr/inst/余种不绑）：
+			// 到此之操作数必与其求值器同种（否则 arg 环已拒，无 paramVal）。
 			kind := ""
-			if pd.Type != nil {
-				if k, ok := saAnnotKind(pd.Type); ok {
-					switch k {
+			switch {
+			case wireWantStr[pname]:
+				kind = "str"
+			case wireWantF64[pname]:
+				kind = "f64"
+			case pd.Type != nil:
+				if ak, ok := saAnnotKind(pd.Type); ok {
+					switch ak {
 					case "i32":
 						kind = "i32"
 					case "f64":
@@ -4080,24 +4244,12 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				}
 			}
 			if kind == "" {
-				// 无注解按操作数形（arg 环已检，处置信形断种；柄须显式记种）。
-				switch {
-				case saIsDecIntLit(op):
+				// 无注解非路由：字面量形直断（名/柄不推，沿旧门）。
+				if saIsDecIntLit(op) {
 					kind = "i32"
-				case saIsFloatLit(op):
+				} else if saIsFloatLit(op) && !saIsIdentText(op) && !saIsTempOp(op) {
 					kind = "f64"
-				case saIsTempOp(op):
-					if k, ok := scope.types[op]; ok && (k == "i32" || k == "f64" || k == "str") {
-						kind = k
-					}
-				default:
-					if k, ok := scope.types[op]; ok && (k == "i32" || k == "f64" || k == "str") {
-						kind = k
-					}
 				}
-			}
-			if kind == "" {
-				continue
 			}
 			ws := &wireSaved{}
 			if oldTyp, ok := scope.types[pname]; ok {
@@ -4320,6 +4472,37 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter " + bin.Right.Text() + " has no value"})
 			return false
+		}
+		// 名单接线操作数种形检查（右值已按种求值；确定错位大声拒：float 文本/串记种
+		// 禁入 i32 域（d1 458277600 实证），串记种禁入 f64 域；未记种柄沿旧门）。
+		if fk := def.fkinds[fname]; fk == "i32" || fk == "" {
+			if wireWantStr[bin.Right.Text()] {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string operand into i32 field is not lowerable"})
+				return false
+			}
+			if saOperandTextKind(v, scope) == "f64" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float operand into i32 field is not lowerable"})
+				return false
+			}
+			if k, ok := scope.types[v]; ok && k == "str" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string operand into i32 field is not lowerable"})
+				return false
+			}
+		}
+		if def.fkinds[fname] == "f64" {
+			if wireWantStr[bin.Right.Text()] {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string operand into f64 field is not lowerable"})
+				return false
+			}
+			if k, ok := scope.types[v]; ok && k == "str" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string operand into f64 field is not lowerable"})
+				return false
+			}
 		}
 		// str/arr/inst 域存句柄（右值已按种求值）；f64 域存双精度。
 		if def.fkinds[fname] == "str" || def.fkinds[fname] == "arr" || def.fkinds[fname] == "inst" {

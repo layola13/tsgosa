@@ -1,0 +1,2 @@
+# 同参双目标浮错位大声拒（"8.0" 文本禁入 i32 域，禁截断；q7 实证）
+float operand into i32 field is not lowerable
