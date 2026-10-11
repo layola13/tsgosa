@@ -1,0 +1,2 @@
+# 嵌套元数组缺省须 OOB 臂现场构造（未建；上游丢缺省恒存 0 同族）
+array element defaults over bindings are not lowerable yet

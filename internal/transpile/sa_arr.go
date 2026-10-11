@@ -2010,12 +2010,44 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 // 数组位本体；抽取供嵌套递归复用，零语义差）。
 func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string, litLen int, srcElems []*ast.Node, elemIsStr bool, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	idx := 0
-	// 串元判向（调用方按源给定：字面量经 `saLiteralIsStrArray`，
-	// 绑定经注解/透传同表；元柄即 16 字节串结构指针，记 `str`
-	// 供串位消费，禁当 i32 打印指针数，p8g 实证）。
-	elemKind := "i32"
-	if elemIsStr {
-		elemKind = "str"
+	// 逐元判种（字面量源按 idx 位源元精确：内层字面量即 arr，
+	// 串求值元即串（与构造 `saArrayLiteralElem` 判向同谓词），其余
+	// i32；混合字面量各元记各的种（`[[1], 2]` 的 b 恒 i32，1882
+	// 实证）；缺位/绑定源沿模式级标记（串/嵌套/其余），p8g 同例）。
+	kindOf := func() string {
+		if srcElems != nil {
+			if idx < len(srcElems) && srcElems[idx] != nil {
+				se := srcElems[idx]
+				if se.Kind == ast.KindArrayLiteralExpression {
+					return "arr"
+				}
+				if saIsStrExpr(se, scope) {
+					return "str"
+				}
+			} else if elemIsStr {
+				return "str"
+			}
+			return "i32"
+		}
+		if elemIsStr {
+			return "str"
+		}
+		if scope.arrNest != nil && scope.arrNest[arr] {
+			return "arr"
+		}
+		return "i32"
+	}
+	// rowIsStrArray 报告当前元是否为串元数组（两步串透传标记源：
+	// 字面量行内叶全串直判，绑定行凭外层内叶串标记）。
+	rowIsStrArray := func() bool {
+		if srcElems != nil {
+			if idx < len(srcElems) && srcElems[idx] != nil &&
+				srcElems[idx].Kind == ast.KindArrayLiteralExpression {
+				return saLiteralIsStrArray(srcElems[idx], scope)
+			}
+			return false
+		}
+		return scope.arrInnerStr != nil && scope.arrInnerStr[arr]
 	}
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
 		if el.Kind != ast.KindBindingElement {
@@ -2108,10 +2140,18 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 					return false
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, op))
-				scope.types[name] = elemKind
+				scope.types[name] = kindOf()
 				saDeclareInitOwn(scope, name, op)
 				idx++
 				continue
+			}
+			// 数组元缺省绑定源不可求值（OOB 臂须现场构造数组缺省，
+			// 未建；标量缺省系 TS 本错；上游丢缺省恒存 0 系静默错值，
+			// p8b 同族，正确优先大声拒）。
+			if kindOf() == "arr" {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element defaults over bindings are not lowerable yet"})
+				return false
 			}
 			v, msg := saLowerCheckedIndexDefault(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer, elemIsStr)
 			if msg != "" {
@@ -2120,14 +2160,19 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 				return false
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, v))
-			scope.types[name] = elemKind
+			scope.types[name] = kindOf()
 			saDeclareInitOwn(scope, name, v)
 			idx++
 			continue
 		}
 		v := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
 		w.Write(fmt.Sprintf("  %s = %s\n", name, v))
-		scope.types[name] = elemKind
+		scope.types[name] = kindOf()
+		// 行串标记（字面量行内叶全串直判；绑定行凭外层内叶串标记；
+		// 两步串透传 o14 同例）。
+		if rowIsStrArray() {
+			saMarkArrStr(scope, name)
+		}
 		saDeclareInitOwn(scope, name, v)
 		idx++
 	}
@@ -2537,6 +2582,18 @@ func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassD
 			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", name, hid, off))
 			scope.types[name] = "str"
 			continue
+		}
+		// inst 域绑布局种（两步解构透传：`const {p} = b` 后 `const {v} = p`
+		// 经既有 `inst:` 源消解布局；与成员读 step92 同律；子布局未记录
+		// 沿旧 i32 口径，零行为变）。
+		if def.fkinds[field] == "inst" {
+			if sub, ok := def.fsub[field]; ok {
+				if _, ok2 := scope.classes[sub]; ok2 {
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", name, hid, off))
+					scope.types[name] = "inst:" + sub
+					continue
+				}
+			}
 		}
 		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", name, hid, off))
 		scope.types[name] = "i32"

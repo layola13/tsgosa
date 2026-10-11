@@ -1,0 +1,7 @@
+function main(): i32 {
+  const aa = [[1]];
+  const [r] = aa;
+  const [a = 5] = r;
+  console.log(a);
+  return 0;
+}

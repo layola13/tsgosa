@@ -1,0 +1,2 @@
+# 嵌套元标量缺省系 TS 本错（`r: number[]` 配 `5`；上游丢缺省恒存 0 同族）
+array element defaults over bindings are not lowerable yet

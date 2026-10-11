@@ -1,0 +1,2 @@
+# 剥到底为整数（s 即元值，不可再解构；正确终止）
+destructuring source must be bound array

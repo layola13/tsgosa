@@ -1,0 +1,2 @@
+# 空嵌套无从证明内层（通过即空柄解引用 fault；JS 侧 TypeError；上游过）
+destructuring source must be bound array
