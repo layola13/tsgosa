@@ -1,0 +1,2 @@
+# 无注解形参非数组种（i32 缺省；双边同拒）
+destructuring source must be bound array

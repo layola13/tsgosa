@@ -2535,6 +2535,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	if pl := arrow.ParameterList(); pl != nil {
 		saSeedParamMapVals(pl.Nodes, kinds, classes, scope)
 		saSeedParamArrStr(pl.Nodes, kinds, scope)
+		saSeedParamArrNest(pl.Nodes, kinds, scope)
 	}
 	if len(arrowPendings) > 0 {
 		if !saDrainDestructuredParams(w, arrowPendings, scope, pos, refusals, nextLabel, nextTemp) {

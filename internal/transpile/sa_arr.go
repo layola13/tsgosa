@@ -66,6 +66,92 @@ func saPropArrInnerStr(scope *saScope, from, to string) {
 	}
 }
 
+// saSeedParamArrNest 播形参嵌套数组标记（`aa: T[][]` 按注解记 arrNest
+// （元确为数组），内叶串另记 arrInnerStr；无注解/扁平数组不记，读侧沿旧门；
+// 函数/箭头序同形共用，见 saSeedParamArrStr）。
+func saSeedParamArrNest(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
+	for _, pn := range paramNodes {
+		if pn == nil {
+			continue
+		}
+		pd := pn.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || kinds[nm.Text()] != "arr" {
+			continue
+		}
+		if pd.Type == nil {
+			continue
+		}
+		if saIsNestedArrayAnnot(pd.Type) {
+			if scope.arrNest == nil {
+				scope.arrNest = map[string]bool{}
+			}
+			scope.arrNest[nm.Text()] = true
+		}
+		if saIsNestedStrArrayAnnot(pd.Type) {
+			saMarkArrInnerStr(scope, nm.Text())
+		}
+	}
+}
+
+// saIsNestedArrayAnnot reports `T[][]` / `Array<T[]>` / `readonly T[][]`
+// annotations (elements are arrays; inner kind erased, same granularity as
+// upstream; aliases/other generics stay unmarked).
+func saIsNestedArrayAnnot(tn *ast.TypeNode) bool {
+	if tn == nil {
+		return false
+	}
+	if tn.Kind == ast.KindTypeOperator {
+		if to := tn.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saIsNestedArrayAnnot(to.Type)
+		}
+		return false
+	}
+	if tn.Kind == ast.KindArrayType {
+		el := tn.AsArrayTypeNode().ElementType
+		if el == nil {
+			return false
+		}
+		if el.Kind == ast.KindArrayType {
+			return true
+		}
+		if el.Kind == ast.KindTypeReference {
+			if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+				ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Array" {
+				return true
+			}
+		}
+		return false
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Array" {
+			return false
+		}
+		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+			return false
+		}
+		arg := ref.TypeArguments.Nodes[0]
+		if arg == nil {
+			return false
+		}
+		if arg.Kind == ast.KindArrayType {
+			return true
+		}
+		if arg.Kind == ast.KindTypeReference {
+			if aref := arg.AsTypeReferenceNode(); aref != nil && aref.TypeName != nil &&
+				aref.TypeName.Kind == ast.KindIdentifier && aref.TypeName.Text() == "Array" {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // saSeedParamArrStr 播形参串元标记（`a: string[]` 按注解记 arrStr；
 // 无注解/i32 数组不记，读侧沿旧门；函数/箭头序同形共用，见 saSeedParamMapVals）。
 func saSeedParamArrStr(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
@@ -189,6 +275,7 @@ func saLiteralIsNestedStrArray(n *ast.Node, scope *saScope) bool {
 	}
 	return true
 }
+
 // saLiteralIsStrArray pre-scans array literals for all-string elements
 // (empty/spread/nested/omitted never mark; bindings propagate at declaration).
 func saLiteralIsStrArray(n *ast.Node, scope *saScope) bool {

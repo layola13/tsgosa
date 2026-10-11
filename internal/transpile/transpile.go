@@ -3674,6 +3674,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if fn.Parameters != nil {
 		saSeedParamMapVals(fn.Parameters.Nodes, paramKinds, classes, scope)
 		saSeedParamArrStr(fn.Parameters.Nodes, paramKinds, scope)
+		saSeedParamArrNest(fn.Parameters.Nodes, paramKinds, scope)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒；
 	// 空体亦展开，与上游空体 drain 同形）。
