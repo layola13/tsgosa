@@ -1,0 +1,2 @@
+# 纯字面量混排浮点入 i32 大声拒（与声明位 `float value needs float annotation` 同门，禁截断）
+float value needs float annotation

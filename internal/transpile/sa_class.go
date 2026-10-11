@@ -3778,6 +3778,46 @@ func saCtorWiringKindsDepth(ctor *ast.Node, owner string, scope *saScope, depth 
 // saWireCtorBody 解释构造体语句（`super(...)` 委托基 wiring + `this.f = param` +
 // 参数属性隐式 `this.p = p` 注在顶层 super() 后（无 super 置顶），显式 wiring 优先；
 // 形状证据：封存 wireCtorBody + wireCtorFieldStore + visitConstructorBody/Worker）。
+// saWiringPureLit 报告接线右值为纯字面量形（数值/串/布尔/null 字面量、
+// 括号透明、前缀一元（-!+~）、算术位二元；名/调用/成员/新建/数组/对象/模板
+// 一律否（含名即 caller 影子误值风险，沿旧门）。
+func saWiringPureLit(e *ast.Node) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral, ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword:
+		return true
+	case ast.KindParenthesizedExpression:
+		if pe := e.AsParenthesizedExpression(); pe != nil {
+			return saWiringPureLit(pe.Expression)
+		}
+		return false
+	case ast.KindPrefixUnaryExpression:
+		if un := e.AsPrefixUnaryExpression(); un != nil && un.Operand != nil {
+			switch un.Operator {
+			case ast.KindMinusToken, ast.KindPlusToken, ast.KindTildeToken, ast.KindExclamationToken:
+				return saWiringPureLit(un.Operand)
+			}
+		}
+		return false
+	case ast.KindBinaryExpression:
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil {
+			switch be.OperatorToken.Kind {
+			case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindSlashToken,
+				ast.KindPercentToken, ast.KindAsteriskAsteriskToken,
+				ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
+				ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
+				ast.KindGreaterThanGreaterThanGreaterThanToken:
+				return saWiringPureLit(be.Left) && saWiringPureLit(be.Right)
+			}
+		}
+		return false
+	}
+	return false
+}
+
 func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, fnArgs map[string]*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	body := ctor.Body()
 	if body == nil {
@@ -3947,6 +3987,67 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				}
 				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, bv))
 				continue
+			}
+			// 纯字面量表达式右值（`this.n = 2 + 3`/`-7`/`"a" + "b"`；无名绑定零作用域
+			// 风险；含名/调用/成员一律沿旧门，禁 caller 影子误值）：i32/f64/串按域种
+			// 求值落存（bool 经 saEvalBool 取 1/0 入 i32 槽）；求值失败透传其声。
+			if saWiringPureLit(bin.Right) {
+				fk := def.fkinds[fname]
+				if fk == "i32" || fk == "" {
+					if br := bin.Right; br != nil && (br.Kind == ast.KindTrueKeyword || br.Kind == ast.KindFalseKeyword) {
+						bv := "1"
+						if br.Kind == ast.KindFalseKeyword {
+							bv = "0"
+						}
+						w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, bv))
+						continue
+					}
+					if bo, bom := saEvalBool(w, bin.Right, scope, pos, refusals, nextTemp); bom == "" {
+						if bo == "0" || bo == "1" {
+							w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, bo))
+							continue
+						}
+					}
+					v, msg := saEvalI32(w, bin.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					if msg := saCheckI32Value(scope, v); msg != "" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					// f64 temp 永不沉入 i32 域（与声明位同门，大声）。
+					if k, ok := scope.types[v]; ok && k == "f64" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "float value needs float annotation"})
+						return false
+					}
+					w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
+					continue
+				}
+				if fk == "f64" {
+					v, msg := saEvalF64(w, bin.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
+					continue
+				}
+				if fk == "str" {
+					v, msg := saEvalStr(w, bin.Right, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, off, v))
+					continue
+				}
 			}
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor wiring right side must be a parameter name"})
