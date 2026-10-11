@@ -1807,9 +1807,12 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		return false
 	}
 	var srcElems []*ast.Node
-	if srcInit.Kind == ast.KindArrayLiteralExpression && srcInit.AsArrayLiteralExpression().Elements != nil {
-		for _, n := range srcInit.AsArrayLiteralExpression().Elements.Nodes {
-			srcElems = append(srcElems, n)
+	if srcInit.Kind == ast.KindArrayLiteralExpression {
+		srcElems = []*ast.Node{}
+		if elems := srcInit.AsArrayLiteralExpression().Elements; elems != nil {
+			for _, n := range elems.Nodes {
+				srcElems = append(srcElems, n)
+			}
 		}
 	}
 	elemIsStr := scope.arrStr != nil && scope.arrStr[arr]
@@ -1844,9 +1847,46 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 			continue
 		}
 		if nm.Kind != ast.KindIdentifier {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
-			return false
+			if nm.Kind != ast.KindArrayBindingPattern {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested destructuring shape is not lowerable"})
+				return false
+			}
+			// 嵌套数组模式（`const [[a]] = [[1]]`）：外层元读回内层句柄
+			// 再递归逐元（上游 m2 同形双守卫；对象内嵌双边同拒沿旧门；
+			// 串元作数组解构系病态，TS 本错，大声拒；绑定源内层种
+			// 不可证（`string[][]` 内叶会静默错值，而等价扁平 m5 系
+			// 拒收），只放行字面量内层，绑定嵌套待叶种标记设计）。
+			if elemIsStr {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern over string elements is not lowerable"})
+				return false
+			}
+			if srcElems == nil {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern over runtime array is not lowerable yet"})
+				return false
+			}
+			if idx >= len(srcElems) || srcElems[idx] == nil || srcElems[idx].Kind != ast.KindArrayLiteralExpression {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "nested array pattern needs a literal inner array"})
+				return false
+			}
+			innerElems := []*ast.Node{}
+			innerLitLen := 0
+			if elems := srcElems[idx].AsArrayLiteralExpression().Elements; elems != nil {
+				for _, n := range elems.Nodes {
+					innerElems = append(innerElems, n)
+				}
+				innerLitLen = len(elems.Nodes)
+			}
+			innerIsStr := saLiteralIsStrArray(srcElems[idx], scope)
+			inner := saLowerCheckedIndex(w, arr, fmt.Sprintf("%d", idx), scope.nextLabel, nextTemp)
+			if !saLowerArrayPatternElems(w, d, inner, innerLitLen, innerElems, innerIsStr, nm.AsNode(), scope, pos, refusals, nextTemp) {
+				return false
+			}
+			idx++
+			continue
 		}
 		name := nm.Text()
 		if _, dup := scope.types[name]; dup {

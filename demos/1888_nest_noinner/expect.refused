@@ -1,0 +1,2 @@
+# 空外层无内数组（通过即内层空柄解引用 fault；上游转译过）
+nested array pattern needs a literal inner array

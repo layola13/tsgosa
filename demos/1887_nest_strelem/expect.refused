@@ -1,0 +1,2 @@
+# 串元作数组解构系病态（TS 本错；串索引经 `s[i]` 另口）
+nested array pattern over string elements is not lowerable
