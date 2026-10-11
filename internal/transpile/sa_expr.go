@@ -924,6 +924,11 @@ func saLowerJSONInstObject(w printer.EmitTextWriter, base string, def *saClassDe
 			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", h, base, off))
 			p, l := saExpandStr(w, h, nextTemp)
 			writeV(fmt.Sprintf("@sa_json_writer_field_string(%s, &%s, %s, &%s, %s)", wr, kp, kl, p, l))
+		case fk == "f64":
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", v, base, off))
+			writeV(fmt.Sprintf("@sa_json_writer_field_f64(%s, &%s, %s, %s)", wr, kp, kl, v))
 		case fk == "arr":
 			ek, ok := scope.arrFieldElem[def.name+"."+f.name]
 			if !ok || (ek != "i32" && ek != "str") {
@@ -1043,7 +1048,6 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 	}
 	// 数组形（i32/串元；嵌套另步；空数组即 `[]`）。
 	if saIsArrValue(a, scope) {
-		println("DBG json ARR-BRANCH")
 		h, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", false, msg
@@ -1110,10 +1114,22 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 		}
 		p, l := saExpandStr(w, h, nextTemp)
 		writeV(fmt.Sprintf("@sa_json_writer_write_string(%s, &%s, %s)", wr, p, l))
+	case saIsF64Operand(a, scope):
+		v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		writeV(fmt.Sprintf("@sa_json_writer_write_f64(%s, %s)", wr, v))
 	default:
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", false, "JSON.stringify takes an i32/string/bool/null value (arrays/objects are not lowerable yet)"
+		}
+		// f64 混排经严格求值落 f64 temp（如 `x+1` 经 fadd、f64 方法调用经内联出口；
+		// 与打印径 temp 种纠偏同形；sext 会截断小数）。
+		if k, ok := scope.types[v]; ok && k == "f64" {
+			writeV(fmt.Sprintf("@sa_json_writer_write_f64(%s, %s)", wr, v))
+			break
 		}
 		wide := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
