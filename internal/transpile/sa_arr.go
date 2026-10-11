@@ -960,6 +960,59 @@ func saLowerCheckedIndex(w printer.EmitTextWriter, base, idx string, nextLabel, 
 	return dest
 }
 
+// saLowerCheckedIndexDefault lowering 带缺省的守卫下标读（绑定数组解构缺省
+// 用；守卫/装载/汇合与 saLowerCheckedIndex 同形，OOB 臂改求缺省值存槽。
+// 惰性：界内缺省恒不求值，副作用缺省只在越界触发（`??`/三元惰性同律）。
+// 上游同形 OOB 恒存 0（p8b 实证 bun 5 vs 上游 0，静默错值），薄口按 JS
+// 求值缺省式（字面量越界臂同律），正确优先（铁律 4）；缺省求值失败沿
+// saEvalI32 原拒因上抛（调用方定位）。
+func saLowerCheckedIndexDefault(w printer.EmitTextWriter, base, idx string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int, init *ast.Node) (string, string) {
+	freshT := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	freshL := func(p string) string {
+		l := fmt.Sprintf("L_%s_%d", p, *nextLabel)
+		*nextLabel++
+		return l
+	}
+	slot := freshT()
+	endL := freshL("idx_end")
+	oobL := freshL("idx_oob")
+	loadL := freshL("idx_ok")
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	ln := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, base))
+	ok := freshT()
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, idx, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, loadL, oobL))
+	w.Write(fmt.Sprintf("%s:\n", loadL))
+	data := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, base))
+	off := freshT()
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, idx))
+	addr := freshT()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+	v := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", v, addr))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", oobL))
+	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, op))
+	saReleaseOwnedTemp(w, scope, op)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
+}
+
 // saLowerElementStore lowering `a[i] = v`（形状证据：封存 lowerElementStore:8437-8448）。
 // saLowerElementStore lowering `a[i] = v`（形状证据：封存 lowerElementStore:8437-8448）。
 func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTemp *int) {
@@ -1777,22 +1830,32 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 			return false
 		}
 		// 缺省折叠（字面量源下标编译期已知：界内缺省恒死走元，
-		// 越界按 i32 求值缺省式；标识源长度未知沿旧门大声拒）。
+		// 越界按 i32 求值缺省式；绑定源运行时守卫：界内走元，
+		// 越界臂内惰性求缺省值（JS 语义；上游 OOB 恒存 0 系静默错值，
+		// p8b 实证 bun 5 vs 上游 0，正确优先）。
 		if be.Initializer != nil && (litLen < 0 || idx >= litLen) {
-			if litLen < 0 {
-				ln, col := pos(el.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring defaults are not lowerable yet"})
-				return false
+			if litLen >= 0 {
+				op, msg := saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+				scope.types[name] = "i32"
+				saDeclareInitOwn(scope, name, op)
+				idx++
+				continue
 			}
-			op, msg := saEvalI32(w, be.Initializer, scope, pos, refusals, nextTemp)
+			v, msg := saLowerCheckedIndexDefault(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer)
 			if msg != "" {
 				ln, col := pos(el.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 				return false
 			}
-			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+			w.Write(fmt.Sprintf("  %s = %s\n", name, v))
 			scope.types[name] = "i32"
-			saDeclareInitOwn(scope, name, op)
+			saDeclareInitOwn(scope, name, v)
 			idx++
 			continue
 		}
