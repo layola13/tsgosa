@@ -1971,6 +1971,56 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 			def, _ = scope.classes[scope.thisClass]
 		}
 	}
+	effInit := vd.Initializer
+	outerInit := vd.Initializer
+	for outerInit != nil && (outerInit.Kind == ast.KindParenthesizedExpression || outerInit.Kind == ast.KindNonNullExpression) {
+		if outerInit.Kind == ast.KindParenthesizedExpression {
+			outerInit = outerInit.AsParenthesizedExpression().Expression
+		} else {
+			outerInit = outerInit.AsNonNullExpression().Expression
+		}
+	}
+	if outerInit != nil && (outerInit.Kind == ast.KindAsExpression || outerInit.Kind == ast.KindSatisfiesExpression) &&
+		def == nil && src == "" {
+		// 断言包装字面量源（`const {x} = {x:5} as Pt`；声明位 sa_decl.go:142
+		// 同例 + 1358 数组透明包装同例；布局取断言类型名；`as const`/泛型/
+		// 错配沿旧门；成功时 effInit 供下缺省折叠键集）。
+		var inner *ast.Node
+		var tnode *ast.TypeNode
+		if outerInit.Kind == ast.KindSatisfiesExpression {
+			if se := outerInit.AsSatisfiesExpression(); se != nil {
+				inner, tnode = se.Expression, se.Type
+			}
+		} else {
+			if ae := outerInit.AsAsExpression(); ae != nil {
+				inner, tnode = ae.Expression, ae.Type
+			}
+		}
+		for inner != nil && (inner.Kind == ast.KindParenthesizedExpression || inner.Kind == ast.KindNonNullExpression) {
+			if inner.Kind == ast.KindParenthesizedExpression {
+				inner = inner.AsParenthesizedExpression().Expression
+			} else {
+				inner = inner.AsNonNullExpression().Expression
+			}
+		}
+		if inner != nil && inner.Kind == ast.KindObjectLiteralExpression && tnode != nil && tnode.Kind == ast.KindTypeReference {
+			if ref := tnode.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+				if _, ok := scope.classes[ref.TypeName.Text()]; ok {
+					h, defname, msg := saLowerObjectLiteral(w, inner, ref.TypeName.Text(), scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					if d2, ok := scope.classes[defname]; ok {
+						def = d2
+					}
+					src = h
+					effInit = inner
+				}
+			}
+		}
+	}
 	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression &&
 		(def == nil || src == "") {
 		// 字面量源现场具化（注解供布局时亦须物化——旧 `def == nil` 条件跳过
@@ -2054,9 +2104,10 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 		return false
 	}
 	hid := src
-	// 字面量源键集（缺省折叠用；标识源存在性未知不折，litKeys 为空即全拒）。
-	isLitSrc := vd.Initializer != nil && vd.Initializer.Kind == ast.KindObjectLiteralExpression
-	litKeys := saLiteralKeySet(vd.Initializer)
+	// 字面量源键集（缺省折叠用；标识源存在性未知不折，litKeys 为空即全拒；
+	// 断言包装源以解包字面量为准）。
+	isLitSrc := effInit != nil && effInit.Kind == ast.KindObjectLiteralExpression
+	litKeys := saLiteralKeySet(effInit)
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
 		if el.Kind != ast.KindBindingElement {
 			continue
