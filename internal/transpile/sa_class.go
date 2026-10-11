@@ -3560,6 +3560,16 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 				paramVal[nm.Text()] = v
 				continue
 			}
+			// 串注解直路由（`this.n = t.length` 等读位用串形参；
+			// 名单/计算位 want 扫描已先行，此处只补读位漏网）。
+			if k, ok := saAnnotKind(pd.Type); ok && k == "str" {
+				v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				paramVal[nm.Text()] = v
+				continue
+			}
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -4083,7 +4093,7 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		if !ok {
 			return false
 		}
-		if pa.Name().Text() == "length" && k == "arr" {
+		if pa.Name().Text() == "length" && (k == "arr" || k == "str") {
 			return true
 		}
 		if len(k) > 5 && k[:5] == "inst:" {
