@@ -2603,15 +2603,66 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 // saLowerObjPatternElems lowering 对象模式逐元（saLowerObjDestructuringDecl
 // 对象位本体；抽取供嵌套递归复用，零语义差）。
 func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassDef, hid string, isLitSrc bool, litKeys map[string]bool, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	excluded := map[string]bool{}
+	sawRest := false
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
+		if sawRest {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest element must be last"})
+			return false
+		}
 		if el.Kind != ast.KindBindingElement {
 			continue
 		}
 		be := el.AsBindingElement()
 		if be.DotDotDotToken != nil {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
-			return false
+			// 对象剩余解构（`const {x, ...rest} = o`；须居末 + 纯标识名；
+			// 剩余域合成子布局后 alloc + 逐域复制（种分发与对象 spread
+			// 复制臂同形）；上游 destructureObject 无 rest 臂，此处为
+			// spread 形复合，非自造语义）。
+			sawRest = true
+			nm := be.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier || be.PropertyName != nil || be.Initializer != nil {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest element needs a plain name"})
+				return false
+			}
+			name := nm.Text()
+			if _, dup := scope.types[name]; dup {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+				return false
+			}
+			rdef := saRestLayout(def, excluded, scope.classes)
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if rdef.size == 0 {
+				w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+			} else {
+				w.Write(fmt.Sprintf("  %s = alloc %d\n", h, rdef.size))
+			}
+			saOwnTemp(scope, h)
+			for _, f := range rdef.fields {
+				fk := rdef.fkinds[f.name]
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				if fk == "str" || fk == "arr" || fk == "inst" {
+					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, hid, def.offsets[f.name]))
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, f.offset, t))
+					continue
+				}
+				if fk == "f64" {
+					w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", t, hid, def.offsets[f.name]))
+					w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, f.offset, t))
+					continue
+				}
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, hid, def.offsets[f.name]))
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, f.offset, t))
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "inst:" + rdef.name
+			saDeclareInitOwn(scope, name, h)
+			continue
 		}
 		nm := be.Name()
 		if nm == nil || (nm.Kind != ast.KindIdentifier && nm.Kind != ast.KindObjectBindingPattern) {
@@ -2643,6 +2694,7 @@ func saLowerObjPatternElems(w printer.EmitTextWriter, d *ast.Node, def *saClassD
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + field + " is not in the " + def.name + " layout"})
 			return false
 		}
+		excluded[field] = true
 		if nm.Kind == ast.KindObjectBindingPattern {
 			// 嵌套对象模式（`const {p: {v}} = b`）：外层域读回内层句柄
 			// 再递归逐域（实例布局固定，内外偏移皆静态，读链恒 sound；

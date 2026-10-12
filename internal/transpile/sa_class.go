@@ -1828,6 +1828,91 @@ func saAnonLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.T
 	return true
 }
 
+// saRestLayoutEqual 判定既有剩余布局与给定源域集同形（域序/种全等；
+// 子布局名随种走，不等即不复用，后缀另建，与匿名合成同律）。
+func saRestLayoutEqual(def, src *saClassDef, fields []string) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		sk := src.fkinds[fname]
+		if sk == "" {
+			sk = "i32"
+		}
+		if def.fkinds[fname] != sk {
+			return false
+		}
+	}
+	return true
+}
+
+// saRestLayout 由源布局派生剩余字段子布局（对象剩余解构 `...rest` 用；
+// 排除集外字段保源序，偏移按种重算，fdefs/fsub/fopt 透传；名按源名 +
+// 剩余域名确定性派生，同形复用异形后缀；isSynth 故不参与键集匹配，
+// 与字面量合成同律；空剩余即零域布局，alloc 侧走既有零尺寸口径）。
+func saRestLayout(src *saClassDef, excluded map[string]bool, classes map[string]*saClassDef) *saClassDef {
+	if src == nil {
+		return nil
+	}
+	var fields []string
+	for _, f := range src.fields {
+		if !excluded[f.name] {
+			fields = append(fields, f.name)
+		}
+	}
+	base := "Rest_" + saMonoName(src.name)
+	if len(fields) > 0 {
+		base += "_" + saMonoName(strings.Join(fields, "_"))
+	}
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if saRestLayoutEqual(def, src, fields) {
+				return def
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}}
+		off := 0
+		for _, fname := range fields {
+			fkind := src.fkinds[fname]
+			if fkind == "" {
+				fkind = "i32"
+			}
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			if src.fdefs != nil {
+				def.fdefs[fname] = src.fdefs[fname]
+			}
+			if sub, ok := src.fsub[fname]; ok {
+				if def.fsub == nil {
+					def.fsub = map[string]string{}
+				}
+				def.fsub[fname] = sub
+			}
+			if src.fopt[fname] {
+				if def.fopt == nil {
+					def.fopt = map[string]bool{}
+				}
+				def.fopt[fname] = true
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def
+	}
+}
+
 // saRecordTypeAlias 记录对象字面量类型别名布局（`type X = {a: T, ...}`；
 // 非字面量目标（联合/基元/引用）不记，含泛型形参别名不记（l5/l6 史诗级另立），
 // 方法签名不占槽，与接口同形；嵌套具名域经已记录表解子布局（声明序依赖，

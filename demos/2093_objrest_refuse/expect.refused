@@ -1,2 +1,0 @@
-# 对象剩余解构另立（本轮只收数组位）
-rest elements in destructuring are not lowerable
