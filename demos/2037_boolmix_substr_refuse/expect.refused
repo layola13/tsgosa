@@ -1,0 +1,2 @@
+# 串元下标混布尔沿串门拒（串位仅同种相等）
+only +/==/!= operate on strings

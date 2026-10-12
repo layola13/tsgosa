@@ -1,0 +1,2 @@
+# 可选下标混布尔沿旧门（`?.` 空读 0 与 undefined 语义分叉，禁仿）
+boolean f in i32 expression

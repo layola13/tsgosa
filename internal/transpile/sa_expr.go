@@ -56,6 +56,14 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 			(saIsBoolish(be.Right, scope) && saIsBoolMixOperand(be.Left, scope))) {
 		return ""
 	}
+	// 混合布尔下标相等放行（`f == a[i]`；空守卫 + 越界守卫见求值核；
+	// 与求值位同谓词）。
+	if be != nil && be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+		be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+		((saIsBoolish(be.Left, scope) && saIsBoolSubOperand(be.Right, scope)) ||
+			(saIsBoolish(be.Right, scope) && saIsBoolSubOperand(be.Left, scope))) {
+		return ""
+	}
 	for _, side := range []*ast.Node{be.Left, be.Right} {
 		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
 			return side.Text()
@@ -107,6 +115,120 @@ func saIsBoolMixOperand(e *ast.Node, scope *saScope) bool {
 		}
 	}
 	return false
+}
+
+// saIsBoolSubOperand 报告混合布尔相等的下标整数侧形状（具名数组基 + 字面量/
+// i32 绑定下标；串元/嵌套元/可选链沿旧门；OOB 读运行时折 false/true，空基与
+// 既有 plain 下标同 fault）。
+func saIsBoolSubOperand(e *ast.Node, scope *saScope) bool {
+	if e == nil || e.Kind != ast.KindElementAccessExpression {
+		return false
+	}
+	ea := e.AsElementAccessExpression()
+	if ea == nil || ea.QuestionDotToken != nil || ea.Expression == nil ||
+		ea.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	base := ea.Expression.Text()
+	k, ok := scope.types[base]
+	if !ok || k != "arr" {
+		return false
+	}
+	if scope.arrStr != nil && scope.arrStr[base] {
+		return false
+	}
+	if scope.arrNest != nil && scope.arrNest[base] {
+		return false
+	}
+	idx := ea.ArgumentExpression
+	for idx != nil && idx.Kind == ast.KindPrefixUnaryExpression {
+		un := idx.AsPrefixUnaryExpression()
+		if un == nil || un.Operand == nil {
+			break
+		}
+		if un.Operator != ast.KindMinusToken && un.Operator != ast.KindPlusToken {
+			break
+		}
+		idx = un.Operand
+	}
+	if idx == nil {
+		return false
+	}
+	if idx.Kind == ast.KindNumericLiteral && !saIsFloatLit(idx.Text()) {
+		return true
+	}
+	if idx.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[idx.Text()]; ok && k == "i32" {
+			return true
+		}
+	}
+	return false
+}
+
+// saLowerBoolSubEq lowering 混合布尔下标相等（`f == a[i]`；布尔侧归一，下标侧
+// 越界守卫：OOB 折 false（`!=` 折 true），与 JS undefined 语义一致；空基不设防，
+// 与既有 plain 下标同 fault（上游同崩），禁新 fault 模式引入；槽汇合）。
+func saLowerBoolSubEq(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken
+	var boolNode, subNode *ast.Node
+	if saIsBoolish(be.Left, scope) {
+		boolNode, subNode = be.Left, be.Right
+	} else {
+		boolNode, subNode = be.Right, be.Left
+	}
+	ea := subNode.AsElementAccessExpression()
+	base := ea.Expression.Text()
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	endL := fmt.Sprintf("L_beq_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	oobL := fmt.Sprintf("L_beq_oob_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	loadL := fmt.Sprintf("L_beq_load_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	b, msg := saEvalBool(w, boolNode, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if msg := saCheckIntIndex(scope, idx); msg != "" {
+		return "", msg
+	}
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, base))
+	ok := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, idx, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, loadL, oobL))
+	w.Write(fmt.Sprintf("%s:\n", loadL))
+	v := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+	op2 := "eq"
+	if neg {
+		op2 = "ne"
+	}
+	e := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", e, op2, b, v))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, e))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", oobL))
+	fv := "0"
+	if neg {
+		fv = "1"
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
 }
 
 // saPeelParens 剥括号（条件位逻辑判定只认括号透明；`as`/断言等沿旧门）。
@@ -6340,6 +6462,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, r))
+			return t, ""
+		}
+		// 混合布尔下标相等（`f == a[i]`；布尔侧归一，下标侧空守卫 + 越界守卫，
+		// 空基/OOB 折 false（`!=` 折 true），与 JS undefined 语义一致；
+		// 与条件位同谓词；串元/嵌套元/可选链沿旧门）。
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+			((saIsBoolish(be.Left, scope) && saIsBoolSubOperand(be.Right, scope)) ||
+				(saIsBoolish(be.Right, scope) && saIsBoolSubOperand(be.Left, scope))) {
+			t, msg := saLowerBoolSubEq(w, be, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
 			return t, ""
 		}
 		// f64 arithmetic/comparison (either side float forces float; mixed shapes refuse).
