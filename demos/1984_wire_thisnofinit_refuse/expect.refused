@@ -1,0 +1,2 @@
+# 无初值字段读 undefined，本仓无值，大声拒（有初值即通见 1978）
+constructor wiring right side must be a parameter name

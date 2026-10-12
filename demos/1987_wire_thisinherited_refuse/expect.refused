@@ -1,0 +1,2 @@
+# 继承字段接线读另立（基 finit 不在派生表，super 序另议）
+constructor wiring right side must be a parameter name

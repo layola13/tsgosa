@@ -4124,6 +4124,36 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		if pa == nil || pa.Expression == nil || pa.Name() == nil {
 			return false
 		}
+		if pa.Expression.Kind == ast.KindThisKeyword {
+			// this 读（`this.m`；属主布局数据字段且有 finit 初值——JS 字段初始化
+			// 先于构造体，无初值读 undefined，本仓无值沿旧门；仅收 i32/str 种，
+			// arr/inst/f64 柄入值位系静默错码（正常位同洞既有，本门禁扩散），
+			// 错种由求值位大声拒；求值经实例通道）。
+			if pa.QuestionDotToken != nil || pa.Name().Kind != ast.KindIdentifier {
+				return false
+			}
+			nm := pa.Name().Text()
+			if strings.HasPrefix(nm, "#") {
+				return false
+			}
+			def, ok := scope.classes[scope.thisClass]
+			if !ok || def == nil {
+				return false
+			}
+			if _, ok := def.offsets[nm]; !ok {
+				return false
+			}
+			if fk := def.fkinds[nm]; fk != "i32" && fk != "str" && fk != "" {
+				return false
+			}
+			if def.finits == nil {
+				return false
+			}
+			if _, ok := def.finits[nm]; !ok {
+				return false
+			}
+			return true
+		}
 		if pa.QuestionDotToken != nil {
 			if pa.Name().Text() != "length" || pa.Expression.Kind != ast.KindIdentifier ||
 				!allow[pa.Expression.Text()] {
@@ -4205,6 +4235,12 @@ func saWiringStrRead(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 }
 
 func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, paramVal map[string]string, fnArgs map[string]*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	// 接线期 this 读（`this.m` 经实例通道直读在建柄；finit 先行故初值 sound；
+	// super/注入/快照环无 this 求值，不受影响；退出恢复。thisClass 同步为
+	// 属主（门经布局验证；外层值恢复）。
+	savedSelf, savedClass := scope.thisSelf, scope.thisClass
+	scope.thisSelf, scope.thisClass = h, owner
+	defer func() { scope.thisSelf, scope.thisClass = savedSelf, savedClass }()
 	// 名单接线串实参集合（arg 环已按串求值；串柄入 i32/f64 域即错，见下守卫；
 	// 与 new 侧 wantStr 同源重算（纯扫，零发射）。
 	// 名单接线串/浮实参集合（arg 环已按串/浮求值；错域入即错，见下守卫；
