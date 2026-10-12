@@ -1136,6 +1136,13 @@ func saExpectArrElemKind(e *ast.Node, scope *saScope) string {
 			}
 		}
 	}
+	// 串元数组函数返回（门侧 `saIsArrValue` 同源分支；字面量侧串元即串，
+	// 调用侧 arrStr 记种即串，余下恒 i32，与门同口径）。
+	if e != nil && e.Kind == ast.KindCallExpression {
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "arrStr" {
+			return "str"
+		}
+	}
 	return "i32"
 }
 

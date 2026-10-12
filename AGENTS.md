@@ -23,6 +23,8 @@
 
 > 用户令（2026-10-08，本轮收录并执行）：六条铁律原样重申不另立（①必须在已有架构做②必须替换已有生成的JS逻辑③禁止新建文件④禁止原创逻辑⑤禁止在MAIN.GO里面堆逻辑⑥禁止在transpile.go写巨无霸，单次增量约30行内、领域lowering按归属落已有`sa_*.go`）；学习顺序sala→sci/sa→satsgo/saemit→tsgosa落`ts→sa`；工具链优先（Go 1.26.0`/opt/go`+Zig 0.14.1，已验）；从最后一轮提交（`f00bb6e48` R3-72）继续；ts基本语法优先、npm次之；`lib.d.ts`完全用`sci/sa_std`实现（新增语义先落`sci/sa_std`，tsgosa只做`@import`+符号映射）；`this`/派生/匿名/导出导入+ts全特性+单元测试框架继续全支持；验收为`satsgo`已完成转换全部移植（差分门禁逐项对齐）+`tsgo/docs/todo.md`四批探针+循环迭代1-7逐项核实验收；每特性独立commit即推`https://github.com/layola13/tsgosa`（`GIT_TOKEN`）。
 
+> 用户令（2026-10-12，收录并执行，拒绝任何理由）：六条铁律原样重申不另立；以 `https://github.com/TheAlgorithms/TypeScript`（已克隆至同级 `../TheAlgorithms-TypeScript`）为实战语料，用 tsgosa `ts→sa` 务必全部支持它的单元测试与例子（`*.test.ts` + 算法源文件逐个可转可跑）；转不过即按铁律修（有问题改底座/移植，不跳过不绕行），禁以任何理由拒收；验收为 TALG 矩阵全绿 + 既有门禁（`--check` + `--corpus` 286 agree）零回退；每增量独立 commit 即推 `https://github.com/layola13/tsgosa`（`GIT_TOKEN`），sala 对应页同步更新。
+
 ## 1. 六条铁律（违反即回滚）
 
 1. **必须在已有架构做**：只改 `tsgosa` 已有文件（`internal/compiler/emitter.go` 管线、`internal/transformers/*` 中转、`internal/printer/*` 落字、`internal/transpile/transpile.go` 单文件口、`cmd/tsgo/main.go` 薄 CLI）。不另起平行 lowering 体系。

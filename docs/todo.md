@@ -5,6 +5,14 @@
 > 环境：Ubuntu 24.04 / Go 1.27.1（`/usr/local/go`）/ Zig 0.14.1（`/opt`）/ `tsgo`（`/tmp/tsgo`，41M，由本仓 `go build ./cmd/tsgo`）/ `sci` LLVM 版（`zig build -Dllvm=true`，默认库名 `LLVM-14`；显式 `-Dllvm-lib-name=LLVM-C` 会失败）。
 > 探针位置（易失，见 §5）：`/tmp/opencode/ts-sa-probe/{cases,bcases,b2cases}` + 生成器 `gen_probes.py/gen_backend.py/gen_batch2.py`；Demo：`/tmp/opencode/ts-sa-demo/`、`/tmp/opencode/ts-sa-demo2/`。
 
+## P0 TALG 全量（最高优先级，用户令 2026-10-12，拒绝任何理由）
+
+> 语料：`https://github.com/TheAlgorithms/TypeScript`（已克隆至同级 `../TheAlgorithms-TypeScript`，108 算法源 + 99 `*.test.ts`，jest）。
+> 方法：新建真 npm 工程（同级 `../talgapp`，`npm i file:../TheAlgorithms-TypeScript` 物化拷贝，symlink 底座不穿透故禁软链；`src/main.ts` 入口 import 算法 + `describe/it/expect` 内联断言）→ `tsgo build` 程序链 → `sa check` + `build-exe` 真机 → bun 镜算。
+> 纪律：六条铁律不另立；转不过即修（门与求值不对称类优先补齐），禁以任何理由拒收（AGENTS.md 用户令已收录）。
+> 进展：bubbleSort 跨包直链已通（真机 9/0）；expect 数组断言门补齐 `saCallRetKind` 数组函数臂（`sa_arr.go:saIsArrValue` + `sa_ctrl.go:saExpectArrElemKind`，与 `saArrValueOf` 求值侧同源，零新语义；JEV choose 落件）。
+> 矩阵（逐算法填）：见下批增量台账；验收为 TALG 全绿 + 既有门禁零回退。
+
 ## 第一批：53 随机探针（`cases/`）
 
 34 通过（含：串数组/嵌套数组/Map/Set/`for-in`/`Array.isArray`/`throw` 裸抛/`try-catch` 无值抛/默认参数/rest/spread-call/重载/`async` 定义/`switch` 串与 fallthrough/float/bitwise/`static/#私有/getter/abstract`/`namespace`/`??`(i32)/正则 `test`/`typeof`/联合/泛型/`as`/`keyof`/`any`）。

@@ -3623,7 +3623,15 @@ func saIsArrValue(e *ast.Node, scope *saScope) bool {
 		return ok && k == "arr"
 	case ast.KindCallExpression:
 		k, ok := saArrCallRet(e.AsCallExpression(), scope)
-		return ok && k == "arr"
+		if ok && k == "arr" {
+			return true
+		}
+		// 同文件/链接数组函数返回（求值侧 `saArrValueOf` 同源分支既有；
+		// 门与求值不对称致 expect 调用位误拒，此处补齐，零新语义）。
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && (k == "arr" || k == "arrStr") {
+			return true
+		}
+		return false
 	case ast.KindParenthesizedExpression:
 		return saIsArrValue(e.AsParenthesizedExpression().Expression, scope)
 	case ast.KindAsExpression:
