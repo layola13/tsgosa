@@ -4069,6 +4069,9 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 			case ast.KindAmpersandAmpersandToken, ast.KindBarBarToken:
 				// 逻辑值语义（`f && true`；操作数递归同门；求值经既有逻辑值位短路）。
 				return saWiringNamedLit(be.Left, allow, scope) && saWiringNamedLit(be.Right, allow, scope)
+			case ast.KindQuestionQuestionToken:
+				// 空合（`t?.length ?? -1`；左右操作数递归同门；求值经既有空合核）。
+				return saWiringNamedLit(be.Left, allow, scope) && saWiringNamedLit(be.Right, allow, scope)
 			}
 		}
 		return false
@@ -4081,11 +4084,18 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		}
 		return false
 	case ast.KindElementAccessExpression:
-		// 数组下标读（`a[0]`；基须已绑 arr 形参；索引递归同门；`?.` 沿旧门）。
+		// 数组下标读（`a[0]`；基须已绑 arr 形参；索引递归同门；`?.` 沿旧门）与
+		// 串可选下标（`t?.[i]`；基须已绑 str 形参；索引递归同门；求值经串位守卫）。
 		ea := e.AsElementAccessExpression()
-		if ea == nil || ea.QuestionDotToken != nil || ea.Expression == nil ||
+		if ea == nil || ea.Expression == nil ||
 			ea.Expression.Kind != ast.KindIdentifier || !allow[ea.Expression.Text()] {
 			return false
+		}
+		if ea.QuestionDotToken != nil {
+			if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "str" {
+				return false
+			}
+			return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 		}
 		if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "arr" {
 			return false
@@ -4098,11 +4108,22 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 	case ast.KindPropertyAccessExpression:
 		// 取长/实例字段读（`a.length`/`b.f`；基须已绑 arr/inst 形参；
-		// `?.`/链式沿旧门；错种由求值位大声拒）与嵌套链读（`oo.p.v` 两级链；
-		// 根须已绑形参，布局由 saChainLeafDef 纯判定；深层链/`?.`/元素基沿旧门）。
+		// 错种由求值位大声拒）与嵌套链读（`oo.p.v` 两级链；
+		// 根须已绑形参，布局由 saChainLeafDef 纯判定；深层链/`?.`/元素基沿旧门）与
+		// 串可选取长（`t?.length`；基须已绑 str 形参；其余 `?.` 成员沿旧门）。
 		pa := e.AsPropertyAccessExpression()
-		if pa == nil || pa.QuestionDotToken != nil || pa.Expression == nil || pa.Name() == nil {
+		if pa == nil || pa.Expression == nil || pa.Name() == nil {
 			return false
+		}
+		if pa.QuestionDotToken != nil {
+			if pa.Name().Text() != "length" || pa.Expression.Kind != ast.KindIdentifier ||
+				!allow[pa.Expression.Text()] {
+				return false
+			}
+			if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "str" {
+				return false
+			}
+			return true
 		}
 		if pa.Expression.Kind == ast.KindPropertyAccessExpression {
 			inner := pa.Expression.AsPropertyAccessExpression()

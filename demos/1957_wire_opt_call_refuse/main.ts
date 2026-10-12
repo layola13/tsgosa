@@ -1,0 +1,9 @@
+class C {
+  s: string = "";
+  constructor(t: string|null) { this.s = t?.toUpperCase() ?? "?"; }
+}
+function main(): i32 {
+  const c = new C("hey");
+  console.log(c.s);
+  return 0;
+}
