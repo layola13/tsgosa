@@ -1,0 +1,2 @@
+# 标量缺省系 TS 本错（元为数组，数不能代柄；沿旧门）
+array element defaults over bindings are not lowerable yet

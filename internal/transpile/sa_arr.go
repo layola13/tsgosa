@@ -1181,6 +1181,57 @@ func saLowerCheckedIndexDefault(w printer.EmitTextWriter, base, idx string, scop
 	return dest, ""
 }
 
+// saLowerCheckedIndexDefaultArr lowering 数组缺省的守卫下标读（嵌套数组解构
+// 缺省用；守卫/装载/汇合与 saLowerCheckedIndexDefault 同形，OOB 臂现场构造数组
+// 字面量缺省（saLowerArrayLiteral 自带归属登记与 arrNest/arrStr 标记，槽存后即释，
+// 与标量臂同律）；界内读元柄直传（嵌套元即内层柄，4 字节槽同宽）。
+func saLowerCheckedIndexDefaultArr(w printer.EmitTextWriter, base, idx string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int, init *ast.Node) (string, string) {
+	freshT := func() string {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		return t
+	}
+	freshL := func(p string) string {
+		l := fmt.Sprintf("L_%s_%d", p, *nextLabel)
+		*nextLabel++
+		return l
+	}
+	slot := freshT()
+	endL := freshL("idx_end")
+	oobL := freshL("idx_oob")
+	loadL := freshL("idx_ok")
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	ln := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, base))
+	ok := freshT()
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, idx, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, loadL, oobL))
+	w.Write(fmt.Sprintf("%s:\n", loadL))
+	data := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, base))
+	off := freshT()
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, idx))
+	addr := freshT()
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+	v := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", v, addr))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", oobL))
+	op, msg := saLowerArrayLiteral(w, init, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, op))
+	saReleaseOwnedTemp(w, scope, op)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := freshT()
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
+}
+
 // saLowerElementStore lowering `a[i] = v`（形状证据：封存 lowerElementStore:8437-8448）。
 // saLowerElementStore lowering `a[i] = v`（形状证据：封存 lowerElementStore:8437-8448）。
 func saLowerElementStore(w printer.EmitTextWriter, base, idx, rhs string, nextTemp *int) {
@@ -2145,13 +2196,67 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 				idx++
 				continue
 			}
-			// 数组元缺省绑定源不可求值（OOB 臂须现场构造数组缺省，
-			// 未建；标量缺省系 TS 本错；上游丢缺省恒存 0 系静默错值，
-			// p8b 同族，正确优先大声拒）。
+			// 数组元缺省 OOB 现场构造（缺省须数组字面量，OOB 臂具化绑定；
+			// 标量缺省系 TS 本错沿旧门大声拒；源内叶串种须与缺省字面串种一致
+			// （空字面通配），错配大声拒禁静默；上游丢缺省恒存 0 系静默错值，
+			// p8b 同族，正确优先）。
 			if kindOf() == "arr" {
-				ln, col := pos(el.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element defaults over bindings are not lowerable yet"})
-				return false
+				if be.Initializer == nil || be.Initializer.Kind != ast.KindArrayLiteralExpression {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element defaults over bindings are not lowerable yet"})
+					return false
+				}
+				defStr := saLiteralIsStrArray(be.Initializer, scope)
+				srcStr := scope.arrInnerStr != nil && scope.arrInnerStr[arr]
+				defEmpty := true
+				defNested := false
+				if ale := be.Initializer.AsArrayLiteralExpression(); ale != nil && ale.Elements != nil {
+					for _, dn := range ale.Elements.Nodes {
+						if dn == nil {
+							continue
+						}
+						if dn.Kind == ast.KindArrayLiteralExpression {
+							defNested = true
+							break
+						}
+					}
+					if len(ale.Elements.Nodes) > 0 {
+						defEmpty = false
+					}
+				}
+				if !defEmpty && defStr != srcStr {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element default kind does not match nested source"})
+					return false
+				}
+				if !defEmpty && defStr {
+					// 非空串元缺省沿旧门（具化子归属与臂内释放冲突，h1 实证；
+					// i32 元无子归属已通；另立）。
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element string defaults over bindings are not lowerable yet"})
+					return false
+				}
+				if defNested {
+					// 嵌套字面缺省沿旧门（内层柄子归属与臂内释放冲突，k6 实证；
+					// 另立）。
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element nested defaults over bindings are not lowerable yet"})
+					return false
+				}
+				v, msg := saLowerCheckedIndexDefaultArr(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer)
+				if msg != "" {
+					ln, col := pos(el.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				w.Write(fmt.Sprintf("  %s = %s\n", name, v))
+				scope.types[name] = kindOf()
+				if defStr || (defEmpty && srcStr) {
+					saMarkArrStr(scope, name)
+				}
+				saDeclareInitOwn(scope, name, v)
+				idx++
+				continue
 			}
 			v, msg := saLowerCheckedIndexDefault(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer, elemIsStr)
 			if msg != "" {

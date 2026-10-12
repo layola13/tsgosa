@@ -1,2 +1,2 @@
-# 嵌套元数组缺省须 OOB 臂现场构造（未建；上游丢缺省恒存 0 同族）
-array element defaults over bindings are not lowerable yet
+# 数组直打禁文本化（1188 既定边界；解构缺省本身已通，见 1958-1963）
+array r in i32 expression

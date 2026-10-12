@@ -1,0 +1,2 @@
+# 串缺省配 i32 嵌套源系类型错位，大声拒禁静默
+array element default kind does not match nested source
