@@ -5,5 +5,7 @@ class C {
 function main(): i32 {
   const c = new C([8, 9]);
   console.log(c.n);
+  const d = new C(null);
+  console.log(d.n);
   return 0;
 }

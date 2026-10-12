@@ -4084,7 +4084,9 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		}
 		return false
 	case ast.KindElementAccessExpression:
-		// 数组下标读（`a[0]`；基须已绑 arr 形参；索引递归同门；`?.` 沿旧门）与
+		// 数组下标读（`a[0]`；基须已绑 arr 形参；索引递归同门）与
+		// 数组可选下标（`a?.[i]`；基须已绑 arr 形参，空基归零；串元柄禁入，
+		// 求值经 `saLowerOptionalIndex` 空守卫）与
 		// 串可选下标（`t?.[i]`；基须已绑 str 形参；索引递归同门；求值经串位守卫）。
 		ea := e.AsElementAccessExpression()
 		if ea == nil || ea.Expression == nil ||
@@ -4092,7 +4094,14 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 			return false
 		}
 		if ea.QuestionDotToken != nil {
-			if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "str" {
+			if k, ok := scope.types[ea.Expression.Text()]; !ok {
+				return false
+			} else if k == "str" {
+				return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
+			} else if k != "arr" {
+				return false
+			}
+			if scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
 				return false
 			}
 			return saWiringNamedLit(ea.ArgumentExpression, allow, scope)

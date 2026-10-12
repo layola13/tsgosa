@@ -1,0 +1,2 @@
+# 串元 ?. 下标禁入 i32 接线（正常位 t1 同拒 parity）
+constructor wiring right side must be a parameter name
