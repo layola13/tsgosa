@@ -48,6 +48,14 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 		saIsBoolish(be.Left, scope) && saIsBoolish(be.Right, scope) {
 		return ""
 	}
+	// 混合布尔相等放行（`f == 1` 松相等一侧布尔值、一侧整数形；归一后 eq/ne，
+	// 与 JS 宽松语义一致；严格相等混种沿旧门；求值位同谓词，verdict 一致）。
+	if be != nil && be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+		be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+		((saIsBoolish(be.Left, scope) && saIsBoolMixOperand(be.Right, scope)) ||
+			(saIsBoolish(be.Right, scope) && saIsBoolMixOperand(be.Left, scope))) {
+		return ""
+	}
 	for _, side := range []*ast.Node{be.Left, be.Right} {
 		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
 			return side.Text()
@@ -67,6 +75,23 @@ func saIsBoolish(e *ast.Node, scope *saScope) bool {
 	}
 	if e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "bool" {
+			return true
+		}
+	}
+	return false
+}
+
+// saIsBoolMixOperand 报告混合布尔相等的整数侧形状（整数字面量与 i32 绑定
+// 标识符；调用/下标等须求值才知种，值位与条件位 verdict 须一致，故沿旧门）。
+func saIsBoolMixOperand(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindNumericLiteral && !saIsFloatLit(e.Text()) {
+		return true
+	}
+	if e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "i32" {
 			return true
 		}
 	}
@@ -6270,6 +6295,35 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
 			op2 := "eq"
 			if neg {
+				op2 = "ne"
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, r))
+			return t, ""
+		}
+		// 混合布尔相等（松相等一侧布尔值、一侧整数形：布尔侧归一，整数侧求值；
+		// 与条件位同谓词；严格相等混种/余形沿旧门大声拒）。
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+			((saIsBoolish(be.Left, scope) && saIsBoolMixOperand(be.Right, scope)) ||
+				(saIsBoolish(be.Right, scope) && saIsBoolMixOperand(be.Left, scope))) {
+			var l, r, msgL, msgR string
+			if saIsBoolish(be.Left, scope) {
+				l, msgL = saEvalBool(w, be.Left, scope, pos, refusals, nextTemp)
+				r, msgR = saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+			} else {
+				r, msgR = saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
+				l, msgL = saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
+			}
+			if msgL != "" {
+				return "", msgL
+			}
+			if msgR != "" {
+				return "", msgR
+			}
+			op2 := "eq"
+			if be.OperatorToken.Kind == ast.KindExclamationEqualsToken {
 				op2 = "ne"
 			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
