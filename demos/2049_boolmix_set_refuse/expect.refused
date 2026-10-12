@@ -1,0 +1,2 @@
+# Set 无值可比（has 返回另行，非本核）
+boolean f in i32 expression

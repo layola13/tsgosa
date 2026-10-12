@@ -64,6 +64,14 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 			(saIsBoolish(be.Right, scope) && saIsBoolSubOperand(be.Left, scope))) {
 		return ""
 	}
+	// 混合布尔 Map 读相等放行（`f == m.get(k)`；命中/缺键守卫见求值核；
+	// 与求值位同谓词）。
+	if be != nil && be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+		be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+		((saIsBoolish(be.Left, scope) && saIsBoolMapOperand(be.Right, scope)) ||
+			(saIsBoolish(be.Right, scope) && saIsBoolMapOperand(be.Left, scope))) {
+		return ""
+	}
 	for _, side := range []*ast.Node{be.Left, be.Right} {
 		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
 			return side.Text()
@@ -228,6 +236,132 @@ func saLowerBoolSubEq(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return dest, ""
+}
+
+// saIsBoolMapOperand 报告混合布尔相等的 Map 读整数侧形状（`m.get(k)` 单参
+// 调用与 `m[k]` 脱糖；具名 map 基 + i32 值建表（无表恒 i32）；串/数组/实例值、
+// Set 基、可选链沿旧门；缺键运行时折 false/true，值位条件位同谓词对称）。
+func saIsBoolMapOperand(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	var recv *ast.Node
+	var nargs int = -1
+	if e.Kind == ast.KindCallExpression {
+		ce := e.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return false
+		}
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Text() != "get" {
+			return false
+		}
+		recv = pa.Expression
+		if ce.Arguments != nil {
+			nargs = len(ce.Arguments.Nodes)
+		} else {
+			nargs = 0
+		}
+		if nargs != 1 {
+			return false
+		}
+	} else if e.Kind == ast.KindElementAccessExpression {
+		ea := e.AsElementAccessExpression()
+		if ea == nil || ea.QuestionDotToken != nil {
+			return false
+		}
+		recv = ea.Expression
+	} else {
+		return false
+	}
+	if recv == nil || recv.Kind != ast.KindIdentifier {
+		return false
+	}
+	k, ok := scope.types[recv.Text()]
+	if !ok || k != "map" {
+		return false
+	}
+	if vk, ok := scope.mapVals[recv.Text()]; ok && vk != "" && vk != "i32" {
+		return false
+	}
+	return true
+}
+
+// saLowerBoolMapEq lowering 混合布尔 Map 读相等（`f == m.get(k)`；布尔侧归一，
+// 先 has 判存：缺键折 false（`!=` 折 true），命中比对值；键槽支配位编码、
+// join 后释放；槽汇合）。
+func saLowerBoolMapEq(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken
+	var boolNode, mapNode *ast.Node
+	if saIsBoolish(be.Left, scope) {
+		boolNode, mapNode = be.Left, be.Right
+	} else {
+		boolNode, mapNode = be.Right, be.Left
+	}
+	var recv string
+	var key *ast.Node
+	if mapNode.Kind == ast.KindCallExpression {
+		ce := mapNode.AsCallExpression()
+		pa := ce.Expression.AsPropertyAccessExpression()
+		recv = pa.Expression.Text()
+		key = ce.Arguments.Nodes[0]
+	} else {
+		ea := mapNode.AsElementAccessExpression()
+		recv = ea.Expression.Text()
+		key = ea.ArgumentExpression
+	}
+	scope.addImport("sa_std/btree_map.sa")
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	endL := fmt.Sprintf("L_bmq_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_bmq_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	hitL := fmt.Sprintf("L_bmq_hit_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	b, msg := saEvalBool(w, boolNode, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	ks, kcell, msg := saMapKeySlice(w, key, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	hit := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_contains_key(&%s, &%s)\n", hit, recv, ks))
+	saOwnTemp(scope, hit)
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
+	w.Write(fmt.Sprintf("%s:\n", hitL))
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", v, recv, ks))
+	op2 := "eq"
+	if neg {
+		op2 = "ne"
+	}
+	e := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s %s, %s\n", e, op2, b, v))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, e))
+	// get 结果臂内即释（分支内定义跨 join 沿用非法，h1 子归属同律；值已入槽）。
+	w.Write(fmt.Sprintf("  !%s\n", v))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	fv := "0"
+	if neg {
+		fv = "1"
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	saReleaseKeySlice(w, ks, kcell)
 	return dest, ""
 }
 
@@ -6472,6 +6606,18 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			((saIsBoolish(be.Left, scope) && saIsBoolSubOperand(be.Right, scope)) ||
 				(saIsBoolish(be.Right, scope) && saIsBoolSubOperand(be.Left, scope))) {
 			t, msg := saLowerBoolSubEq(w, be, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return t, ""
+		}
+		// 混合布尔 Map 读相等（`f == m.get(k)`；命中比值，缺键折 false；
+		// 与条件位同谓词；串/数组/实例值与 Set 基沿旧门）。
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken) &&
+			((saIsBoolish(be.Left, scope) && saIsBoolMapOperand(be.Right, scope)) ||
+				(saIsBoolish(be.Right, scope) && saIsBoolMapOperand(be.Left, scope))) {
+			t, msg := saLowerBoolMapEq(w, be, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
 			}
