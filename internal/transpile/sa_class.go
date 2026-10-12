@@ -4331,7 +4331,15 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			continue
 		}
 		wbin := wex.AsBinaryExpression()
-		if wbin.OperatorToken == nil || wbin.OperatorToken.Kind != ast.KindEqualsToken || wbin.Right == nil {
+		if wbin.OperatorToken == nil || wbin.Right == nil {
+			continue
+		}
+		if wbin.OperatorToken.Kind != ast.KindEqualsToken {
+			// 复合赋值接线预扫（`this.f op= RHS` 读参须绑定；纯字面量沿旧径无绑定）。
+			if !saWiringPureLit(wbin.Right) {
+				needWireBind = true
+				break
+			}
 			continue
 		}
 		if wbin.Right.Kind == ast.KindIdentifier {
@@ -4537,11 +4545,44 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 			return false
 		}
 		bin := ex.AsBinaryExpression()
-		if bin.OperatorToken == nil || bin.OperatorToken.Kind != ast.KindEqualsToken ||
+		if bin.OperatorToken == nil ||
 			bin.Left == nil || bin.Left.Kind != ast.KindPropertyAccessExpression {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
 			return false
+		}
+		if bin.OperatorToken.Kind != ast.KindEqualsToken {
+			// 复合赋值接线（`this.n += k`；读-改-写回经既有实例字段复合臂；
+			// thisSelf 已注入；finit 在场门（无初值读 undefined，本仓无值）与
+			// 私有域沿旧门；失败沿复合臂拒因，不另附门）。
+			cpa := bin.Left.AsPropertyAccessExpression()
+			if cpa == nil || cpa.Expression == nil || cpa.Expression.Kind != ast.KindThisKeyword || cpa.Name() == nil {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+				return false
+			}
+			cnm := cpa.Name().Text()
+			if cdef, ok := scope.classes[owner]; !ok || cdef == nil {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + owner})
+				return false
+			} else if _, ok := cdef.offsets[cnm]; !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "field " + cnm + " is not in the " + owner + " layout"})
+				return false
+			} else if cdef.finits == nil {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+				return false
+			} else if _, ok := cdef.finits[cnm]; !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor of " + owner + " supports only this.f = param wirings"})
+				return false
+			}
+			if !saLowerCompound(w, bin, scope, pos, refusals, nextTemp, s) {
+				return false
+			}
+			continue
 		}
 		pa := bin.Left.AsPropertyAccessExpression()
 		if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword || pa.Name() == nil {

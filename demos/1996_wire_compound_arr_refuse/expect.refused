@@ -1,0 +1,2 @@
+# 数组域复合赋值沿旧门（读改写回句柄语义另立）
+compound assignment to unknown/non-i32 variable

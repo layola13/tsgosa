@@ -1,0 +1,2 @@
+# 无初值字段读改写即读 undefined，大声拒（有初值即通见 1988）
+constructor of C supports only this.f = param wirings
