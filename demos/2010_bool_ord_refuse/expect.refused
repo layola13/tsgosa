@@ -1,0 +1,2 @@
+# 布尔排序比较系 TS 本错（bool 不可排序；相等见 2002-2009）
+unsupported condition kind (boolean f in comparison)

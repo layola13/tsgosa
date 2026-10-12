@@ -28,7 +28,7 @@ func saLiteralI32(e *ast.Node) (string, bool) {
 }
 
 // saBoolSideCond 报告二元条件中布尔类型一侧的变量名（无则 ""）。
-// 门禁 TestSATSGoPortNonParamCondRefused 要求此类条件以 condition kind 拒绝。
+// 相等比较双布尔侧（`f == t`）走值位布尔相等核，不在此拒（见 saEvalI32 相等臂）。
 func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 	if cond == nil || cond.Kind != ast.KindBinaryExpression {
 		return ""
@@ -39,12 +39,38 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 	if be != nil && (saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(be) == ast.KindBarBarToken) {
 		return ""
 	}
+	// 布尔相等比较放行（双边布尔值：具名 bool 绑定/true/false 字面量；
+	// 求值经 saEvalBool 归一后 eq/ne；排序比较沿旧门）。
+	if be != nil && be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+		be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+		be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+		be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) &&
+		saIsBoolish(be.Left, scope) && saIsBoolish(be.Right, scope) {
+		return ""
+	}
 	for _, side := range []*ast.Node{be.Left, be.Right} {
 		if side != nil && side.Kind == ast.KindIdentifier && scope.types[side.Text()] == "bool" {
 			return side.Text()
 		}
 	}
 	return ""
+}
+
+// saIsBoolish 报告表达式是否为布尔值形（具名 bool 绑定或 true/false 字面量；
+// 相等比较双边门与条件位豁免共用；其余形（`!f`/调用/三元）沿旧门）。
+func saIsBoolish(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.KindTrueKeyword || e.Kind == ast.KindFalseKeyword {
+		return true
+	}
+	if e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && k == "bool" {
+			return true
+		}
+	}
+	return false
 }
 
 // saPeelParens 剥括号（条件位逻辑判定只认括号透明；`as`/断言等沿旧门）。
@@ -6224,6 +6250,32 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, rn))
 				return t, ""
 			}
+		}
+		// 布尔相等比较（双边布尔值形经 saEvalBool 归一 0/1 后 eq/ne；
+		// 排序比较系 TS 本错（bool 不可排序），沿旧门；混合种沿旧门大声拒）。
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) &&
+			saIsBoolish(be.Left, scope) && saIsBoolish(be.Right, scope) {
+			l, msgL := saEvalBool(w, be.Left, scope, pos, refusals, nextTemp)
+			if msgL != "" {
+				return "", msgL
+			}
+			r, msgR := saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
+			if msgR != "" {
+				return "", msgR
+			}
+			neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+			op2 := "eq"
+			if neg {
+				op2 = "ne"
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, r))
+			return t, ""
 		}
 		// f64 arithmetic/comparison (either side float forces float; mixed shapes refuse).
 		if saIsF64Operand(be.Left, scope) || saIsF64Operand(be.Right, scope) {

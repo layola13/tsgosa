@@ -1,0 +1,2 @@
+# 布尔算术系 TS 本错（bool 不可加；相等见 2002-2009）
+boolean f in i32 expression
