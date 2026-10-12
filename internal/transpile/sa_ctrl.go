@@ -189,6 +189,55 @@ func saLowerCompound(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported index: " + msg})
 			return false
 		}
+		// 串元复合拼接（`sa[i] += s`；读柄+串求值+拼接存回；仅 +=，余算符系
+		// TS 本错；空读回存 0（OOB 读恒 0，后续读位同折，存值不可观测；
+		// 右值支配位求值保副作用；直接 concat 空柄即崩）；与实例串臂同律）。
+		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier &&
+			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
+			if saBinaryOpKind(be) != ast.KindPlusEqualsToken {
+				ln, col := pos(where.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "string element compound needs +="})
+				return false
+			}
+			cur := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+			scope.types[cur] = "str"
+			nullL := fmt.Sprintf("L_sec_null_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			okL := fmt.Sprintf("L_sec_ok_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_sec_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			isnull := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, cur))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+			w.Write(fmt.Sprintf("%s:\n", nullL))
+			saLowerElementStore(w, base, idx, "0", nextTemp)
+			// 空臂右值求值弃值（右值副作用恒执行，与 i32 臂无条件求值同律；
+			// 臂内新生即释，join 态配平）。
+			rhs0, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(where.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported string += rhs: " + msg})
+				return false
+			}
+			saReleaseOwnedTemp(w, scope, rhs0)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", okL))
+			rhs, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(where.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported string += rhs: " + msg})
+				return false
+			}
+			out := saConcatSlices(w, cur, rhs, scope, nextTemp)
+			saLowerElementStore(w, base, idx, out, nextTemp)
+			// 臂内即释（分支内定义跨 join 沿用非法；值已入槽，h1 同律）。
+			saReleaseOwnedTemp(w, scope, out)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			return true
+		}
 		// 读-改-写回：join 读回当前值，算符作用后存回同址。
 		cur := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
 		r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)

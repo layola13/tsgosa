@@ -1,0 +1,2 @@
+# i32 元串右值沿旧门（串只能进串元）
+unsupported compound rhs: expression KindStringLiteral is not in the SA-lowerable subset

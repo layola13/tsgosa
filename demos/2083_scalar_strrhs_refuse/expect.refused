@@ -1,0 +1,2 @@
+# 标量串右值沿旧门（显式 String() 另立，P-A2 项）
+unsupported compound rhs: expression KindStringLiteral is not in the SA-lowerable subset
