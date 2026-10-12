@@ -64,8 +64,8 @@ func saBoolSideCond(cond *ast.Node, scope *saScope) string {
 	return ""
 }
 
-// saIsBoolish 报告表达式是否为布尔值形（具名 bool 绑定或 true/false 字面量；
-// 相等比较双边门与条件位豁免共用；其余形（`!f`/调用/三元）沿旧门）。
+// saIsBoolish 报告表达式是否为布尔值形（具名 bool 绑定/true/false 字面量/
+// boolean 返回调用；相等比较双边门与条件位豁免共用；`!f`/三元等沿旧门）。
 func saIsBoolish(e *ast.Node, scope *saScope) bool {
 	if e == nil {
 		return false
@@ -78,11 +78,17 @@ func saIsBoolish(e *ast.Node, scope *saScope) bool {
 			return true
 		}
 	}
+	if e.Kind == ast.KindCallExpression {
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "boolean" {
+			return true
+		}
+	}
 	return false
 }
 
-// saIsBoolMixOperand 报告混合布尔相等的整数侧形状（整数字面量与 i32 绑定
-// 标识符；调用/下标等须求值才知种，值位与条件位 verdict 须一致，故沿旧门）。
+// saIsBoolMixOperand 报告混合布尔相等的整数侧形状（整数字面量、i32 绑定
+// 标识符与 number 返回调用；下标/三元等须求值定种，值位与条件位 verdict 须
+// 一致，故沿旧门）。
 func saIsBoolMixOperand(e *ast.Node, scope *saScope) bool {
 	if e == nil {
 		return false
@@ -92,6 +98,11 @@ func saIsBoolMixOperand(e *ast.Node, scope *saScope) bool {
 	}
 	if e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "i32" {
+			return true
+		}
+	}
+	if e.Kind == ast.KindCallExpression {
+		if k, ok := saCallRetKind(e.AsCallExpression(), scope); ok && k == "number" {
 			return true
 		}
 	}
