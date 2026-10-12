@@ -2105,16 +2105,44 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 		}
 		return scope.arrInnerStr != nil && scope.arrInnerStr[arr]
 	}
+	sawRest := false
 	for _, el := range pat.AsBindingPattern().Elements.Nodes {
+		if sawRest {
+			ln, col := pos(el.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest element must be last"})
+			return false
+		}
 		if el.Kind != ast.KindBindingElement {
 			idx++
 			continue
 		}
 		be := el.AsBindingElement()
 		if be.DotDotDotToken != nil {
-			ln, col := pos(el.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest elements in destructuring are not lowerable"})
-			return false
+			// 剩余解构（`const [x, ...rest] = a`；尾段切片现场具化（R1
+			// `@ts_arr_slice_copy` 现货，标记透传与归属同切片径）；rest 须处末
+			// （TS 本错）；嵌套 rest 沿旧门；越界起位钳空与切片同律。
+			sawRest = true
+			nm := be.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "rest element needs a plain name"})
+				return false
+			}
+			name := nm.Text()
+			if _, dup := scope.types[name]; dup {
+				ln, col := pos(el.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate local " + name})
+				return false
+			}
+			h := saLowerArraySlice(w, arr, fmt.Sprintf("%d", idx), "", scope, nextTemp)
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "arr"
+			saPropArrNest(scope, arr, name)
+			saPropArrStr(scope, arr, name)
+			saPropArrInnerStr(scope, arr, name)
+			saDeclareInitOwn(scope, name, h)
+			idx++
+			continue
 		}
 		nm := be.Name()
 		if nm == nil {
