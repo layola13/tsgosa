@@ -1218,12 +1218,17 @@ func saLowerCheckedIndexDefaultArr(w printer.EmitTextWriter, base, idx string, s
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", oobL))
+	mark := len(scope.ownOrder)
 	op, msg := saLowerArrayLiteral(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, op))
-	saReleaseOwnedTemp(w, scope, op)
+	// 臂内新生归属逆序释放（分支内定义跨 join 沿用即 UnknownRegister，h1 实证；
+	// 释后记 released，域尾 sweep 跳过禁双释；与 p0 域尾序同律）。
+	for i := len(scope.ownOrder) - 1; i >= mark; i-- {
+		saReleaseOwnedTemp(w, scope, scope.ownOrder[i])
+	}
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	dest := freshT()
@@ -2198,8 +2203,9 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 			}
 			// 数组元缺省 OOB 现场构造（缺省须数组字面量，OOB 臂具化绑定；
 			// 标量缺省系 TS 本错沿旧门大声拒；源内叶串种须与缺省字面串种一致
-			// （空字面通配），错配大声拒禁静默；上游丢缺省恒存 0 系静默错值，
-			// p8b 同族，正确优先）。
+			// （空字面通配），错配大声拒禁静默；臂内新生归属逆序释放（分支内
+			// 定义跨 join 沿用即 UnknownRegister，h1/k6 实证）；上游丢缺省恒存
+			// 0 系静默错值，p8b 同族，正确优先）。
 			if kindOf() == "arr" {
 				if be.Initializer == nil || be.Initializer.Kind != ast.KindArrayLiteralExpression {
 					ln, col := pos(el.Pos())
@@ -2209,17 +2215,7 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 				defStr := saLiteralIsStrArray(be.Initializer, scope)
 				srcStr := scope.arrInnerStr != nil && scope.arrInnerStr[arr]
 				defEmpty := true
-				defNested := false
 				if ale := be.Initializer.AsArrayLiteralExpression(); ale != nil && ale.Elements != nil {
-					for _, dn := range ale.Elements.Nodes {
-						if dn == nil {
-							continue
-						}
-						if dn.Kind == ast.KindArrayLiteralExpression {
-							defNested = true
-							break
-						}
-					}
 					if len(ale.Elements.Nodes) > 0 {
 						defEmpty = false
 					}
@@ -2227,20 +2223,6 @@ func saLowerArrayPatternElems(w printer.EmitTextWriter, d *ast.Node, arr string,
 				if !defEmpty && defStr != srcStr {
 					ln, col := pos(el.Pos())
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element default kind does not match nested source"})
-					return false
-				}
-				if !defEmpty && defStr {
-					// 非空串元缺省沿旧门（具化子归属与臂内释放冲突，h1 实证；
-					// i32 元无子归属已通；另立）。
-					ln, col := pos(el.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element string defaults over bindings are not lowerable yet"})
-					return false
-				}
-				if defNested {
-					// 嵌套字面缺省沿旧门（内层柄子归属与臂内释放冲突，k6 实证；
-					// 另立）。
-					ln, col := pos(el.Pos())
-					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array element nested defaults over bindings are not lowerable yet"})
 					return false
 				}
 				v, msg := saLowerCheckedIndexDefaultArr(w, arr, fmt.Sprintf("%d", idx), scope, pos, refusals, scope.nextLabel, nextTemp, be.Initializer)
