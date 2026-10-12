@@ -3993,15 +3993,18 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 	// 臂尾收敛释放（H-multiarm）：置位且臂未终结时，在截断前释本臂新生归属，
 	// 使合并点各入边状态一致；defer 逆序保证先于 saScopeExit 执行。
 	armDepth := len(scope.ownOrder)
-	wantArmRelease := scope.armRelease
 	wantArmTemps := scope.armReleaseTemps
 	terminated := false
 	defer func() {
 		if wantArmTemps && !terminated {
 			saReleaseArmTemps(w, scope, armDepth)
 		}
-		if wantArmRelease && !terminated {
+		// 臂出口统一释放臂内新生归属（终结块静默，上游 releaseScope 同律；
+		// 槽位等预注册存活（下标低于基点）；块域外不可见名死后即释，
+		// 兄弟块复名/重复内联不再重定义陷阱；含旧 armRelease 旗标语义）。
+		if !terminated {
 			saReleaseDeeperThan(w, scope, armDepth)
+			saUnpinArmScalars(w, scope, saved)
 		}
 	}()
 	for _, s := range stmts {

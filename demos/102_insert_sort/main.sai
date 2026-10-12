@@ -113,6 +113,8 @@ L_while_end_9:
   t_50 = mul t_48, 4
   t_51 = add t_49, t_50
   store t_51 + 0, k as i32
+  !j
+  !k
   t_52 = add i, 1
   !i
   i = t_52

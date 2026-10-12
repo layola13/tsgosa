@@ -39,6 +39,7 @@ L_while_body_2:
 L_ms_bad_4:
   panic(1403)
 L_ms_ok_5:
+  !q
   jmp L_while_top_1
 L_while_end_3:
   ret 0

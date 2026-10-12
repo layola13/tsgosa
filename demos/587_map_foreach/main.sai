@@ -130,6 +130,10 @@ L_mfe_body_40:
   t_72 = load t_70 + 8 as u64
   call @sa_print_bytes(&t_71, t_72)
   !t_70
+  !t_64
+  !t_63
+  !t_52
+  !t_51
 L_cb_end_2:
   t_73 = load t_49 + 0 as i32
   t_74 = add t_38, 1

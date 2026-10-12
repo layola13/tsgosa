@@ -3650,6 +3650,23 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 			paramVal[nm.Text()] = v
 			continue
 		}
+		// 可空实例联合形参（`next: Node|null`）：同布局实例直传，空字面量
+		// 吸收为 0 句柄；与方法内联/函数形参位同源；错布局沿旧门。
+		if pd.Type != nil && pd.Type.Kind == ast.KindUnionType {
+			if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), scope.classes); ok && len(inst) > 5 {
+				lname := inst[5:]
+				if a != nil && a.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[a.Text()]; ok && k == "inst:"+lname {
+						paramVal[nm.Text()] = a.Text()
+						continue
+					}
+				}
+				if saIsNullLit(a, scope) {
+					paramVal[nm.Text()] = "0"
+					continue
+				}
+			}
+		}
 		if wantF64[nm.Text()] {
 			v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -5256,6 +5273,14 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			}
 			// 可擦除注解按实参形绑定（泛型 `T`、any、联合等无布局名：实例实参继承布局，
 			// 标量走快照；arr/str 句柄实参无布局绑定，沿旧门；封存 inlineClassMethod 按实参布局别名）。
+			if pd.Type != nil && pd.Type.Kind == ast.KindUnionType {
+				// 可空实例联合形参（`next: Node|null` 即 Node 布局，空吸收为 0
+				// 句柄；与函数形参位 transpile.go:2647 同源；其余联合沿旧门）。
+				if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), scope.classes); ok {
+					kinds[i] = inst
+					continue
+				}
+			}
 			if i < len(argNodes) && argNodes[i] != nil {
 				if argNodes[i].Kind == ast.KindIdentifier {
 					if k, ok := scope.types[argNodes[i].Text()]; ok {

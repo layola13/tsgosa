@@ -41,6 +41,8 @@ L_fe_body_2:
   t_18 = add t_16, t_17
   !s
   s = t_18
+  !rest
+  !x
 L_cb_end_4:
   t_19 = load t_13 + 0 as i32
   t_20 = add t_8, 1

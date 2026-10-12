@@ -4986,6 +4986,31 @@ func saOwnTemp(scope *saScope, t string) {
 	saDeclareOwned(scope, t)
 }
 
+// saUnpinArmScalars 解臂内标量绑定 pin（move 形 `x = t` pin 住 SA 寄存器，
+// 兄弟块复名/重复内联再定义即 RegisterRedefinition；`!` 解 pin 后计算/move
+// 重定义皆合法（verifier 实测）；标量无堆可释故恒安全，句柄种沿既有归属口
+// 不在此列；已释/已消费跳过；预注册名（槽位等）不动）。
+func saUnpinArmScalars(w printer.EmitTextWriter, scope *saScope, saved saScopeSaved) {
+	for name, kind := range scope.types {
+		if _, ok := saved.types[name]; ok {
+			continue
+		}
+		if saIsTempOp(name) {
+			continue
+		}
+		if kind != "i32" && kind != "bool" && kind != "f64" {
+			continue
+		}
+		if b := saOwnOf(scope, name); b != nil && (b.released || b.consumed) {
+			continue
+		}
+		w.Write(fmt.Sprintf("  !%s\n", name))
+		if b := saOwnOf(scope, name); b != nil {
+			b.released = true
+		}
+	}
+}
+
 // saReleaseOwnedTemp 释归属临时量（具名绑定永不经此口；封存
 // releaseIfOwnedTemp:11286-11293）。
 func saReleaseOwnedTemp(w printer.EmitTextWriter, scope *saScope, t string) {

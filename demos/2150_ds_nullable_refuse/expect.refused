@@ -1,0 +1,2 @@
+# 可空实例域读另立（构造/方法联合形参已通）
+only .length member access lowerable

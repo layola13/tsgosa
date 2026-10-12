@@ -26,6 +26,7 @@ L_then_4:
   !t
   t = t_7
 L_endif_6:
+  !__ts_rand_seed
   EXPAND FOR_NEXT i, 1, L_for_top_1
 L_for_end_3:
   t_8 = sext t as i64

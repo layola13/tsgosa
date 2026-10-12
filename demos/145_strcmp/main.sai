@@ -33,6 +33,7 @@ L_then_4:
   !a
   ret d
 L_endif_6:
+  !d
   t_11 = add i, 1
   !i
   i = t_11
