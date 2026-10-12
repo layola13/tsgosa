@@ -5294,12 +5294,15 @@ func saUnwrapTransparent(e *ast.Node) *ast.Node {
 	return e
 }
 
-// saCheckI32Value 守 i32 值位记种（串/实例句柄禁入；求值只建种不验种，验种在
-// 各 i32 值位（存/实参/下标）；沿用 string/instance value 文族；铁律 4）。
+// saCheckI32Value 守 i32 值位记种（串/数组/实例句柄禁入；求值只建种不验种，验种在
+// 各 i32 值位（存/实参/下标/返回）；沿用 string/array/instance value 文族；铁律 4）。
 func saCheckI32Value(scope *saScope, v string) string {
-	if k, ok := scope.types[v]; ok && (k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
+	if k, ok := scope.types[v]; ok && (k == "str" || k == "arr" || (len(k) > 5 && k[:5] == "inst:")) {
 		if k == "str" {
 			return "string value in i32 expression"
+		}
+		if k == "arr" {
+			return "array value in i32 expression"
 		}
 		return "instance value in i32 expression"
 	}
@@ -5542,6 +5545,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
+				}
+				// 裸泛型参字段擦除豁免（`Box<T>.value` 未决 T 落 arr 回退；旧行为按
+				// i32 读（139），改记 i32 保零回退；真数组声明非裸参不受影响）。
+				if k, ok := scope.types[t]; ok && k == "arr" && saIsBareTypeParamField(def, pa.Name().Text()) {
+					scope.types[t] = "i32"
 				}
 				if k, ok := scope.types[t]; ok && k == "f64" {
 					return "", "float field " + pa.Name().Text() + " in i32 expression"

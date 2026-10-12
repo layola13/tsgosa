@@ -78,6 +78,28 @@ type saClassDef struct {
 	isSynth       bool
 }
 
+// saIsBareTypeParamField 报告字段声明类型是否为裸类型参引用（未决泛型擦除
+// 回退，如 `Box<T>.value`；具化/真数组声明非裸参，返回 false）。
+func saIsBareTypeParamField(def *saClassDef, fname string) bool {
+	if def == nil || def.fdefs == nil {
+		return false
+	}
+	tn, ok := def.fdefs[fname]
+	if !ok || tn == nil || tn.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := tn.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	for _, tp := range def.tparams {
+		if tp == ref.TypeName.Text() {
+			return true
+		}
+	}
+	return false
+}
+
 // saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst/f64 句柄与
 // 双精度 8/8；形状证据：封存 widthOf:268-279 + alignTo:281-289）。
 func saFieldWidth(kind string) (int, int) {
