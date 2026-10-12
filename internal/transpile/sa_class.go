@@ -4098,10 +4098,25 @@ func saWiringNamedLit(e *ast.Node, allow map[string]bool, scope *saScope) bool {
 		return saWiringNamedLit(ea.ArgumentExpression, allow, scope)
 	case ast.KindPropertyAccessExpression:
 		// 取长/实例字段读（`a.length`/`b.f`；基须已绑 arr/inst 形参；
-		// `?.`/链式沿旧门；错种由求值位大声拒）。
+		// `?.`/链式沿旧门；错种由求值位大声拒）与嵌套链读（`oo.p.v` 两级链；
+		// 根须已绑形参，布局由 saChainLeafDef 纯判定；深层链/`?.`/元素基沿旧门）。
 		pa := e.AsPropertyAccessExpression()
-		if pa == nil || pa.QuestionDotToken != nil || pa.Expression == nil ||
-			pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil ||
+		if pa == nil || pa.QuestionDotToken != nil || pa.Expression == nil || pa.Name() == nil {
+			return false
+		}
+		if pa.Expression.Kind == ast.KindPropertyAccessExpression {
+			inner := pa.Expression.AsPropertyAccessExpression()
+			if inner == nil || inner.QuestionDotToken != nil || inner.Expression == nil ||
+				inner.Expression.Kind != ast.KindIdentifier || inner.Name() == nil ||
+				!allow[inner.Expression.Text()] {
+				return false
+			}
+			if _, _, ok := saChainLeafDef(e, scope); !ok {
+				return false
+			}
+			return true
+		}
+		if pa.Expression.Kind != ast.KindIdentifier ||
 			!allow[pa.Expression.Text()] {
 			return false
 		}

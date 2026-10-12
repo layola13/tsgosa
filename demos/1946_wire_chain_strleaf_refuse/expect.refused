@@ -1,0 +1,2 @@
+# 串叶禁入 i32 域（句柄非整数；1938 同族正确拒收）
+string value in i32 expression
