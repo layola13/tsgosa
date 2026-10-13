@@ -4456,6 +4456,11 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 			return c
 		}
 	}
+	if c, ok := saProgKeyForBare(dir, importer, spec, name); ok {
+		if _, ok := files[c]; ok {
+			return c
+		}
+	}
 	return ""
 }
 
@@ -4504,6 +4509,73 @@ func saProgAdoptFile(files map[string]string, parsed map[string]*ast.SourceFile,
 	files[c] = string(text)
 	abs := "/" + strings.TrimPrefix(c, "/")
 	parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
+	return true
+}
+
+// saProgKeyForBare maps an outside-project bare resolution back into the
+// shared `node_modules/<pkg>/<rest>` key space so symlinked (`file:`),
+// external, and pnpm-forest installs share keys with real installs (cf
+// saProgKeyFor suffix branch). The base resolver realpaths symlinks, so the
+// resolved file no longer contains `node_modules/`; this re-derives the key
+// from the SPEC (scope-aware package split) and verifies the alias by
+// EvalSymlinks walking node_modules up from the importer (Node lookup
+// order), requiring the resolved file to sit under the link target.
+// Anything else (escape, missing link, non-package root) refuses loudly
+// and callers aggregate Unresolved.
+func saProgKeyForBare(dir, importer, spec, resolved string) (string, bool) {
+	pkg, rest := spec, ""
+	if strings.HasPrefix(spec, "@") {
+		segs := strings.SplitN(spec, "/", 3)
+		if len(segs) < 2 || segs[0] == "@" || segs[1] == "" {
+			return "", false
+		}
+		pkg = segs[0] + "/" + segs[1]
+		if len(segs) > 2 {
+			rest = segs[2]
+		}
+	} else if i := strings.Index(spec, "/"); i >= 0 {
+		pkg, rest = spec[:i], spec[i+1:]
+	}
+	if pkg == "" || pkg == "." || strings.Contains(rest, "..") {
+		return "", false
+	}
+	// Node lookup order: nearest node_modules/<pkg> walking up to (and
+	// including) dir; never above the project root.
+	impDir := filepath.Join(dir, filepath.Dir(filepath.FromSlash(importer)))
+	for cur := impDir; ; {
+		linkPath := filepath.Join(cur, "node_modules", filepath.FromSlash(pkg))
+		if real, err := filepath.EvalSymlinks(linkPath); err == nil {
+			if rel, err := filepath.Rel(real, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				c := path.Clean("node_modules/" + pkg + "/" + filepath.ToSlash(rel))
+				if c != "" && c != "node_modules" {
+					return c, true
+				}
+			}
+			return "", false
+		}
+		if cur == dir {
+			return "", false
+		}
+		up := filepath.Dir(cur)
+		if up == cur || len(up) >= len(cur) {
+			return "", false
+		}
+		cur = up
+	}
+}
+
+// saProgAdoptFileAs adopts an absolute-disk file under an explicit key.
+func saProgAdoptFileAs(files map[string]string, parsed map[string]*ast.SourceFile, key, name string, kind core.ScriptKind) bool {
+	if _, ok := files[key]; ok {
+		return false
+	}
+	text, err := os.ReadFile(name)
+	if err != nil {
+		return false
+	}
+	files[key] = string(text)
+	abs := "/" + strings.TrimPrefix(key, "/")
+	parsed[path.Clean(key)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
 	return true
 }
 
@@ -4586,6 +4658,11 @@ func saProgIncludeBare(files map[string]string, dir string, resolver *module.Res
 				}
 				if saProgAdoptFile(files, parsed, dir, name, kind) {
 					progress = true
+				} else if c, ok := saProgKeyForBare(dir, p, spec, name); ok {
+					// symlinked/external installs: key by spec, read by resolved path.
+					if saProgAdoptFileAs(files, parsed, c, name, kind) {
+						progress = true
+					}
 				}
 			}
 		}
