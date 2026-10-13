@@ -6328,6 +6328,10 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					if _, _, ok := saKeyofBase(ea.Expression, scope); ok {
 						return saLowerOptKeyofNullish(w, ea, be.Right, scope, pos, refusals, nextTemp)
 					}
+					// 调用基址融合（返回布局已知才认领；余形沿旧门）。
+					if out, msg, ok := saLowerOptKeyofCallBase(w, ea, be.Right, scope, pos, refusals, nextTemp); ok {
+						return out, msg
+					}
 				}
 			}
 			// 实例空合同行：同布局双实例或左实例+空右臂走 ptr 通用槽（与返回位同形）。

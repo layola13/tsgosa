@@ -1463,8 +1463,8 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 
 // saLowerOptKeyofNullish 融合 `base?.[k] ?? D`（i32 布局专用）：空基与缺键
 // 合流 miss 臂（D 单点惰性求值一次；命中即值，与上游 `undefined ?? D` 逐情形
-// 一致：空基→D、命中→值、缺键→D）；基址须解包至标识符/this（调用/字面量沿旧门）
-// （非 i32 布局/`?.` 缺配对沿旧门大声拒）。
+// 一致：空基→D、命中→值、缺键→D）；基址须解包至标识符/this（调用基址另见
+// saLowerOptKeyofCallBase，字面量沿旧门）（非 i32 布局/`?.` 缺配对沿旧门大声拒）。
 func saLowerOptKeyofNullish(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, dflt *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	_, def, ok := saKeyofBase(ea.Expression, scope)
 	if !ok {
@@ -1487,6 +1487,53 @@ func saLowerOptKeyofNullish(w printer.EmitTextWriter, ea *ast.ElementAccessExpre
 	} else {
 		return "", "optional keyof index reads are not lowerable yet"
 	}
+	return saLowerOptKeyofEmit(w, ea, dflt, base, def, scope, pos, refusals, nextTemp)
+}
+
+// saLowerOptKeyofCallBase 融合调用基址 `getObj()?.[k] ?? D`（for-in 调用臂
+// 同形：返回布局已知 + 全 i32 才求值入柄；调用恰求值一次，巡后释放；成员
+// 调用/void/非 inst 返回沿旧门）。
+func saLowerOptKeyofCallBase(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, dflt *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, bool) {
+	ce := saForInCallBase(ea.Expression)
+	if ce == nil {
+		return "", "", false
+	}
+	rk, ok := saCallRetKind(ce, scope)
+	if !ok || len(rk) <= 5 || rk[:5] != "inst:" {
+		return "", "", false
+	}
+	def, ok := scope.classes[rk[5:]]
+	if !ok || def == nil {
+		return "", "", false
+	}
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "i32" {
+			return "", "keyof index needs all-i32 layout", true
+		}
+	}
+	op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+	if msg != "" || voidCall {
+		return "", "", false
+	}
+	fh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", fh, op))
+	scope.types[fh] = rk
+	if saIsTempOp(op) {
+		saConsumeOwn(scope, op)
+	}
+	fhDepth := len(scope.ownOrder)
+	saDeclareOwned(scope, fh)
+	out, msg := saLowerOptKeyofEmit(w, ea, dflt, fh, def, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg, true
+	}
+	saReleaseDeeperThan(w, scope, fhDepth)
+	return out, "", true
+}
+
+// saLowerOptKeyofEmit 融合发射核（基柄 + 布局既定）：空基与缺键合流 miss 臂。
+func saLowerOptKeyofEmit(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, dflt *ast.Node, base string, def *saClassDef, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	slot := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
