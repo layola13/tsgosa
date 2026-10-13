@@ -3597,6 +3597,22 @@ func saForInCallBase(e *ast.Node) *ast.CallExpression {
 	}
 	return nil
 }
+
+// saForInThisField 取 for-in this 字段基址名（`this.o`；`?.`/调用/元素基沿旧门）。
+func saForInThisField(e *ast.Node) string {
+	if e == nil || e.Kind != ast.KindPropertyAccessExpression {
+		return ""
+	}
+	pa := e.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil ||
+		pa.Name().Kind != ast.KindIdentifier {
+		return ""
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword {
+		return ""
+	}
+	return pa.Name().Text()
+}
 func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	_ = needImport
 	fo := s.AsForInOrOfStatement()
@@ -3667,8 +3683,8 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			return true
 		}
 	}
-	if fo.Expression != nil && fo.Expression.Kind == ast.KindIdentifier {
-		if k, ok := scope.types[fo.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+	if ub := saKeyofUnwrap(fo.Expression, scope); ub != nil && ub.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[ub.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
 			def, ok := scope.classes[k[5:]]
 			if !ok {
 				ln, col := pos(s.Pos())
@@ -3682,6 +3698,28 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				return false
 			}
 			return saLowerForInInstFields(w, binding, bodyStmts, def, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		}
+	}
+	// this 字段基址（`for (k in this.o)`）：属主布局字段具 inst 子布局即静态
+	// 展开（与标识形态共用；数组/标量/方法字段沿旧门）。
+	if fname := saForInThisField(fo.Expression); fname != "" {
+		if scope.thisSelf == "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "this outside a class method is not lowerable"})
+			return false
+		}
+		if ownerDef, ok := scope.classes[scope.thisClass]; ok && ownerDef != nil {
+			if sub, ok := ownerDef.fsub[fname]; ok {
+				if def, ok := scope.classes[sub]; ok && def != nil {
+					bodyStmts, ok := saEmbeddedBlock(fo.Statement)
+					if !ok {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in body"})
+						return false
+					}
+					return saLowerForInInstFields(w, binding, bodyStmts, def, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+				}
+			}
 		}
 	}
 	// 串 for-in（索引巡回 0..len-1，绑定 i32；16 字节 {ptr,len} 头与数组同形，
