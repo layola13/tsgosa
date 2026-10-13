@@ -2707,8 +2707,8 @@ func saIsPureValueOp(op ast.Kind) bool {
 // RHS 按序全求值并具名右值即时快照入 temp 后再依次存，交换自洽；判种谓词与声明位
 // saLowerArrayPatternElems 同源，赋值位只做已绑定同种回存）。
 // 左右须同为数组字面量且等长（缺元/多余沿旧门大声拒，不静默错码）；左元须为已绑定
-// 同种具名（i32/bool/f64 值语义经 saStoreLocal；空穴仍求值 RHS 保副作用后丢弃；
-// modVars/数组/实例/嵌套沿旧门；串交换需句柄移动编排另立，本轮大声拒）。
+// 同种具名或数组元素（i32/bool/f64 值语义经 saStoreLocal，串经移动入 temp 后重绑；
+// 空穴仍求值 RHS 保副作用后丢弃；modVars/实例/嵌套/复用移动/forOf 沿旧门大声拒）。
 func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, s *ast.Node) bool {
 	fail := func(msg string) bool {
 		ln, col := pos(s.Pos())
@@ -2755,7 +2755,7 @@ func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression
 			}
 			kind := "i32"
 			if scope.arrStr != nil && scope.arrStr[base] {
-				return fail("string element swap needs explicit temporaries (not supported yet)")
+				kind = "str"
 			}
 			pairs[i] = pair{elem: ea, kind: kind}
 			continue
@@ -2773,9 +2773,6 @@ func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression
 		}
 		if k != "i32" && k != "bool" && k != "f64" && k != "str" {
 			return fail("destructuring assignment to non-value variable " + name)
-		}
-		if k == "str" {
-			return fail("string swap needs explicit temporaries (not supported yet)")
 		}
 		pairs[i] = pair{name: name, kind: k}
 	}
@@ -2796,6 +2793,8 @@ func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression
 		}
 		var op, msg string
 		switch pairs[i].kind {
+		case "str":
+			op, msg = saEvalStr(w, re, scope, pos, refusals, nextTemp)
 		case "f64":
 			op, msg = saEvalF64(w, re, scope, pos, refusals, nextTemp)
 		case "bool":
@@ -2805,6 +2804,23 @@ func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression
 		}
 		if msg != "" {
 			return fail("unsupported destructuring value: " + msg)
+		}
+		// 串具名右值即时移动入新 temp（`t = name` 即移动，源消费；后继存读冻结
+		// 值，同时语义成立；已消费/复用/forOf 皆大声拒，不静默错码）。
+		if pairs[i].kind == "str" {
+			if _, named := scope.types[op]; named && !saIsTempOp(op) {
+				if scope.forOfStr != nil && scope.forOfStr[op] {
+					return fail("destructuring value over a loop variable is not supported yet")
+				}
+				if b := saOwnOf(scope, op); b != nil && (b.consumed || b.released) {
+					return fail("destructuring value was already moved")
+				}
+				nt := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s\n", nt, op))
+				saConsumeOwn(scope, op)
+				op = nt
+			}
 		}
 		// 具名右值（saEval 透传名未物化）即时快照，否则后继存覆盖源槽读脏；
 		// temp/字面量已冻结不动；串柄不快照（沿元素存既有语义，裸 add 会造无归属别名）。
@@ -2829,6 +2845,22 @@ func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression
 			continue
 		}
 		op := vals[i]
+		if p.elem == nil && p.kind == "str" {
+			// 串具名回存（op 恒为移动入 temp 的独占柄；别名检查留作纵深；
+			// 重绑纪律与普通串赋值同形）。
+			if _, named := scope.types[op]; named && !saIsTempOp(op) && !scope.forOfStr[op] {
+				return fail("handle copies need an explicit clone (pass the handle directly)")
+			}
+			saRebindRelease(w, scope, p.name)
+			w.Write(fmt.Sprintf("  %s = %s\n", p.name, op))
+			saConsumeOwn(scope, op)
+			if b := saOwnOf(scope, p.name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, p.name)
+			saClearNullConst(scope, p.name)
+			continue
+		}
 		if p.elem != nil {
 			base, msg := saArrStoreBase(w, p.elem.Expression, scope, pos, refusals, nextTemp)
 			if msg != "" {
