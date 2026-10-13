@@ -2703,6 +2703,167 @@ func saIsPureValueOp(op ast.Kind) bool {
 	return false
 }
 
+// saLowerDestructureAssign lowering 数组解构赋值 `[a, b] = [b, a]`（同时语义：
+// RHS 按序全求值并具名右值即时快照入 temp 后再依次存，交换自洽；判种谓词与声明位
+// saLowerArrayPatternElems 同源，赋值位只做已绑定同种回存）。
+// 左右须同为数组字面量且等长（缺元/多余沿旧门大声拒，不静默错码）；左元须为已绑定
+// 同种具名（i32/bool/f64 值语义经 saStoreLocal；空穴仍求值 RHS 保副作用后丢弃；
+// modVars/数组/实例/嵌套沿旧门；串交换需句柄移动编排另立，本轮大声拒）。
+func saLowerDestructureAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, s *ast.Node) bool {
+	fail := func(msg string) bool {
+		ln, col := pos(s.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	if be.Right == nil || be.Right.Kind != ast.KindArrayLiteralExpression {
+		return fail("destructuring assignment needs an array literal on the right")
+	}
+	lhs := be.Left.AsArrayLiteralExpression()
+	rhs := be.Right.AsArrayLiteralExpression()
+	if lhs == nil || lhs.Elements == nil || rhs == nil || rhs.Elements == nil {
+		return fail("destructuring assignment needs array literals on both sides")
+	}
+	lels := lhs.Elements.Nodes
+	rels := rhs.Elements.Nodes
+	if len(lels) != len(rels) {
+		return fail(fmt.Sprintf("destructuring assignment needs equal lengths (got %d targets, %d values)", len(lels), len(rels)))
+	}
+	type pair struct {
+		name string                       // 具名目标（空即空穴/元素位）
+		elem *ast.ElementAccessExpression // 元素目标（nil 即具名/空穴）
+		kind string                       // i32/bool/f64/str，空穴为空
+	}
+	pairs := make([]pair, len(lels))
+	for i, el := range lels {
+		if el == nil || el.Kind == ast.KindOmittedExpression {
+			continue
+		}
+		if el.Kind == ast.KindElementAccessExpression {
+			// 元素目标 `a[i]`（排序交换主体；基须为绑定数组，`?.` 沿旧门）。
+			ea := el.AsElementAccessExpression()
+			if ea.QuestionDotToken != nil {
+				return fail("optional index store not lowerable")
+			}
+			if ea.Expression == nil || ea.Expression.Kind != ast.KindIdentifier {
+				return fail("destructuring element base must be a bound array name")
+			}
+			base := ea.Expression.Text()
+			bk, ok := scope.types[base]
+			if !ok || (bk != "arr" && bk != "str") {
+				// 注：串数组基在 scope.types 记 "str"（arrStr 另标串元），i32 数组记 "arr"。
+				return fail("destructuring element base must be a bound array")
+			}
+			kind := "i32"
+			if scope.arrStr != nil && scope.arrStr[base] {
+				return fail("string element swap needs explicit temporaries (not supported yet)")
+			}
+			pairs[i] = pair{elem: ea, kind: kind}
+			continue
+		}
+		if el.Kind != ast.KindIdentifier {
+			return fail("destructuring assignment targets must be plain names or array elements")
+		}
+		name := el.Text()
+		k, ok := scope.types[name]
+		if !ok {
+			if _, mok := scope.modVars[name]; mok {
+				return fail(fmt.Sprintf("destructuring assignment to module state %s is not supported yet", name))
+			}
+			return fail("assignment to unknown variable " + name)
+		}
+		if k != "i32" && k != "bool" && k != "f64" && k != "str" {
+			return fail("destructuring assignment to non-value variable " + name)
+		}
+		if k == "str" {
+			return fail("string swap needs explicit temporaries (not supported yet)")
+		}
+		pairs[i] = pair{name: name, kind: k}
+	}
+	// RHS 全求值（左序；空穴位仍求值保副作用，结果丢弃）。
+	vals := make([]string, len(rels))
+	for i, re := range rels {
+		if pairs[i].name == "" && pairs[i].elem == nil {
+			if op, msg := saEvalI32(w, re, scope, pos, refusals, nextTemp); msg == "" {
+				saReleaseOwnedTemp(w, scope, op)
+				continue
+			}
+			h, msg := saEvalStr(w, re, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail("unsupported destructuring value: " + msg)
+			}
+			saReleaseOwnedTemp(w, scope, h)
+			continue
+		}
+		var op, msg string
+		switch pairs[i].kind {
+		case "f64":
+			op, msg = saEvalF64(w, re, scope, pos, refusals, nextTemp)
+		case "bool":
+			op, msg = saEvalBool(w, re, scope, pos, refusals, nextTemp)
+		default:
+			op, msg = saEvalI32(w, re, scope, pos, refusals, nextTemp)
+		}
+		if msg != "" {
+			return fail("unsupported destructuring value: " + msg)
+		}
+		// 具名右值（saEval 透传名未物化）即时快照，否则后继存覆盖源槽读脏；
+		// temp/字面量已冻结不动；串柄不快照（沿元素存既有语义，裸 add 会造无归属别名）。
+		if pairs[i].kind != "str" {
+			if _, named := scope.types[op]; named && !saIsTempOp(op) {
+				nt := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				if pairs[i].kind == "f64" {
+					w.Write(fmt.Sprintf("  %s = fadd %s, 0.0\n", nt, op))
+				} else {
+					w.Write(fmt.Sprintf("  %s = add %s, 0\n", nt, op))
+				}
+				op = nt
+			}
+		}
+		vals[i] = op
+	}
+	// 依次存（RHS 已全物化，同时语义成立；分发与普通赋值同形；元素位基址
+	// 下标存时求值，与 JS 先值后址次序同形）。
+	for i, p := range pairs {
+		if p.name == "" && p.elem == nil {
+			continue
+		}
+		op := vals[i]
+		if p.elem != nil {
+			base, msg := saArrStoreBase(w, p.elem.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail("destructuring element base must be a bound array")
+			}
+			idx, msg := saEvalI32(w, p.elem.ArgumentExpression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return fail("unsupported destructuring index: " + msg)
+			}
+			if p.kind == "str" {
+				saLowerElementStore(w, base, idx, op, nextTemp)
+				continue
+			}
+			if p.kind != "i32" {
+				return fail("destructuring element kind not supported yet")
+			}
+			if msg := saCheckI32Value(scope, op); msg != "" {
+				return fail(msg)
+			}
+			saLowerElementStore(w, base, idx, op, nextTemp)
+			continue
+		}
+		switch p.kind {
+		case "f64":
+			w.Write(fmt.Sprintf("  %s = %s\n", p.name, op))
+		default:
+			if msg := saCheckI32Value(scope, op); msg != "" {
+				return fail(msg)
+			}
+			saStoreLocal(w, p.name, op, scope, nextTemp)
+		}
+	}
+	return true
+}
+
 // saLowerExprStmt lowering 表达式语句：调用（值/void 皆可，结果丢弃）与赋值
 // （`x = <i32>`，x 须已绑定；复合/短路赋分流）。其余一律大声拒。
 func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
@@ -2790,6 +2951,9 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 		return true
 	}
 	// 元素目标 `a[i] = v`（仅 plain `=`；复合走 saLowerCompound 的元素分支）。
+	if be.Left != nil && be.Left.Kind == ast.KindArrayLiteralExpression {
+		return saLowerDestructureAssign(w, be, scope, pos, refusals, nextTemp, s)
+	}
 	if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
 		return saLowerElementAssign(w, be, scope, pos, refusals, nextTemp, s)
 	}
