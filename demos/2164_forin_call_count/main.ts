@@ -1,8 +1,8 @@
-interface O { a: i32; b: i32; }
+interface O { a: number; b: number; }
 function getObj(): O { return { a: 1, b: 2 }; }
-function main(): i32 {
+function main(): number {
   let t = 0;
   for (const k in getObj()) { t += 1; }
-  console.log(t);
-  return 0;
+  return t;
 }
+console.log(main())

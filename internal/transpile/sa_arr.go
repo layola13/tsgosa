@@ -3311,6 +3311,49 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 // saLowerForIn lowering for-in（形状证据：封存 lowerForIn:2189-2226：
 // 与 for-of 同索引巡回，唯绑定位为下标本身 `binding = idx`（+ declarePlain
 // 记 i32）；对象巡回大声拒（须为绑定数组）；continue→top 原样）。
+//
+// saLowerForInInstFields 对象 for-in 布局字段静态展开（标识基址与调用
+// 基址共用：逐份独立域，键名串常量 inline 体，份尾释本份归属；体终结则
+// 后续份不可达截断防死码；空布局零次展开）。
+func saLowerForInInstFields(w printer.EmitTextWriter, binding string, bodyStmts []*ast.Node, def *saClassDef, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	for _, f := range def.fields {
+		// 逐份独立域（名隔离；份尾释本份归属（含键绑），防静态重定义；
+		// 体终结则后续份不可达，截断防死码）。
+		savedF := saScopeEnter(scope)
+		copyDepth := len(scope.ownOrder)
+		kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+		w.Write(fmt.Sprintf("  %s = %s\n", binding, kh))
+		scope.types[binding] = "str"
+		// for-in 键每份新鲜具化，直授 move 安全（for-of 串元素同形；540 律；541）。
+		if scope.forOfStr == nil {
+			scope.forOfStr = map[string]bool{}
+		}
+		scope.forOfStr[binding] = true
+		saConsumeOwn(scope, kh)
+		saDeclareOwned(scope, binding)
+		armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		if armOK {
+			saReleaseDeeperThan(w, scope, copyDepth)
+		}
+		saScopeExit(scope, savedF)
+		if !armOK {
+			return false
+		}
+		if saArmTerminates(bodyStmts) {
+			break
+		}
+	}
+	return true
+}
+
+// saForInCallBase 取 for-in 调用基址（括号透明；成员调用/箭头沿旧门）。
+func saForInCallBase(e *ast.Node) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	if e != nil && e.Kind == ast.KindCallExpression {
+		return e.AsCallExpression()
+	}
+	return nil
+}
 func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	_ = needImport
 	fo := s.AsForInOrOfStatement()
@@ -3340,6 +3383,47 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	}
 	// 对象 for-in 静态展开（布局字段逐个绑键名串常量 inline 体；`o[k]`
 	// 动态读沿旧门；break/continue 沿无循环栈门拒；空布局零次展开）。
+	// 调用基址（`for (k in getObj())`）：返回布局已知的调用先求值入临时
+	// 柄，再与绑定标识形态共用字段展开（调用恰求值一次，与上游同语义；
+	// 非 inst 返回/未知布局/求值失败皆大声拒，不下探数组门）。
+	if ce := saForInCallBase(fo.Expression); ce != nil {
+		if rk, ok := saCallRetKind(ce, scope); ok && len(rk) > 5 && rk[:5] == "inst:" {
+			def, ok := scope.classes[rk[5:]]
+			if !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + rk[5:]})
+				return false
+			}
+			op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" || voidCall {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("unsupported for-in call base: %s", msg)})
+				return false
+			}
+			fh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s\n", fh, op))
+			scope.types[fh] = rk
+			if saIsTempOp(op) {
+				saConsumeOwn(scope, op)
+			}
+			fhDepth := len(scope.ownOrder)
+			saDeclareOwned(scope, fh)
+			bodyStmts, ok := saEmbeddedBlock(fo.Statement)
+			if !ok {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in body"})
+				return false
+			}
+			if !saLowerForInInstFields(w, binding, bodyStmts, def, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp) {
+				return false
+			}
+			// 调用柄巡后释放（展开只读布局，柄未消费；份内释放以份深为准，
+			// 此柄在份外，按声明深统一收）。
+			saReleaseDeeperThan(w, scope, fhDepth)
+			return true
+		}
+	}
 	if fo.Expression != nil && fo.Expression.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[fo.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
 			def, ok := scope.classes[k[5:]]
@@ -3354,34 +3438,7 @@ func saLowerForIn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported for-in body"})
 				return false
 			}
-			for _, f := range def.fields {
-				// 逐份独立域（名隔离；份尾释本份归属（含键绑），防静态重定义；
-				// 体终结则后续份不可达，截断防死码）。
-				savedF := saScopeEnter(scope)
-				copyDepth := len(scope.ownOrder)
-				kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
-				w.Write(fmt.Sprintf("  %s = %s\n", binding, kh))
-				scope.types[binding] = "str"
-				// for-in 键每份新鲜具化，直授 move 安全（for-of 串元素同形；540 律；541）。
-				if scope.forOfStr == nil {
-					scope.forOfStr = map[string]bool{}
-				}
-				scope.forOfStr[binding] = true
-				saConsumeOwn(scope, kh)
-				saDeclareOwned(scope, binding)
-				armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
-				if armOK {
-					saReleaseDeeperThan(w, scope, copyDepth)
-				}
-				saScopeExit(scope, savedF)
-				if !armOK {
-					return false
-				}
-				if saArmTerminates(bodyStmts) {
-					break
-				}
-			}
-			return true
+			return saLowerForInInstFields(w, binding, bodyStmts, def, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		}
 	}
 	// 串 for-in（索引巡回 0..len-1，绑定 i32；16 字节 {ptr,len} 头与数组同形，
