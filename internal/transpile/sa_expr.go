@@ -5496,8 +5496,12 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 				}
 			}
 		}
-		// 链式实例 f64 字段读（`o.inner.v` 经内层句柄逐级解，与 i32 链读位同形）。
+		// 链式实例 f64 字段读（`o.inner.v` 经内层句柄逐级解，与 i32 链读位同形；
+		// 末跳 `?.` 沿旧门大声拒，不静默直读崩）。
 		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
+			if pa.QuestionDotToken != nil {
+				return "", "optional field access on non-i32 field is not lowerable"
+			}
 			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
 			if msg == "" {
 				if _, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "f64" {
@@ -5766,10 +5770,19 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		// 嵌套对象链读（`q.p.a` 经内层句柄逐级解；叶子按布局读/getter 内联；
 		// 非 inst 链节沿旧门；形状证据：封存 lowerMemberChain）。
+		// 末跳 `?.`（`a.b?.v`）走空守卫 join（内链已具化，只守卫终跳，与具名基
+		// `b?.v` 同形；非 i32 叶沿守卫门内大声拒）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
 			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
 			if msg == "" {
 				if _, ok := cdef.offsets[pa.Name().Text()]; ok {
+					if pa.QuestionDotToken != nil {
+						t, msg := saLowerGuardedFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return t, ""
+					}
 					t, msg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
 					if msg != "" {
 						return "", msg

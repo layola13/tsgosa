@@ -521,6 +521,14 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 							def.fsub = map[string]string{}
 						}
 						def.fsub[fkey] = sub.name
+					} else if pd.Type.AsTypeReferenceNode().TypeName.Text() == name {
+						// 自引用字段（链表 `next: Node`）：类表尚未落子，按实例布局记种；
+						// 宽与 arr 柄槽同为 8,8，布局零位移。
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = name
 					} else {
 						// 未记录用户类型（含泛型形参 `T`）落 ptr 句柄槽（8B；封存
 						// saNameOfType:197-199 用户类型皆 ptr 句柄 + recordClassNamed:9713-9716
@@ -546,7 +554,28 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					}
 				} else if pd.Type.Kind == ast.KindUnionType {
 					// union-typed fields lower as ptr handle slots (cf saNameOfType union default).
-					fkind = "arr"
+					// 单类+空联合（`next: Node | null`）按实例布局记种（与 TypeReference
+					// 同律：fkind 置 inst + fsub 登记，读位经布局消解；maybe-null 直读
+					// 与调用返回值同口径（假设非空，空即运行时 trap，与 JS TypeError
+					// 同形；确定空仍由 const-null 门大声拒）；`?.` 守卫读位凭此解析布局。
+					if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), classes); ok {
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = inst[5:]
+					} else if self, ok := saUnionSelfKind(pd.Type.AsUnionTypeNode(), name); ok {
+						// 自引用可空联合（`next: Node | null`）：类表尚未落子，按实例布局记种；
+						// 宽与 arr 柄槽同为 8,8，布局零位移；maybe-null 直读与调用
+						// 返回值同口径（假设非空），`?.` 守卫读位凭此解析布局。
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = self
+					} else {
+						fkind = "arr"
+					}
 				} else if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
 					// `any` fields lower as ptr handle slots (cf saNameOfType unknown default).
 					fkind = "arr"

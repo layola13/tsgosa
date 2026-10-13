@@ -3006,6 +3006,50 @@ func saUnionScalarKind(n *ast.Node) (string, bool) {
 	return kind, true
 }
 
+// saUnionSelfKind 取自引用单类+空联合的类名（`next: Node | null` 在 Node
+// 记录中：类表尚未落子，saUnionInstKind 恒 false；成员须恰为自身引用 + 空，
+// 余形沿旧门）。返类名（不带 inst: 前缀，调用点自拼）。
+func saUnionSelfKind(ut *ast.UnionTypeNode, self string) (string, bool) {
+	if ut == nil || ut.Types == nil || self == "" {
+		return "", false
+	}
+	if len(ut.Types.Nodes) != 2 {
+		return "", false
+	}
+	sawSelf, sawNull := false, false
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			sawNull = true
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				sawNull = true
+				continue
+			}
+			return "", false
+		}
+		if m.Kind != ast.KindTypeReference {
+			return "", false
+		}
+		ref := m.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		if ref.TypeName.Text() != self {
+			return "", false
+		}
+		sawSelf = true
+	}
+	if !sawSelf || !sawNull {
+		return "", false
+	}
+	return self, true
+}
+
 // saUnionInstKind 取单类+空联合的实例种（`Box|null` 即 `inst:Box`，空吸收为 0
 // 句柄；多类/全空/非类成员一律 false。封存 union 首个已知布局同形的语法子集）。
 func saUnionInstKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef) (string, bool) {
