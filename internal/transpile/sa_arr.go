@@ -1461,6 +1461,109 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 	return out, ""
 }
 
+// saLowerOptKeyofNullish 融合 `base?.[k] ?? D`（i32 布局专用）：空基与缺键
+// 合流 miss 臂（D 单点惰性求值一次；命中即值，与上游 `undefined ?? D` 逐情形
+// 一致：空基→D、命中→值、缺键→D）；基址须解包至标识符/this（调用/字面量沿旧门）
+// （非 i32 布局/`?.` 缺配对沿旧门大声拒）。
+func saLowerOptKeyofNullish(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, dflt *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	_, def, ok := saKeyofBase(ea.Expression, scope)
+	if !ok {
+		return "", "optional keyof index reads are not lowerable yet"
+	}
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "i32" {
+			return "", "keyof index needs all-i32 layout"
+		}
+	}
+	ub := saKeyofUnwrap(ea.Expression, scope)
+	var base string
+	if ub != nil && ub.Kind == ast.KindIdentifier {
+		base = ub.Text()
+	} else if ub != nil && ub.Kind == ast.KindThisKeyword {
+		if scope.thisSelf == "" {
+			return "", "this outside a class method is not lowerable"
+		}
+		base = scope.thisSelf
+	} else {
+		return "", "optional keyof index reads are not lowerable yet"
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	missL := fmt.Sprintf("L_koq_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	chkL := fmt.Sprintf("L_koq_chk_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_koq_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	// 空基（子集 null 即 0 句柄）直入 miss 臂。
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, base))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, missL, chkL))
+	w.Write(fmt.Sprintf("%s:\n", chkL))
+	key := ea.ArgumentExpression
+	if key != nil && (key.Kind == ast.KindStringLiteral || key.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+		s, ok := saKeyofLitText(key)
+		if !ok {
+			return "", "keyof literal key is not lowerable"
+		}
+		if off, ok := def.offsets[s]; ok {
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, base, off))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, v))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		} else {
+			w.Write(fmt.Sprintf("  jmp %s\n", missL))
+		}
+	} else {
+		kh, msg := saEvalStr(w, key, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		for _, f := range def.fields {
+			fh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			eq := saStringContentEq(w, kh, fh, false, scope, nextTemp)
+			saReleaseOwnedTemp(w, scope, fh)
+			hitL := fmt.Sprintf("L_koq_hit_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nextL := fmt.Sprintf("L_koq_next_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, hitL, nextL))
+			w.Write(fmt.Sprintf("%s:\n", hitL))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, base, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, v))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", nextL))
+		}
+		w.Write(fmt.Sprintf("  jmp %s\n", missL))
+	}
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	// 右臂快照点（D 惰性求值新建的归属临时量随槽消费，否则返前释放在直通
+	// 臂上引用未定义寄存器；串空合核同律）。
+	mark := len(scope.ownOrder)
+	d, msg := saEvalI32(w, dflt, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, d))
+	for _, nm := range scope.ownOrder[mark:] {
+		if saIsTempOp(nm) {
+			saConsumeOwn(scope, nm)
+		}
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out, ""
+}
+
 // saKeyofLitText 取字面量键文本（串字面量/无替换模板，取煮后文本）。
 func saKeyofLitText(key *ast.Node) (string, bool) {
 	if key == nil {

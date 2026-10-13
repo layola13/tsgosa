@@ -6321,6 +6321,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
 			// `??` 空合槽须先于串门（i32 位，右惰性；串臂走串槽，i32 位大声拒，
 			// 禁串句柄误作整数，铁律 4 高于同形）。
+			// `?.[] ?? D` 融合先行（空基与缺键合流 miss 臂，D 单点惰性；
+			// 非 keyof 基沿旧门）。
+			if be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
+				if ea := be.Left.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken != nil {
+					if _, _, ok := saKeyofBase(ea.Expression, scope); ok {
+						return saLowerOptKeyofNullish(w, ea, be.Right, scope, pos, refusals, nextTemp)
+					}
+				}
+			}
 			// 实例空合同行：同布局双实例或左实例+空右臂走 ptr 通用槽（与返回位同形）。
 			if saIsInstOperandSyntax(be.Left, scope) && (saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
 				return saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
