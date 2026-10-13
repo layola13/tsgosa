@@ -1261,9 +1261,13 @@ func saCheckIntIndex(scope *saScope, idx string) string {
 	return ""
 }
 
-// saKeyofBase 解析 keyof 基布局（标识符 inst 绑定/this；余形 false）。
+// saKeyofBase 解析 keyof 基布局（标识符 inst 绑定/this；透明包装见
+// saKeyofUnwrap；余形 false）。
 func saKeyofBase(base *ast.Node, scope *saScope) (string, *saClassDef, bool) {
 	if base == nil {
+		return "", nil, false
+	}
+	if base = saKeyofUnwrap(base, scope); base == nil {
 		return "", nil, false
 	}
 	if base.Kind == ast.KindIdentifier {
@@ -1280,6 +1284,60 @@ func saKeyofBase(base *ast.Node, scope *saScope) (string, *saClassDef, bool) {
 		}
 	}
 	return "", nil, false
+}
+
+// saKeyofUnwrap 剥离 keyof 基透明包装（括号/非空/`<>`恒透明；as/satisfies
+// 仅 any/unknown/never 或同名布局透传，跨布局断言返 nil 调用方沿旧门大声拒，
+// 禁静默错布局；铁律 4）。
+func saKeyofUnwrap(base *ast.Node, scope *saScope) *ast.Node {
+	for base != nil {
+		switch base.Kind {
+		case ast.KindParenthesizedExpression:
+			base = base.AsParenthesizedExpression().Expression
+		case ast.KindNonNullExpression:
+			base = base.AsNonNullExpression().Expression
+		case ast.KindTypeAssertionExpression:
+			base = base.AsTypeAssertion().Expression
+		case ast.KindAsExpression, ast.KindSatisfiesExpression:
+			var inner *ast.Node
+			var tnode *ast.TypeNode
+			if base.Kind == ast.KindAsExpression {
+				ax := base.AsAsExpression()
+				inner, tnode = ax.Expression, ax.Type
+			} else {
+				sx := base.AsSatisfiesExpression()
+				inner, tnode = sx.Expression, sx.Type
+			}
+			if tnode != nil && (tnode.Kind == ast.KindAnyKeyword || tnode.Kind == ast.KindUnknownKeyword || tnode.Kind == ast.KindNeverKeyword) {
+				base = inner
+				continue
+			}
+			// 同名布局透传（inner 布局 L 且目标直名 L；别名/泛型具化沿旧门）。
+			layout, _, ok := saKeyofBase(inner, scope)
+			if !ok || !saTypeNamesLayout(tnode, layout) {
+				return nil
+			}
+			base = inner
+		default:
+			return base
+		}
+	}
+	return base
+}
+
+// saTypeNamesLayout 断言目标是否为布局直名（`as O`；泛型实参/限定名沿旧门）。
+func saTypeNamesLayout(tnode *ast.TypeNode, layout string) bool {
+	if tnode == nil || tnode.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := tnode.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+		return false
+	}
+	return ref.TypeName.Text() == layout
 }
 
 // saLowerKeyofIndex lowering `p[k]` 动态键读（布局须全 i32；字面量键静态
@@ -1305,8 +1363,9 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 		}
 		base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 		if msg != "" {
-			// 实例基经句柄直读（saArrValueOf 只识数组；实例柄即基）。
-			if h, _, msg2 := saInstBase(ea.Expression, scope); msg2 == "" && h != "" {
+			// 实例基经句柄直读（saArrValueOf 只识数组；实例柄即基；as/括号
+			// 等透明包装经 saKeyofUnwrap 剥离，跨布局断言返 nil 沿旧门拒）。
+			if h, _, msg2 := saInstBase(saKeyofUnwrap(ea.Expression, scope), scope); msg2 == "" && h != "" {
 				base = h
 			} else {
 				return "", "keyof base must be a bound instance"
@@ -1328,7 +1387,7 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 	}
 	base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		if h, _, msg2 := saInstBase(ea.Expression, scope); msg2 == "" && h != "" {
+		if h, _, msg2 := saInstBase(saKeyofUnwrap(ea.Expression, scope), scope); msg2 == "" && h != "" {
 			base = h
 		} else {
 			return "", "keyof base must be a bound instance"
