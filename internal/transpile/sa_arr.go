@@ -1312,9 +1312,10 @@ func saKeyofUnwrap(base *ast.Node, scope *saScope) *ast.Node {
 				base = inner
 				continue
 			}
-			// 同名布局透传（inner 布局 L 且目标直名 L；别名/泛型具化沿旧门）。
+			// 同名布局透传（inner 布局 L 且目标为同名/别名链/泛型具化同布局；
+			// 别名/泛型目标另见 saTypeNamesLayout）。
 			layout, _, ok := saKeyofBase(inner, scope)
-			if !ok || !saTypeNamesLayout(tnode, layout) {
+			if !ok || !saTypeNamesLayout(tnode, layout, scope) {
 				return nil
 			}
 			base = inner
@@ -1325,8 +1326,10 @@ func saKeyofUnwrap(base *ast.Node, scope *saScope) *ast.Node {
 	return base
 }
 
-// saTypeNamesLayout 断言目标是否为布局直名（`as O`；泛型实参/限定名沿旧门）。
-func saTypeNamesLayout(tnode *ast.TypeNode, layout string) bool {
+// saTypeNamesLayout 断言目标是否为布局直名（`as O`；别名链跟随至接口名
+// 再比（`type O2 = O`）；泛型具化经 saInstantiateIface 求布局名再比
+// （`as Box<number>`）；余形沿旧门）。
+func saTypeNamesLayout(tnode *ast.TypeNode, layout string, scope *saScope) bool {
 	if tnode == nil || tnode.Kind != ast.KindTypeReference {
 		return false
 	}
@@ -1334,10 +1337,41 @@ func saTypeNamesLayout(tnode *ast.TypeNode, layout string) bool {
 	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
 		return false
 	}
+	name := ref.TypeName.Text()
 	if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+		if lname, ok := saInstantiateIface(name, ref.TypeArguments.Nodes, scope.classes); ok {
+			return lname == layout
+		}
 		return false
 	}
-	return ref.TypeName.Text() == layout
+	if name == layout {
+		return true
+	}
+	// 别名链跟随（环/断链止步；终点须为布局名本身）。
+	seen := map[string]bool{}
+	cur := name
+	for i := 0; i < len(scope.aliasOf)+1; i++ {
+		if seen[cur] {
+			return false
+		}
+		seen[cur] = true
+		tgt, ok := scope.aliasOf[cur]
+		if !ok || tgt == nil || tgt.Kind != ast.KindTypeReference {
+			return false
+		}
+		nr := tgt.AsTypeReferenceNode()
+		if nr == nil || nr.TypeName == nil || nr.TypeName.Kind != ast.KindIdentifier {
+			return false
+		}
+		if nr.TypeArguments != nil && len(nr.TypeArguments.Nodes) > 0 {
+			return false
+		}
+		cur = nr.TypeName.Text()
+		if cur == layout {
+			return true
+		}
+	}
+	return false
 }
 
 // saLowerKeyofIndex lowering `p[k]` 动态键读（布局须全 i32；字面量键静态
