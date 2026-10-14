@@ -78,42 +78,56 @@ L_idx_end_1:
   t_37 = load t_35 + 8 as u64
   call @sa_print_bytes(&t_36, t_37)
   !t_35
-  t_38 = call @ts_arr_pop(a)
-  b = t_38
-  t_39 = alloc 8
-  t_40 = ne b, 0
-  br t_40 -> L_null_t_4, L_null_f_5
-L_null_t_4:
-  store t_39 + 0, b as ptr
-  jmp L_null_end_6
-L_null_f_5:
-  store t_39 + 0, -1 as ptr
-  jmp L_null_end_6
-L_null_end_6:
-  t_41 = load t_39 + 0 as i32
-  !t_39
-  t_42 = sext t_41 as i64
-  t_43 = alloc 64
-  t_44 = alloc 8
-  t_45 = call @sa_fmt_i64_into(t_42, 10, t_43, 64, &t_44)
-  t_46 = load t_44 + 0 as u64
-  t_47 = alloc 16
-  store t_47 + 0, t_43 as ptr
-  store t_47 + 8, t_46 as u64
-  !t_45
-  t_48 = load t_47 + 0 as ptr
-  t_49 = load t_47 + 8 as u64
-  call @sa_print_bytes(&t_48, t_49)
-  !t_47
-  t_50 = alloc 16
-  store t_50 + 0, &str_const_0 as ptr
-  store t_50 + 8, 1 as u64
-  t_51 = load t_50 + 0 as ptr
-  t_52 = load t_50 + 8 as u64
-  call @sa_print_bytes(&t_51, t_52)
-  !t_50
-  !t_44
+  t_38 = alloc 8
+  t_39 = load a + 8 as u64
+  t_40 = eq t_39, 0
+  br t_40 -> L_pop_empty_4, L_pop_has_5
+L_pop_empty_4:
+  store t_38 + 0, 0 as i32
+  jmp L_pop_end_6
+L_pop_has_5:
+  t_41 = call @ts_arr_pop(a)
+  store t_38 + 0, t_41 as i32
+  !t_41
+  jmp L_pop_end_6
+L_pop_end_6:
+  t_42 = load t_38 + 0 as i32
+  !t_38
+  b = t_42
+  t_43 = alloc 8
+  t_44 = ne b, 0
+  br t_44 -> L_null_t_7, L_null_f_8
+L_null_t_7:
+  store t_43 + 0, b as ptr
+  jmp L_null_end_9
+L_null_f_8:
+  store t_43 + 0, -1 as ptr
+  jmp L_null_end_9
+L_null_end_9:
+  t_45 = load t_43 + 0 as i32
   !t_43
+  t_46 = sext t_45 as i64
+  t_47 = alloc 64
+  t_48 = alloc 8
+  t_49 = call @sa_fmt_i64_into(t_46, 10, t_47, 64, &t_48)
+  t_50 = load t_48 + 0 as u64
+  t_51 = alloc 16
+  store t_51 + 0, t_47 as ptr
+  store t_51 + 8, t_50 as u64
+  !t_49
+  t_52 = load t_51 + 0 as ptr
+  t_53 = load t_51 + 8 as u64
+  call @sa_print_bytes(&t_52, t_53)
+  !t_51
+  t_54 = alloc 16
+  store t_54 + 0, &str_const_0 as ptr
+  store t_54 + 8, 1 as u64
+  t_55 = load t_54 + 0 as ptr
+  t_56 = load t_54 + 8 as u64
+  call @sa_print_bytes(&t_55, t_56)
+  !t_54
+  !t_48
+  !t_47
   !b
   !t_29
   !t_28

@@ -15,113 +15,155 @@
   store t_1 + 8, 2 as u64
   !t_2
   a = t_1
-  t_5 = call @ts_arr_pop(a)
-  t_6 = alloc 8
-  t_7 = ne t_5, 0
-  br t_7 -> L_null_t_1, L_null_f_2
-L_null_t_1:
-  store t_6 + 0, t_5 as ptr
-  jmp L_null_end_3
-L_null_f_2:
-  store t_6 + 0, 0 as ptr
-  jmp L_null_end_3
-L_null_end_3:
-  t_8 = load t_6 + 0 as i32
-  !t_6
-  t_9 = sext t_8 as i64
-  t_10 = alloc 64
-  t_11 = alloc 8
-  t_12 = call @sa_fmt_i64_into(t_9, 10, t_10, 64, &t_11)
-  t_13 = load t_11 + 0 as u64
-  t_14 = alloc 16
-  store t_14 + 0, t_10 as ptr
-  store t_14 + 8, t_13 as u64
-  !t_12
-  t_15 = load t_14 + 0 as ptr
-  t_16 = load t_14 + 8 as u64
-  call @sa_print_bytes(&t_15, t_16)
-  !t_14
-  t_17 = alloc 16
-  store t_17 + 0, &str_const_0 as ptr
-  store t_17 + 8, 1 as u64
-  t_18 = load t_17 + 0 as ptr
-  t_19 = load t_17 + 8 as u64
-  call @sa_print_bytes(&t_18, t_19)
-  !t_17
-  t_20 = call @ts_arr_pop(a)
-  t_21 = alloc 8
-  t_22 = ne t_20, 0
-  br t_22 -> L_null_t_4, L_null_f_5
+  t_5 = alloc 8
+  t_6 = load a + 8 as u64
+  t_7 = eq t_6, 0
+  br t_7 -> L_pop_empty_1, L_pop_has_2
+L_pop_empty_1:
+  store t_5 + 0, 0 as i32
+  jmp L_pop_end_3
+L_pop_has_2:
+  t_8 = call @ts_arr_pop(a)
+  store t_5 + 0, t_8 as i32
+  !t_8
+  jmp L_pop_end_3
+L_pop_end_3:
+  t_9 = load t_5 + 0 as i32
+  !t_5
+  t_10 = alloc 8
+  t_11 = ne t_9, 0
+  br t_11 -> L_null_t_4, L_null_f_5
 L_null_t_4:
-  store t_21 + 0, t_20 as ptr
+  store t_10 + 0, t_9 as ptr
   jmp L_null_end_6
 L_null_f_5:
-  store t_21 + 0, 0 as ptr
+  store t_10 + 0, 0 as ptr
   jmp L_null_end_6
 L_null_end_6:
-  t_23 = load t_21 + 0 as i32
-  !t_21
-  t_24 = sext t_23 as i64
-  t_25 = alloc 64
-  t_26 = alloc 8
-  t_27 = call @sa_fmt_i64_into(t_24, 10, t_25, 64, &t_26)
-  t_28 = load t_26 + 0 as u64
-  t_29 = alloc 16
-  store t_29 + 0, t_25 as ptr
-  store t_29 + 8, t_28 as u64
-  !t_27
-  t_30 = load t_29 + 0 as ptr
-  t_31 = load t_29 + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  !t_29
-  t_32 = alloc 16
-  store t_32 + 0, &str_const_0 as ptr
-  store t_32 + 8, 1 as u64
-  t_33 = load t_32 + 0 as ptr
-  t_34 = load t_32 + 8 as u64
-  call @sa_print_bytes(&t_33, t_34)
-  !t_32
-  t_35 = call @ts_arr_pop(a)
-  t_36 = alloc 8
-  t_37 = ne t_35, 0
-  br t_37 -> L_null_t_7, L_null_f_8
-L_null_t_7:
-  store t_36 + 0, t_35 as ptr
-  jmp L_null_end_9
-L_null_f_8:
-  store t_36 + 0, 0 as ptr
-  jmp L_null_end_9
-L_null_end_9:
-  t_38 = load t_36 + 0 as i32
-  !t_36
-  t_39 = sext t_38 as i64
-  t_40 = alloc 64
-  t_41 = alloc 8
-  t_42 = call @sa_fmt_i64_into(t_39, 10, t_40, 64, &t_41)
-  t_43 = load t_41 + 0 as u64
-  t_44 = alloc 16
-  store t_44 + 0, t_40 as ptr
-  store t_44 + 8, t_43 as u64
-  !t_42
-  t_45 = load t_44 + 0 as ptr
-  t_46 = load t_44 + 8 as u64
-  call @sa_print_bytes(&t_45, t_46)
-  !t_44
-  t_47 = alloc 16
-  store t_47 + 0, &str_const_0 as ptr
-  store t_47 + 8, 1 as u64
-  t_48 = load t_47 + 0 as ptr
-  t_49 = load t_47 + 8 as u64
-  call @sa_print_bytes(&t_48, t_49)
-  !t_47
-  !t_41
-  !t_40
-  !t_35
-  !t_26
-  !t_25
-  !t_20
-  !t_11
+  t_12 = load t_10 + 0 as i32
   !t_10
-  !t_5
+  t_13 = sext t_12 as i64
+  t_14 = alloc 64
+  t_15 = alloc 8
+  t_16 = call @sa_fmt_i64_into(t_13, 10, t_14, 64, &t_15)
+  t_17 = load t_15 + 0 as u64
+  t_18 = alloc 16
+  store t_18 + 0, t_14 as ptr
+  store t_18 + 8, t_17 as u64
+  !t_16
+  t_19 = load t_18 + 0 as ptr
+  t_20 = load t_18 + 8 as u64
+  call @sa_print_bytes(&t_19, t_20)
+  !t_18
+  t_21 = alloc 16
+  store t_21 + 0, &str_const_0 as ptr
+  store t_21 + 8, 1 as u64
+  t_22 = load t_21 + 0 as ptr
+  t_23 = load t_21 + 8 as u64
+  call @sa_print_bytes(&t_22, t_23)
+  !t_21
+  t_24 = alloc 8
+  t_25 = load a + 8 as u64
+  t_26 = eq t_25, 0
+  br t_26 -> L_pop_empty_7, L_pop_has_8
+L_pop_empty_7:
+  store t_24 + 0, 0 as i32
+  jmp L_pop_end_9
+L_pop_has_8:
+  t_27 = call @ts_arr_pop(a)
+  store t_24 + 0, t_27 as i32
+  !t_27
+  jmp L_pop_end_9
+L_pop_end_9:
+  t_28 = load t_24 + 0 as i32
+  !t_24
+  t_29 = alloc 8
+  t_30 = ne t_28, 0
+  br t_30 -> L_null_t_10, L_null_f_11
+L_null_t_10:
+  store t_29 + 0, t_28 as ptr
+  jmp L_null_end_12
+L_null_f_11:
+  store t_29 + 0, 0 as ptr
+  jmp L_null_end_12
+L_null_end_12:
+  t_31 = load t_29 + 0 as i32
+  !t_29
+  t_32 = sext t_31 as i64
+  t_33 = alloc 64
+  t_34 = alloc 8
+  t_35 = call @sa_fmt_i64_into(t_32, 10, t_33, 64, &t_34)
+  t_36 = load t_34 + 0 as u64
+  t_37 = alloc 16
+  store t_37 + 0, t_33 as ptr
+  store t_37 + 8, t_36 as u64
+  !t_35
+  t_38 = load t_37 + 0 as ptr
+  t_39 = load t_37 + 8 as u64
+  call @sa_print_bytes(&t_38, t_39)
+  !t_37
+  t_40 = alloc 16
+  store t_40 + 0, &str_const_0 as ptr
+  store t_40 + 8, 1 as u64
+  t_41 = load t_40 + 0 as ptr
+  t_42 = load t_40 + 8 as u64
+  call @sa_print_bytes(&t_41, t_42)
+  !t_40
+  t_43 = alloc 8
+  t_44 = load a + 8 as u64
+  t_45 = eq t_44, 0
+  br t_45 -> L_pop_empty_13, L_pop_has_14
+L_pop_empty_13:
+  store t_43 + 0, 0 as i32
+  jmp L_pop_end_15
+L_pop_has_14:
+  t_46 = call @ts_arr_pop(a)
+  store t_43 + 0, t_46 as i32
+  !t_46
+  jmp L_pop_end_15
+L_pop_end_15:
+  t_47 = load t_43 + 0 as i32
+  !t_43
+  t_48 = alloc 8
+  t_49 = ne t_47, 0
+  br t_49 -> L_null_t_16, L_null_f_17
+L_null_t_16:
+  store t_48 + 0, t_47 as ptr
+  jmp L_null_end_18
+L_null_f_17:
+  store t_48 + 0, 0 as ptr
+  jmp L_null_end_18
+L_null_end_18:
+  t_50 = load t_48 + 0 as i32
+  !t_48
+  t_51 = sext t_50 as i64
+  t_52 = alloc 64
+  t_53 = alloc 8
+  t_54 = call @sa_fmt_i64_into(t_51, 10, t_52, 64, &t_53)
+  t_55 = load t_53 + 0 as u64
+  t_56 = alloc 16
+  store t_56 + 0, t_52 as ptr
+  store t_56 + 8, t_55 as u64
+  !t_54
+  t_57 = load t_56 + 0 as ptr
+  t_58 = load t_56 + 8 as u64
+  call @sa_print_bytes(&t_57, t_58)
+  !t_56
+  t_59 = alloc 16
+  store t_59 + 0, &str_const_0 as ptr
+  store t_59 + 8, 1 as u64
+  t_60 = load t_59 + 0 as ptr
+  t_61 = load t_59 + 8 as u64
+  call @sa_print_bytes(&t_60, t_61)
+  !t_59
+  !t_53
+  !t_52
+  !t_47
+  !t_34
+  !t_33
+  !t_28
+  !t_15
+  !t_14
+  !t_9
   !a
   ret 0

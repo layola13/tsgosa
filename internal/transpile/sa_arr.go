@@ -6170,10 +6170,42 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		// R1 回迁映射：末端取值缩长语义由 `sci/sa_std/ts_array.sa`
 		// `@ts_arr_pop` 实现（i32 结果须 saOwnTemp 登记，R1-12 同例）。
+		// 0.17 空守卫：sci 0.17 线尚无 main 的 wasm-port 空守卫
+		// （空弹返 0），调用点自守卫（`saLowerGuardedMethodCall`
+		// L_call_null 槽形；空即 0，非空直调；JS 空弹 undefined→0
+		// 子集口径与旧守卫同值）。
 		scope.addImport("sa_std/ts_array.sa")
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		plen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", plen, recv))
+		isempty := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		nullL := fmt.Sprintf("L_pop_empty_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		hasL := fmt.Sprintf("L_pop_has_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_pop_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isempty, plen))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isempty, nullL, hasL))
+		w.Write(fmt.Sprintf("%s:\n", nullL))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", slot))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", hasL))
+		pv := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_pop(%s)\n", pv, recv))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, pv))
+		w.Write(fmt.Sprintf("  !%s\n", pv))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
 		out := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @ts_arr_pop(%s)\n", out, recv))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
 		saOwnTemp(scope, out)
 		return out, "i32", ""
 	case "shift":
@@ -6182,12 +6214,42 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		// R1 回迁映射：首端取值前移语义由 `sci/sa_std/ts_array.sa`
 		// `@ts_arr_shift` 实现（i32 结果须 saOwnTemp 登记，R1-12 同例）。
+		// 0.17 空守卫：与 pop 同形（空即 0；shift 空取在双线皆越界，
+		// 此处一并收敛，verdict 中性）。
 		scope.addImport("sa_std/ts_array.sa")
-		out := fmt.Sprintf("t_%d", *nextTemp)
+		sslot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = call @ts_arr_shift(%s)\n", out, recv))
-		saOwnTemp(scope, out)
-		return out, "i32", ""
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", sslot))
+		slen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", slen, recv))
+		sempty := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		snullL := fmt.Sprintf("L_shift_empty_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		shasL := fmt.Sprintf("L_shift_has_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		sendL := fmt.Sprintf("L_shift_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", sempty, slen))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", sempty, snullL, shasL))
+		w.Write(fmt.Sprintf("%s:\n", snullL))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", sslot))
+		w.Write(fmt.Sprintf("  jmp %s\n", sendL))
+		w.Write(fmt.Sprintf("%s:\n", shasL))
+		sv := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_shift(%s)\n", sv, recv))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", sslot, sv))
+		w.Write(fmt.Sprintf("  !%s\n", sv))
+		w.Write(fmt.Sprintf("  jmp %s\n", sendL))
+		w.Write(fmt.Sprintf("%s:\n", sendL))
+		sout := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", sout, sslot))
+		w.Write(fmt.Sprintf("  !%s\n", sslot))
+		saOwnTemp(scope, sout)
+		return sout, "i32", ""
 	case "unshift":
 		// 展开形（`a.unshift(0, ...b)`；中转暂存保序 + 逆序单步前插；1398）。
 		for _, an := range argNodes {
