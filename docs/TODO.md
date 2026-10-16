@@ -18,7 +18,7 @@ bare 按需纳入 + package.json 读底座 + symlink 穿透 + `.js` 落点直转
 
 - [ ] E1-1 版本化注册表：`zod@4.6.5` 本体仍 0%（类/泛型/this 链在子集外）。
   现状：210/220/257/258/259 为 `expect.refused` 锁定，双边同拒，零 panic。
-  方向二选一（需用户拍板）：A 通道（SA 原生重写 zod 子集эс，224 为雏形）；
+  方向二选一（需用户拍板）：A 通道（SA 原生重写 zod 子集，224 为雏形）；
   B 通道（program-link + 深类型系统：Record 动态字典 Z1、顶层 const 对象 Z2、
   类运行时/Error 基 Z3）。验收：zod464 通数变化（非首拒消失）。
 - [ ] E1-2 纯 `.js` 包：218 锁定双边同拒（`module.exports` 无布局）。
@@ -84,11 +84,14 @@ Error 体系 / Node 运行时一律不行。逐项：
 hooks 三件 + afterAll 整域缓冲、expect（零元/比较/串/长度/toThrow/toMatch/
 toContain 数组形/数组深比/negation）。剩余：
 
-- [ ] E5-1 `.not` 全系：仅 toBe/toEqual/toContain 翻转；其余匹配器 `.not` 待补。
+- [ ] E5-1 `.not` 全系：`neg` 已贯通全部已支持匹配器（实例/数组/串/零元/
+  比较/长度/toThrow/toMatch/toBeNaN，`sa_ctrl.go` 分发核实证）；
+  剩余为未支持匹配器（mock/对象系，需对象深模型，冻结，禁硬做）。
 - [ ] E5-2 `test.failing` / `concurrent` / `retry`：无 panic 捕获/事件循环底座，
   大声拒已锁（冻结，维持）。
-- [ ] E5-3 `sa test` 真跑：需 LLVM 后端（本机已有 LLVM-14 可跑）；
-  `sa_tests/` 91 件 `--list` 层已验，真跑待批量复核。
+- [x] E5-3 `sa test` 真跑：LLVM-14 后端已通，90 件批量原生复核
+  **89 PASS + t289_hash 挂起**（`PackageNotResolved`，node 插件环境项 E9-2，
+  转译侧全绿）；`--list` 发现层同步全绿。代码零改动（纯验证项）。
 
 ## E6 诊断抛光 H1b / H9（只影响拒因文本，不影响 verdict）
 
@@ -122,9 +125,9 @@ join/split/replace/match/exec、`@ts_str_compare`。剩余：
 
 ## E9 环境债（本轮现装现验，须文档化）
 
-- [ ] E9-1 LLVM-14 构建依赖：`sa` 原生后端需 `llvm-14-dev`
+- [x] E9-1 LLVM-14 构建依赖：`sa` 原生后端需 `llvm-14-dev`
  （sci 默认 `/usr/lib/llvm-14`）+ `zig build`（默认开 LLVM；
-  `-Dllvm=false` 编出的 `sa` 跑不了 `build-exe`，`run.sh` 注释旧提示待改）。
+  `-Dllvm=false` 编出的 `sa` 跑不了 `build-exe`，`run.sh:51` 旧提示已改）。
 - [ ] E9-2 node/deno 插件正式安装：manifest 缺进程权限声明，
   `sa plugin install` 拒收（归 `sa_plugin_node` 上游）；`--dev` 可绕过。
   203–208/289 七例原生跑分依赖此项。

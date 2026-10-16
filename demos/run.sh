@@ -48,7 +48,7 @@ elif [ -n "$(find "$TSGOSA/cmd/tsgo" "$TSGOSA/internal/transpile" -name '*.go' -
   (cd "$TSGOSA" && go build -o "$TSGO_BIN" ./cmd/tsgo) || exit 2
 fi
 if [ ! -x "$SA_BIN" ]; then
-  echo "error: sa backend not found at $SA_BIN (build sci: zig build -Dllvm=false)" >&2
+  echo "error: sa backend not found at $SA_BIN (build sci: zig build # LLVM backend default-on, needs llvm-14-dev)" >&2
   exit 2
 fi
 
