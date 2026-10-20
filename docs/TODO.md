@@ -88,6 +88,10 @@ Error 体系 / Node 运行时一律不行。逐项：
       arrStr 路径），字句柄须在**循环体内**释（则数组元素悬垂，须核 arrStr
       读路径是否重建 {ptr,len}）；②或先解清串元数组的句柄归属模型再落
       （禁半落地，违铁律 4）。
+      另：串源当前在**数组声明路径**（`saLowerArrDecl` 尾）落
+      「array initializer must be literal or array」——即 `Array.from` 的
+      调用分派未走到 `saLowerArrayFrom`（其串源分支未触发），落精确拒因需
+      先定位该分派点（勿在 `saLowerArrayFrom` 内加检查，验不到）。
 - [x] 已核验可用（本轮探针，零改码）：`infer`/映射类型/条件类型/模板字面量
       类型（纯类型擦除全通）、私有字段 + getter、`p?.["a"]` 可选计算下标、
       `catch` 无绑定、`as` 断言、`instanceof` 值位折叠、`hasOwnProperty` 方法形、
