@@ -3865,7 +3865,7 @@ func saIsArrMethod(m string) bool {
 		"includes", "reverse", "slice", "at", "join", "copyWithin", "toReversed",
 		"toSorted", "with", "toSpliced", "splice", "flat", "flatMap", "concat",
 		"forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
-		"some", "every", "reduce", "reduceRight":
+		"some", "every", "reduce", "reduceRight", "entries":
 		return true
 	}
 	return false
@@ -6650,6 +6650,26 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			depth = dv
 		}
 		return saLowerArrayFlat(w, recv, depth, scope, nextTemp), "arr", ""
+	case "entries":
+		// `arr.entries()` 下标-值对数组（sci `sa_std/ts_array.sa`
+		// `@ts_arr_entries`：每元一个 2 元 i32 数组 {i, v}；外层数组存对句柄
+		// 地址，与嵌套数组模型同形；对数组由 sci 侧分配（端口无逐对归属问题））。
+		if len(argNodes) != 0 {
+			return "", "", "entries takes no arguments"
+		}
+		if (scope.arrStr != nil && scope.arrStr[recv]) || (scope.arrNest != nil && scope.arrNest[recv]) {
+			return "", "", "entries needs an i32 array (string or nested elements are not lowerable)"
+		}
+		scope.addImport("sa_std/ts_array.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_entries(%s)\n", h, recv))
+		saOwnTemp(scope, h)
+		if scope.arrNest == nil {
+			scope.arrNest = map[string]bool{}
+		}
+		scope.arrNest[h] = true
+		return h, "arr", ""
 	case "at":
 		if len(argNodes) != 1 {
 			return "", "", "at needs 1 argument"
