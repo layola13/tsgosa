@@ -75,7 +75,16 @@ Error 体系 / Node 运行时一律不行。逐项：
       端口侧须归一为 JS 的 -1/0/1，禁直接透传原值）。
 - [ ] E2-2g `Object.entries(o)` / `arr.entries()`：pair 数组需 **str+i32 混元**
       元素（端口数组模型当前同元：arr/arrStr/arrNest 三种标记皆单一种）→
-      需扩「按位元种」或引入 pair 专用标记。
+      需扩「按位元种」或引入 pair 专用标记。（`Object.entries` 已给精确拒因；
+      `arr.entries()` 仍落 unknown method。）
+- [ ] E2-2h `Array.from(<string>)`：串→字符数组（`Array.from` 现支持
+      `{length}` 零数组 / 数组克隆 / mapper，串源落
+      `array initializer must be literal or array`；端口已有串逐字取字
+      `saLowerStrIndexChar`，需串循环保鲜 + 元素句柄入槽）。
+- [x] 已核验可用（本轮探针，零改码）：`infer`/映射类型/条件类型/模板字面量
+      类型（纯类型擦除全通）、私有字段 + getter、`p?.["a"]` 可选计算下标、
+      `catch` 无绑定、`as` 断言、`instanceof` 值位折叠、`hasOwnProperty` 方法形、
+      `localeCompare`、`Object.keys/values/assign`。
 - [ ] E2-3 `instanceof`（234×，含自定义类）：双边同拒，无 vtable/品牌表底座。
 - [ ] E2-4 `process.env`（319×）：双边同拒，需宿主注入设计（ambient 槽？裁决）。
 - [ ] E2-5 `TextEncoder`（86×）/ `Uint8Array` / `Buffer.from`：双边同拒，
