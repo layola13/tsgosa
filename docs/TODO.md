@@ -99,6 +99,19 @@ Error 体系 / Node 运行时一律不行。逐项：
 - [x] E2-2i sci 侧空分隔切分（`@ts_str_split` 零长分隔符）——**已完成**
       （sci `6d8369fe` 已推：`sl==0` 分支按字节切 1 字节段；harness `sa check` ok
       1797 指令 + `"abc"` → 3 元素 exit 3）
+- [ ] E2-2k sci 侧 `arr.entries()` 对数组原语（`@ts_arr_entries`）——**未解**
+      （2026-10-20 探针记录，供下轮续查）：按 R 轨道拟在
+      `sci/sa_std/ts_array.sa` 追加 `@ts_arr_entries(src: ptr) -> ptr`（每元一个
+      2 元 i32 数组 {i, v}，外层存对句柄地址，与薄口嵌套数组模型同形）。
+      **现象**：追加后调用方 `sa check` 落 `InvalidSyntax`（basic blocks/操作数
+      形态类报错，非未知符号类）；**已排除**：①文件尾部结构/宏（追加在末尾与
+      插在 concat2 前均同样失败）②符号名冲突（改名 `@ts_arr_entries2` 同样失败）
+      ③参数名/参数个数（`@ts_arr_mkcopy(3)` 单参调用 check ok ✓；`src` 与既有
+      `@ts_arr_slice_copy(src: ptr,…)` 同名 ✓）④体指令（缩到 3 条指令仍失败）
+      ⑤`trunc` 语法（`trunc X as i32` ✓，已用）。**仍存疑**：与既有同形符号的
+      残余差异（疑为该文件内已有近名局部符号，或调用方对**返回数组**的形态要求）
+      ——未定位前不提交（禁半落地）；端口侧 `arr.entries()` / `Object.entries`
+      的 pair 混元随之继续冻结。
       （sci 先落 + harness 验，tsgosa 再改调）：`sci/sa_std/ts_string.sa`
       `@ts_str_split` 的 `L_SSP_BODY` 用 `nstart = add idx, sl` 推进游标，
       **sl=0（零长分隔符）时游标原地不动 → 死循环**（实测 `Array.from(str)`
