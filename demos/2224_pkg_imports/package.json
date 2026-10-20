@@ -1,0 +1,7 @@
+{
+  "name": "pkg_imports",
+  "version": "1.0.0",
+  "imports": {
+    "#util": "./util.ts"
+  }
+}

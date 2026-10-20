@@ -1180,6 +1180,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		// 其余 bare 警告（driver 聚合 Unresolved；用点自然拒）。
 		if _, ok := link.specOf[spec]; !ok {
 			ln, col := pos(st.Pos())
+			// `#` 前缀是 package.json "imports" 映射（包内别名），非第三方包：
+			// 底座 resolver 原生支持，拒因文案分列（禁文不对题）。
+			if len(spec) > 0 && spec[0] == '#' {
+				*warnings = append(*warnings, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (package.json imports mapping not found)"})
+				return true
+			}
 			*warnings = append(*warnings, SARefusal{Line: ln, Col: col, Msg: "import " + spec + " is not resolvable (bare third-party imports are Phase 3; see todo/03_npm.md)"})
 			return true
 		}
