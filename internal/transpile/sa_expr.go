@@ -1369,6 +1369,22 @@ func saLowerJSONStringify(w printer.EmitTextWriter, a *ast.Node, scope *saScope,
 		}
 		goto finish
 	}
+	// 对象字面量（布局按自身键集合成，E2-1c）：具化后走同一路径。
+	if a.Kind == ast.KindObjectLiteralExpression {
+		h, lname, msg := saLowerObjectLiteral(w, a, "", scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		def := scope.classes[lname]
+		if def == nil {
+			return "", false, "JSON.stringify needs a known-layout object"
+		}
+		if msg := saLowerJSONInstObject(w, h, def, scope, nextTemp, wr, map[string]bool{}); msg != "" {
+			return "", false, msg
+		}
+		saReleaseOwnedTemp(w, scope, h)
+		goto finish
+	}
 	// 数组形（i32/串元；嵌套另步；空数组即 `[]`）。
 	if saIsArrValue(a, scope) {
 		h, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp)
