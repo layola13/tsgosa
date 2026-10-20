@@ -92,6 +92,15 @@ Error 体系 / Node 运行时一律不行。逐项：
       「array initializer must be literal or array」——即 `Array.from` 的
       调用分派未走到 `saLowerArrayFrom`（其串源分支未触发），落精确拒因需
       先定位该分派点（勿在 `saLowerArrayFrom` 内加检查，验不到）。
+- [ ] E2-2i sci 侧空分隔切分（`@ts_str_split` 零长分隔符）——**R 轨道前置**
+      （sci 先落 + harness 验，tsgosa 再改调）：`sci/sa_std/ts_string.sa`
+      `@ts_str_split` 的 `L_SSP_BODY` 用 `nstart = add idx, sl` 推进游标，
+      **sl=0（零长分隔符）时游标原地不动 → 死循环**（实测 `Array.from(str)`
+      走此路：产物 `sa check` 过但真机 **挂死**（exit 124）——最坏类，已回退，
+      禁半落地）。修法（sci 侧）：`sl == 0` 走独立分支——按字节逐位切 1 字节
+      段（JS `split("")` 语义 = 码元序列；`Array.from` 按码点，代理对边缘差，
+      端口域 ASCII 一致）。tsgosa 侧随即可改调：`Array.from(<string>)` 与
+      `"str".split("")` 同时转正（前者语义差同后者）。
 - [x] 已核验可用（本轮探针，零改码）：`infer`/映射类型/条件类型/模板字面量
       类型（纯类型擦除全通）、私有字段 + getter、`p?.["a"]` 可选计算下标、
       `catch` 无绑定、`as` 断言、`instanceof` 值位折叠、`hasOwnProperty` 方法形、
