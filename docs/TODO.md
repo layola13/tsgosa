@@ -67,6 +67,11 @@ Error 体系 / Node 运行时一律不行。逐项：
   嵌套泛型数组（`T[][]`）、对象元数组的派生方法（map/filter 回调元为实例）待摘。
   数组族新原语已就位（sci：`@ts_arr_entries`（对数组）、`@ts_arr_keys`（下标）、
   `@ts_arr_clone_flat`（值浅拷）→ 端口 `arr.entries()`/`keys()`/`values()` 已转正）；
+  **E2-1 宽元数组的形状已由 `sa_plugin_sla` 参照确定**（用户提示）：其
+  `demos/rosetta/32_trait_object_vector/main.sa` 的对象向量 = **16 字节头
+  {ptr,len}（与端口头同构 ✓）+ 8 字节步幅的指针元素缓冲**（`mul idx, 8` ✓）——
+  即实例元数组应另立「指针数组」种（8 字节步幅），**不塞进 4 字节 word 模型**
+  （word 模型下实例句柄会被截断 → 悬垂）；sci 侧需新增宽元 push/get 原语。
   余 `Object.entries`（键值对 = 串+i32 **混元** → 端口数组模型同元，禁混元，
   须立 pair 专用标记；完整设计见下条 E2-2m）。
 - [ ] E2-2 `?.` 组合：参数直取/局部拷贝/链基/调用基/struct 数组元基已通
@@ -222,7 +227,9 @@ D5 f64 复合按 fadd；D6 联合声明走推断；D7 T2；D8 f64 整循环；
 D9 symbol 注解拒收；X-datecmp / X-nanspec / X-statread / X-sortstr /
 X-strjoin / X-radix / X-sweep 系上游有病项（薄口拒收正确，不移植）。
 
-- [ ] E2-2m `Object.entries(o)` pair 混元模型（obj 家族最后一块）——**完整设计**
+- [x] E2-2m `Object.entries(o)` pair 混元模型（obj 家族最后一块）——**已完成**
+      （按下列设计施工：两个标记分开 + 逐字段展开构造 + 静态位次分种 + 两条读路径 +
+      两种解构形态精确拒；demo `2243_object_entries` 真机 2/a/7/b/9）
       （可直接施工，无需再探）：
       ①**标记**：saScope 增 `arrPair map[string]bool`（pair 数组句柄 → 真）；
       端口数组模型同元（arr/arrStr/arrNest 三种标记皆单一种），故 pair 需**按位

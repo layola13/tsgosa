@@ -2468,6 +2468,23 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			return h, false, ""
 		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
+			pa.Name() != nil && pa.Name().Text() == "entries" {
+			// `Object.entries(o)` 键值对数组（每元一个 2 元数组 {key, value}：
+			// 位 0 串键 / 位 1 i32 值，按静态位次分种；解构形态沿旧门拒）。
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "Object.entries takes one argument"
+			}
+			h, msg := saLowerObjectEntries(w, argNodes[0], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return h, false, ""
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
 			pa.Name() != nil && pa.Name().Text() == "values" {
 			// `Object.values(o)` 已知布局 i32 数据槽具化新数组（存取器/异种槽沿旧门；与 keys 计数同口径；577）。
 			var argNodes []*ast.Node

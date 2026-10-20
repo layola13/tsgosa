@@ -3503,6 +3503,12 @@ type saScope struct {
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr map[string]bool
+	// arrPair marks Object.entries result arrays (their elements are pair
+	// arrays: slot 0 = the string key handle address, slot 1 = the i32 value).
+	arrPair map[string]bool
+	// arrPairEl marks the pair arrays themselves (a direct slot read on one
+	// would bind the key handle address as an integer).
+	arrPairEl map[string]bool
 	// arrInnerStr marks array handles whose elements are arrays of string
 	// handles (nested destructuring inner leaves bind str; mirror of arrStr,
 	// element kind only, never ownership).

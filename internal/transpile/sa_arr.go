@@ -1643,6 +1643,26 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	if layout, def, ok := saKeyofBase(ea.Expression, scope); ok {
 		return saLowerKeyofIndex(w, ea, layout, def, scope, pos, refusals, nextTemp)
 	}
+	// Object.entries 的 pair 数组：位次读走专用径（saPairSlot 按静态位次
+	// 分种）；此处直读位次不明 → 大声拒（禁把键的句柄地址当整数绑出）。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier &&
+		scope.arrPairEl != nil && scope.arrPairEl[ea.Expression.Text()] {
+		return "", "Object.entries pair elements must be read as es[i][0] (string key) or es[i][1] (i32 value)"
+	}
+	// Object.entries pair 位 1（i32 值）：先取外层 pair 句柄，再读位 1。
+	if lit, ok := saPairSlot(ea.AsNode(), scope); ok {
+		if lit != 1 {
+			return "", "Object.entries pair slot 0 is the string key (read it as a string)"
+		}
+		base := ea.Expression.AsElementAccessExpression()
+		pairH, msg := saLowerIndexLoadExpr(w, base, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		out := saLowerCheckedIndex(w, pairH, "1", scope.nextLabel, nextTemp)
+		saReleaseOwnedTemp(w, scope, pairH)
+		return out, ""
+	}
 	// 顶层 const 数组下标读（i32 元快照物化后走既有越界归零径；串元走串位，
 	// 嵌套走双下标臂，此处 i32 位大声拒；局部/mod 槽遮蔽优先；写位/方法位/别名位
 	// 无臂沿旧门大声拒；698/758/798）。
@@ -1882,6 +1902,136 @@ func saLowerObjectKeys(w printer.EmitTextWriter, e *ast.Node, scope *saScope, po
 		saLowerArrayPush(w, h, seg, scope, nextTemp)
 	}
 	return h, ""
+}
+
+// saLiteralIndex 取字面量下标（非字面量返 false）：Object.entries 的 pair
+// 位次按静态下标分种（位 0 串键 / 位 1 i32 值），动态下标拒（禁运行时猜位次）。
+func saLiteralIndex(e *ast.Node) (int, bool) {
+	if e == nil || e.Kind != ast.KindNumericLiteral {
+		return 0, false
+	}
+	var v int
+	if _, err := fmt.Sscanf(e.Text(), "%d", &v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// saPairSlot 判断元素访问是否落在 Object.entries 的 pair 上：内层读的基须是
+// 「entries 数组的字面量下标访问」，内外下标皆字面量 → 返回位次（0=串键、
+// 1=i32 值）。链式读 es[0][0] 的内层基是元素访问（非标识符），故按「基是
+// entries 数组的元素访问」判定（标记打在 entries 数组上）。
+func saPairSlot(e *ast.Node, scope *saScope) (int, bool) {
+	ea := e.AsElementAccessExpression()
+	if ea == nil || ea.QuestionDotToken != nil {
+		return 0, false
+	}
+	if ea.Expression == nil || ea.Expression.Kind != ast.KindElementAccessExpression {
+		return 0, false
+	}
+	base := ea.Expression.AsElementAccessExpression()
+	if base == nil || base.QuestionDotToken != nil {
+		return 0, false
+	}
+	if base.Expression == nil || base.Expression.Kind != ast.KindIdentifier {
+		return 0, false
+	}
+	if scope.arrPair == nil || !scope.arrPair[base.Expression.Text()] {
+		return 0, false
+	}
+	if _, ok := saLiteralIndex(base.ArgumentExpression); !ok {
+		return 0, false
+	}
+	lit, ok := saLiteralIndex(ea.ArgumentExpression)
+	if !ok {
+		return 0, false
+	}
+	return lit, true
+}
+
+// saMarkArrPair 标记 Object.entries 结果数组（其元素为 pair 数组）。
+func saMarkArrPair(scope *saScope, name string) {
+	if scope.arrPair == nil {
+		scope.arrPair = map[string]bool{}
+	}
+	scope.arrPair[name] = true
+}
+
+// saCallReturnsPairArray 判定调用是否为 `Object.entries(o)`（其结果为 pair
+// 数组；供声明位播种标记与解构位拒因共用）。
+func saCallReturnsPairArray(ce *ast.CallExpression) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier ||
+		pa.Expression.Text() != "Object" || pa.Name() == nil || pa.Name().Text() != "entries" {
+		return false
+	}
+	return ce.Arguments != nil && len(ce.Arguments.Nodes) == 1
+}
+
+// saLowerObjectEntries `Object.entries(o)` 已知布局 → 键值对数组（每元一个
+// 2 元数组 {key, value}：位 0 存键的串句柄地址、位 1 存 i32 值；外层数组存
+// 各 pair 的地址，与嵌套数组模型同形）。键序 = 字段声明序。句柄域字段沿旧门
+// 拒（pair 值槽为 i32 字）。逐字段展开落字（无循环——循环体内建的句柄其域尾释
+// 在体外 → verifier UnknownRegister 实锤，step2223 教训）。
+func saLowerObjectEntries(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return "", "Object.entries needs a bound object"
+	}
+	k, ok := scope.types[e.Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return "", "Object.entries needs a known-layout object"
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil {
+		return "", "Object.entries needs a known-layout object"
+	}
+	if len(def.getters) > 0 || len(def.setters) > 0 {
+		return "", "Object.entries needs data slots"
+	}
+	out := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, out)
+	if scope.arrNest == nil {
+		scope.arrNest = map[string]bool{}
+	}
+	scope.arrNest[out] = true
+	saMarkArrPair(scope, out)
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "i32" {
+			return "", "Object.entries needs i32 fields (handle fields are not lowerable)"
+		}
+		key := saLowerStringLiteral(w, f.name, scope, nextTemp)
+		v, msg := saLowerClassFieldLoad(w, e.Text(), def, f.name, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		buf := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", buf))
+		saOwnTemp(scope, buf)
+		b0 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 0\n", b0, buf))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", b0, key))
+		b1 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = add %s, 4\n", b1, buf))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", b1, v))
+		pair := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", pair))
+		saOwnTemp(scope, pair)
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", pair, buf))
+		w.Write(fmt.Sprintf("  store %s + 8, 2 as u64\n", pair))
+		if scope.arrPairEl == nil {
+			scope.arrPairEl = map[string]bool{}
+		}
+		scope.arrPairEl[pair] = true
+		saLowerArrayPush(w, out, pair, scope, nextTemp)
+	}
+	return out, ""
 }
 
 // saLowerObjectValues `Object.values(o)` 已知布局 i32 数据槽具化新数组（字段声明序；存取器/异种槽/未知布局沿旧门；577）。
@@ -2252,6 +2402,13 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 	}
 	if pat.Kind == ast.KindObjectBindingPattern {
 		return saLowerObjDestructuringDecl(w, d, vd, pat, scope, pos, refusals, nextTemp)
+	}
+	if pat.Kind == ast.KindArrayBindingPattern && vd.Initializer != nil &&
+		vd.Initializer.Kind == ast.KindCallExpression &&
+		saCallReturnsPairArray(vd.Initializer.AsCallExpression()) {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Object.entries pair destructuring is not lowerable (the key is a string; read es[i][0] and es[i][1] instead)"})
+		return false
 	}
 	if pat.Kind != ast.KindArrayBindingPattern {
 		ln, col := pos(d.Pos())
@@ -3137,6 +3294,10 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 			if saFuncReturnsStrArray(vd.Initializer.AsCallExpression(), scope) {
 				saMarkArrStr(scope, name)
 			}
+			// Object.entries 结果数组标记（其元素为 pair：位 0 串键 / 位 1 i32 值）。
+			if saCallReturnsPairArray(vd.Initializer.AsCallExpression()) {
+				saMarkArrPair(scope, name)
+			}
 		}
 		return true
 	}
@@ -3444,6 +3605,15 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 		if strBase != "" {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "array patterns in for-of need array bases"})
+			scope.loops = scope.loops[:len(scope.loops)-1]
+			return false
+		}
+		// Object.entries 的 pair 元素解构：键是串，端口解构位恒 i32 → 大声拒
+		// （禁把键的句柄地址当整数绑出，静默错码）。
+		if fo.Expression != nil && fo.Expression.Kind == ast.KindCallExpression &&
+			saCallReturnsPairArray(fo.Expression.AsCallExpression()) {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Object.entries pair destructuring is not lowerable (the key is a string; read es[i][0] and es[i][1] instead)"})
 			scope.loops = scope.loops[:len(scope.loops)-1]
 			return false
 		}
@@ -4090,7 +4260,7 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	}
 	// `Object.values(o)` 回 i32 数组柄、`Object.keys(o)` 回串元数组柄
 	// （布局门在求值侧；种判定零落字；577）。
-	if (m == "values" || m == "keys") && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" {
+	if (m == "values" || m == "keys" || m == "entries") && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" {
 		return "arr", true
 	}
 	if !saIsArrMethod(m) {

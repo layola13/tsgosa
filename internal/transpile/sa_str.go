@@ -111,6 +111,12 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
 			return true
 		}
+		// Object.entries pair 位 0 即串值（按静态位次；`?.` 沿旧门）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+			if lit, ok := saPairSlot(ea.AsNode(), scope); ok && lit == 0 {
+				return true
+			}
+		}
 		// 顶层串元数组元素读即串值（快照；`?.` 沿旧门；758）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
 			ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
@@ -491,6 +497,20 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			return saLowerCheckedIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
+		}
+		// Object.entries pair 位 0（串键）：先取外层 pair 句柄，再读位 0。
+		if lit, ok := saPairSlot(ea.AsNode(), scope); ok {
+			if lit != 0 {
+				return "", "Object.entries pair slot 1 is the i32 value"
+			}
+			base := ea.Expression.AsElementAccessExpression()
+			pairH, msg := saLowerIndexLoadExpr(w, base, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			out := saLowerCheckedIndex(w, pairH, "0", scope.nextLabel, nextTemp)
+			saReleaseOwnedTemp(w, scope, pairH)
+			return out, ""
 		}
 		// 顶层串元数组元素读（快照物化后走越界归零柄读回，用后即释；`?.` 沿旧门；758）。
 		if ea.QuestionDotToken == nil && ea.Expression != nil &&
