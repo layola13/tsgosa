@@ -1929,11 +1929,9 @@ func saLowerStringSplit(w printer.EmitTextWriter, ce *ast.CallExpression, scope 
 	if len(args) < 1 {
 		return "", "split needs 1 argument"
 	}
-	// 空分隔静态拒（`split("")` 运行时零步进死循环，真机 OOM（137）实证；
-	// 切分实现在只读 sci 镜像，薄口侧字面量先行大声；变量分隔沿旧路；1368）。
-	if a0 := args[0]; a0 != nil && (a0.Kind == ast.KindStringLiteral || a0.Kind == ast.KindNoSubstitutionTemplateLiteral) && a0.Text() == "" {
-		return "", "String.split with empty separator is not lowerable (zero-width scan loops forever)"
-	}
+	// 空分隔（`split("")`）已放行：sci 侧 `@ts_str_split` 增零长分隔符分支
+	// （按字节逐位切 1 字节段，JS 语义；原零步进死循环已修，sci `6d8369fe`）。
+	// 变量分隔沿旧路（其值在运行时才知道，空值由 sci 分支兜住）。
 	sep, msg := saEvalStr(w, args[0], scope, pos, refusals, nextTemp)
 	if msg != "" {
 		// 正则分隔（`sa_regex_match` 循环切分；空匹配推进一步；limit 达数即停）。
