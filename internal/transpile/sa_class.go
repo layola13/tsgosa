@@ -2983,6 +2983,28 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 			return nil, false
 		}
 		k := saLitFieldKind(init, scope)
+		if k == "" && init != nil && init.Kind == ast.KindNumericLiteral && saIsF64Operand(init, scope) {
+			// 浮点字面量初值 → f64 域（禁截断存 i32）。
+			k = "f64"
+		}
+		if k == "" && init != nil && init.Kind == ast.KindCallExpression {
+			// 调用初值：按被调返回种取（i32/str/arr/inst；未知即拒，禁猜）。
+			if ck, ok := saCallRetKind(init.AsCallExpression(), scope); ok {
+				switch {
+				case ck == "i32" || ck == "bool":
+					k = "i32"
+				case ck == "str":
+					k = "str"
+				case ck == "arr" || ck == "arrStr":
+					k = "arr"
+				case ck == "f64":
+					k = "f64"
+				case len(ck) > 5 && ck[:5] == "inst:":
+					k = "inst"
+					subs[fname] = ck[5:]
+				}
+			}
+		}
 		if k == "" && init != nil && init.Kind == ast.KindIdentifier {
 			// 绑定名初值：按已定种取域种（str/arr/f64/inst；i32/bool 已由
 			// saLitFieldKind 给出；禁猜未知名）。
@@ -3325,6 +3347,17 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				}
 				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], o.init.Text()))
 				continue
+			}
+			// 调用返回实例（具实例返回种；句柄直存，源 temp 移交字段）。
+			if o.init != nil && o.init.Kind == ast.KindCallExpression {
+				if ck, ok := saCallRetKind(o.init.AsCallExpression(), scope); ok && ck == "inst:"+sub {
+					v, _, msg := saEvalCall(w, o.init.AsCallExpression(), scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+					continue
+				}
 			}
 			return "", "", "nested field " + o.fname + " needs an object literal"
 		}
