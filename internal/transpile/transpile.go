@@ -1366,6 +1366,13 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 					continue
 				}
+				// 声明文件（.d.ts）里的类只有类型、无运行时实现（无构造体/方法体）：
+				// 接口（纯类型）可播种，类大声拒（禁静默错码：本地 alloc 会跳过真构造）。
+				if strings.HasSuffix(ctgt, ".d.ts") && !ch.def.isIface {
+					ln, col := pos(n.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is declared in a declaration file (no runtime implementation)"})
+					continue
+				}
 				if link.classSeed == nil {
 					link.classSeed = map[string]*saClassDef{}
 				}
@@ -4235,7 +4242,10 @@ func RunBuild(args []string) int {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".d.ts") {
+		// `.d.ts` 声明文件入集（类型单元：只提供类型侧布局，无运行时代码；
+		// 形状证据：TS 语义 .d.ts 与 .ts 同为模块候选，底座解析器优先
+		// .ts（priorityExtensions TS|DTS））。非 .ts 一律跳过。
+		if !strings.HasSuffix(p, ".ts") {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, p)
@@ -4319,9 +4329,16 @@ func saDetectEntry(dir string, files map[string]string) string {
 	}
 	names := []string{}
 	for n := range files {
+		// 声明文件（.d.ts）不作入口候选（类型单元非可执行入口）。
+		if strings.HasSuffix(n, ".d.ts") {
+			continue
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	if len(names) == 0 {
+		return ""
+	}
 	return names[0]
 }
 
@@ -4456,9 +4473,10 @@ func saProgPrefix(p, entry string) string {
 			base = strings.Join(segs, "_")
 		}
 	}
+	// 声明文件先剥（".d.ts" 含 ".ts" 后缀，顺序反了会留 "x.d"）。
+	base = strings.TrimSuffix(base, ".d.ts")
 	base = strings.TrimSuffix(base, ".ts")
 	base = strings.TrimSuffix(base, ".js")
-	base = strings.TrimSuffix(base, ".d.ts")
 	var b strings.Builder
 	for _, r := range base {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {

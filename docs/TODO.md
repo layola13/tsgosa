@@ -29,6 +29,11 @@ bare 按需纳入 + package.json 读底座 + symlink 穿透 + `.js` 落点直转
     口径解 npm 包（`exports` `"types"` 置首 / 顶层 `"types"` 字段不再恒
     Unresolved）；demo `2219_npm_types_first` 真机 42。
   - [ ] E1-3b `.d.ts` 类型单元：types 侧布局播种（interface/class/enum/别名）。
+    - [x] 本地/相对 `.d.ts`（2026-10-20）：声明文件入集为类型单元，接口/别名/
+      枚举可播种；`declare class` 大声拒（无运行时构造）；demo `2220_dts_types`
+      真机 3/2/2。
+    - [ ] npm 包 `.d.ts`：同一 spec 双目标（运行时目标 + 类型目标），绑定需查
+      类型目标。
   - [ ] E1-3c package.json 入口字段：`main`/`module`/`exports`/`types`/
     `imports`(`#alias`)/`workspaces` + 依赖报告面（peer/optional）。
 - [ ] E1-4 动态 `require()`/`import()`：现定位拒（step358 `import = require`）。
