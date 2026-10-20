@@ -3865,7 +3865,7 @@ func saIsArrMethod(m string) bool {
 		"includes", "reverse", "slice", "at", "join", "copyWithin", "toReversed",
 		"toSorted", "with", "toSpliced", "splice", "flat", "flatMap", "concat",
 		"forEach", "map", "filter", "find", "findIndex", "findLast", "findLastIndex",
-		"some", "every", "reduce", "reduceRight", "entries":
+		"some", "every", "reduce", "reduceRight", "entries", "keys", "values":
 		return true
 	}
 	return false
@@ -6650,6 +6650,32 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			depth = dv
 		}
 		return saLowerArrayFlat(w, recv, depth, scope, nextTemp), "arr", ""
+	case "keys":
+		// `arr.keys()` 下标数组（sci `sa_std/ts_array.sa` `@ts_arr_keys`：
+		// 0..len-1 的 i32 下标；新句柄，调用方持有）。
+		if len(argNodes) != 0 {
+			return "", "", "keys takes no arguments"
+		}
+		scope.addImport("sa_std/ts_array.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_keys(%s)\n", h, recv))
+		saOwnTemp(scope, h)
+		return h, "arr", ""
+	case "values":
+		// `arr.values()` 值数组（i32 元即原数组浅拷；sci `@ts_arr_clone_flat`
+		// 现货，新句柄，串元/嵌套标记透传）。
+		if len(argNodes) != 0 {
+			return "", "", "values takes no arguments"
+		}
+		scope.addImport("sa_std/ts_array.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_clone_flat(%s)\n", h, recv))
+		saOwnTemp(scope, h)
+		saPropArrNest(scope, recv, h)
+		saPropArrStr(scope, recv, h)
+		return h, "arr", ""
 	case "entries":
 		// `arr.entries()` 下标-值对数组（sci `sa_std/ts_array.sa`
 		// `@ts_arr_entries`：每元一个 2 元 i32 数组 {i, v}；外层数组存对句柄
