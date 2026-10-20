@@ -244,6 +244,16 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
 						return false
 					}
+				} else if tn.Kind == ast.KindTypeLiteral {
+					// 内联对象类型注解（`const o: {a: number} = {...}`）：按类型
+					// 字面量合成布局（复用 saSynthAnonLayout 纪律）。
+					lname, lok := saSynthAnonLayout(tn, scope.classes)
+					if !lok {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+						return false
+					}
+					want = lname
 				} else {
 					if tn.Kind != ast.KindTypeReference {
 						ln, col := pos(d.Pos())
@@ -596,6 +606,13 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 		}
 		vkind, ok := saAnnotKind(vd.Type)
+		if !ok && vd.Type != nil && vd.Type.Kind == ast.KindTypeLiteral {
+			// 内联对象类型注解（`const o: {a: number} = {...}`）：按类型字面量
+			// 合成布局（复用 saSynthAnonLayout 纪律）。
+			if lname, lok := saSynthAnonLayout(vd.Type, scope.classes); lok {
+				vkind, ok = "inst:"+lname, true
+			}
+		}
 		if !ok {
 			// 泛型具化优先（`const b: Box<i32> = mk()` 按单态记种；
 			// 不可具化下探既有链；封存 layoutOfAnnotation 同形）。

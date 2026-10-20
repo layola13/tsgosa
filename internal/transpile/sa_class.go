@@ -552,6 +552,20 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
 						return false
 					}
+				} else if pd.Type.Kind == ast.KindTypeLiteral {
+					// 内联对象类型字段（`f: {a: number}`）：按类型字面量合成布局
+					// （复用 saSynthAnonLayout 纪律）。
+					if lname, ok := saSynthAnonLayout(pd.Type, classes); ok {
+						fkind = "inst"
+						if def.fsub == nil {
+							def.fsub = map[string]string{}
+						}
+						def.fsub[fkey] = lname
+					} else {
+						ln, col := pos(m.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "class fields must be i32, string, array or recorded layout"})
+						return false
+					}
 				} else if pd.Type.Kind == ast.KindUnionType {
 					// union-typed fields lower as ptr handle slots (cf saNameOfType union default).
 					// 单类+空联合（`next: Node | null`）按实例布局记种（与 TypeReference
