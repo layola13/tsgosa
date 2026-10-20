@@ -78,10 +78,26 @@ Error 体系 / Node 运行时一律不行。逐项：
   verifier 要求参数寄存器在出口为 dead（`!v` 会**释放对象** ✗ 与「数组持有元素」
   冲突 ✗，而 sla 靠 `VEC_PUSH` 宏自行处理 ✓）→ 端口侧选「地址入槽 + 读回
   零扩展」口径 ✓）。
-  → **E2-1 端口侧设计**（无需 sci 改动）：`scope.arrInst`（句柄→布局名）标记；
-  元素读按 arrInst 走「读字 → 零扩展成指针」径（复 arrStr 读法 ✓）；字面量
-  构造与形参播种按 `P[]` 注解记 arrInst + 布局；字段读经 `saInstBaseElem` 的
-  下标臂取布局（现仅支持 struct 数组元 ✓ → 需扩普通实例元数组 ✓）。
+  → **E2-1 端口侧设计**（无需 sci 改动；2026-10-20 定位到具体位点，可直接施工）：
+  ①`scope.arrInst map[string]string`（数组句柄 → 元素布局名）；
+  ②**元素读**（`sa_arr.go` 的 `saLowerIndexLoadExpr` 本地数组分支 ✓）：基命中
+  `arrInst` 时，元素值 = 槽里的**句柄地址字**（端口 word 模型：元素存地址 ✓
+  复 arrStr 同口径 ✓）→ **记种** `scope.types[out] = "inst:<布局>"`（零扩展在
+  消费侧按低址前提自动成立 ✓，与 arrStr 读法同 ✓）；
+  ③**字段读无需新代码** ✅：`sa_class.go` 的 `saInstBaseElem` 下标臂（:3478）
+  已「读元素 → 查 `scope.types[op]` 是否 inst: → 取布局」——只要 ② 记了种 ✓
+  它即生效 ✓（`items[0].v` 直接可读 ✓）；
+  ④**字面量构造**（`sa_arr.go` 的 `saArrayLiteralElem` ✓）：元素为对象字面量时
+  按该布局具化实例（`saLowerObjectLiteral` ✓，句柄地址入槽 ✓）——**需先知道
+  布局**（无注解时用 E2-1c 的合成布局 `Lit_*` ✓）；
+  ⑤**布局来源**：声明位 `const items: P[] = [...]` → 注解元素类型名即布局 ✓
+  （在该声明位记 `arrInst[绑定名] = "P"` ✓，与 `saSeedParamArrStr` 同形 ✓）；
+  形参 `f(items: P[])` → 同形播种（`saSeedParamArrStr` 旁加 `saSeedParamArrInst` ✓）；
+  ⑥**归属**：元素存的是**地址字**（非指针本体 ✓）→ 实例对象仍由创建处持有 ✓
+  （字面量具化的 temp 归域尾释 ✓）→ 数组元素在域尾后悬垂（与 arrStr 同律 ✓，
+  端口既有前提 ✓）。
+  ⑦**验收**：demo（`const items: P[] = [{v:1},{v:2}]` → `items[0].v` / `items.length`
+  / 形参形态）+ `sa check` + 真机跑分 + 全量门禁。
   余 `Object.entries`（键值对 = 串+i32 **混元** → 端口数组模型同元，禁混元，
   须立 pair 专用标记；完整设计见下条 E2-2m）。
 - [ ] E2-2 `?.` 组合：参数直取/局部拷贝/链基/调用基/struct 数组元基已通
