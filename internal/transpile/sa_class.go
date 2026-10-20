@@ -2944,6 +2944,104 @@ func saStaticFold(w printer.EmitTextWriter, base *ast.Node, field string, scope 
 // want 非空时须命中该接口。
 // 形状证据：封存 lowerObjectLiteral:9009+（spread 相 9026-9044 + 键集去重
 // 9066-9076 + 源序重放 9086-9103；零初始化在薄口省略：目标每域必有来源）。
+// saSynthLiteralLayout 按对象字面量的键集与值种合成布局（TS 的对象字面量
+// 类型即其自身形状；无匹配接口时的兜底）：域值种 i32/str 直用；嵌套对象
+// 字面量递归合成（inst + fsub 子布局）；余形（数组/调用/f64/实例/方法/spread）
+// 未知即拒（禁猜）。形状证据：封存 lowerObjectLiteral 键集匹配 9066-9076
+// 无命中时的自然延伸 + saSynthAnonLayout 合成纪律（isSynth 标记，键集匹配
+// 不参与命中，禁误吞多命中门）。
+func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saClassDef, bool) {
+	if ol == nil || ol.Properties == nil {
+		return nil, false
+	}
+	names := []string{}
+	kinds := map[string]string{}
+	subs := map[string]string{}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil || p.Kind == ast.KindSpreadAssignment {
+			// spread 源须已记布局（无命中时不可合成）。
+			return nil, false
+		}
+		var fname string
+		var init *ast.Node
+		switch p.Kind {
+		case ast.KindPropertyAssignment:
+			pa := p.AsPropertyAssignment()
+			if pa == nil || pa.Name() == nil {
+				return nil, false
+			}
+			fname = pa.Name().Text()
+			init = pa.Initializer
+		case ast.KindShorthandPropertyAssignment:
+			sp := p.AsShorthandPropertyAssignment()
+			if sp == nil || sp.Name() == nil {
+				return nil, false
+			}
+			fname = sp.Name().Text()
+			init = p.Name()
+		default:
+			return nil, false
+		}
+		k := saLitFieldKind(init, scope)
+		if k == "" {
+			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+				return nil, false
+			}
+			sub, ok := saSynthLiteralLayout(init.AsObjectLiteralExpression(), scope)
+			if !ok {
+				return nil, false
+			}
+			k = "inst"
+			subs[fname] = sub.name
+		}
+		names = append(names, fname)
+		kinds[fname] = k
+	}
+	if len(names) == 0 {
+		return nil, false
+	}
+	base := "Lit_" + saMonoName(strings.Join(names, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := scope.classes[name]; ok {
+			// 同形复用：域名序与种全等（异形另建，禁静默改布局）。
+			same := len(def.fields) == len(names)
+			if same {
+				for i, fn := range names {
+					if def.fields[i].name != fn || def.fkinds[fn] != kinds[fn] {
+						same = false
+						break
+					}
+				}
+			}
+			if same {
+				return def, true
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fsub: map[string]string{}}
+		off := 0
+		for _, fname := range names {
+			fkind := kinds[fname]
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			if s, ok := subs[fname]; ok {
+				def.fsub[fname] = s
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		scope.classes[name] = def
+		return def, true
+	}
+}
+
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
 	type spreadSrc struct {
@@ -3062,9 +3160,16 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	if def == nil {
 		hits := saMatchIfaceList(uniq, scope.classes)
 		if len(hits) == 0 {
-			return "", "", "object literal matches no recorded interface layout (declare the interface first)"
+			// 无匹配接口：按字面量自身键集+值种合成布局（TS 的对象字面量
+			// 类型即其自身形状；未知值种仍拒，禁猜）。
+			sdef, sok := saSynthLiteralLayout(ol, scope)
+			if !sok {
+				return "", "", "object literal matches no recorded interface layout (declare the interface first)"
+			}
+			def = sdef
+		} else {
+			def = hits[0]
 		}
-		def = hits[0]
 		if len(hits) > 1 {
 			// 值种决胜（模板与单态键集并存时按字面量值种计分；唯一最高
 			// 分即用，平分沿旧多命中门；单命中零行为变）。
