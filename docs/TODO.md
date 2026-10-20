@@ -23,7 +23,13 @@ bare 按需纳入 + package.json 读底座 + symlink 穿透 + `.js` 落点直转
   类运行时/Error 基 Z3）。验收：zod464 通数变化（非首拒消失）。
 - [ ] E1-2 纯 `.js` 包：218 锁定双边同拒（`module.exports` 无布局）。
   需模块形状识别（CJS/ESM）+ 无类型 JS 的 `any` 化策略（与 T2/故意分歧政策联动）。
-- [ ] E1-3 `package.json` exports / 条件配线：`@zod/source` 已验证跟随；
+  - [x] E1-2 npm JS 运行时包形状（2026-10-20）：`.d.ts` 契约借种（返回种 +
+    形参种）+ CJS 导出形状 + `.mjs`/`.cjs`/`.d.mts`/`.d.cts` 扩展族；demo
+    `2222_npm_js_shapes` 真机 42/hi/42。
+  - [ ] E1-2 余量：CJS 默认导出（`module.exports = fn`）、`exports` 增量赋值
+    多语句、JS 类运行时（`.d.ts` 声明类 ↔ `.js` 实现）、ESM `export default`
+    运行时、`.d.ts` 类型侧布局播种入 JS 文件（现仅签名借种）。
+  - [ ] E1-3 `package.json` exports / 条件配线：`@zod/source` 已验证跟随；
   通用 exports 映射表未建。验收：fixture 真包 + `--parity` SAME。
   - [x] E1-3a 运行时/类型双解析（2026-10-20）：底座 `NoDtsResolution` 运行时
     口径解 npm 包（`exports` `"types"` 置首 / 顶层 `"types"` 字段不再恒

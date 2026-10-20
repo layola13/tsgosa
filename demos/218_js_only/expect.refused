@@ -1,7 +1,6 @@
-# 纯 .js 包预期拒收指纹（.js 直转 lowering 后按构造精确拒收，非浅层 Unresolved；
-# 双边同拒 exit 1；指纹只钉 stdout 行）
-top-level executable statements are not lowerable in non-entry program files
+# 纯 .js 包（无 .d.ts 类型契约）预期拒收指纹：JS 无注解 → 返回种 any → 端口
+# 不猜 i32（禁静默错码），诚实拒收；CommonJS 导出形状已可识别（导出名绑定
+# 通过），故拒因只剩返回种未知一项。双边同拒 exit 1；指纹只钉 stdout 行
 return value in void function refused
-add is not exported by jsonly-pkg
-call to unknown function add (declare it before use)
+void function call in value position
 refused: resolve subset-report.txt before running sh build.sh

@@ -459,6 +459,8 @@ type saFileLink struct {
 	slotHarvest   map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
 	slotHarvests  map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
 	slotSeed      map[string]*saModState            // out/in: imported local slot name -> defining slot
+	declSigs      map[string]saFuncSig              // in: .d.ts 声明签名（JS 运行时借种；声明契约即类型来源）
+	declHarvest   map[string]saFuncSig              // out: own 无体声明签名（仅类型单元产出；不入 harvest——无实现不可链）
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -1738,9 +1740,35 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		// 证据：satsgo saemit.go:642（预扫跳过）+ :758（发射跳过）+ :983（无体拒）；
 		// 上游 JS 管线同形擦除（printer 落字仅实现体）。
 		if fn.Body == nil {
+			// 声明文件（.d.ts）类型单元：导出声明签名记 declHarvest（供同名
+			// JS 运行时借种——.d.ts 是类型契约、.js 是运行时）；不入函数表
+			// （无实现不可链，禁静默错码）。
+			if link != nil && ast.HasModifier(st, ast.ModifierFlagsExport) {
+				tmp := map[string]saFuncSig{}
+				if saPrescanFuncSig(fn, st, nm.Text(), tmp, tcx, classes, aliasOf, enums, pos, &refusals) {
+					if link.declHarvest == nil {
+						link.declHarvest = map[string]saFuncSig{}
+					}
+					link.declHarvest[nm.Text()] = tmp[nm.Text()]
+				}
+			}
 			continue
 		}
 		saPrescanFuncSig(fn, st, nm.Text(), funcs, tcx, classes, aliasOf, enums, pos, &refusals)
+		// JS 运行时借 .d.ts 声明签名（JS 无注解 → checker 返 any → 缺省 void
+		// 会拒掉真实 npm 包；声明契约即类型来源：返回种 + 形参种按 .d.ts）。
+		if link != nil && len(link.declSigs) > 0 {
+			if ds, ok := link.declSigs[nm.Text()]; ok {
+				if sig, ok2 := funcs[nm.Text()]; ok2 {
+					sig.retKind = ds.retKind
+					sig.isVoid = ds.isVoid
+					if len(ds.paramKinds) == sig.params {
+						sig.paramKinds = ds.paramKinds
+					}
+					funcs[nm.Text()] = sig
+				}
+			}
+		}
 	}
 	// 预扫二b：命名空间成员函数签名（`N_M_f` 发射键 + `N.M.f` 调用键双记；
 	// 无体跳过；非函数/类/类型成员整块不在此（发射侧同门拒））。
@@ -1850,6 +1878,25 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if sig, ok := funcs[name]; ok {
 					link.harvest[name] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), isArrow: true}
 				}
+			}
+			// CommonJS 导出形状收割（`module.exports = {a}` / `exports.a = a`）：
+			// 导出名即本地名（改名形不收——发射名是本地名，导入方的限定被调
+			// 解析不到，禁静默错码）；值函数经函数表取签名。
+			if pairs := saCJSExportPairs(st); len(pairs) > 0 {
+				for exported, local := range pairs {
+					if local != exported {
+						ln, col := pos(st.Pos())
+						refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "CommonJS export renaming (" + exported + " <- " + local + ") is not lowerable"})
+						continue
+					}
+					if sig, ok := funcs[local]; ok {
+						if link.harvest == nil {
+							link.harvest = map[string]saProgFunc{}
+						}
+						link.harvest[exported] = saProgFunc{sig: sig, exported: true, defLocal: local}
+					}
+				}
+				continue
 			}
 			// 类收割：具名类声明记布局指针 + export 旗（上游 program.go
 			// sharedClassDefs + expOf 同形；类表达式/默认导出类/heritage 基
@@ -2214,6 +2261,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// entry-only; shape evidence: upstream progprobe "top-level
 			// executable statements are not lowerable in non-entry
 			// program files (move them into functions)").
+			// CommonJS 导出形状除外：模块形状语句无运行时语义（我们的模型按
+			// 名字发射函数），擦除即可；其导出名已由收割登记。
+			if len(saCJSExportPairs(st)) > 0 {
+				continue
+			}
 			if link != nil && !link.isEntry {
 				ln, col := pos(st.Pos())
 				refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "top-level executable statements are not lowerable in non-entry program files (move them into functions)"})
@@ -3672,8 +3724,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 			return
 		}
 		retKind, isVoid = k, k == "void"
-	} else if k, v, ok := saPrescanRet(nil, st, tcx, classes, aliasOf); ok {
+	} else if k, v, ok := saPrescanRet(nil, st, tcx, classes, aliasOf); ok && k != "void" {
 		retKind, isVoid = k, v
+	} else if sig, ok := funcs[name]; ok && sig.retKind != "" && !sig.isVoid {
+		// 预扫签名兜底（JS 运行时借 .d.ts 声明契约：JS 无注解 → checker 返
+		// any → 缺省 void 会拒掉真实 npm 包；预扫已按声明契约落返回种）。
+		retKind, isVoid = sig.retKind, sig.isVoid
 	}
 	emitName := name
 	if forceName != "" {
@@ -4473,10 +4529,19 @@ func saProgPrefix(p, entry string) string {
 			base = strings.Join(segs, "_")
 		}
 	}
-	// 声明文件先剥（".d.ts" 含 ".ts" 后缀，顺序反了会留 "x.d"）。
-	base = strings.TrimSuffix(base, ".d.ts")
-	base = strings.TrimSuffix(base, ".ts")
-	base = strings.TrimSuffix(base, ".js")
+	// 声明文件先剥（".d.ts" 含 ".ts" 后缀，顺序反了会留 "x.d"）；留 "_d"
+	// 标记：与同名 .js/.ts 运行时单元不撞名（workspace 成员单元名唯一，
+	// 撞名大声拒——npm 包 .js + .d.ts 同基名即此形）。
+	if strings.HasSuffix(base, ".d.ts") || strings.HasSuffix(base, ".d.mts") || strings.HasSuffix(base, ".d.cts") {
+		base = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(base, ".d.ts"), ".d.mts"), ".d.cts") + "_d"
+	} else {
+		base = strings.TrimSuffix(base, ".ts")
+		base = strings.TrimSuffix(base, ".mts")
+		base = strings.TrimSuffix(base, ".cts")
+		base = strings.TrimSuffix(base, ".js")
+		base = strings.TrimSuffix(base, ".mjs")
+		base = strings.TrimSuffix(base, ".cjs")
+	}
 	var b strings.Builder
 	for _, r := range base {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
@@ -4500,10 +4565,10 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 	if !ok {
 		return ""
 	}
-	if strings.HasSuffix(name, ".d.ts") {
+	if saIsDTSPath(name) {
 		return ""
 	}
-	if !strings.HasSuffix(name, ".ts") && !strings.HasSuffix(name, ".js") {
+	if !saIsTSPath(name) && !saIsJSPath(name) {
 		return ""
 	}
 	if c, ok := saProgKeyFor(dir, name); ok {
@@ -4634,7 +4699,7 @@ func saProgAdoptFileAs(files map[string]string, parsed map[string]*ast.SourceFil
 	return true
 }
 
-func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile) {
+func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile, typesOf map[string]string) {
 	const maxFiles = 64
 	tried := map[string]bool{}
 	adoptRel := func(p, spec string) bool {
@@ -4700,21 +4765,39 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				if !ok {
 					continue
 				}
-				if strings.HasSuffix(name, ".d.ts") {
+				if saIsDTSPath(name) {
 					continue
 				}
 				kind := core.ScriptKindTS
-				if strings.HasSuffix(name, ".js") {
+				if saIsJSPath(name) {
 					kind = core.ScriptKindJS
-				} else if !strings.HasSuffix(name, ".ts") {
+				} else if !saIsTSPath(name) {
 					continue
 				}
+				rkey := ""
 				if saProgAdoptFile(files, parsed, dir, name, kind) {
 					progress = true
+					if k, ok := saProgKeyFor(dir, name); ok {
+						rkey = k
+					}
 				} else if c, ok := saProgKeyForBare(dir, p, spec, name); ok {
 					// symlinked/external installs: key by spec, read by resolved path.
 					if saProgAdoptFileAs(files, parsed, c, name, kind) {
 						progress = true
+						rkey = c
+					}
+				}
+				// 类型侧目标（.d.ts）：JS 运行时借其声明签名（npm 包形状：.d.ts
+				// 是类型契约、.js 是运行时；JS 无注解故返回种 any → 缺省 void
+				// 会拒掉真实包）。仅 .js 运行时配对（.ts 自带注解，以自身为准）。
+				if rkey != "" && kind == core.ScriptKindJS {
+					if tname, tok := rs.resolve(p, spec, dir, true); tok && tname != name && saIsDTSPath(tname) {
+						if saProgAdoptFile(files, parsed, dir, tname, core.ScriptKindTS) {
+							progress = true
+						}
+						if k, ok := saProgKeyFor(dir, tname); ok {
+							typesOf[rkey] = k
+						}
 					}
 				}
 			}
@@ -4723,6 +4806,105 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 			return
 		}
 	}
+}
+
+// saIsJSPath / saIsTSPath 判定模块文件族（npm 包形状：`.js`/`.mjs`/`.cjs`
+// 为 JS 运行时，`.ts`/`.mts`/`.cts` 为 TS 源码，`.d.*` 为声明文件）。
+func saIsJSPath(name string) bool {
+	return strings.HasSuffix(name, ".js") || strings.HasSuffix(name, ".mjs") || strings.HasSuffix(name, ".cjs")
+}
+
+func saIsTSPath(name string) bool {
+	return strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".mts") || strings.HasSuffix(name, ".cts")
+}
+
+// saIsDTSPath 判定声明文件族（`.d.ts`/`.d.mts`/`.d.cts`）。
+func saIsDTSPath(name string) bool {
+	return strings.HasSuffix(name, ".d.ts") || strings.HasSuffix(name, ".d.mts") || strings.HasSuffix(name, ".d.cts")
+}
+
+// saCJSExportPairs detects the CommonJS export shape of a top-level statement
+// and returns exported name -> local name pairs:
+//
+//	module.exports = { a, b }        → a→a, b→b（简写形）
+//	exports.a = a / module.exports.a = a → a→a
+//
+// Only identifier-valued members are accepted: a computed value would carry a
+// side effect we cannot lower (erasing it would be a silent wrong translation).
+// Renaming exports (`{ a: b }`) is refused by the caller (the emitted name is
+// the local name, so the importer's qualified callee would not resolve).
+func saCJSExportPairs(st *ast.Node) map[string]string {
+	out := map[string]string{}
+	if st == nil || st.Kind != ast.KindExpressionStatement {
+		return out
+	}
+	es := st.AsExpressionStatement()
+	if es == nil || es.Expression == nil || es.Expression.Kind != ast.KindBinaryExpression {
+		return out
+	}
+	be := es.Expression.AsBinaryExpression()
+	if be == nil || be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindEqualsToken {
+		return out
+	}
+	left, right := be.Left, be.Right
+	if left == nil || right == nil || left.Kind != ast.KindPropertyAccessExpression {
+		return out
+	}
+	pa := left.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return out
+	}
+	base := pa.Expression.Text()
+	// module.exports = { a, b }
+	if base == "module" && pa.Name() != nil && pa.Name().Text() == "exports" {
+		if right.Kind != ast.KindObjectLiteralExpression {
+			return out
+		}
+		ol := right.AsObjectLiteralExpression()
+		if ol == nil || ol.Properties == nil {
+			return out
+		}
+		for _, prop := range ol.Properties.Nodes {
+			if prop == nil {
+				continue
+			}
+			switch prop.Kind {
+			case ast.KindShorthandPropertyAssignment:
+				if n := prop.Name(); n != nil {
+					out[n.Text()] = n.Text()
+				}
+			case ast.KindPropertyAssignment:
+				p2 := prop.AsPropertyAssignment()
+				if p2 == nil || p2.Name() == nil || p2.Initializer == nil {
+					continue
+				}
+				if p2.Initializer.Kind != ast.KindIdentifier {
+					// 计算值成员：形状存疑（副作用不可降），不登记。
+					continue
+				}
+				out[p2.Name().Text()] = p2.Initializer.Text()
+			}
+		}
+		return out
+	}
+	// exports.a = a / module.exports.a = a（导出名 = 末段成员名）
+	if right.Kind == ast.KindIdentifier && pa.Name() != nil {
+		switch {
+		case base == "exports":
+			out[pa.Name().Text()] = right.Text()
+		case base == "module":
+			// 左链为 module.exports.a：基是属性访问 module.exports。
+			if pa.Expression.Kind != ast.KindPropertyAccessExpression {
+				return out
+			}
+			if ib := pa.Expression.AsPropertyAccessExpression(); ib != nil && ib.Name() != nil &&
+				ib.Name().Text() == "exports" && ib.Expression != nil &&
+				ib.Expression.Kind == ast.KindIdentifier && ib.Expression.Text() == "module" {
+				out[pa.Name().Text()] = right.Text()
+			}
+		}
+	}
+	return out
 }
 
 // saProgModuleSpec extracts the literal module string of an import.
@@ -4777,13 +4959,20 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	// bare 第三方按需纳入（resolver 解 node_modules `.ts` 才进集；`.js`/
 	// 包外沿旧 Unresolved；上游 todo/01 node_modules 跟随设计）。
+	// typesOf：JS 运行时文件 → 其类型契约（.d.ts）单元键。
+	typesOf := map[string]string{}
 	if rs != nil {
 		func() {
 			defer func() { _ = recover() }()
-			saProgIncludeBare(files, dir, rs, parsed)
+			saProgIncludeBare(files, dir, rs, parsed, typesOf)
 		}()
 	}
 	graph := map[string][]string{}
+	// 类型契约边（JS 运行时 → 其 .d.ts 类型单元）：声明契约先落（依赖序），
+	// 且类型单元随之可达（零运行时代码的成员单元）。
+	for rt, ty := range typesOf {
+		graph[rt] = append(graph[rt], ty)
+	}
 	specOf := map[string]map[string]string{}
 	reexpOf := map[string]map[string]string{}
 	starOf := map[string][]string{}
@@ -4987,6 +5176,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	ambHarvests := map[string]map[string]bool{}
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
+	declHarvests := map[string]map[string]saFuncSig{}
 	for _, p := range reachable {
 		lk := &saFileLink{
 			defPrefix:     prefixOf[p],
@@ -5017,6 +5207,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			slotHarvest:   map[string]*saModState{},
 			slotHarvests:  slotHarvests,
 			slotSeed:      map[string]*saModState{},
+			declSigs:      declHarvests[typesOf[p]],
 		}
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
@@ -5026,6 +5217,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		ambHarvests[p] = lk.ambHarvest
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
+		declHarvests[p] = lk.declHarvest
 		for _, r := range out.Refusals {
 			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
 		}
