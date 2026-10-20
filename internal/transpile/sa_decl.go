@@ -827,6 +827,16 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					continue
 				}
 			}
+			// 实例拷贝绑定（`const c: P = p`；同布局句柄快照 + 普通归属，
+			// 源仍活不双释；上游 assignLocal 拷贝语义同形，saStoreLocal 命名
+			// 源快照纪律一致）。异布局沿旧门（refuse）。
+			if init != nil && init.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[init.Text()]; ok && k == vkind {
+					saStoreLocal(w, name, init.Text(), scope, nextTemp)
+					scope.types[name] = vkind
+					continue
+				}
+			}
 			if init == nil || init.Kind != ast.KindCallExpression {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
@@ -1002,6 +1012,16 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	if _, ok := saArrBase(scope, init); ok {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+	}
+	// 实例拷贝绑定（`const c = p`；种随源，句柄快照 + 普通归属，源仍活
+	// 不双释；上游 assignLocal 拷贝语义同形，saStoreLocal 命名源快照
+	// 纪律一致）。可空实例（`P | null` 吸收为 inst:P）同形，0 柄即空。
+	if init.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[init.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			saStoreLocal(w, name, init.Text(), scope, nextTemp)
+			scope.types[name] = k
+			return true
+		}
 	}
 	// 顶层 const 数组别名大声拒（快照无共享柄，`const B = A` 无源可借；逐元直读；
 	// 本地 `const r = a` 513 同门；698）。
