@@ -68,7 +68,7 @@ Error 体系 / Node 运行时一律不行。逐项：
   数组族新原语已就位（sci：`@ts_arr_entries`（对数组）、`@ts_arr_keys`（下标）、
   `@ts_arr_clone_flat`（值浅拷）→ 端口 `arr.entries()`/`keys()`/`values()` 已转正）；
   余 `Object.entries`（键值对 = 串+i32 **混元** → 端口数组模型同元，禁混元，
-  须立 pair 专用标记或改用「键表 + 值数组」双数组形）。
+  须立 pair 专用标记；完整设计见下条 E2-2m）。
 - [ ] E2-2 `?.` 组合：参数直取/局部拷贝/链基/调用基/struct 数组元基已通
   （链中 `?.` 已空短路修复，step2223）；余 `?.()` 48×（裸函数可选调用）待摘。
 - [ ] E2-2c Set 展开为数组（`[...new Set(xs)]`）：Set 迭代需 sci 侧新符号
@@ -221,3 +221,29 @@ D1 块重名拒收；D2 泛型单态 i32；D3 f64 零释放；D4 any 联合收�
 D5 f64 复合按 fadd；D6 联合声明走推断；D7 T2；D8 f64 整循环；
 D9 symbol 注解拒收；X-datecmp / X-nanspec / X-statread / X-sortstr /
 X-strjoin / X-radix / X-sweep 系上游有病项（薄口拒收正确，不移植）。
+
+- [ ] E2-2m `Object.entries(o)` pair 混元模型（obj 家族最后一块）——**完整设计**
+      （可直接施工，无需再探）：
+      ①**标记**：saScope 增 `arrPair map[string]bool`（pair 数组句柄 → 真）；
+      端口数组模型同元（arr/arrStr/arrNest 三种标记皆单一种），故 pair 需**按位
+      分种**：位 0 = 串句柄地址、位 1 = i32 值。
+      ②**构造**（`sa_arr.go`，与 `saLowerObjectKeys` 同处）：接收者门同 keys
+      （绑定标识符 + `inst:` 布局 + 无存取器）；逐字段（**声明序**）建一个 2 元
+      pair 数组：头 `alloc 16`（{ptr=buf, len=2}）+ 缓冲 `alloc 8`（位 0 存键的
+      **串句柄地址**（`saLowerStringLiteral` 产出的 16 字节 {ptr,len} 句柄，
+      按薄口既有「元素存句柄地址截断入槽、读回零扩展」惯例），位 1 存该字段
+      **i32 值**（句柄域 str/arr/inst 沿旧门拒：pair 值槽是 i32 字））；外层数组
+      存各 pair 的**地址**（`saLowerArrayPush` 既有 word 推入 ✓）→ 外层即
+      arrNest 形（`scope.arrNest[h] = true`）；pair 数组登记 `arrPair[pair句柄]=true`。
+      **无循环**：字段数静态已知，可展开落字 → 规避「字句柄在循环体内建、域尾释
+      在体外」的 verifier UnknownRegister 坑（step2223 实证）。
+      ③**读侧**：`saEvalStr` 的元素臂（`sa_arr.go` 附近 arrStr 判定处）与 i32
+      元素读（`saLowerIndexLoadExpr`）各加一处：base 命中 `arrPair` 时——
+      下标 0 走**串位**（读出的是串句柄地址，与 arrStr 同形）、下标 1 走
+      **i32 位**；其余下标大声拒。
+      ④**destructure 拒因**：`for (const [k, v] of Object.entries(o))` 的 k 是
+      **串**，端口解构位恒 i32 → 该形态大声拒（`Object.entries pair key is a
+      string (destructuring not lowerable)`）；索引形 `e[0][0]` / `e[0][1]` 可用。
+      ⑤**验收**：demo（`Object.entries` 索引形：键串 + 值 i32）+ sci 侧无需新
+      原语（pair 由端口构造 ✓，与 `@ts_arr_entries` 的 {i,v} 不同：此处位 0 是
+      **串**而非下标 ✗ 故不能直接复用那个原语 ✓）。
