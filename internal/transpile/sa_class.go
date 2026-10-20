@@ -5531,6 +5531,51 @@ func saInlineStaticSetter(w printer.EmitTextWriter, className string, def *saCla
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	return msg
 }
+
+// saLowerObjectAssign `Object.assign(target, source)` 已知布局逐域拷贝（源域序；
+// 同种域；标量域 i32/f64（句柄域拷贝即共享归属，双释风险，大声拒）；未知布局/
+// 异布局沿旧门；返回值即目标，JS 同义）。形状证据：封存 lowerObjectSpread
+// 源序重放同形（step46 对象展开复用同一逐域拷贝纪律）。
+func saLowerObjectAssign(w printer.EmitTextWriter, tnode, snode *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if tnode == nil || tnode.Kind != ast.KindIdentifier || snode == nil || snode.Kind != ast.KindIdentifier {
+		return "", "Object.assign needs bound objects"
+	}
+	tk, ok := scope.types[tnode.Text()]
+	if !ok || len(tk) <= 5 || tk[:5] != "inst:" {
+		return "", "Object.assign needs a known-layout target"
+	}
+	tdef, ok := scope.classes[tk[5:]]
+	if !ok || tdef == nil {
+		return "", "Object.assign needs a known-layout target"
+	}
+	sk, ok := scope.types[snode.Text()]
+	if !ok || len(sk) <= 5 || sk[:5] != "inst:" {
+		return "", "Object.assign needs a known-layout source"
+	}
+	sdef, ok := scope.classes[sk[5:]]
+	if !ok || sdef == nil {
+		return "", "Object.assign needs a known-layout source"
+	}
+	for _, f := range sdef.fields {
+		if _, ok := tdef.offsets[f.name]; !ok || tdef.fkinds[f.name] != sdef.fkinds[f.name] {
+			return "", "Object.assign needs matching field layouts"
+		}
+		kind := sdef.fkinds[f.name]
+		if kind != "i32" && kind != "f64" {
+			// 句柄域（str/arr/inst）拷贝即共享归属：两端各释一次即双释。
+			return "", "Object.assign cannot copy handle fields (shared ownership)"
+		}
+		v, msg := saLowerClassFieldLoad(w, snode.Text(), sdef, f.name, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if msg := saLowerClassFieldStore(w, tnode.Text(), tdef, f.name, v); msg != "" {
+			return "", msg
+		}
+	}
+	return tnode.Text(), ""
+}
+
 func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, scope *saScope, nextTemp *int) (string, string) {
 	off, ok := def.offsets[field]
 	if !ok {

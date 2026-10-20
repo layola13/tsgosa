@@ -1,0 +1,4 @@
+# Object.freeze/seal 无 SA 模型（运行时不可变性）：精确拒因（非浅层未解析）
+Object.freeze is not lowerable (the SA subset has no runtime immutability)
+unsupported initializer: Object.freeze is not lowerable (the SA subset has no runtime immutability)
+refused: resolve subset-report.txt before running sh build.sh

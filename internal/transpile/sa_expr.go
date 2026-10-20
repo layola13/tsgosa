@@ -2805,6 +2805,30 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return saLowerJSONStringify(w, argNodes[0], scope, pos, refusals, nextTemp)
 		}
+		// Object.* 家族：assign 逐域拷贝（已知布局）；freeze/seal/entries 无 SA
+		// 模型（运行时不可变性 / 二元组），精确拒因（禁文不对题）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
+			pa.Name() != nil {
+			switch pa.Name().Text() {
+			case "freeze", "seal", "preventExtensions":
+				return "", false, "Object." + pa.Name().Text() + " is not lowerable (the SA subset has no runtime immutability)"
+			case "entries":
+				return "", false, "Object.entries is not lowerable (pair tuples have no SA model)"
+			case "assign":
+				var argNodes []*ast.Node
+				if ce.Arguments != nil {
+					argNodes = ce.Arguments.Nodes
+				}
+				if len(argNodes) != 2 {
+					return "", false, "Object.assign takes two arguments"
+				}
+				h, msg := saLowerObjectAssign(w, argNodes[0], argNodes[1], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return h, false, ""
+			}
+		}
 		// 已知命名空间的未知成员逐字拒因（`N.M.bogus is not exported...`）。
 		if msg := saNsUnknownMemberMsg(scope, pa); msg != "" {
 			return "", false, msg
