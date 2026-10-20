@@ -6597,6 +6597,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if saBinaryOpKind(be) == ast.KindAsteriskAsteriskToken {
 				return saLowerPow(w, be, scope, pos, refusals, nextTemp)
 			}
+			// `x instanceof C` 值位：静态折叠（条件位同源；`? :` 的条件走
+			// i32 求值路径，故此处补同一折叠，否则三元恒拒）。
+			if saBinaryOpKind(be) == ast.KindInstanceOfKeyword {
+				if res, ok := saFoldInstanceOf(be, scope); ok {
+					return res, ""
+				}
+				return "", "instanceof needs statically known types"
+			}
 			return "", fmt.Sprintf("binary operator %s not in subset", saBinaryOpKind(be).String())
 		}
 		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||

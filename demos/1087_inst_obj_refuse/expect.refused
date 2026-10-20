@@ -1,2 +1,3 @@
-# 未知类 instanceof 大声拒（静态可判域外一律拒，禁误判；P-B3 #9 后 `instanceof Object` 已转正，见 1672/1673）
-binary operator KindInstanceOfKeyword not in subset
+# 未知类 instanceof 大声拒（静态可判域外一律拒，禁误判；`instanceof Object` 已转正，见 1672/1673）
+instanceof needs statically known types
+unsupported condition kind: instanceof needs statically known types
