@@ -1852,6 +1852,38 @@ func saLowerOptionalLength(w printer.EmitTextWriter, base string, scope *saScope
 	return dest
 }
 
+// saLowerObjectKeys `Object.keys(o)` 已知布局字段名序具化串元数组（字段声明序；
+// 存取器/未知布局沿旧门；与 values 同口径，keys 计数折叠同源；串元数组形状复
+// split 分段数组：空数组 + 逐元 push + 串元标记）。
+func saLowerObjectKeys(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return "", "Object.keys needs a bound object"
+	}
+	k, ok := scope.types[e.Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return "", "Object.keys needs a known-layout object"
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil {
+		return "", "Object.keys needs a known-layout object"
+	}
+	if len(def.getters) > 0 || len(def.setters) > 0 {
+		return "", "Object.keys needs data slots"
+	}
+	names := []string{}
+	for _, f := range def.fields {
+		names = append(names, f.name)
+	}
+	h := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, h)
+	saMarkArrStr(scope, h)
+	for _, n := range names {
+		seg := saLowerStringLiteral(w, n, scope, nextTemp)
+		saLowerArrayPush(w, h, seg, scope, nextTemp)
+	}
+	return h, ""
+}
+
 // saLowerObjectValues `Object.values(o)` 已知布局 i32 数据槽具化新数组（字段声明序；存取器/异种槽/未知布局沿旧门；577）。
 func saLowerObjectValues(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil || e.Kind != ast.KindIdentifier {
@@ -4056,8 +4088,9 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 			return "arr", true
 		}
 	}
-	// `Object.values(o)` 回 i32 数组柄（布局门在求值侧；种判定零落字；577）。
-	if m == "values" && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" {
+	// `Object.values(o)` 回 i32 数组柄、`Object.keys(o)` 回串元数组柄
+	// （布局门在求值侧；种判定零落字；577）。
+	if (m == "values" || m == "keys") && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" {
 		return "arr", true
 	}
 	if !saIsArrMethod(m) {
