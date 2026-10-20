@@ -1656,6 +1656,11 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		if hit, _ := saMatchIface(keys, classes); hit != nil {
 			return "inst:" + hit.name, true
 		}
+		// 无匹配接口：按类型字面量合成布局（内联对象返回 `(): {a: number}`；
+		// 复用 saSynthAnonLayout 纪律：合成布局不参与键集命中）。
+		if lname, ok := saSynthAnonLayout(t, classes); ok {
+			return "inst:" + lname, true
+		}
 		return "", false
 	}
 	if t.Kind == ast.KindUnionType {

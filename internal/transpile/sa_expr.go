@@ -852,6 +852,15 @@ func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 // saEvalReturnOperand 按函数返回种求 return 操作数：boolean 函数走 saEvalBool
 // （bool 标识符直用，其余 0/1 操作数），number 函数走 saEvalI32；数组无返回位。
 func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// 括号透明（`({a: 1})` 即 `{a: 1}`；箭头表达式体必带括号，与既有解包
+	// 纪律同律）。
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		e = pe.Expression.AsNode()
+	}
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
 			// 数组绑定直传（`return a`；串元数组同律，返回种 arr/arrStr 皆收；
