@@ -6,56 +6,58 @@
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
   t_1 = alloc 16
-  t_2 = alloc 12
-  t_3 = add t_2, 0
-  store t_3 + 0, 1 as i32
-  t_4 = add t_2, 4
-  store t_4 + 0, 2 as i32
-  t_5 = add t_2, 8
-  store t_5 + 0, 3 as i32
-  store t_1 + 0, t_2 as ptr
-  store t_1 + 8, 3 as u64
+  t_2 = &mut t_1
+  t_3 = alloc 12
+  t_4 = add t_3, 0
+  store t_4 + 0, 1 as i32
+  t_5 = add t_3, 4
+  store t_5 + 0, 2 as i32
+  t_6 = add t_3, 8
+  store t_6 + 0, 3 as i32
+  store t_2 + 0, t_3 as ptr
+  store t_2 + 8, 3 as u64
   !t_2
+  !t_3
   a = t_1
   call @ts_arr_reverse(a)
-  t_6 = alloc 8
-  t_7 = load a + 8 as u64
-  t_8 = ult 0, t_7
-  br t_8 -> L_idx_ok_3, L_idx_oob_2
+  t_7 = alloc 8
+  t_8 = load a + 8 as u64
+  t_9 = ult 0, t_8
+  br t_9 -> L_idx_ok_3, L_idx_oob_2
 L_idx_ok_3:
-  t_9 = load a + 0 as ptr
-  t_10 = mul 0, 4
-  t_11 = add t_9, t_10
-  t_12 = load t_11 + 0 as i32
-  store t_6 + 0, t_12 as ptr
+  t_10 = load a + 0 as ptr
+  t_11 = mul 0, 4
+  t_12 = add t_10, t_11
+  t_13 = load t_12 + 0 as i32
+  store t_7 + 0, t_13 as ptr
   jmp L_idx_end_1
 L_idx_oob_2:
-  store t_6 + 0, 0 as ptr
+  store t_7 + 0, 0 as ptr
   jmp L_idx_end_1
 L_idx_end_1:
-  t_13 = load t_6 + 0 as i32
-  !t_6
-  t_14 = sext t_13 as i64
-  t_15 = alloc 64
-  t_16 = alloc 8
-  t_17 = call @sa_fmt_i64_into(t_14, 10, t_15, 64, &t_16)
-  t_18 = load t_16 + 0 as u64
-  t_19 = alloc 16
-  store t_19 + 0, t_15 as ptr
-  store t_19 + 8, t_18 as u64
+  t_14 = load t_7 + 0 as i32
+  !t_7
+  t_15 = sext t_14 as i64
+  t_16 = alloc 64
+  t_17 = alloc 8
+  t_18 = call @sa_fmt_i64_into(t_15, 10, t_16, 64, &t_17)
+  t_19 = load t_17 + 0 as u64
+  t_20 = alloc 16
+  store t_20 + 0, t_16 as ptr
+  store t_20 + 8, t_19 as u64
+  !t_18
+  t_21 = load t_20 + 0 as ptr
+  t_22 = load t_20 + 8 as u64
+  call @sa_print_bytes(&t_21, t_22)
+  !t_20
+  t_23 = alloc 16
+  store t_23 + 0, &str_const_0 as ptr
+  store t_23 + 8, 1 as u64
+  t_24 = load t_23 + 0 as ptr
+  t_25 = load t_23 + 8 as u64
+  call @sa_print_bytes(&t_24, t_25)
+  !t_23
   !t_17
-  t_20 = load t_19 + 0 as ptr
-  t_21 = load t_19 + 8 as u64
-  call @sa_print_bytes(&t_20, t_21)
-  !t_19
-  t_22 = alloc 16
-  store t_22 + 0, &str_const_0 as ptr
-  store t_22 + 8, 1 as u64
-  t_23 = load t_22 + 0 as ptr
-  t_24 = load t_22 + 8 as u64
-  call @sa_print_bytes(&t_23, t_24)
-  !t_22
   !t_16
-  !t_15
   !a
   ret 0

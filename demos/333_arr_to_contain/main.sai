@@ -6,134 +6,142 @@
 @const str_const_0 = utf8:"\n\0"
 @main__user() -> i32:
   t_1 = alloc 16
-  t_2 = alloc 8
-  t_3 = add t_2, 0
-  store t_3 + 0, 7 as i32
-  t_4 = add t_2, 4
-  store t_4 + 0, 8 as i32
-  store t_1 + 0, t_2 as ptr
-  store t_1 + 8, 2 as u64
+  t_2 = &mut t_1
+  t_3 = alloc 8
+  t_4 = add t_3, 0
+  store t_4 + 0, 7 as i32
+  t_5 = add t_3, 4
+  store t_5 + 0, 8 as i32
+  store t_2 + 0, t_3 as ptr
+  store t_2 + 8, 2 as u64
   !t_2
+  !t_3
   b = t_1
-  t_5 = call @ts_arr_scan(b, 8, 0, 0, 0, 0)
-  t_6 = eq t_5, 0
-  !t_5
-  br t_6 -> L_exp_fail_1, L_exp_ok_2
+  t_6 = call @ts_arr_scan(b, 8, 0, 0, 0, 0)
+  t_7 = eq t_6, 0
+  !t_6
+  br t_7 -> L_exp_fail_1, L_exp_ok_2
 L_exp_fail_1:
   panic(2501)
 L_exp_ok_2:
-  __expect_count_7 = alloc 8
-  store __expect_count_7 + 0, 0 as i32
-  t_8 = load __expect_count_7 + 0 as i32
-  t_9 = add t_8, 1
-  store __expect_count_7 + 0, t_9 as i32
-  t_10 = load b + 8 as u64
-  !__expect_count_7
+  __expect_count_8 = alloc 8
+  store __expect_count_8 + 0, 0 as i32
+  t_9 = load __expect_count_8 + 0 as i32
+  t_10 = add t_9, 1
+  store __expect_count_8 + 0, t_10 as i32
+  t_11 = load b + 8 as u64
+  !__expect_count_8
   !b
-  ret t_10
+  ret t_11
 @main() -> i32:
-  t_11 = alloc 16
-  t_12 = alloc 12
-  t_13 = add t_12, 0
-  store t_13 + 0, 4 as i32
-  t_14 = add t_12, 4
-  store t_14 + 0, 5 as i32
-  t_15 = add t_12, 8
-  store t_15 + 0, 6 as i32
-  store t_11 + 0, t_12 as ptr
-  store t_11 + 8, 3 as u64
-  !t_12
-  a = t_11
-  t_16 = call @ts_arr_scan(a, 5, 0, 0, 0, 0)
-  t_17 = eq t_16, 0
-  !t_16
-  br t_17 -> L_exp_fail_3, L_exp_ok_4
+  t_12 = alloc 16
+  t_13 = &mut t_12
+  t_14 = alloc 12
+  t_15 = add t_14, 0
+  store t_15 + 0, 4 as i32
+  t_16 = add t_14, 4
+  store t_16 + 0, 5 as i32
+  t_17 = add t_14, 8
+  store t_17 + 0, 6 as i32
+  store t_13 + 0, t_14 as ptr
+  store t_13 + 8, 3 as u64
+  !t_13
+  !t_14
+  a = t_12
+  t_18 = call @ts_arr_scan(a, 5, 0, 0, 0, 0)
+  t_19 = eq t_18, 0
+  !t_18
+  br t_19 -> L_exp_fail_3, L_exp_ok_4
 L_exp_fail_3:
   panic(2501)
 L_exp_ok_4:
-  __expect_count_18 = alloc 8
-  store __expect_count_18 + 0, 0 as i32
-  t_19 = load __expect_count_18 + 0 as i32
-  t_20 = add t_19, 1
-  store __expect_count_18 + 0, t_20 as i32
-  t_21 = call @ts_arr_scan(a, 9, 0, 0, 0, 0)
-  t_22 = ne t_21, 0
-  !t_21
-  br t_22 -> L_exp_fail_5, L_exp_ok_6
+  __expect_count_20 = alloc 8
+  store __expect_count_20 + 0, 0 as i32
+  t_21 = load __expect_count_20 + 0 as i32
+  t_22 = add t_21, 1
+  store __expect_count_20 + 0, t_22 as i32
+  t_23 = call @ts_arr_scan(a, 9, 0, 0, 0, 0)
+  t_24 = ne t_23, 0
+  !t_23
+  br t_24 -> L_exp_fail_5, L_exp_ok_6
 L_exp_fail_5:
   panic(2501)
 L_exp_ok_6:
-  t_23 = load __expect_count_18 + 0 as i32
-  t_24 = add t_23, 1
-  store __expect_count_18 + 0, t_24 as i32
-  t_25 = alloc 16
-  t_26 = alloc 12
-  t_27 = add t_26, 0
-  store t_27 + 0, 1 as i32
-  t_28 = add t_26, 4
-  store t_28 + 0, 2 as i32
-  t_29 = add t_26, 8
-  store t_29 + 0, 3 as i32
-  store t_25 + 0, t_26 as ptr
-  store t_25 + 8, 3 as u64
-  !t_26
-  t_30 = call @ts_arr_scan(t_25, 3, 0, 0, 0, 0)
-  t_31 = eq t_30, 0
-  !t_30
-  !t_25
-  br t_31 -> L_exp_fail_7, L_exp_ok_8
+  t_25 = load __expect_count_20 + 0 as i32
+  t_26 = add t_25, 1
+  store __expect_count_20 + 0, t_26 as i32
+  t_27 = alloc 16
+  t_28 = &mut t_27
+  t_29 = alloc 12
+  t_30 = add t_29, 0
+  store t_30 + 0, 1 as i32
+  t_31 = add t_29, 4
+  store t_31 + 0, 2 as i32
+  t_32 = add t_29, 8
+  store t_32 + 0, 3 as i32
+  store t_28 + 0, t_29 as ptr
+  store t_28 + 8, 3 as u64
+  !t_28
+  !t_29
+  t_33 = call @ts_arr_scan(t_27, 3, 0, 0, 0, 0)
+  t_34 = eq t_33, 0
+  !t_33
+  !t_27
+  br t_34 -> L_exp_fail_7, L_exp_ok_8
 L_exp_fail_7:
   panic(2501)
 L_exp_ok_8:
-  t_32 = load __expect_count_18 + 0 as i32
-  t_33 = add t_32, 1
-  store __expect_count_18 + 0, t_33 as i32
-  t_34 = alloc 16
-  t_35 = alloc 12
-  t_36 = add t_35, 0
-  store t_36 + 0, 1 as i32
-  t_37 = add t_35, 4
-  store t_37 + 0, 2 as i32
-  t_38 = add t_35, 8
-  store t_38 + 0, 3 as i32
-  store t_34 + 0, t_35 as ptr
-  store t_34 + 8, 3 as u64
-  !t_35
-  t_39 = call @ts_arr_scan(t_34, 0, 0, 0, 0, 0)
-  t_40 = ne t_39, 0
+  t_35 = load __expect_count_20 + 0 as i32
+  t_36 = add t_35, 1
+  store __expect_count_20 + 0, t_36 as i32
+  t_37 = alloc 16
+  t_38 = &mut t_37
+  t_39 = alloc 12
+  t_40 = add t_39, 0
+  store t_40 + 0, 1 as i32
+  t_41 = add t_39, 4
+  store t_41 + 0, 2 as i32
+  t_42 = add t_39, 8
+  store t_42 + 0, 3 as i32
+  store t_38 + 0, t_39 as ptr
+  store t_38 + 8, 3 as u64
+  !t_38
   !t_39
-  !t_34
-  br t_40 -> L_exp_fail_9, L_exp_ok_10
+  t_43 = call @ts_arr_scan(t_37, 0, 0, 0, 0, 0)
+  t_44 = ne t_43, 0
+  !t_43
+  !t_37
+  br t_44 -> L_exp_fail_9, L_exp_ok_10
 L_exp_fail_9:
   panic(2501)
 L_exp_ok_10:
-  t_41 = load __expect_count_18 + 0 as i32
-  t_42 = add t_41, 1
-  store __expect_count_18 + 0, t_42 as i32
-  !__expect_count_18
+  t_45 = load __expect_count_20 + 0 as i32
+  t_46 = add t_45, 1
+  store __expect_count_20 + 0, t_46 as i32
+  !__expect_count_20
   !a
-  t_43 = call @main__user()
-  t_44 = sext t_43 as i64
-  t_45 = alloc 64
-  t_46 = alloc 8
-  t_47 = call @sa_fmt_i64_into(t_44, 10, t_45, 64, &t_46)
-  t_48 = load t_46 + 0 as u64
-  t_49 = alloc 16
-  store t_49 + 0, t_45 as ptr
-  store t_49 + 8, t_48 as u64
-  !t_47
-  t_50 = load t_49 + 0 as ptr
-  t_51 = load t_49 + 8 as u64
-  call @sa_print_bytes(&t_50, t_51)
+  t_47 = call @main__user()
+  t_48 = sext t_47 as i64
+  t_49 = alloc 64
+  t_50 = alloc 8
+  t_51 = call @sa_fmt_i64_into(t_48, 10, t_49, 64, &t_50)
+  t_52 = load t_50 + 0 as u64
+  t_53 = alloc 16
+  store t_53 + 0, t_49 as ptr
+  store t_53 + 8, t_52 as u64
+  !t_51
+  t_54 = load t_53 + 0 as ptr
+  t_55 = load t_53 + 8 as u64
+  call @sa_print_bytes(&t_54, t_55)
+  !t_53
+  t_56 = alloc 16
+  store t_56 + 0, &str_const_0 as ptr
+  store t_56 + 8, 1 as u64
+  t_57 = load t_56 + 0 as ptr
+  t_58 = load t_56 + 8 as u64
+  call @sa_print_bytes(&t_57, t_58)
+  !t_56
+  !t_50
   !t_49
-  t_52 = alloc 16
-  store t_52 + 0, &str_const_0 as ptr
-  store t_52 + 8, 1 as u64
-  t_53 = load t_52 + 0 as ptr
-  t_54 = load t_52 + 8 as u64
-  call @sa_print_bytes(&t_53, t_54)
-  !t_52
-  !t_46
-  !t_45
-  !t_43
+  !t_47
   ret 0

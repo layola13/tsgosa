@@ -6,472 +6,490 @@
 @const str_const_0 = utf8:"\n\0"
 @main() -> i32:
   t_1 = alloc 16
-  t_2 = alloc 12
-  t_3 = add t_2, 0
-  store t_3 + 0, 3 as i32
-  t_4 = add t_2, 4
-  store t_4 + 0, 1 as i32
-  t_5 = add t_2, 8
-  store t_5 + 0, 2 as i32
-  store t_1 + 0, t_2 as ptr
-  store t_1 + 8, 3 as u64
+  t_2 = &mut t_1
+  t_3 = alloc 12
+  t_4 = add t_3, 0
+  store t_4 + 0, 3 as i32
+  t_5 = add t_3, 4
+  store t_5 + 0, 1 as i32
+  t_6 = add t_3, 8
+  store t_6 + 0, 2 as i32
+  store t_2 + 0, t_3 as ptr
+  store t_2 + 8, 3 as u64
   !t_2
+  !t_3
   xs = t_1
-  t_6 = load xs + 8 as u64
-  t_7 = load xs + 0 as ptr
-  t_8 = alloc 16
-  store t_8 + 0, 0 as ptr
-  store t_8 + 8, 0 as u64
-  t_9 = 0
+  t_7 = load xs + 8 as u64
+  t_8 = load xs + 0 as ptr
+  t_9 = alloc 16
+  t_10 = &mut t_9
+  store t_10 + 0, 0 as ptr
+  store t_10 + 8, 0 as u64
+  !t_10
+  t_11 = 0
 L_fi_top_1:
-  t_10 = slt t_9, t_6
-  br t_10 -> L_fi_body_2, L_fi_end_3
+  t_12 = slt t_11, t_7
+  br t_12 -> L_fi_body_2, L_fi_end_3
 L_fi_body_2:
-  t_11 = mul t_9, 4
-  t_12 = add t_7, t_11
-  t_13 = load t_12 + 0 as i32
-  x = add t_13, 0
-  t_14 = sgt x, 1
-  br t_14 -> L_fi_take_4, L_fi_skip_5
+  t_13 = mul t_11, 4
+  t_14 = add t_8, t_13
+  t_15 = load t_14 + 0 as i32
+  x = add t_15, 0
+  t_16 = sgt x, 1
+  br t_16 -> L_fi_take_4, L_fi_skip_5
 L_fi_take_4:
-  call @ts_arr_push_word(t_8, t_13)
-  t_15 = load t_8 + 8 as u64
+  call @ts_arr_push_word(t_9, t_15)
+  t_17 = load t_9 + 8 as u64
   jmp L_fi_skip_5
 L_fi_skip_5:
-  t_16 = add t_9, 1
-  t_9 = t_16
+  t_18 = add t_11, 1
+  t_11 = t_18
   jmp L_fi_top_1
 L_fi_end_3:
-  t_17 = load t_8 + 8 as u64
-  !t_8
-  t_18 = sext t_17 as i64
-  t_19 = alloc 64
-  t_20 = alloc 8
-  t_21 = call @sa_fmt_i64_into(t_18, 10, t_19, 64, &t_20)
-  t_22 = load t_20 + 0 as u64
-  t_23 = alloc 16
-  store t_23 + 0, t_19 as ptr
-  store t_23 + 8, t_22 as u64
-  !t_21
-  t_24 = load t_23 + 0 as ptr
-  t_25 = load t_23 + 8 as u64
-  call @sa_print_bytes(&t_24, t_25)
+  t_19 = load t_9 + 8 as u64
+  !t_9
+  t_20 = sext t_19 as i64
+  t_21 = alloc 64
+  t_22 = alloc 8
+  t_23 = call @sa_fmt_i64_into(t_20, 10, t_21, 64, &t_22)
+  t_24 = load t_22 + 0 as u64
+  t_25 = alloc 16
+  store t_25 + 0, t_21 as ptr
+  store t_25 + 8, t_24 as u64
   !t_23
-  t_26 = alloc 16
-  store t_26 + 0, &str_const_0 as ptr
-  store t_26 + 8, 1 as u64
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  call @sa_print_bytes(&t_27, t_28)
-  !t_26
-  t_29 = alloc 16
-  store t_29 + 0, 0 as ptr
-  store t_29 + 8, 0 as u64
-  t_30 = load xs + 8 as u64
-  t_31 = load xs + 0 as ptr
-  t_32 = 0
+  t_26 = load t_25 + 0 as ptr
+  t_27 = load t_25 + 8 as u64
+  call @sa_print_bytes(&t_26, t_27)
+  !t_25
+  t_28 = alloc 16
+  store t_28 + 0, &str_const_0 as ptr
+  store t_28 + 8, 1 as u64
+  t_29 = load t_28 + 0 as ptr
+  t_30 = load t_28 + 8 as u64
+  call @sa_print_bytes(&t_29, t_30)
+  !t_28
+  t_31 = alloc 16
+  t_32 = &mut t_31
+  store t_32 + 0, 0 as ptr
+  store t_32 + 8, 0 as u64
+  !t_32
+  t_33 = load xs + 8 as u64
+  t_34 = load xs + 0 as ptr
+  t_35 = 0
 L_mp_top_6:
-  t_33 = slt t_32, t_30
-  br t_33 -> L_mp_body_7, L_mp_end_8
+  t_36 = slt t_35, t_33
+  br t_36 -> L_mp_body_7, L_mp_end_8
 L_mp_body_7:
-  t_34 = mul t_32, 4
-  t_35 = add t_31, t_34
-  t_36 = load t_35 + 0 as i32
-  x = add t_36, 0
-  t_37 = add x, 1
-  call @ts_arr_push_word(t_29, t_37)
-  t_38 = load t_29 + 8 as u64
-  t_39 = add t_32, 1
-  t_32 = t_39
+  t_37 = mul t_35, 4
+  t_38 = add t_34, t_37
+  t_39 = load t_38 + 0 as i32
+  x = add t_39, 0
+  t_40 = add x, 1
+  call @ts_arr_push_word(t_31, t_40)
+  t_41 = load t_31 + 8 as u64
+  t_42 = add t_35, 1
+  t_35 = t_42
   jmp L_mp_top_6
 L_mp_end_8:
-  t_40 = load t_29 + 8 as u64
-  t_41 = load t_29 + 0 as ptr
-  t_42 = alloc 16
-  store t_42 + 0, 0 as ptr
-  store t_42 + 8, 0 as u64
-  t_43 = 0
+  t_43 = load t_31 + 8 as u64
+  t_44 = load t_31 + 0 as ptr
+  t_45 = alloc 16
+  t_46 = &mut t_45
+  store t_46 + 0, 0 as ptr
+  store t_46 + 8, 0 as u64
+  !t_46
+  t_47 = 0
 L_fi_top_9:
-  t_44 = slt t_43, t_40
-  br t_44 -> L_fi_body_10, L_fi_end_11
+  t_48 = slt t_47, t_43
+  br t_48 -> L_fi_body_10, L_fi_end_11
 L_fi_body_10:
-  t_45 = mul t_43, 4
-  t_46 = add t_41, t_45
-  t_47 = load t_46 + 0 as i32
-  x = add t_47, 0
-  t_48 = sgt x, 2
-  br t_48 -> L_fi_take_12, L_fi_skip_13
+  t_49 = mul t_47, 4
+  t_50 = add t_44, t_49
+  t_51 = load t_50 + 0 as i32
+  x = add t_51, 0
+  t_52 = sgt x, 2
+  br t_52 -> L_fi_take_12, L_fi_skip_13
 L_fi_take_12:
-  call @ts_arr_push_word(t_42, t_47)
-  t_49 = load t_42 + 8 as u64
+  call @ts_arr_push_word(t_45, t_51)
+  t_53 = load t_45 + 8 as u64
   jmp L_fi_skip_13
 L_fi_skip_13:
-  t_50 = add t_43, 1
-  t_43 = t_50
+  t_54 = add t_47, 1
+  t_47 = t_54
   jmp L_fi_top_9
 L_fi_end_11:
-  !t_29
-  t_51 = load t_42 + 8 as u64
-  t_52 = load t_42 + 0 as ptr
-  t_53 = add 0, 0
-  t_54 = 0
+  !t_31
+  t_55 = load t_45 + 8 as u64
+  t_56 = load t_45 + 0 as ptr
+  t_57 = add 0, 0
+  t_58 = 0
 L_rd_top_14:
-  t_55 = slt t_54, t_51
-  br t_55 -> L_rd_body_15, L_rd_end_16
+  t_59 = slt t_58, t_55
+  br t_59 -> L_rd_body_15, L_rd_end_16
 L_rd_body_15:
-  t_56 = mul t_54, 4
-  t_57 = add t_52, t_56
-  t_58 = load t_57 + 0 as i32
-  a = add t_53, 0
-  b = add t_58, 0
-  t_59 = add a, b
-  t_53 = t_59
-  t_60 = add t_54, 1
-  t_54 = t_60
+  t_60 = mul t_58, 4
+  t_61 = add t_56, t_60
+  t_62 = load t_61 + 0 as i32
+  a = add t_57, 0
+  b = add t_62, 0
+  t_63 = add a, b
+  t_57 = t_63
+  t_64 = add t_58, 1
+  t_58 = t_64
   jmp L_rd_top_14
 L_rd_end_16:
-  !t_42
-  n = t_53
-  t_61 = sext n as i64
-  t_62 = alloc 64
-  t_63 = alloc 8
-  t_64 = call @sa_fmt_i64_into(t_61, 10, t_62, 64, &t_63)
-  t_65 = load t_63 + 0 as u64
-  t_66 = alloc 16
-  store t_66 + 0, t_62 as ptr
-  store t_66 + 8, t_65 as u64
-  !t_64
-  t_67 = load t_66 + 0 as ptr
-  t_68 = load t_66 + 8 as u64
-  call @sa_print_bytes(&t_67, t_68)
-  !t_66
-  t_69 = alloc 16
-  store t_69 + 0, &str_const_0 as ptr
-  store t_69 + 8, 1 as u64
-  t_70 = load t_69 + 0 as ptr
-  t_71 = load t_69 + 8 as u64
-  call @sa_print_bytes(&t_70, t_71)
-  !t_69
-  t_72 = alloc 16
-  store t_72 + 0, 0 as ptr
-  store t_72 + 8, 0 as u64
-  t_73 = call @ts_arr_concat2(t_72, xs)
-  !t_72
-  t_74 = alloc 16
-  t_75 = alloc 4
-  t_76 = add t_75, 0
-  store t_76 + 0, 4 as i32
-  store t_74 + 0, t_75 as ptr
-  store t_74 + 8, 1 as u64
-  !t_75
-  t_77 = call @ts_arr_concat2(t_73, t_74)
+  !t_45
+  n = t_57
+  t_65 = sext n as i64
+  t_66 = alloc 64
+  t_67 = alloc 8
+  t_68 = call @sa_fmt_i64_into(t_65, 10, t_66, 64, &t_67)
+  t_69 = load t_67 + 0 as u64
+  t_70 = alloc 16
+  store t_70 + 0, t_66 as ptr
+  store t_70 + 8, t_69 as u64
+  !t_68
+  t_71 = load t_70 + 0 as ptr
+  t_72 = load t_70 + 8 as u64
+  call @sa_print_bytes(&t_71, t_72)
+  !t_70
+  t_73 = alloc 16
+  store t_73 + 0, &str_const_0 as ptr
+  store t_73 + 8, 1 as u64
+  t_74 = load t_73 + 0 as ptr
+  t_75 = load t_73 + 8 as u64
+  call @sa_print_bytes(&t_74, t_75)
   !t_73
-  t_78 = call @ts_arr_toreversed(t_77)
-  z = t_78
-  t_79 = alloc 8
-  t_80 = load z + 8 as u64
-  t_81 = ult 0, t_80
-  br t_81 -> L_idx_ok_19, L_idx_oob_18
+  t_76 = alloc 16
+  t_77 = &mut t_76
+  store t_77 + 0, 0 as ptr
+  store t_77 + 8, 0 as u64
+  !t_77
+  t_78 = call @ts_arr_concat2(t_76, xs)
+  !t_76
+  t_79 = alloc 16
+  t_80 = &mut t_79
+  t_81 = alloc 4
+  t_82 = add t_81, 0
+  store t_82 + 0, 4 as i32
+  store t_80 + 0, t_81 as ptr
+  store t_80 + 8, 1 as u64
+  !t_80
+  !t_81
+  t_83 = call @ts_arr_concat2(t_78, t_79)
+  !t_78
+  t_84 = call @ts_arr_toreversed(t_83)
+  z = t_84
+  t_85 = alloc 8
+  t_86 = load z + 8 as u64
+  t_87 = ult 0, t_86
+  br t_87 -> L_idx_ok_19, L_idx_oob_18
 L_idx_ok_19:
-  t_82 = load z + 0 as ptr
-  t_83 = mul 0, 4
-  t_84 = add t_82, t_83
-  t_85 = load t_84 + 0 as i32
-  store t_79 + 0, t_85 as ptr
+  t_88 = load z + 0 as ptr
+  t_89 = mul 0, 4
+  t_90 = add t_88, t_89
+  t_91 = load t_90 + 0 as i32
+  store t_85 + 0, t_91 as ptr
   jmp L_idx_end_17
 L_idx_oob_18:
-  store t_79 + 0, 0 as ptr
+  store t_85 + 0, 0 as ptr
   jmp L_idx_end_17
 L_idx_end_17:
-  t_86 = load t_79 + 0 as i32
-  !t_79
-  t_87 = sext t_86 as i64
-  t_88 = alloc 64
-  t_89 = alloc 8
-  t_90 = call @sa_fmt_i64_into(t_87, 10, t_88, 64, &t_89)
-  t_91 = load t_89 + 0 as u64
-  t_92 = alloc 16
-  store t_92 + 0, t_88 as ptr
-  store t_92 + 8, t_91 as u64
-  !t_90
-  t_93 = load t_92 + 0 as ptr
-  t_94 = load t_92 + 8 as u64
-  call @sa_print_bytes(&t_93, t_94)
-  !t_92
-  t_95 = alloc 16
-  store t_95 + 0, &str_const_0 as ptr
-  store t_95 + 8, 1 as u64
-  t_96 = load t_95 + 0 as ptr
-  t_97 = load t_95 + 8 as u64
-  call @sa_print_bytes(&t_96, t_97)
-  !t_95
-  t_98 = load xs + 8 as i32
-  t_99 = call @ts_arr_slice_copy(xs, -2, t_98)
-  t_100 = alloc 8
-  t_101 = load t_99 + 8 as u64
-  t_102 = ult 0, t_101
-  br t_102 -> L_idx_ok_22, L_idx_oob_21
+  t_92 = load t_85 + 0 as i32
+  !t_85
+  t_93 = sext t_92 as i64
+  t_94 = alloc 64
+  t_95 = alloc 8
+  t_96 = call @sa_fmt_i64_into(t_93, 10, t_94, 64, &t_95)
+  t_97 = load t_95 + 0 as u64
+  t_98 = alloc 16
+  store t_98 + 0, t_94 as ptr
+  store t_98 + 8, t_97 as u64
+  !t_96
+  t_99 = load t_98 + 0 as ptr
+  t_100 = load t_98 + 8 as u64
+  call @sa_print_bytes(&t_99, t_100)
+  !t_98
+  t_101 = alloc 16
+  store t_101 + 0, &str_const_0 as ptr
+  store t_101 + 8, 1 as u64
+  t_102 = load t_101 + 0 as ptr
+  t_103 = load t_101 + 8 as u64
+  call @sa_print_bytes(&t_102, t_103)
+  !t_101
+  t_104 = load xs + 8 as i32
+  t_105 = call @ts_arr_slice_copy(xs, -2, t_104)
+  t_106 = alloc 8
+  t_107 = load t_105 + 8 as u64
+  t_108 = ult 0, t_107
+  br t_108 -> L_idx_ok_22, L_idx_oob_21
 L_idx_ok_22:
-  t_103 = load t_99 + 0 as ptr
-  t_104 = mul 0, 4
-  t_105 = add t_103, t_104
-  t_106 = load t_105 + 0 as i32
-  store t_100 + 0, t_106 as ptr
+  t_109 = load t_105 + 0 as ptr
+  t_110 = mul 0, 4
+  t_111 = add t_109, t_110
+  t_112 = load t_111 + 0 as i32
+  store t_106 + 0, t_112 as ptr
   jmp L_idx_end_20
 L_idx_oob_21:
-  store t_100 + 0, 0 as ptr
+  store t_106 + 0, 0 as ptr
   jmp L_idx_end_20
 L_idx_end_20:
-  t_107 = load t_100 + 0 as i32
-  !t_100
-  !t_99
-  t_108 = load xs + 8 as i32
-  t_109 = call @ts_arr_slice_copy(xs, -2, t_108)
-  t_110 = alloc 8
-  t_111 = load t_109 + 8 as u64
-  t_112 = ult 1, t_111
-  br t_112 -> L_idx_ok_25, L_idx_oob_24
+  t_113 = load t_106 + 0 as i32
+  !t_106
+  !t_105
+  t_114 = load xs + 8 as i32
+  t_115 = call @ts_arr_slice_copy(xs, -2, t_114)
+  t_116 = alloc 8
+  t_117 = load t_115 + 8 as u64
+  t_118 = ult 1, t_117
+  br t_118 -> L_idx_ok_25, L_idx_oob_24
 L_idx_ok_25:
-  t_113 = load t_109 + 0 as ptr
-  t_114 = mul 1, 4
-  t_115 = add t_113, t_114
-  t_116 = load t_115 + 0 as i32
-  store t_110 + 0, t_116 as ptr
+  t_119 = load t_115 + 0 as ptr
+  t_120 = mul 1, 4
+  t_121 = add t_119, t_120
+  t_122 = load t_121 + 0 as i32
+  store t_116 + 0, t_122 as ptr
   jmp L_idx_end_23
 L_idx_oob_24:
-  store t_110 + 0, 0 as ptr
+  store t_116 + 0, 0 as ptr
   jmp L_idx_end_23
 L_idx_end_23:
-  t_117 = load t_110 + 0 as i32
-  !t_110
-  !t_109
-  t_118 = add t_107, t_117
-  t_119 = sext t_118 as i64
-  t_120 = alloc 64
-  t_121 = alloc 8
-  t_122 = call @sa_fmt_i64_into(t_119, 10, t_120, 64, &t_121)
-  t_123 = load t_121 + 0 as u64
-  t_124 = alloc 16
-  store t_124 + 0, t_120 as ptr
-  store t_124 + 8, t_123 as u64
-  !t_122
-  t_125 = load t_124 + 0 as ptr
-  t_126 = load t_124 + 8 as u64
-  call @sa_print_bytes(&t_125, t_126)
-  !t_124
-  t_127 = alloc 16
-  store t_127 + 0, &str_const_0 as ptr
-  store t_127 + 8, 1 as u64
-  t_128 = load t_127 + 0 as ptr
-  t_129 = load t_127 + 8 as u64
-  call @sa_print_bytes(&t_128, t_129)
-  !t_127
+  t_123 = load t_116 + 0 as i32
+  !t_116
+  !t_115
+  t_124 = add t_113, t_123
+  t_125 = sext t_124 as i64
+  t_126 = alloc 64
+  t_127 = alloc 8
+  t_128 = call @sa_fmt_i64_into(t_125, 10, t_126, 64, &t_127)
+  t_129 = load t_127 + 0 as u64
   t_130 = alloc 16
-  store t_130 + 0, 0 as ptr
-  store t_130 + 8, 0 as u64
-  t_131 = load xs + 8 as u64
-  t_132 = load xs + 0 as ptr
-  t_133 = 0
+  store t_130 + 0, t_126 as ptr
+  store t_130 + 8, t_129 as u64
+  !t_128
+  t_131 = load t_130 + 0 as ptr
+  t_132 = load t_130 + 8 as u64
+  call @sa_print_bytes(&t_131, t_132)
+  !t_130
+  t_133 = alloc 16
+  store t_133 + 0, &str_const_0 as ptr
+  store t_133 + 8, 1 as u64
+  t_134 = load t_133 + 0 as ptr
+  t_135 = load t_133 + 8 as u64
+  call @sa_print_bytes(&t_134, t_135)
+  !t_133
+  t_136 = alloc 16
+  t_137 = &mut t_136
+  store t_137 + 0, 0 as ptr
+  store t_137 + 8, 0 as u64
+  !t_137
+  t_138 = load xs + 8 as u64
+  t_139 = load xs + 0 as ptr
+  t_140 = 0
 L_mp_top_26:
-  t_134 = slt t_133, t_131
-  br t_134 -> L_mp_body_27, L_mp_end_28
+  t_141 = slt t_140, t_138
+  br t_141 -> L_mp_body_27, L_mp_end_28
 L_mp_body_27:
-  t_135 = mul t_133, 4
-  t_136 = add t_132, t_135
-  t_137 = load t_136 + 0 as i32
-  x = add t_137, 0
-  t_138 = mul x, 2
-  call @ts_arr_push_word(t_130, t_138)
-  t_139 = load t_130 + 8 as u64
-  t_140 = add t_133, 1
-  t_133 = t_140
+  t_142 = mul t_140, 4
+  t_143 = add t_139, t_142
+  t_144 = load t_143 + 0 as i32
+  x = add t_144, 0
+  t_145 = mul x, 2
+  call @ts_arr_push_word(t_136, t_145)
+  t_146 = load t_136 + 8 as u64
+  t_147 = add t_140, 1
+  t_140 = t_147
   jmp L_mp_top_26
 L_mp_end_28:
-  t_141 = load t_130 + 8 as u64
-  t_142 = load t_130 + 0 as ptr
-  t_143 = alloc 8
-  store t_143 + 0, 0 as ptr
-  t_144 = 0
+  t_148 = load t_136 + 8 as u64
+  t_149 = load t_136 + 0 as ptr
+  t_150 = alloc 8
+  store t_150 + 0, 0 as ptr
+  t_151 = 0
 L_se_top_29:
-  t_145 = slt t_144, t_141
-  br t_145 -> L_se_body_30, L_se_end_31
+  t_152 = slt t_151, t_148
+  br t_152 -> L_se_body_30, L_se_end_31
 L_se_body_30:
-  t_146 = mul t_144, 4
-  t_147 = add t_142, t_146
-  t_148 = load t_147 + 0 as i32
-  x = add t_148, 0
-  t_149 = sgt x, 5
-  br t_149 -> L_se_hit_32, L_se_next_33
+  t_153 = mul t_151, 4
+  t_154 = add t_149, t_153
+  t_155 = load t_154 + 0 as i32
+  x = add t_155, 0
+  t_156 = sgt x, 5
+  br t_156 -> L_se_hit_32, L_se_next_33
 L_se_hit_32:
-  store t_143 + 0, 1 as ptr
+  store t_150 + 0, 1 as ptr
   jmp L_se_end_31
 L_se_next_33:
-  t_150 = add t_144, 1
-  t_144 = t_150
+  t_157 = add t_151, 1
+  t_151 = t_157
   jmp L_se_top_29
 L_se_end_31:
-  t_151 = load t_143 + 0 as i32
-  !t_143
-  !t_130
-  t_152 = sext t_151 as i64
-  t_153 = alloc 64
-  t_154 = alloc 8
-  t_155 = call @sa_fmt_i64_into(t_152, 10, t_153, 64, &t_154)
-  t_156 = load t_154 + 0 as u64
-  t_157 = alloc 16
-  store t_157 + 0, t_153 as ptr
-  store t_157 + 8, t_156 as u64
-  !t_155
-  t_158 = load t_157 + 0 as ptr
-  t_159 = load t_157 + 8 as u64
-  call @sa_print_bytes(&t_158, t_159)
-  !t_157
-  t_160 = alloc 16
-  store t_160 + 0, &str_const_0 as ptr
-  store t_160 + 8, 1 as u64
-  t_161 = load t_160 + 0 as ptr
-  t_162 = load t_160 + 8 as u64
-  call @sa_print_bytes(&t_161, t_162)
-  !t_160
-  t_163 = alloc 16
-  store t_163 + 0, 0 as ptr
-  store t_163 + 8, 0 as u64
-  t_164 = load xs + 8 as u64
-  t_165 = load xs + 0 as ptr
-  t_166 = 0
+  t_158 = load t_150 + 0 as i32
+  !t_150
+  !t_136
+  t_159 = sext t_158 as i64
+  t_160 = alloc 64
+  t_161 = alloc 8
+  t_162 = call @sa_fmt_i64_into(t_159, 10, t_160, 64, &t_161)
+  t_163 = load t_161 + 0 as u64
+  t_164 = alloc 16
+  store t_164 + 0, t_160 as ptr
+  store t_164 + 8, t_163 as u64
+  !t_162
+  t_165 = load t_164 + 0 as ptr
+  t_166 = load t_164 + 8 as u64
+  call @sa_print_bytes(&t_165, t_166)
+  !t_164
+  t_167 = alloc 16
+  store t_167 + 0, &str_const_0 as ptr
+  store t_167 + 8, 1 as u64
+  t_168 = load t_167 + 0 as ptr
+  t_169 = load t_167 + 8 as u64
+  call @sa_print_bytes(&t_168, t_169)
+  !t_167
+  t_170 = alloc 16
+  t_171 = &mut t_170
+  store t_171 + 0, 0 as ptr
+  store t_171 + 8, 0 as u64
+  !t_171
+  t_172 = load xs + 8 as u64
+  t_173 = load xs + 0 as ptr
+  t_174 = 0
 L_mp_top_34:
-  t_167 = slt t_166, t_164
-  br t_167 -> L_mp_body_35, L_mp_end_36
+  t_175 = slt t_174, t_172
+  br t_175 -> L_mp_body_35, L_mp_end_36
 L_mp_body_35:
-  t_168 = mul t_166, 4
-  t_169 = add t_165, t_168
-  t_170 = load t_169 + 0 as i32
-  x = add t_170, 0
-  t_171 = add x, 1
-  call @ts_arr_push_word(t_163, t_171)
-  t_172 = load t_163 + 8 as u64
-  t_173 = add t_166, 1
-  t_166 = t_173
+  t_176 = mul t_174, 4
+  t_177 = add t_173, t_176
+  t_178 = load t_177 + 0 as i32
+  x = add t_178, 0
+  t_179 = add x, 1
+  call @ts_arr_push_word(t_170, t_179)
+  t_180 = load t_170 + 8 as u64
+  t_181 = add t_174, 1
+  t_174 = t_181
   jmp L_mp_top_34
 L_mp_end_36:
-  t_174 = load t_163 + 8 as u64
-  t_175 = load t_163 + 0 as ptr
-  t_176 = 0
+  t_182 = load t_170 + 8 as u64
+  t_183 = load t_170 + 0 as ptr
+  t_184 = 0
 L_fe_top_37:
-  t_177 = slt t_176, t_174
-  br t_177 -> L_fe_body_38, L_fe_end_39
+  t_185 = slt t_184, t_182
+  br t_185 -> L_fe_body_38, L_fe_end_39
 L_fe_body_38:
-  t_178 = mul t_176, 4
-  t_179 = add t_175, t_178
-  t_180 = load t_179 + 0 as i32
-  x = add t_180, 0
-  t_181 = sext x as i64
-  t_182 = alloc 64
-  t_183 = alloc 8
-  t_184 = call @sa_fmt_i64_into(t_181, 10, t_182, 64, &t_183)
-  t_185 = load t_183 + 0 as u64
-  t_186 = alloc 16
-  store t_186 + 0, t_182 as ptr
-  store t_186 + 8, t_185 as u64
-  !t_184
-  t_187 = load t_186 + 0 as ptr
-  t_188 = load t_186 + 8 as u64
-  call @sa_print_bytes(&t_187, t_188)
-  !t_186
-  t_189 = alloc 16
-  store t_189 + 0, &str_const_0 as ptr
-  store t_189 + 8, 1 as u64
-  t_190 = load t_189 + 0 as ptr
-  t_191 = load t_189 + 8 as u64
-  call @sa_print_bytes(&t_190, t_191)
-  !t_189
-  t_192 = add t_176, 1
-  t_176 = t_192
+  t_186 = mul t_184, 4
+  t_187 = add t_183, t_186
+  t_188 = load t_187 + 0 as i32
+  x = add t_188, 0
+  t_189 = sext x as i64
+  t_190 = alloc 64
+  t_191 = alloc 8
+  t_192 = call @sa_fmt_i64_into(t_189, 10, t_190, 64, &t_191)
+  t_193 = load t_191 + 0 as u64
+  t_194 = alloc 16
+  store t_194 + 0, t_190 as ptr
+  store t_194 + 8, t_193 as u64
+  !t_192
+  t_195 = load t_194 + 0 as ptr
+  t_196 = load t_194 + 8 as u64
+  call @sa_print_bytes(&t_195, t_196)
+  !t_194
+  t_197 = alloc 16
+  store t_197 + 0, &str_const_0 as ptr
+  store t_197 + 8, 1 as u64
+  t_198 = load t_197 + 0 as ptr
+  t_199 = load t_197 + 8 as u64
+  call @sa_print_bytes(&t_198, t_199)
+  !t_197
+  t_200 = add t_184, 1
+  t_184 = t_200
   jmp L_fe_top_37
 L_fe_end_39:
-  !t_163
-  t_193 = alloc 16
-  store t_193 + 0, 0 as ptr
-  store t_193 + 8, 0 as u64
-  t_194 = load xs + 8 as u64
-  t_195 = load xs + 0 as ptr
-  t_196 = 0
+  !t_170
+  t_201 = alloc 16
+  t_202 = &mut t_201
+  store t_202 + 0, 0 as ptr
+  store t_202 + 8, 0 as u64
+  !t_202
+  t_203 = load xs + 8 as u64
+  t_204 = load xs + 0 as ptr
+  t_205 = 0
 L_mp_top_40:
-  t_197 = slt t_196, t_194
-  br t_197 -> L_mp_body_41, L_mp_end_42
+  t_206 = slt t_205, t_203
+  br t_206 -> L_mp_body_41, L_mp_end_42
 L_mp_body_41:
-  t_198 = mul t_196, 4
-  t_199 = add t_195, t_198
-  t_200 = load t_199 + 0 as i32
-  x = add t_200, 0
-  t_201 = mul x, 10
-  call @ts_arr_push_word(t_193, t_201)
-  t_202 = load t_193 + 8 as u64
-  t_203 = add t_196, 1
-  t_196 = t_203
+  t_207 = mul t_205, 4
+  t_208 = add t_204, t_207
+  t_209 = load t_208 + 0 as i32
+  x = add t_209, 0
+  t_210 = mul x, 10
+  call @ts_arr_push_word(t_201, t_210)
+  t_211 = load t_201 + 8 as u64
+  t_212 = add t_205, 1
+  t_205 = t_212
   jmp L_mp_top_40
 L_mp_end_42:
-  t_204 = load t_193 + 8 as u64
-  t_205 = load t_193 + 0 as ptr
-  t_206 = alloc 8
-  store t_206 + 0, 0 as ptr
-  t_207 = 0
+  t_213 = load t_201 + 8 as u64
+  t_214 = load t_201 + 0 as ptr
+  t_215 = alloc 8
+  store t_215 + 0, 0 as ptr
+  t_216 = 0
 L_fd_top_43:
-  t_208 = slt t_207, t_204
-  br t_208 -> L_fd_body_44, L_fd_end_45
+  t_217 = slt t_216, t_213
+  br t_217 -> L_fd_body_44, L_fd_end_45
 L_fd_body_44:
-  t_209 = mul t_207, 4
-  t_210 = add t_205, t_209
-  t_211 = load t_210 + 0 as i32
-  x = add t_211, 0
-  t_212 = sgt x, 15
-  br t_212 -> L_fd_hit_46, L_fd_next_47
+  t_218 = mul t_216, 4
+  t_219 = add t_214, t_218
+  t_220 = load t_219 + 0 as i32
+  x = add t_220, 0
+  t_221 = sgt x, 15
+  br t_221 -> L_fd_hit_46, L_fd_next_47
 L_fd_hit_46:
-  store t_206 + 0, t_211 as ptr
+  store t_215 + 0, t_220 as ptr
   jmp L_fd_end_45
 L_fd_next_47:
-  t_213 = add t_207, 1
-  t_207 = t_213
+  t_222 = add t_216, 1
+  t_216 = t_222
   jmp L_fd_top_43
 L_fd_end_45:
-  t_214 = load t_206 + 0 as i32
-  !t_206
-  !t_193
-  t_215 = sext t_214 as i64
-  t_216 = alloc 64
-  t_217 = alloc 8
-  t_218 = call @sa_fmt_i64_into(t_215, 10, t_216, 64, &t_217)
-  t_219 = load t_217 + 0 as u64
-  t_220 = alloc 16
-  store t_220 + 0, t_216 as ptr
-  store t_220 + 8, t_219 as u64
-  !t_218
-  t_221 = load t_220 + 0 as ptr
-  t_222 = load t_220 + 8 as u64
-  call @sa_print_bytes(&t_221, t_222)
-  !t_220
-  t_223 = alloc 16
-  store t_223 + 0, &str_const_0 as ptr
-  store t_223 + 8, 1 as u64
-  t_224 = load t_223 + 0 as ptr
-  t_225 = load t_223 + 8 as u64
-  call @sa_print_bytes(&t_224, t_225)
-  !t_223
-  !t_217
-  !t_216
-  !t_154
-  !t_153
-  !t_121
-  !t_120
-  !t_89
-  !t_88
+  t_223 = load t_215 + 0 as i32
+  !t_215
+  !t_201
+  t_224 = sext t_223 as i64
+  t_225 = alloc 64
+  t_226 = alloc 8
+  t_227 = call @sa_fmt_i64_into(t_224, 10, t_225, 64, &t_226)
+  t_228 = load t_226 + 0 as u64
+  t_229 = alloc 16
+  store t_229 + 0, t_225 as ptr
+  store t_229 + 8, t_228 as u64
+  !t_227
+  t_230 = load t_229 + 0 as ptr
+  t_231 = load t_229 + 8 as u64
+  call @sa_print_bytes(&t_230, t_231)
+  !t_229
+  t_232 = alloc 16
+  store t_232 + 0, &str_const_0 as ptr
+  store t_232 + 8, 1 as u64
+  t_233 = load t_232 + 0 as ptr
+  t_234 = load t_232 + 8 as u64
+  call @sa_print_bytes(&t_233, t_234)
+  !t_232
+  !t_226
+  !t_225
+  !t_161
+  !t_160
+  !t_127
+  !t_126
+  !t_95
+  !t_94
   !z
-  !t_77
-  !t_74
-  !t_63
-  !t_62
+  !t_83
+  !t_79
+  !t_67
+  !t_66
   !n
-  !t_20
-  !t_19
+  !t_22
+  !t_21
   !xs
   ret 0

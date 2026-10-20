@@ -54,93 +54,95 @@ L_idx_end_4:
   ret
 @main() -> i32:
   t_23 = alloc 16
-  t_24 = alloc 8
-  t_25 = add t_24, 0
-  store t_25 + 0, 1 as i32
-  t_26 = add t_24, 4
-  store t_26 + 0, 2 as i32
-  store t_23 + 0, t_24 as ptr
-  store t_23 + 8, 2 as u64
+  t_24 = &mut t_23
+  t_25 = alloc 8
+  t_26 = add t_25, 0
+  store t_26 + 0, 1 as i32
+  t_27 = add t_25, 4
+  store t_27 + 0, 2 as i32
+  store t_24 + 0, t_25 as ptr
+  store t_24 + 8, 2 as u64
   !t_24
+  !t_25
   a = t_23
   call @swap(a, 0, 1)
-  t_27 = alloc 8
-  t_28 = load a + 8 as u64
-  t_29 = ult 0, t_28
-  br t_29 -> L_idx_ok_9, L_idx_oob_8
+  t_28 = alloc 8
+  t_29 = load a + 8 as u64
+  t_30 = ult 0, t_29
+  br t_30 -> L_idx_ok_9, L_idx_oob_8
 L_idx_ok_9:
-  t_30 = load a + 0 as ptr
-  t_31 = mul 0, 4
-  t_32 = add t_30, t_31
-  t_33 = load t_32 + 0 as i32
-  store t_27 + 0, t_33 as ptr
+  t_31 = load a + 0 as ptr
+  t_32 = mul 0, 4
+  t_33 = add t_31, t_32
+  t_34 = load t_33 + 0 as i32
+  store t_28 + 0, t_34 as ptr
   jmp L_idx_end_7
 L_idx_oob_8:
-  store t_27 + 0, 0 as ptr
+  store t_28 + 0, 0 as ptr
   jmp L_idx_end_7
 L_idx_end_7:
-  t_34 = load t_27 + 0 as i32
-  !t_27
-  t_35 = sext t_34 as i64
-  t_36 = alloc 64
-  t_37 = alloc 8
-  t_38 = call @sa_fmt_i64_into(t_35, 10, t_36, 64, &t_37)
-  t_39 = load t_37 + 0 as u64
-  t_40 = alloc 16
-  store t_40 + 0, t_36 as ptr
-  store t_40 + 8, t_39 as u64
-  !t_38
-  t_41 = load t_40 + 0 as ptr
-  t_42 = load t_40 + 8 as u64
-  call @sa_print_bytes(&t_41, t_42)
-  !t_40
-  t_43 = alloc 16
-  store t_43 + 0, &str_const_0 as ptr
-  store t_43 + 8, 1 as u64
-  t_44 = load t_43 + 0 as ptr
-  t_45 = load t_43 + 8 as u64
-  call @sa_print_bytes(&t_44, t_45)
-  !t_43
-  t_46 = alloc 8
-  t_47 = load a + 8 as u64
-  t_48 = ult 1, t_47
-  br t_48 -> L_idx_ok_12, L_idx_oob_11
+  t_35 = load t_28 + 0 as i32
+  !t_28
+  t_36 = sext t_35 as i64
+  t_37 = alloc 64
+  t_38 = alloc 8
+  t_39 = call @sa_fmt_i64_into(t_36, 10, t_37, 64, &t_38)
+  t_40 = load t_38 + 0 as u64
+  t_41 = alloc 16
+  store t_41 + 0, t_37 as ptr
+  store t_41 + 8, t_40 as u64
+  !t_39
+  t_42 = load t_41 + 0 as ptr
+  t_43 = load t_41 + 8 as u64
+  call @sa_print_bytes(&t_42, t_43)
+  !t_41
+  t_44 = alloc 16
+  store t_44 + 0, &str_const_0 as ptr
+  store t_44 + 8, 1 as u64
+  t_45 = load t_44 + 0 as ptr
+  t_46 = load t_44 + 8 as u64
+  call @sa_print_bytes(&t_45, t_46)
+  !t_44
+  t_47 = alloc 8
+  t_48 = load a + 8 as u64
+  t_49 = ult 1, t_48
+  br t_49 -> L_idx_ok_12, L_idx_oob_11
 L_idx_ok_12:
-  t_49 = load a + 0 as ptr
-  t_50 = mul 1, 4
-  t_51 = add t_49, t_50
-  t_52 = load t_51 + 0 as i32
-  store t_46 + 0, t_52 as ptr
+  t_50 = load a + 0 as ptr
+  t_51 = mul 1, 4
+  t_52 = add t_50, t_51
+  t_53 = load t_52 + 0 as i32
+  store t_47 + 0, t_53 as ptr
   jmp L_idx_end_10
 L_idx_oob_11:
-  store t_46 + 0, 0 as ptr
+  store t_47 + 0, 0 as ptr
   jmp L_idx_end_10
 L_idx_end_10:
-  t_53 = load t_46 + 0 as i32
-  !t_46
-  t_54 = sext t_53 as i64
-  t_55 = alloc 64
-  t_56 = alloc 8
-  t_57 = call @sa_fmt_i64_into(t_54, 10, t_55, 64, &t_56)
-  t_58 = load t_56 + 0 as u64
-  t_59 = alloc 16
-  store t_59 + 0, t_55 as ptr
-  store t_59 + 8, t_58 as u64
+  t_54 = load t_47 + 0 as i32
+  !t_47
+  t_55 = sext t_54 as i64
+  t_56 = alloc 64
+  t_57 = alloc 8
+  t_58 = call @sa_fmt_i64_into(t_55, 10, t_56, 64, &t_57)
+  t_59 = load t_57 + 0 as u64
+  t_60 = alloc 16
+  store t_60 + 0, t_56 as ptr
+  store t_60 + 8, t_59 as u64
+  !t_58
+  t_61 = load t_60 + 0 as ptr
+  t_62 = load t_60 + 8 as u64
+  call @sa_print_bytes(&t_61, t_62)
+  !t_60
+  t_63 = alloc 16
+  store t_63 + 0, &str_const_0 as ptr
+  store t_63 + 8, 1 as u64
+  t_64 = load t_63 + 0 as ptr
+  t_65 = load t_63 + 8 as u64
+  call @sa_print_bytes(&t_64, t_65)
+  !t_63
   !t_57
-  t_60 = load t_59 + 0 as ptr
-  t_61 = load t_59 + 8 as u64
-  call @sa_print_bytes(&t_60, t_61)
-  !t_59
-  t_62 = alloc 16
-  store t_62 + 0, &str_const_0 as ptr
-  store t_62 + 8, 1 as u64
-  t_63 = load t_62 + 0 as ptr
-  t_64 = load t_62 + 8 as u64
-  call @sa_print_bytes(&t_63, t_64)
-  !t_62
   !t_56
-  !t_55
+  !t_38
   !t_37
-  !t_36
   !a
   ret 0

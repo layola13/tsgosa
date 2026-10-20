@@ -7,44 +7,46 @@
   t_1 = alloc 4
   store t_1 + 0, 0 as i32
   t_2 = alloc 16
-  t_3 = alloc 12
-  t_4 = add t_3, 0
-  store t_4 + 0, 1 as i32
-  t_5 = add t_3, 4
-  store t_5 + 0, 2 as i32
-  t_6 = add t_3, 8
-  store t_6 + 0, 3 as i32
-  store t_2 + 0, t_3 as ptr
-  store t_2 + 8, 3 as u64
+  t_3 = &mut t_2
+  t_4 = alloc 12
+  t_5 = add t_4, 0
+  store t_5 + 0, 1 as i32
+  t_6 = add t_4, 4
+  store t_6 + 0, 2 as i32
+  t_7 = add t_4, 8
+  store t_7 + 0, 3 as i32
+  store t_3 + 0, t_4 as ptr
+  store t_3 + 8, 3 as u64
   !t_3
+  !t_4
   a = add t_2, 0
-  t_7 = load a + 8 as u64
   t_8 = load a + 8 as u64
-  store t_1 + 0, t_8 as i32
+  t_9 = load a + 8 as u64
+  store t_1 + 0, t_9 as i32
   c = t_1
-  t_9 = load c + 0 as i32
-  t_10 = sext t_9 as i64
-  t_11 = alloc 64
-  t_12 = alloc 8
-  t_13 = call @sa_fmt_i64_into(t_10, 10, t_11, 64, &t_12)
-  t_14 = load t_12 + 0 as u64
-  t_15 = alloc 16
-  store t_15 + 0, t_11 as ptr
-  store t_15 + 8, t_14 as u64
+  t_10 = load c + 0 as i32
+  t_11 = sext t_10 as i64
+  t_12 = alloc 64
+  t_13 = alloc 8
+  t_14 = call @sa_fmt_i64_into(t_11, 10, t_12, 64, &t_13)
+  t_15 = load t_13 + 0 as u64
+  t_16 = alloc 16
+  store t_16 + 0, t_12 as ptr
+  store t_16 + 8, t_15 as u64
+  !t_14
+  t_17 = load t_16 + 0 as ptr
+  t_18 = load t_16 + 8 as u64
+  call @sa_print_bytes(&t_17, t_18)
+  !t_16
+  t_19 = alloc 16
+  store t_19 + 0, &str_const_0 as ptr
+  store t_19 + 8, 1 as u64
+  t_20 = load t_19 + 0 as ptr
+  t_21 = load t_19 + 8 as u64
+  call @sa_print_bytes(&t_20, t_21)
+  !t_19
   !t_13
-  t_16 = load t_15 + 0 as ptr
-  t_17 = load t_15 + 8 as u64
-  call @sa_print_bytes(&t_16, t_17)
-  !t_15
-  t_18 = alloc 16
-  store t_18 + 0, &str_const_0 as ptr
-  store t_18 + 8, 1 as u64
-  t_19 = load t_18 + 0 as ptr
-  t_20 = load t_18 + 8 as u64
-  call @sa_print_bytes(&t_19, t_20)
-  !t_18
   !t_12
-  !t_11
   !c
   !t_2
   ret 0

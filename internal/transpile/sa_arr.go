@@ -405,9 +405,12 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	}
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	// 独占借用（SA Rust 式默认不可变）：`&mut` 是唯一写权限来源，直写不可变
+	// 绑定会 ConstMutation；借用视图与源同址，写后即释（借用须先于源释放）。
+	hm := saMutBorrow(w, nextTemp, h)
 	buf := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(elems)*4))
 	for i, v := range elems {
 		p := fmt.Sprintf("t_%d", *nextTemp)
@@ -415,8 +418,9 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
 	}
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
-	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(elems)))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", hm, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", hm, len(elems)))
+	w.Write(fmt.Sprintf("  !%s\n", hm))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
 	if nested {
@@ -429,6 +433,18 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		saMarkArrStr(scope, h)
 	}
 	return h, ""
+}
+
+// saMutBorrow 独占借用（SA Rust 式默认不可变）：`&mut` 是唯一写权限来源。
+// sci 的 `--default-immutable` 模式下 `alloc` 得到不可变绑定，直写会
+// ConstMutation；须先取独占借用，写入经借用视图（与源同址），写后即释
+// （借用须先于源释放，否则释放源时借用仍活跃会 BorrowConflict）。
+// 返回借用视图寄存器名。
+func saMutBorrow(w printer.EmitTextWriter, nextTemp *int, target string) string {
+	view := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = &mut %s\n", view, target))
+	return view
 }
 
 // saTplNumText 报告文本是否为模板孔安全数字形（可选 ± 号 + 1~15 位十进制
@@ -828,9 +844,12 @@ func saBuildNestArray(w printer.EmitTextWriter, sub saTopArr, scope *saScope, ne
 func saAssembleHandles(w printer.EmitTextWriter, hs []string, scope *saScope, nextTemp *int) string {
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	// 独占借用（SA Rust 式默认不可变）：`&mut` 是唯一写权限来源，直写不可变
+	// 绑定会 ConstMutation；借用视图与源同址，写后即释（借用须先于源释放）。
+	hm := saMutBorrow(w, nextTemp, h)
 	buf := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
 	w.Write(fmt.Sprintf("  %s = alloc %d\n", buf, len(hs)*4))
 	for i, v := range hs {
 		p := fmt.Sprintf("t_%d", *nextTemp)
@@ -838,8 +857,9 @@ func saAssembleHandles(w printer.EmitTextWriter, hs []string, scope *saScope, ne
 		w.Write(fmt.Sprintf("  %s = add %s, %d\n", p, buf, i*4))
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", p, v))
 	}
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, buf))
-	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", h, len(hs)))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", hm, buf))
+	w.Write(fmt.Sprintf("  store %s + 8, %d as u64\n", hm, len(hs)))
+	w.Write(fmt.Sprintf("  !%s\n", hm))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
 	return h
@@ -4601,8 +4621,10 @@ func saNewEmptyArray(w printer.EmitTextWriter, nextTemp *int) string {
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", h))
-	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", h))
+	hm := saMutBorrow(w, nextTemp, h)
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", hm))
+	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", hm))
+	w.Write(fmt.Sprintf("  !%s\n", hm))
 	return h
 }
 

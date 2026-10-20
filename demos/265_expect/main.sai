@@ -487,443 +487,451 @@ L_exp_ok_68:
   !t_174
   !__expect_count_100
   t_195 = alloc 16
-  t_196 = alloc 12
-  t_197 = add t_196, 0
-  store t_197 + 0, 1 as i32
-  t_198 = add t_196, 4
-  store t_198 + 0, 2 as i32
-  t_199 = add t_196, 8
-  store t_199 + 0, 3 as i32
-  store t_195 + 0, t_196 as ptr
-  store t_195 + 8, 3 as u64
+  t_196 = &mut t_195
+  t_197 = alloc 12
+  t_198 = add t_197, 0
+  store t_198 + 0, 1 as i32
+  t_199 = add t_197, 4
+  store t_199 + 0, 2 as i32
+  t_200 = add t_197, 8
+  store t_200 + 0, 3 as i32
+  store t_196 + 0, t_197 as ptr
+  store t_196 + 8, 3 as u64
   !t_196
-  t_200 = load t_195 + 8 as u64
-  t_201 = ne t_200, 3
+  !t_197
+  t_201 = load t_195 + 8 as u64
+  t_202 = ne t_201, 3
   !t_195
-  br t_201 -> L_exp_fail_69, L_exp_ok_70
+  br t_202 -> L_exp_fail_69, L_exp_ok_70
 L_exp_fail_69:
   panic(2501)
 L_exp_ok_70:
-  __expect_count_202 = alloc 8
-  store __expect_count_202 + 0, 0 as i32
-  t_203 = load __expect_count_202 + 0 as i32
-  t_204 = add t_203, 1
-  store __expect_count_202 + 0, t_204 as i32
-  t_205 = alloc 16
-  store t_205 + 0, &str_const_0 as ptr
-  store t_205 + 8, 5 as u64
-  t_206 = load t_205 + 8 as u64
-  t_207 = ne t_206, 5
-  !t_205
-  br t_207 -> L_exp_fail_71, L_exp_ok_72
+  __expect_count_203 = alloc 8
+  store __expect_count_203 + 0, 0 as i32
+  t_204 = load __expect_count_203 + 0 as i32
+  t_205 = add t_204, 1
+  store __expect_count_203 + 0, t_205 as i32
+  t_206 = alloc 16
+  store t_206 + 0, &str_const_0 as ptr
+  store t_206 + 8, 5 as u64
+  t_207 = load t_206 + 8 as u64
+  t_208 = ne t_207, 5
+  !t_206
+  br t_208 -> L_exp_fail_71, L_exp_ok_72
 L_exp_fail_71:
   panic(2501)
 L_exp_ok_72:
-  t_208 = load __expect_count_202 + 0 as i32
-  t_209 = add t_208, 1
-  store __expect_count_202 + 0, t_209 as i32
-  t_210 = alloc 16
-  t_211 = alloc 12
-  t_212 = add t_211, 0
-  store t_212 + 0, 1 as i32
-  t_213 = add t_211, 4
-  store t_213 + 0, 2 as i32
-  t_214 = add t_211, 8
-  store t_214 + 0, 3 as i32
-  store t_210 + 0, t_211 as ptr
-  store t_210 + 8, 3 as u64
+  t_209 = load __expect_count_203 + 0 as i32
+  t_210 = add t_209, 1
+  store __expect_count_203 + 0, t_210 as i32
+  t_211 = alloc 16
+  t_212 = &mut t_211
+  t_213 = alloc 12
+  t_214 = add t_213, 0
+  store t_214 + 0, 1 as i32
+  t_215 = add t_213, 4
+  store t_215 + 0, 2 as i32
+  t_216 = add t_213, 8
+  store t_216 + 0, 3 as i32
+  store t_212 + 0, t_213 as ptr
+  store t_212 + 8, 3 as u64
+  !t_212
+  !t_213
+  t_217 = load t_211 + 8 as u64
+  t_218 = eq t_217, 2
   !t_211
-  t_215 = load t_210 + 8 as u64
-  t_216 = eq t_215, 2
-  !t_210
-  br t_216 -> L_exp_fail_73, L_exp_ok_74
+  br t_218 -> L_exp_fail_73, L_exp_ok_74
 L_exp_fail_73:
   panic(2501)
 L_exp_ok_74:
-  t_217 = load __expect_count_202 + 0 as i32
-  t_218 = add t_217, 1
-  store __expect_count_202 + 0, t_218 as i32
-  !__expect_count_202
-  __expect_count_219 = alloc 8
-  store __expect_count_219 + 0, 0 as i32
-  t_220 = load __expect_count_219 + 0 as i32
-  t_221 = add t_220, 1
-  store __expect_count_219 + 0, t_221 as i32
-  t_222 = alloc 16
-  store t_222 + 0, &str_const_10 as ptr
-  store t_222 + 8, 4 as u64
-  t_223 = load t_222 + 0 as ptr
-  t_224 = load t_222 + 8 as u64
-  call @sa_print_bytes(&t_223, t_224)
-  !t_222
-  t_225 = alloc 16
-  store t_225 + 0, &str_const_11 as ptr
-  store t_225 + 8, 1 as u64
-  t_226 = load t_225 + 0 as ptr
-  t_227 = load t_225 + 8 as u64
-  call @sa_print_bytes(&t_226, t_227)
-  !t_225
-  t_228 = load __expect_count_219 + 0 as i32
-  t_229 = add t_228, 1
-  store __expect_count_219 + 0, t_229 as i32
-  !__expect_count_219
-  t_230 = alloc 16
-  store t_230 + 0, &str_const_12 as ptr
-  store t_230 + 8, 1 as u64
-  t_231 = alloc 16
-  store t_231 + 0, &str_const_12 as ptr
-  store t_231 + 8, 1 as u64
-  t_232 = load t_230 + 0 as ptr
-  t_233 = load t_230 + 8 as u64
-  t_234 = load t_231 + 0 as ptr
-  t_235 = load t_231 + 8 as u64
-  t_236 = call @ts_str_equals(t_232, t_233, t_234, t_235)
-  t_237 = add t_236, 0
-  !t_236
-  t_238 = eq t_237, 0
-  !t_230
-  !t_231
-  br t_238 -> L_exp_fail_75, L_exp_ok_76
+  t_219 = load __expect_count_203 + 0 as i32
+  t_220 = add t_219, 1
+  store __expect_count_203 + 0, t_220 as i32
+  !__expect_count_203
+  __expect_count_221 = alloc 8
+  store __expect_count_221 + 0, 0 as i32
+  t_222 = load __expect_count_221 + 0 as i32
+  t_223 = add t_222, 1
+  store __expect_count_221 + 0, t_223 as i32
+  t_224 = alloc 16
+  store t_224 + 0, &str_const_10 as ptr
+  store t_224 + 8, 4 as u64
+  t_225 = load t_224 + 0 as ptr
+  t_226 = load t_224 + 8 as u64
+  call @sa_print_bytes(&t_225, t_226)
+  !t_224
+  t_227 = alloc 16
+  store t_227 + 0, &str_const_11 as ptr
+  store t_227 + 8, 1 as u64
+  t_228 = load t_227 + 0 as ptr
+  t_229 = load t_227 + 8 as u64
+  call @sa_print_bytes(&t_228, t_229)
+  !t_227
+  t_230 = load __expect_count_221 + 0 as i32
+  t_231 = add t_230, 1
+  store __expect_count_221 + 0, t_231 as i32
+  !__expect_count_221
+  t_232 = alloc 16
+  store t_232 + 0, &str_const_12 as ptr
+  store t_232 + 8, 1 as u64
+  t_233 = alloc 16
+  store t_233 + 0, &str_const_12 as ptr
+  store t_233 + 8, 1 as u64
+  t_234 = load t_232 + 0 as ptr
+  t_235 = load t_232 + 8 as u64
+  t_236 = load t_233 + 0 as ptr
+  t_237 = load t_233 + 8 as u64
+  t_238 = call @ts_str_equals(t_234, t_235, t_236, t_237)
+  t_239 = add t_238, 0
+  !t_238
+  t_240 = eq t_239, 0
+  !t_232
+  !t_233
+  br t_240 -> L_exp_fail_75, L_exp_ok_76
 L_exp_fail_75:
   panic(2501)
 L_exp_ok_76:
-  __expect_count_239 = alloc 8
-  store __expect_count_239 + 0, 0 as i32
-  t_240 = load __expect_count_239 + 0 as i32
-  t_241 = add t_240, 1
-  store __expect_count_239 + 0, t_241 as i32
-  t_242 = alloc 16
-  store t_242 + 0, &str_const_12 as ptr
-  store t_242 + 8, 1 as u64
-  t_243 = alloc 16
-  store t_243 + 0, &str_const_12 as ptr
-  store t_243 + 8, 1 as u64
-  t_244 = load t_242 + 0 as ptr
-  t_245 = load t_242 + 8 as u64
-  t_246 = load t_243 + 0 as ptr
-  t_247 = load t_243 + 8 as u64
-  t_248 = call @ts_str_equals(t_244, t_245, t_246, t_247)
-  t_249 = add t_248, 0
-  !t_248
-  t_250 = eq t_249, 0
-  !t_242
-  !t_243
-  br t_250 -> L_exp_fail_77, L_exp_ok_78
+  __expect_count_241 = alloc 8
+  store __expect_count_241 + 0, 0 as i32
+  t_242 = load __expect_count_241 + 0 as i32
+  t_243 = add t_242, 1
+  store __expect_count_241 + 0, t_243 as i32
+  t_244 = alloc 16
+  store t_244 + 0, &str_const_12 as ptr
+  store t_244 + 8, 1 as u64
+  t_245 = alloc 16
+  store t_245 + 0, &str_const_12 as ptr
+  store t_245 + 8, 1 as u64
+  t_246 = load t_244 + 0 as ptr
+  t_247 = load t_244 + 8 as u64
+  t_248 = load t_245 + 0 as ptr
+  t_249 = load t_245 + 8 as u64
+  t_250 = call @ts_str_equals(t_246, t_247, t_248, t_249)
+  t_251 = add t_250, 0
+  !t_250
+  t_252 = eq t_251, 0
+  !t_244
+  !t_245
+  br t_252 -> L_exp_fail_77, L_exp_ok_78
 L_exp_fail_77:
   panic(2501)
 L_exp_ok_78:
-  t_251 = load __expect_count_239 + 0 as i32
-  t_252 = add t_251, 1
-  store __expect_count_239 + 0, t_252 as i32
-  t_253 = alloc 16
-  store t_253 + 0, &str_const_12 as ptr
-  store t_253 + 8, 1 as u64
-  t_254 = alloc 16
-  store t_254 + 0, &str_const_13 as ptr
-  store t_254 + 8, 1 as u64
-  t_255 = load t_253 + 0 as ptr
-  t_256 = load t_253 + 8 as u64
-  t_257 = load t_254 + 0 as ptr
-  t_258 = load t_254 + 8 as u64
-  t_259 = call @ts_str_equals(t_255, t_256, t_257, t_258)
-  t_260 = add t_259, 0
-  !t_259
-  t_261 = ne t_260, 0
-  !t_253
-  !t_254
-  br t_261 -> L_exp_fail_79, L_exp_ok_80
+  t_253 = load __expect_count_241 + 0 as i32
+  t_254 = add t_253, 1
+  store __expect_count_241 + 0, t_254 as i32
+  t_255 = alloc 16
+  store t_255 + 0, &str_const_12 as ptr
+  store t_255 + 8, 1 as u64
+  t_256 = alloc 16
+  store t_256 + 0, &str_const_13 as ptr
+  store t_256 + 8, 1 as u64
+  t_257 = load t_255 + 0 as ptr
+  t_258 = load t_255 + 8 as u64
+  t_259 = load t_256 + 0 as ptr
+  t_260 = load t_256 + 8 as u64
+  t_261 = call @ts_str_equals(t_257, t_258, t_259, t_260)
+  t_262 = add t_261, 0
+  !t_261
+  t_263 = ne t_262, 0
+  !t_255
+  !t_256
+  br t_263 -> L_exp_fail_79, L_exp_ok_80
 L_exp_fail_79:
   panic(2501)
 L_exp_ok_80:
-  t_262 = load __expect_count_239 + 0 as i32
-  t_263 = add t_262, 1
-  store __expect_count_239 + 0, t_263 as i32
-  t_264 = alloc 16
-  store t_264 + 0, &str_const_14 as ptr
-  store t_264 + 8, 3 as u64
-  t_265 = alloc 16
-  store t_265 + 0, &str_const_15 as ptr
-  store t_265 + 8, 2 as u64
-  t_266 = load t_264 + 0 as ptr
-  t_267 = load t_264 + 8 as u64
-  t_268 = load t_265 + 0 as ptr
-  t_269 = load t_265 + 8 as u64
-  t_270 = call @sa_string_concat(t_266, t_267, t_268, t_269)
-  t_271 = call @sa_fmt_buffer_data(t_270)
-  t_272 = call @sa_fmt_buffer_len(t_270)
-  t_273 = alloc 16
-  store t_273 + 0, t_271 as ptr
-  store t_273 + 8, t_272 as u64
-  !t_271
-  !t_272
-  !t_270
-  !t_264
-  !t_265
-  t_274 = alloc 16
-  store t_274 + 0, &str_const_16 as ptr
-  store t_274 + 8, 5 as u64
-  t_275 = load t_273 + 0 as ptr
-  t_276 = load t_273 + 8 as u64
-  t_277 = load t_274 + 0 as ptr
-  t_278 = load t_274 + 8 as u64
-  t_279 = call @ts_str_equals(t_275, t_276, t_277, t_278)
-  t_280 = add t_279, 0
-  !t_279
-  t_281 = eq t_280, 0
+  t_264 = load __expect_count_241 + 0 as i32
+  t_265 = add t_264, 1
+  store __expect_count_241 + 0, t_265 as i32
+  t_266 = alloc 16
+  store t_266 + 0, &str_const_14 as ptr
+  store t_266 + 8, 3 as u64
+  t_267 = alloc 16
+  store t_267 + 0, &str_const_15 as ptr
+  store t_267 + 8, 2 as u64
+  t_268 = load t_266 + 0 as ptr
+  t_269 = load t_266 + 8 as u64
+  t_270 = load t_267 + 0 as ptr
+  t_271 = load t_267 + 8 as u64
+  t_272 = call @sa_string_concat(t_268, t_269, t_270, t_271)
+  t_273 = call @sa_fmt_buffer_data(t_272)
+  t_274 = call @sa_fmt_buffer_len(t_272)
+  t_275 = alloc 16
+  store t_275 + 0, t_273 as ptr
+  store t_275 + 8, t_274 as u64
   !t_273
   !t_274
-  br t_281 -> L_exp_fail_81, L_exp_ok_82
+  !t_272
+  !t_266
+  !t_267
+  t_276 = alloc 16
+  store t_276 + 0, &str_const_16 as ptr
+  store t_276 + 8, 5 as u64
+  t_277 = load t_275 + 0 as ptr
+  t_278 = load t_275 + 8 as u64
+  t_279 = load t_276 + 0 as ptr
+  t_280 = load t_276 + 8 as u64
+  t_281 = call @ts_str_equals(t_277, t_278, t_279, t_280)
+  t_282 = add t_281, 0
+  !t_281
+  t_283 = eq t_282, 0
+  !t_275
+  !t_276
+  br t_283 -> L_exp_fail_81, L_exp_ok_82
 L_exp_fail_81:
   panic(2501)
 L_exp_ok_82:
-  t_282 = load __expect_count_239 + 0 as i32
-  t_283 = add t_282, 1
-  store __expect_count_239 + 0, t_283 as i32
-  !__expect_count_239
-  t_284 = alloc 8
-  store t_284 + 0, 1 as i32
-  store t_284 + 4, 2 as i32
-  p = t_284
-  t_285 = alloc 8
-  store t_285 + 0, 1 as i32
-  store t_285 + 4, 2 as i32
-  q = t_285
+  t_284 = load __expect_count_241 + 0 as i32
+  t_285 = add t_284, 1
+  store __expect_count_241 + 0, t_285 as i32
+  !__expect_count_241
   t_286 = alloc 8
   store t_286 + 0, 1 as i32
-  store t_286 + 4, 9 as i32
-  r = t_286
-  t_287 = load p + 0 as i32
-  t_288 = load q + 0 as i32
-  t_289 = ne t_287, t_288
-  t_290 = load p + 4 as i32
-  t_291 = load q + 4 as i32
-  t_292 = ne t_290, t_291
-  t_293 = or t_289, t_292
-  br t_293 -> L_expinst_fail_83, L_expinst_ok_84
+  store t_286 + 4, 2 as i32
+  p = t_286
+  t_287 = alloc 8
+  store t_287 + 0, 1 as i32
+  store t_287 + 4, 2 as i32
+  q = t_287
+  t_288 = alloc 8
+  store t_288 + 0, 1 as i32
+  store t_288 + 4, 9 as i32
+  r = t_288
+  t_289 = load p + 0 as i32
+  t_290 = load q + 0 as i32
+  t_291 = ne t_289, t_290
+  t_292 = load p + 4 as i32
+  t_293 = load q + 4 as i32
+  t_294 = ne t_292, t_293
+  t_295 = or t_291, t_294
+  br t_295 -> L_expinst_fail_83, L_expinst_ok_84
 L_expinst_fail_83:
   panic(2501)
 L_expinst_ok_84:
-  __expect_count_294 = alloc 8
-  store __expect_count_294 + 0, 0 as i32
-  t_295 = load __expect_count_294 + 0 as i32
-  t_296 = add t_295, 1
-  store __expect_count_294 + 0, t_296 as i32
-  t_297 = load __expect_count_294 + 0 as i32
+  __expect_count_296 = alloc 8
+  store __expect_count_296 + 0, 0 as i32
+  t_297 = load __expect_count_296 + 0 as i32
   t_298 = add t_297, 1
-  store __expect_count_294 + 0, t_298 as i32
-  t_299 = load p + 0 as i32
-  t_300 = load r + 0 as i32
-  t_301 = eq t_299, t_300
-  t_302 = load p + 4 as i32
-  t_303 = load r + 4 as i32
-  t_304 = eq t_302, t_303
-  t_305 = and t_301, t_304
-  br t_305 -> L_expinst_fail_85, L_expinst_ok_86
+  store __expect_count_296 + 0, t_298 as i32
+  t_299 = load __expect_count_296 + 0 as i32
+  t_300 = add t_299, 1
+  store __expect_count_296 + 0, t_300 as i32
+  t_301 = load p + 0 as i32
+  t_302 = load r + 0 as i32
+  t_303 = eq t_301, t_302
+  t_304 = load p + 4 as i32
+  t_305 = load r + 4 as i32
+  t_306 = eq t_304, t_305
+  t_307 = and t_303, t_306
+  br t_307 -> L_expinst_fail_85, L_expinst_ok_86
 L_expinst_fail_85:
   panic(2501)
 L_expinst_ok_86:
-  t_306 = load __expect_count_294 + 0 as i32
-  t_307 = add t_306, 1
-  store __expect_count_294 + 0, t_307 as i32
-  t_308 = load __expect_count_294 + 0 as i32
+  t_308 = load __expect_count_296 + 0 as i32
   t_309 = add t_308, 1
-  store __expect_count_294 + 0, t_309 as i32
-  t_310 = load p + 0 as i32
-  t_311 = load p + 0 as i32
-  t_312 = ne t_310, t_311
-  t_313 = load p + 4 as i32
-  t_314 = load p + 4 as i32
-  t_315 = ne t_313, t_314
-  t_316 = or t_312, t_315
-  br t_316 -> L_expinst_fail_87, L_expinst_ok_88
+  store __expect_count_296 + 0, t_309 as i32
+  t_310 = load __expect_count_296 + 0 as i32
+  t_311 = add t_310, 1
+  store __expect_count_296 + 0, t_311 as i32
+  t_312 = load p + 0 as i32
+  t_313 = load p + 0 as i32
+  t_314 = ne t_312, t_313
+  t_315 = load p + 4 as i32
+  t_316 = load p + 4 as i32
+  t_317 = ne t_315, t_316
+  t_318 = or t_314, t_317
+  br t_318 -> L_expinst_fail_87, L_expinst_ok_88
 L_expinst_fail_87:
   panic(2501)
 L_expinst_ok_88:
-  t_317 = load __expect_count_294 + 0 as i32
-  t_318 = add t_317, 1
-  store __expect_count_294 + 0, t_318 as i32
-  t_319 = load __expect_count_294 + 0 as i32
+  t_319 = load __expect_count_296 + 0 as i32
   t_320 = add t_319, 1
-  store __expect_count_294 + 0, t_320 as i32
-  !__expect_count_294
+  store __expect_count_296 + 0, t_320 as i32
+  t_321 = load __expect_count_296 + 0 as i32
+  t_322 = add t_321, 1
+  store __expect_count_296 + 0, t_322 as i32
+  !__expect_count_296
   !r
   !q
   !p
-  t_321 = alloc 12
-  t_322 = alloc 16
-  store t_322 + 0, &str_const_17 as ptr
-  store t_322 + 8, 2 as u64
-  store t_321 + 0, t_322 as ptr
-  store t_321 + 8, 1 as i32
-  m = t_321
   t_323 = alloc 12
   t_324 = alloc 16
   store t_324 + 0, &str_const_17 as ptr
   store t_324 + 8, 2 as u64
   store t_323 + 0, t_324 as ptr
   store t_323 + 8, 1 as i32
-  n = t_323
-  t_325 = load m + 8 as i32
-  t_326 = load n + 8 as i32
-  t_327 = ne t_325, t_326
-  t_328 = load m + 0 as ptr
-  t_329 = load n + 0 as ptr
-  t_330 = load t_328 + 0 as ptr
-  t_331 = load t_328 + 8 as u64
-  t_332 = load t_329 + 0 as ptr
-  t_333 = load t_329 + 8 as u64
-  t_334 = call @ts_str_equals(t_330, t_331, t_332, t_333)
-  t_335 = add t_334, 0
-  !t_334
-  t_336 = eq t_335, 0
-  t_337 = or t_327, t_336
-  br t_337 -> L_expinst_fail_89, L_expinst_ok_90
+  m = t_323
+  t_325 = alloc 12
+  t_326 = alloc 16
+  store t_326 + 0, &str_const_17 as ptr
+  store t_326 + 8, 2 as u64
+  store t_325 + 0, t_326 as ptr
+  store t_325 + 8, 1 as i32
+  n = t_325
+  t_327 = load m + 8 as i32
+  t_328 = load n + 8 as i32
+  t_329 = ne t_327, t_328
+  t_330 = load m + 0 as ptr
+  t_331 = load n + 0 as ptr
+  t_332 = load t_330 + 0 as ptr
+  t_333 = load t_330 + 8 as u64
+  t_334 = load t_331 + 0 as ptr
+  t_335 = load t_331 + 8 as u64
+  t_336 = call @ts_str_equals(t_332, t_333, t_334, t_335)
+  t_337 = add t_336, 0
+  !t_336
+  t_338 = eq t_337, 0
+  t_339 = or t_329, t_338
+  br t_339 -> L_expinst_fail_89, L_expinst_ok_90
 L_expinst_fail_89:
   panic(2501)
 L_expinst_ok_90:
-  __expect_count_338 = alloc 8
-  store __expect_count_338 + 0, 0 as i32
-  t_339 = load __expect_count_338 + 0 as i32
-  t_340 = add t_339, 1
-  store __expect_count_338 + 0, t_340 as i32
-  t_341 = load __expect_count_338 + 0 as i32
+  __expect_count_340 = alloc 8
+  store __expect_count_340 + 0, 0 as i32
+  t_341 = load __expect_count_340 + 0 as i32
   t_342 = add t_341, 1
-  store __expect_count_338 + 0, t_342 as i32
-  !__expect_count_338
+  store __expect_count_340 + 0, t_342 as i32
+  t_343 = load __expect_count_340 + 0 as i32
+  t_344 = add t_343, 1
+  store __expect_count_340 + 0, t_344 as i32
+  !__expect_count_340
   !n
-  !t_324
+  !t_326
   !m
-  !t_322
-  t_343 = alloc 12
-  t_344 = alloc 16
-  t_345 = alloc 8
-  t_346 = add t_345, 0
-  store t_346 + 0, 1 as i32
-  t_347 = add t_345, 4
-  store t_347 + 0, 2 as i32
-  store t_344 + 0, t_345 as ptr
-  store t_344 + 8, 2 as u64
-  !t_345
-  store t_343 + 0, t_344 as ptr
-  store t_343 + 8, 3 as i32
-  u = t_343
-  t_348 = alloc 12
-  t_349 = alloc 16
-  t_350 = alloc 8
-  t_351 = add t_350, 0
-  store t_351 + 0, 1 as i32
-  t_352 = add t_350, 4
-  store t_352 + 0, 2 as i32
-  store t_349 + 0, t_350 as ptr
-  store t_349 + 8, 2 as u64
-  !t_350
-  store t_348 + 0, t_349 as ptr
-  store t_348 + 8, 3 as i32
-  v = t_348
-  t_353 = load u + 8 as i32
-  t_354 = load v + 8 as i32
-  t_355 = ne t_353, t_354
-  t_356 = load u + 0 as ptr
-  t_357 = load v + 0 as ptr
-  t_358 = load t_356 + 8 as u64
-  t_359 = load t_357 + 8 as u64
-  t_360 = load t_356 + 0 as ptr
-  t_361 = load t_357 + 0 as ptr
-  t_362 = ne t_358, t_359
-  t_363 = 0
+  !t_324
+  t_345 = alloc 12
+  t_346 = alloc 16
+  t_347 = &mut t_346
+  t_348 = alloc 8
+  t_349 = add t_348, 0
+  store t_349 + 0, 1 as i32
+  t_350 = add t_348, 4
+  store t_350 + 0, 2 as i32
+  store t_347 + 0, t_348 as ptr
+  store t_347 + 8, 2 as u64
+  !t_347
+  !t_348
+  store t_345 + 0, t_346 as ptr
+  store t_345 + 8, 3 as i32
+  u = t_345
+  t_351 = alloc 12
+  t_352 = alloc 16
+  t_353 = &mut t_352
+  t_354 = alloc 8
+  t_355 = add t_354, 0
+  store t_355 + 0, 1 as i32
+  t_356 = add t_354, 4
+  store t_356 + 0, 2 as i32
+  store t_353 + 0, t_354 as ptr
+  store t_353 + 8, 2 as u64
+  !t_353
+  !t_354
+  store t_351 + 0, t_352 as ptr
+  store t_351 + 8, 3 as i32
+  v = t_351
+  t_357 = load u + 8 as i32
+  t_358 = load v + 8 as i32
+  t_359 = ne t_357, t_358
+  t_360 = load u + 0 as ptr
+  t_361 = load v + 0 as ptr
+  t_362 = load t_360 + 8 as u64
+  t_363 = load t_361 + 8 as u64
+  t_364 = load t_360 + 0 as ptr
+  t_365 = load t_361 + 0 as ptr
+  t_366 = ne t_362, t_363
+  t_367 = 0
   jmp L_deq_top_91
 L_deq_top_91:
-  t_364 = slt t_363, t_358
-  br t_364 -> L_deq_body_92, L_deq_end_93
+  t_368 = slt t_367, t_362
+  br t_368 -> L_deq_body_92, L_deq_end_93
 L_deq_body_92:
-  t_365 = mul t_363, 4
-  t_366 = add t_360, t_365
-  t_367 = add t_361, t_365
-  t_368 = load t_366 + 0 as i32
-  t_369 = load t_367 + 0 as i32
-  t_370 = ne t_368, t_369
-  t_371 = or t_362, t_370
-  t_362 = t_371
-  t_372 = add t_363, 1
-  t_363 = t_372
+  t_369 = mul t_367, 4
+  t_370 = add t_364, t_369
+  t_371 = add t_365, t_369
+  t_372 = load t_370 + 0 as i32
+  t_373 = load t_371 + 0 as i32
+  t_374 = ne t_372, t_373
+  t_375 = or t_366, t_374
+  t_366 = t_375
+  t_376 = add t_367, 1
+  t_367 = t_376
   jmp L_deq_top_91
 L_deq_end_93:
-  t_373 = or t_355, t_362
-  br t_373 -> L_expinst_fail_94, L_expinst_ok_95
+  t_377 = or t_359, t_366
+  br t_377 -> L_expinst_fail_94, L_expinst_ok_95
 L_expinst_fail_94:
   panic(2501)
 L_expinst_ok_95:
-  __expect_count_374 = alloc 8
-  store __expect_count_374 + 0, 0 as i32
-  t_375 = load __expect_count_374 + 0 as i32
-  t_376 = add t_375, 1
-  store __expect_count_374 + 0, t_376 as i32
-  t_377 = load __expect_count_374 + 0 as i32
-  t_378 = add t_377, 1
-  store __expect_count_374 + 0, t_378 as i32
-  !__expect_count_374
+  __expect_count_378 = alloc 8
+  store __expect_count_378 + 0, 0 as i32
+  t_379 = load __expect_count_378 + 0 as i32
+  t_380 = add t_379, 1
+  store __expect_count_378 + 0, t_380 as i32
+  t_381 = load __expect_count_378 + 0 as i32
+  t_382 = add t_381, 1
+  store __expect_count_378 + 0, t_382 as i32
+  !__expect_count_378
   !v
-  !t_349
+  !t_352
   !u
-  !t_344
-  t_379 = alloc 12
-  t_380 = alloc 4
-  store t_380 + 0, 1 as i32
-  store t_379 + 0, t_380 as ptr
-  store t_379 + 8, 2 as i32
-  m = t_379
-  t_381 = alloc 12
-  t_382 = alloc 4
-  store t_382 + 0, 1 as i32
-  store t_381 + 0, t_382 as ptr
-  store t_381 + 8, 2 as i32
-  n = t_381
-  t_383 = load m + 0 as ptr
-  t_384 = load n + 0 as ptr
-  t_385 = load t_383 + 0 as i32
-  t_386 = load t_384 + 0 as i32
-  t_387 = ne t_385, t_386
-  t_388 = load m + 8 as i32
-  t_389 = load n + 8 as i32
-  t_390 = ne t_388, t_389
-  t_391 = or t_387, t_390
-  br t_391 -> L_expinst_fail_96, L_expinst_ok_97
+  !t_346
+  t_383 = alloc 12
+  t_384 = alloc 4
+  store t_384 + 0, 1 as i32
+  store t_383 + 0, t_384 as ptr
+  store t_383 + 8, 2 as i32
+  m = t_383
+  t_385 = alloc 12
+  t_386 = alloc 4
+  store t_386 + 0, 1 as i32
+  store t_385 + 0, t_386 as ptr
+  store t_385 + 8, 2 as i32
+  n = t_385
+  t_387 = load m + 0 as ptr
+  t_388 = load n + 0 as ptr
+  t_389 = load t_387 + 0 as i32
+  t_390 = load t_388 + 0 as i32
+  t_391 = ne t_389, t_390
+  t_392 = load m + 8 as i32
+  t_393 = load n + 8 as i32
+  t_394 = ne t_392, t_393
+  t_395 = or t_391, t_394
+  br t_395 -> L_expinst_fail_96, L_expinst_ok_97
 L_expinst_fail_96:
   panic(2501)
 L_expinst_ok_97:
-  __expect_count_392 = alloc 8
-  store __expect_count_392 + 0, 0 as i32
-  t_393 = load __expect_count_392 + 0 as i32
-  t_394 = add t_393, 1
-  store __expect_count_392 + 0, t_394 as i32
-  t_395 = load __expect_count_392 + 0 as i32
-  t_396 = add t_395, 1
-  store __expect_count_392 + 0, t_396 as i32
-  !__expect_count_392
+  __expect_count_396 = alloc 8
+  store __expect_count_396 + 0, 0 as i32
+  t_397 = load __expect_count_396 + 0 as i32
+  t_398 = add t_397, 1
+  store __expect_count_396 + 0, t_398 as i32
+  t_399 = load __expect_count_396 + 0 as i32
+  t_400 = add t_399, 1
+  store __expect_count_396 + 0, t_400 as i32
+  !__expect_count_396
   !n
-  !t_382
+  !t_386
   !m
-  !t_380
-  t_397 = sext 42 as i64
-  t_398 = alloc 64
-  t_399 = alloc 8
-  t_400 = call @sa_fmt_i64_into(t_397, 10, t_398, 64, &t_399)
-  t_401 = load t_399 + 0 as u64
-  t_402 = alloc 16
-  store t_402 + 0, t_398 as ptr
-  store t_402 + 8, t_401 as u64
-  !t_400
-  t_403 = load t_402 + 0 as ptr
-  t_404 = load t_402 + 8 as u64
-  call @sa_print_bytes(&t_403, t_404)
+  !t_384
+  t_401 = sext 42 as i64
+  t_402 = alloc 64
+  t_403 = alloc 8
+  t_404 = call @sa_fmt_i64_into(t_401, 10, t_402, 64, &t_403)
+  t_405 = load t_403 + 0 as u64
+  t_406 = alloc 16
+  store t_406 + 0, t_402 as ptr
+  store t_406 + 8, t_405 as u64
+  !t_404
+  t_407 = load t_406 + 0 as ptr
+  t_408 = load t_406 + 8 as u64
+  call @sa_print_bytes(&t_407, t_408)
+  !t_406
+  t_409 = alloc 16
+  store t_409 + 0, &str_const_11 as ptr
+  store t_409 + 8, 1 as u64
+  t_410 = load t_409 + 0 as ptr
+  t_411 = load t_409 + 8 as u64
+  call @sa_print_bytes(&t_410, t_411)
+  !t_409
+  !t_403
   !t_402
-  t_405 = alloc 16
-  store t_405 + 0, &str_const_11 as ptr
-  store t_405 + 8, 1 as u64
-  t_406 = load t_405 + 0 as ptr
-  t_407 = load t_405 + 8 as u64
-  call @sa_print_bytes(&t_406, t_407)
-  !t_405
-  !t_399
-  !t_398
   ret 0

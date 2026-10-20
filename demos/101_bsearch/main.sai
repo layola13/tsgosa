@@ -45,68 +45,70 @@ L_for_end_3:
   ret -1
 @main() -> i32:
   t_13 = alloc 16
-  t_14 = alloc 20
-  t_15 = add t_14, 0
-  store t_15 + 0, 1 as i32
-  t_16 = add t_14, 4
-  store t_16 + 0, 3 as i32
-  t_17 = add t_14, 8
-  store t_17 + 0, 5 as i32
-  t_18 = add t_14, 12
-  store t_18 + 0, 7 as i32
-  t_19 = add t_14, 16
-  store t_19 + 0, 9 as i32
-  store t_13 + 0, t_14 as ptr
-  store t_13 + 8, 5 as u64
+  t_14 = &mut t_13
+  t_15 = alloc 20
+  t_16 = add t_15, 0
+  store t_16 + 0, 1 as i32
+  t_17 = add t_15, 4
+  store t_17 + 0, 3 as i32
+  t_18 = add t_15, 8
+  store t_18 + 0, 5 as i32
+  t_19 = add t_15, 12
+  store t_19 + 0, 7 as i32
+  t_20 = add t_15, 16
+  store t_20 + 0, 9 as i32
+  store t_14 + 0, t_15 as ptr
+  store t_14 + 8, 5 as u64
   !t_14
+  !t_15
   a = t_13
-  t_20 = call @bsearch(a, 5)
-  t_21 = sext t_20 as i64
-  t_22 = alloc 64
-  t_23 = alloc 8
-  t_24 = call @sa_fmt_i64_into(t_21, 10, t_22, 64, &t_23)
-  t_25 = load t_23 + 0 as u64
-  t_26 = alloc 16
-  store t_26 + 0, t_22 as ptr
-  store t_26 + 8, t_25 as u64
-  !t_24
-  t_27 = load t_26 + 0 as ptr
-  t_28 = load t_26 + 8 as u64
-  call @sa_print_bytes(&t_27, t_28)
-  !t_26
-  t_29 = alloc 16
-  store t_29 + 0, &str_const_0 as ptr
-  store t_29 + 8, 1 as u64
-  t_30 = load t_29 + 0 as ptr
-  t_31 = load t_29 + 8 as u64
-  call @sa_print_bytes(&t_30, t_31)
-  !t_29
-  t_32 = call @bsearch(a, 4)
-  t_33 = sext t_32 as i64
-  t_34 = alloc 64
-  t_35 = alloc 8
-  t_36 = call @sa_fmt_i64_into(t_33, 10, t_34, 64, &t_35)
-  t_37 = load t_35 + 0 as u64
-  t_38 = alloc 16
-  store t_38 + 0, t_34 as ptr
-  store t_38 + 8, t_37 as u64
+  t_21 = call @bsearch(a, 5)
+  t_22 = sext t_21 as i64
+  t_23 = alloc 64
+  t_24 = alloc 8
+  t_25 = call @sa_fmt_i64_into(t_22, 10, t_23, 64, &t_24)
+  t_26 = load t_24 + 0 as u64
+  t_27 = alloc 16
+  store t_27 + 0, t_23 as ptr
+  store t_27 + 8, t_26 as u64
+  !t_25
+  t_28 = load t_27 + 0 as ptr
+  t_29 = load t_27 + 8 as u64
+  call @sa_print_bytes(&t_28, t_29)
+  !t_27
+  t_30 = alloc 16
+  store t_30 + 0, &str_const_0 as ptr
+  store t_30 + 8, 1 as u64
+  t_31 = load t_30 + 0 as ptr
+  t_32 = load t_30 + 8 as u64
+  call @sa_print_bytes(&t_31, t_32)
+  !t_30
+  t_33 = call @bsearch(a, 4)
+  t_34 = sext t_33 as i64
+  t_35 = alloc 64
+  t_36 = alloc 8
+  t_37 = call @sa_fmt_i64_into(t_34, 10, t_35, 64, &t_36)
+  t_38 = load t_36 + 0 as u64
+  t_39 = alloc 16
+  store t_39 + 0, t_35 as ptr
+  store t_39 + 8, t_38 as u64
+  !t_37
+  t_40 = load t_39 + 0 as ptr
+  t_41 = load t_39 + 8 as u64
+  call @sa_print_bytes(&t_40, t_41)
+  !t_39
+  t_42 = alloc 16
+  store t_42 + 0, &str_const_1 as ptr
+  store t_42 + 8, 1 as u64
+  t_43 = load t_42 + 0 as ptr
+  t_44 = load t_42 + 8 as u64
+  call @sa_print_bytes(&t_43, t_44)
+  !t_42
   !t_36
-  t_39 = load t_38 + 0 as ptr
-  t_40 = load t_38 + 8 as u64
-  call @sa_print_bytes(&t_39, t_40)
-  !t_38
-  t_41 = alloc 16
-  store t_41 + 0, &str_const_1 as ptr
-  store t_41 + 8, 1 as u64
-  t_42 = load t_41 + 0 as ptr
-  t_43 = load t_41 + 8 as u64
-  call @sa_print_bytes(&t_42, t_43)
-  !t_41
   !t_35
-  !t_34
-  !t_32
+  !t_33
+  !t_24
   !t_23
-  !t_22
-  !t_20
+  !t_21
   !a
   ret 0

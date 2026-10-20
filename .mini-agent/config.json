@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "sa-vm": {
+      "command": "node",
+      "args": [
+        "/content/sa_all/tsgosa/.codex-ultra/sa-vm/sa-vm-mcp.mjs"
+      ],
+      "enabled": true
+    }
+  },
+  "agent": {
+    "name": "mini-agent",
+    "user_agent": "mini-agent/0.2.174"
+  }
+}

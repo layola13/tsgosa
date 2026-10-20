@@ -303,22 +303,24 @@ L_endif_32:
   !acc
   acc = t_104
   t_105 = alloc 16
-  t_106 = alloc 12
-  t_107 = add t_106, 0
-  store t_107 + 0, 1 as i32
-  t_108 = add t_106, 4
-  store t_108 + 0, 2 as i32
-  t_109 = add t_106, 8
-  store t_109 + 0, 3 as i32
-  store t_105 + 0, t_106 as ptr
-  store t_105 + 8, 3 as u64
+  t_106 = &mut t_105
+  t_107 = alloc 12
+  t_108 = add t_107, 0
+  store t_108 + 0, 1 as i32
+  t_109 = add t_107, 4
+  store t_109 + 0, 2 as i32
+  t_110 = add t_107, 8
+  store t_110 + 0, 3 as i32
+  store t_106 + 0, t_107 as ptr
+  store t_106 + 8, 3 as u64
   !t_106
-  t_110 = call @schemas__score(t_105, 5)
-  t_111 = mul t_110, 128
-  t_112 = add acc, t_111
+  !t_107
+  t_111 = call @schemas__score(t_105, 5)
+  t_112 = mul t_111, 128
+  t_113 = add acc, t_112
   !acc
-  acc = t_112
-  !t_110
+  acc = t_113
+  !t_111
   !t_105
   !t_102
   !t_101

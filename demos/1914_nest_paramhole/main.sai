@@ -43,46 +43,50 @@ L_idx_end_4:
   ret a
 @main() -> i32:
   t_17 = alloc 16
-  t_18 = alloc 8
-  t_19 = add t_18, 0
-  store t_19 + 0, 9 as i32
-  t_20 = add t_18, 4
-  store t_20 + 0, 8 as i32
-  store t_17 + 0, t_18 as ptr
-  store t_17 + 8, 2 as u64
+  t_18 = &mut t_17
+  t_19 = alloc 8
+  t_20 = add t_19, 0
+  store t_20 + 0, 9 as i32
+  t_21 = add t_19, 4
+  store t_21 + 0, 8 as i32
+  store t_18 + 0, t_19 as ptr
+  store t_18 + 8, 2 as u64
   !t_18
-  t_21 = alloc 16
-  t_22 = alloc 4
-  t_23 = add t_22, 0
-  store t_23 + 0, t_17 as i32
-  store t_21 + 0, t_22 as ptr
-  store t_21 + 8, 1 as u64
-  !t_22
-  aa = t_21
-  t_24 = call @get(aa)
-  t_25 = sext t_24 as i64
-  t_26 = alloc 64
-  t_27 = alloc 8
-  t_28 = call @sa_fmt_i64_into(t_25, 10, t_26, 64, &t_27)
-  t_29 = load t_27 + 0 as u64
-  t_30 = alloc 16
-  store t_30 + 0, t_26 as ptr
-  store t_30 + 8, t_29 as u64
-  !t_28
-  t_31 = load t_30 + 0 as ptr
-  t_32 = load t_30 + 8 as u64
-  call @sa_print_bytes(&t_31, t_32)
-  !t_30
-  t_33 = alloc 16
-  store t_33 + 0, &str_const_0 as ptr
-  store t_33 + 8, 1 as u64
-  t_34 = load t_33 + 0 as ptr
-  t_35 = load t_33 + 8 as u64
-  call @sa_print_bytes(&t_34, t_35)
-  !t_33
-  !t_27
-  !t_26
+  !t_19
+  t_22 = alloc 16
+  t_23 = &mut t_22
+  t_24 = alloc 4
+  t_25 = add t_24, 0
+  store t_25 + 0, t_17 as i32
+  store t_23 + 0, t_24 as ptr
+  store t_23 + 8, 1 as u64
+  !t_23
   !t_24
+  aa = t_22
+  t_26 = call @get(aa)
+  t_27 = sext t_26 as i64
+  t_28 = alloc 64
+  t_29 = alloc 8
+  t_30 = call @sa_fmt_i64_into(t_27, 10, t_28, 64, &t_29)
+  t_31 = load t_29 + 0 as u64
+  t_32 = alloc 16
+  store t_32 + 0, t_28 as ptr
+  store t_32 + 8, t_31 as u64
+  !t_30
+  t_33 = load t_32 + 0 as ptr
+  t_34 = load t_32 + 8 as u64
+  call @sa_print_bytes(&t_33, t_34)
+  !t_32
+  t_35 = alloc 16
+  store t_35 + 0, &str_const_0 as ptr
+  store t_35 + 8, 1 as u64
+  t_36 = load t_35 + 0 as ptr
+  t_37 = load t_35 + 8 as u64
+  call @sa_print_bytes(&t_36, t_37)
+  !t_35
+  !t_29
+  !t_28
+  !t_26
   !aa
   !t_17
   ret 0

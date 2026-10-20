@@ -1,0 +1,8 @@
+[agent]
+name = "mini-agent"
+user_agent = "mini-agent/0.2.174"
+
+[mcp_servers.sa-vm]
+command = "node"
+args = ["/content/sa_all/tsgosa/.codex-ultra/sa-vm/sa-vm-mcp.mjs"]
+startup_timeout_sec = 30

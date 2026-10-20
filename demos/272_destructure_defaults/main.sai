@@ -32,73 +32,75 @@
   call @sa_print_bytes(&t_12, t_13)
   !t_11
   t_14 = alloc 16
-  t_15 = alloc 8
-  t_16 = add t_15, 0
-  store t_16 + 0, 1 as i32
-  t_17 = add t_15, 4
-  store t_17 + 0, 2 as i32
-  store t_14 + 0, t_15 as ptr
-  store t_14 + 8, 2 as u64
+  t_15 = &mut t_14
+  t_16 = alloc 8
+  t_17 = add t_16, 0
+  store t_17 + 0, 1 as i32
+  t_18 = add t_16, 4
+  store t_18 + 0, 2 as i32
+  store t_15 + 0, t_16 as ptr
+  store t_15 + 8, 2 as u64
   !t_15
-  t_18 = alloc 8
-  t_19 = load t_14 + 8 as u64
-  t_20 = ult 0, t_19
-  br t_20 -> L_idx_ok_3, L_idx_oob_2
+  !t_16
+  t_19 = alloc 8
+  t_20 = load t_14 + 8 as u64
+  t_21 = ult 0, t_20
+  br t_21 -> L_idx_ok_3, L_idx_oob_2
 L_idx_ok_3:
-  t_21 = load t_14 + 0 as ptr
-  t_22 = mul 0, 4
-  t_23 = add t_21, t_22
-  t_24 = load t_23 + 0 as i32
-  store t_18 + 0, t_24 as ptr
+  t_22 = load t_14 + 0 as ptr
+  t_23 = mul 0, 4
+  t_24 = add t_22, t_23
+  t_25 = load t_24 + 0 as i32
+  store t_19 + 0, t_25 as ptr
   jmp L_idx_end_1
 L_idx_oob_2:
-  store t_18 + 0, 0 as ptr
+  store t_19 + 0, 0 as ptr
   jmp L_idx_end_1
 L_idx_end_1:
-  t_25 = load t_18 + 0 as i32
-  !t_18
-  m = t_25
-  t_26 = alloc 8
-  t_27 = load t_14 + 8 as u64
-  t_28 = ult 1, t_27
-  br t_28 -> L_idx_ok_6, L_idx_oob_5
+  t_26 = load t_19 + 0 as i32
+  !t_19
+  m = t_26
+  t_27 = alloc 8
+  t_28 = load t_14 + 8 as u64
+  t_29 = ult 1, t_28
+  br t_29 -> L_idx_ok_6, L_idx_oob_5
 L_idx_ok_6:
-  t_29 = load t_14 + 0 as ptr
-  t_30 = mul 1, 4
-  t_31 = add t_29, t_30
-  t_32 = load t_31 + 0 as i32
-  store t_26 + 0, t_32 as ptr
+  t_30 = load t_14 + 0 as ptr
+  t_31 = mul 1, 4
+  t_32 = add t_30, t_31
+  t_33 = load t_32 + 0 as i32
+  store t_27 + 0, t_33 as ptr
   jmp L_idx_end_4
 L_idx_oob_5:
-  store t_26 + 0, 0 as ptr
+  store t_27 + 0, 0 as ptr
   jmp L_idx_end_4
 L_idx_end_4:
-  t_33 = load t_26 + 0 as i32
-  !t_26
-  n = t_33
-  t_34 = add m, n
-  t_35 = sext t_34 as i64
-  t_36 = alloc 64
-  t_37 = alloc 8
-  t_38 = call @sa_fmt_i64_into(t_35, 10, t_36, 64, &t_37)
-  t_39 = load t_37 + 0 as u64
-  t_40 = alloc 16
-  store t_40 + 0, t_36 as ptr
-  store t_40 + 8, t_39 as u64
+  t_34 = load t_27 + 0 as i32
+  !t_27
+  n = t_34
+  t_35 = add m, n
+  t_36 = sext t_35 as i64
+  t_37 = alloc 64
+  t_38 = alloc 8
+  t_39 = call @sa_fmt_i64_into(t_36, 10, t_37, 64, &t_38)
+  t_40 = load t_38 + 0 as u64
+  t_41 = alloc 16
+  store t_41 + 0, t_37 as ptr
+  store t_41 + 8, t_40 as u64
+  !t_39
+  t_42 = load t_41 + 0 as ptr
+  t_43 = load t_41 + 8 as u64
+  call @sa_print_bytes(&t_42, t_43)
+  !t_41
+  t_44 = alloc 16
+  store t_44 + 0, &str_const_0 as ptr
+  store t_44 + 8, 1 as u64
+  t_45 = load t_44 + 0 as ptr
+  t_46 = load t_44 + 8 as u64
+  call @sa_print_bytes(&t_45, t_46)
+  !t_44
   !t_38
-  t_41 = load t_40 + 0 as ptr
-  t_42 = load t_40 + 8 as u64
-  call @sa_print_bytes(&t_41, t_42)
-  !t_40
-  t_43 = alloc 16
-  store t_43 + 0, &str_const_0 as ptr
-  store t_43 + 8, 1 as u64
-  t_44 = load t_43 + 0 as ptr
-  t_45 = load t_43 + 8 as u64
-  call @sa_print_bytes(&t_44, t_45)
-  !t_43
   !t_37
-  !t_36
   !n
   !m
   !t_14
