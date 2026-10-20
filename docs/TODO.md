@@ -65,8 +65,13 @@ Error 体系 / Node 运行时一律不行。逐项：
   （R 轨道纪律：sci 先落 + harness 验，tsgosa 再改调）。未决前不做（禁静默错码）。
 - [ ] E2-1b 接口对象数组之外的集合面：`Map<K, V[]>` 已有；`Record<K, V[]>`、
   嵌套泛型数组（`T[][]`）、对象元数组的派生方法（map/filter 回调元为实例）待摘。
-- [ ] E2-2 `?.` 组合：仅参数直取可用；`p?.x ?? d` / 局部 / 拷贝全拒
-  （`== null` 显式判断可用作改写目标）。`?.()` 48× 全拒。
+- [ ] E2-2 `?.` 组合：参数直取/局部拷贝/链基/调用基/struct 数组元基已通
+  （链中 `?.` 已空短路修复，step2223）；余 `?.()` 48×（裸函数可选调用）待摘。
+- [ ] E2-2c Set 展开为数组（`[...new Set(xs)]`）：Set 迭代需 sci 侧新符号
+  （R 轨道：sci 先落 + harness 验；上游的 Set 迭代是把元素当数组读的错译，
+  我方拒收正确，不移植）。
+- [ ] E2-2d 动态 `import()`：运行时模块加载，底座无（`import()` 表达式现落
+  「only direct function calls lowerable」）。
 - [ ] E2-3 `instanceof`（234×，含自定义类）：双边同拒，无 vtable/品牌表底座。
 - [ ] E2-4 `process.env`（319×）：双边同拒，需宿主注入设计（ambient 槽？裁决）。
 - [ ] E2-5 `TextEncoder`（86×）/ `Uint8Array` / `Buffer.from`：双边同拒，
