@@ -3463,6 +3463,42 @@ func saIsInstOperandSyntax(e *ast.Node, scope *saScope) bool {
 	return false
 }
 
+// saChainHasOptional 报告成员链基里是否含 `?.`（`o?.inner.v` 的中间步：null
+// 短路后基为空柄，末读须空守卫 join，否则读零址 SIGSEGV——禁静默错码）。
+func saChainHasOptional(e *ast.Node) bool {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindPropertyAccessExpression:
+			pa := e.AsPropertyAccessExpression()
+			if pa == nil {
+				return false
+			}
+			if pa.QuestionDotToken != nil {
+				return true
+			}
+			e = pa.Expression
+		case ast.KindElementAccessExpression:
+			ea := e.AsElementAccessExpression()
+			if ea == nil {
+				return false
+			}
+			e = ea.Expression
+		case ast.KindCallExpression:
+			ce := e.AsCallExpression()
+			if ce == nil {
+				return false
+			}
+			if ce.QuestionDotToken != nil {
+				return true
+			}
+			e = ce.Expression
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 	// 括号接收者透明（`(c).m()` 即 `c.m()`；与被调/注解/表达式侧括号
 	// 解包同律；上游同位拒收系过严，本仓 thin-lead（481 同例）。
@@ -5747,7 +5783,37 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+	if pa.QuestionDotToken != nil {
+		// `o?.inner`：空守卫（null → 空句柄 0），否则读嵌套对象句柄；直读会
+		// 在 null 基上读零址 SIGSEGV（禁静默错码：TS 语义是整链短路）。
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		isnull := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		nullL := fmt.Sprintf("L_chain_null_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		okL := fmt.Sprintf("L_chain_ok_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_chain_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, h))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+		w.Write(fmt.Sprintf("%s:\n", nullL))
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", okL))
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", v, h, off))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", t, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+	} else {
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+	}
 	sub, ok := scope.classes[def.fsub[leaf]]
 	if !ok {
 		return "", nil, "nested field " + leaf + " has no recorded sub layout"

@@ -5783,6 +5783,15 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 						}
 						return t, ""
 					}
+					// 链内含 `?.`（`o?.inner.v`）：中间步 null 短路后基为空柄，
+					// 末读走空守卫 join（空 → undefined 0），否则读零址 SIGSEGV。
+					if saChainHasOptional(pa.Expression) {
+						t, msg := saLowerGuardedFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return t, ""
+					}
 					t, msg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
 					if msg != "" {
 						return "", msg
