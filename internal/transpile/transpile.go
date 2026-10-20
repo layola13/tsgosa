@@ -1743,7 +1743,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 声明文件（.d.ts）类型单元：导出声明签名记 declHarvest（供同名
 			// JS 运行时借种——.d.ts 是类型契约、.js 是运行时）；不入函数表
 			// （无实现不可链，禁静默错码）。
-			if link != nil && ast.HasModifier(st, ast.ModifierFlagsExport) {
+			if link != nil {
 				tmp := map[string]saFuncSig{}
 				if saPrescanFuncSig(fn, st, nm.Text(), tmp, tcx, classes, aliasOf, enums, pos, &refusals) {
 					if link.declHarvest == nil {
@@ -1884,7 +1884,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 解析不到，禁静默错码）；值函数经函数表取签名。
 			if pairs := saCJSExportPairs(st); len(pairs) > 0 {
 				for exported, local := range pairs {
-					if local != exported {
+					if local != exported && exported != "default" {
 						ln, col := pos(st.Pos())
 						refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "CommonJS export renaming (" + exported + " <- " + local + ") is not lowerable"})
 						continue
@@ -4855,8 +4855,12 @@ func saCJSExportPairs(st *ast.Node) map[string]string {
 		return out
 	}
 	base := pa.Expression.Text()
-	// module.exports = { a, b }
+	// module.exports = fn（CJS 默认导出）：导出名 default，值为本地名。
 	if base == "module" && pa.Name() != nil && pa.Name().Text() == "exports" {
+		if right.Kind == ast.KindIdentifier {
+			out["default"] = right.Text()
+			return out
+		}
 		if right.Kind != ast.KindObjectLiteralExpression {
 			return out
 		}

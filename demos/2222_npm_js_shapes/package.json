@@ -4,6 +4,7 @@
   "dependencies": {
     "js-cjs": "1.0.0",
     "js-esm": "1.0.0",
-    "js-mjs": "1.0.0"
+    "js-mjs": "1.0.0",
+    "js-cjsdef": "1.0.0"
   }
 }
