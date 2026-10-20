@@ -77,7 +77,11 @@ Error 体系 / Node 运行时一律不行。逐项：
       元素（端口数组模型当前同元：arr/arrStr/arrNest 三种标记皆单一种）→
       需扩「按位元种」或引入 pair 专用标记。（`Object.entries` 已给精确拒因；
       `arr.entries()` 仍落 unknown method。）
-- [ ] E2-2h `Array.from(<string>)`：串→字符数组（`Array.from` 现支持
+- [x] E2-2h `Array.from(<string>)`：**已转正**（E2-2i，sci `6d8369fe` + tsgosa 同批）——
+      串源走 `sci/sa_std/ts_string.sa` `@ts_str_split` 零长分隔符分支（sci 侧已修
+      死循环：原 `nstart = idx + sl` 在 sl=0 时游标不动）；demo `2239_array_from_string`
+      真机 `3/a/c`。余：`"str".split("")` 本身（端口侧仍走数组声明路径的笼统拒因）。
+- [x] E2-2h-old `Array.from(<string>)`：串→字符数组（`Array.from` 现支持
       `{length}` 零数组 / 数组克隆 / mapper，串源落
       `array initializer must be literal or array`；`"abc".split("")` 同拒）。
       实现要点（已探明，勿重复踩）：逐字核 `saLowerStrIndexChar` 返**字柄
@@ -92,7 +96,9 @@ Error 体系 / Node 运行时一律不行。逐项：
       「array initializer must be literal or array」——即 `Array.from` 的
       调用分派未走到 `saLowerArrayFrom`（其串源分支未触发），落精确拒因需
       先定位该分派点（勿在 `saLowerArrayFrom` 内加检查，验不到）。
-- [ ] E2-2i sci 侧空分隔切分（`@ts_str_split` 零长分隔符）——**R 轨道前置**
+- [x] E2-2i sci 侧空分隔切分（`@ts_str_split` 零长分隔符）——**已完成**
+      （sci `6d8369fe` 已推：`sl==0` 分支按字节切 1 字节段；harness `sa check` ok
+      1797 指令 + `"abc"` → 3 元素 exit 3）
       （sci 先落 + harness 验，tsgosa 再改调）：`sci/sa_std/ts_string.sa`
       `@ts_str_split` 的 `L_SSP_BODY` 用 `nstart = add idx, sl` 推进游标，
       **sl=0（零长分隔符）时游标原地不动 → 死循环**（实测 `Array.from(str)`

@@ -5081,6 +5081,28 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 		scope.addImport("sa_std/ts_array.sa")
 		w.Write(fmt.Sprintf("  %s = call @ts_arr_mkcopy(%s)\n", h, n))
 		base = h
+	} else if saIsStrExpr(argNodes[0], scope) {
+		// 串源：逐字成串元数组（复用 `sci/sa_std/ts_string.sa` `@ts_str_split`
+		// 的零长分隔符扫描（sci 侧已修：原 `nstart = idx + sl` 在 sl=0 时
+		// 游标不动 → 死循环）；段句柄由 sci 侧分配（调用方持数组柄），
+		// 端口侧不建字句柄（循环体内建的字句柄其域尾释在体外 → verifier
+		// UnknownRegister 实锤，禁半落地）。
+		// 语义差：split("") 按码元切，Array.from 按码点切（代理对边缘差；
+		// 端口域为 ASCII，两者一致）。
+		sh, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		empty := saLowerStringLiteral(w, "", scope, nextTemp)
+		bp, bl := saExpandStr(w, sh, nextTemp)
+		sp, sl := saExpandStr(w, empty, nextTemp)
+		scope.addImport("sa_std/ts_string.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_str_split(%s, %s, %s, %s, 0, 0)\n", h, bp, bl, sp, sl))
+		saOwnTemp(scope, h)
+		saMarkArrStr(scope, h)
+		base = h
 	} else {
 		src, msg := saArrValueOf(w, argNodes[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
