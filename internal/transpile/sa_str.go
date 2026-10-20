@@ -354,7 +354,7 @@ func saStrCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	switch pa.Name().Text() {
-	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith", "includes", "search":
+	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith", "includes", "search", "localeCompare":
 		return saIsStrExpr(pa.Expression, scope)
 	}
 	return false
@@ -366,7 +366,7 @@ func saIsStrMethod(m string) bool {
 	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith",
 		"toLowerCase", "toUpperCase", "repeat", "padStart", "padEnd", "replace", "replaceAll",
 		"includes", "search", "match", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
-		"slice", "substring", "substr", "toString":
+		"slice", "substring", "substr", "toString", "localeCompare":
 		return true
 	}
 	return false
@@ -2129,6 +2129,24 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			sym = "sa_string_last_index_of"
 		}
 		return call1(sym, np, nl, from), false, ""
+	case "localeCompare":
+		// `a.localeCompare(b)`：三路串比较（sci `@ts_str_compare` 现货；
+		// ECMA-262 只规定符号（负/零/正），量值实现相关，故直透原值，
+		// 禁归一臆造）。
+		if len(args) != 1 {
+			return "", false, "localeCompare needs 1 argument"
+		}
+		n, msg := strArg(0)
+		if msg != "" {
+			return "", false, msg
+		}
+		np, nl := saExpandStr(w, n, nextTemp)
+		scope.addImport("sa_std/ts_string.sa")
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_str_compare(%s, %s, %s, %s)\n", t, bp, bl, np, nl))
+		saOwnTemp(scope, t)
+		return t, false, ""
 	case "startsWith", "endsWith":
 		if len(args) != 1 && ((method != "startsWith" && method != "endsWith") || len(args) != 2) {
 			return "", false, method + " needs 1 argument"
