@@ -247,6 +247,27 @@ X-strjoin / X-radix / X-sweep 系上游有病项（薄口拒收正确，不移�
       ⑤**验收**：demo（`Object.entries` 索引形：键串 + 值 i32）+ sci 侧无需新
       原语（pair 由端口构造 ✓，与 `@ts_arr_entries` 的 {i,v} 不同：此处位 0 是
       **串**而非下标 ✗ 故不能直接复用那个原语 ✓）。
+      ⑦**追加实测（2026-10-20 二次试做后回退，务必照此施工）**：按上述设计
+      实现了构造 + 两条读路径 + `saIsStrExpr` 位次判定后，**索引形全通**
+      （`es.length`=2 / `es[0][0]`="a" / `es[0][1]`=7 / `es[1][0]`="b" /
+      `es[1][1]`=9 ✓，`sa check` ok 1571 指令），但**解构形仍静默错码**：
+      `for (const [k, v] of Object.entries(p))` 编译通过且把**键的句柄地址当
+      i32 绑出**（值错，最坏类）→ 已回退。
+      **根因**：解构读 pair 槽位走的是**解构自有读径**（for-of 数组模式分支的
+      `saLowerCheckedIndex(elemT, idx)` 一类 / 声明解构的数组位），**不经过**
+      `saLowerIndexLoadExpr`/`saEvalStr` 的元素读入口 → 我加在元素读入口的
+      「pair 位次不明即拒」守卫**根本不会被触发** ✗。
+      **正解（缺一不可）**：①「pair 数组自身」另立标记（`scope.arrPairEl`：该
+      句柄就是 pair 数组）——与「entries 结果数组」标记（`scope.arrPair`：其
+      元素是 pair）**分两个标记** ✗ 混用会误判；②**解构两个位点各自加拒**：
+      for-of 的数组模式解构分支（**注意**：该分支不在 `saLowerForOf` 内——同文件
+      另有「array patterns in for-of need array bases」拒因位，须按该拒因位定位
+      真实分支 ✓）与声明位数组解构（`saLowerDestructuringDecl` 数组位 ✓）；
+      拒因须以「被解构源是 Object.entries 结果」为判据（initializer 是该调用 ✓
+      或源句柄命中 `arrPairEl`/`arrPair` 标记 ✓——**注意 for-of 迭代的是调用
+      结果临时量（temp），其名字与 entries 绑定名不同 ✗**，故只能按 initializer
+      调用形态判定 ✓）；③两个解构位点各加「键是串、端口解构位恒 i32 → 大声拒」
+      守卫后，索引形保持可用 ✓。
       ⑥**追加实测（2026-10-20 试做后回退，务必照此施工）**：`es[0][0]` 的**内层
       读基是元素访问表达式**（非标识符 ✗）→ 按「pair 句柄名」查标记取不到 ✗ →
       键槽**读出垃圾地址**（静默错码 ✗ 最坏类，已回退）。正解两条：
