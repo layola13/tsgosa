@@ -247,3 +247,20 @@ X-strjoin / X-radix / X-sweep 系上游有病项（薄口拒收正确，不移�
       ⑤**验收**：demo（`Object.entries` 索引形：键串 + 值 i32）+ sci 侧无需新
       原语（pair 由端口构造 ✓，与 `@ts_arr_entries` 的 {i,v} 不同：此处位 0 是
       **串**而非下标 ✗ 故不能直接复用那个原语 ✓）。
+      ⑥**追加实测（2026-10-20 试做后回退，务必照此施工）**：`es[0][0]` 的**内层
+      读基是元素访问表达式**（非标识符 ✗）→ 按「pair 句柄名」查标记取不到 ✗ →
+      键槽**读出垃圾地址**（静默错码 ✗ 最坏类，已回退）。正解两条：
+      (a) 标记打在**外层 entries 数组**上（`scope.arrPair[entries句柄]=true`，
+      语义＝「其元素是 pair」✗ 不再逐 pair 登记）；
+      (b) 读侧加 helper `saPairSlot(e, scope) (位次 int, ok bool)`：内层读的
+      基须是「entries 数组的**字面量**下标访问」，且内层下标亦为字面量 → 返回
+      位次（0=串键 / 1=i32 值）；非字面量下标拒（禁运行时猜位次 ✗）；
+      (c) 串位读（`sa_str.go`）与 i32 位读（`sa_arr.go`）各按位次分派：位 0 走
+      **先取外层 pair 句柄**（`saLowerIndexLoadExpr` 读外层元素 ✓）**再读位 0**
+      （`saLowerCheckedIndex(pairH, 0)` ✓）；位 1 同形读位 1 ✓；
+      (d) `saIsStrExpr` 的元素臂按 `saPairSlot` 位次 0 判串 ✓（否则 console.log
+      会把键当 i32 打印 ✗）；
+      (e) 归属：pair 头/缓冲须 `saOwnTemp` 登记（否则 verifier MemoryLeak ✗
+      实锤）；键的串句柄沿 `saLowerStringLiteral` 既有归属 ✓。
+      ⑥**门禁**：落 demo（`es.length` / `es[0][0]` 键串 / `es[0][1]` 值 i32）+
+      `sa check` + 真机跑分 + 全量 `--check`/`--corpus` + 原生跑分。
