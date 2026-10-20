@@ -86,9 +86,14 @@ Error 体系 / Node 运行时一律不行。逐项：
   须立 pair 专用标记；完整设计见下条 E2-2m）。
 - [ ] E2-2 `?.` 组合：参数直取/局部拷贝/链基/调用基/struct 数组元基已通
   （链中 `?.` 已空短路修复，step2223）；余 `?.()` 48×（裸函数可选调用）待摘。
-- [ ] E2-2c Set 展开为数组（`[...new Set(xs)]`）：Set 迭代需 sci 侧新符号
-  （R 轨道：sci 先落 + harness 验；上游的 Set 迭代是把元素当数组读的错译，
-  我方拒收正确，不移植）。
+- [ ] E2-2c Set 展开为数组（`[...new Set(xs)]`）：**2026-10-20 复核：sci 侧已有
+  现成原语**（`sci/sa_std/btree_set.sa`：`sa_btree_set_first` /
+  `sa_btree_set_pop_first`（出键到 out 槽）/ `sa_btree_set_len` ✅）→
+  **无需新增 sci 原语**（上一轮记的「需 sci 新符号」作废 ✅）：端口侧做法 =
+  新建空数组 + 循环 `pop_first` 取键（端口 Set 只装 i32 ✅）逐个 push +
+  计数判空止（键为 i32 字 → 推入不涉句柄归属 ✅，循环体临时量在体内释 ✅，
+  不触发「域尾释在体外」的 UnknownRegister 坑 ✅）。上游的 Set 迭代是把元素当
+  数组读的错译（node 应得 11 实锤），我方按上述原语正确实现，不移植错译。
 - [ ] E2-2e `o.hasOwnProperty(k)` 已补（E2-7c，demo 2237）；余项：
 - [ ] E2-2f `str.localeCompare(b)`：需三路串比较（sci 已有 `@ts_str_compare`；
       端口侧须归一为 JS 的 -1/0/1，禁直接透传原值）。
