@@ -4361,7 +4361,86 @@ func RunBuild(args []string) int {
 // saDetectEntry resolves the program entry: package.json "saEntry",
 // tsconfig "files"[0], then src/main.ts, main.ts, src/index.ts, index.ts,
 // fallback lexicographically first file (deterministic).
+// saPkgEntryString 取条件对象里的入口串（import/default/require/node 序；
+// "types" 键是声明入口不作运行时入口）。
+func saPkgEntryString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]any:
+		for _, k := range []string{"import", "default", "require", "node"} {
+			if s, ok := t[k].(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// saPkgEntryCandidates 从 package.json 取入口候选（exports "." 子路径 +
+// main/module/types/typings）；形状证据：base packagejson.Parse + TS 入口惯例。
+func saPkgEntryCandidates(data []byte) []string {
+	var pkg map[string]any
+	if json.Unmarshal(data, &pkg) != nil {
+		return nil
+	}
+	if ex, ok := pkg["exports"]; ok {
+		if m, ok := ex.(map[string]any); ok {
+			if dot, ok := m["."]; ok {
+				if s := saPkgEntryString(dot); s != "" {
+					return []string{s}
+				}
+			}
+		}
+	}
+	var out []string
+	for _, k := range []string{"main", "module", "types", "typings"} {
+		if s, ok := pkg[k].(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// saWorkspaceDirs 从 package.json "workspaces" 取成员目录前缀（"packages/*"
+// → "packages/"；字面目录 → "dir/"）；形状证据：base packagejson.Parse +
+// npm workspaces 惯例（数组形或 {"packages": [...]} 形）。
+func saWorkspaceDirs(data []byte) []string {
+	var pkg map[string]any
+	if json.Unmarshal(data, &pkg) != nil {
+		return nil
+	}
+	raw, ok := pkg["workspaces"]
+	if !ok {
+		return nil
+	}
+	var list []any
+	switch t := raw.(type) {
+	case []any:
+		list = t
+	case map[string]any:
+		if pk, ok := t["packages"].([]any); ok {
+			list = pk
+		}
+	}
+	var out []string
+	for _, it := range list {
+		s, ok := it.(string)
+		if !ok || s == "" {
+			continue
+		}
+		s = strings.TrimPrefix(path.Clean(s), "./")
+		if strings.HasSuffix(s, "*") {
+			out = append(out, strings.TrimSuffix(s, "*"))
+			continue
+		}
+		out = append(out, s+"/")
+	}
+	return out
+}
+
 func saDetectEntry(dir string, files map[string]string) string {
+	wsDirs := []string{}
 	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
 		var pkg map[string]any
 		if json.Unmarshal(data, &pkg) == nil {
@@ -4371,6 +4450,15 @@ func saDetectEntry(dir string, files map[string]string) string {
 				}
 			}
 		}
+		// package.json 入口字段（exports "." / main / module / types）：只取
+		// 落在 files 集内的源（构建产物 .js 不在集内，天然跳过）。
+		for _, cand := range saPkgEntryCandidates(data) {
+			c := path.Clean(cand)
+			if _, ok := files[c]; ok {
+				return c
+			}
+		}
+		wsDirs = saWorkspaceDirs(data)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "tsconfig.json")); err == nil {
 		var ts map[string]any
@@ -4393,6 +4481,17 @@ func saDetectEntry(dir string, files map[string]string) string {
 	for n := range files {
 		// 声明文件（.d.ts）不作入口候选（类型单元非可执行入口）。
 		if strings.HasSuffix(n, ".d.ts") {
+			continue
+		}
+		// workspace 成员目录内的源不作根入口候选（成员是库，入口在根）。
+		skip := false
+		for _, d := range wsDirs {
+			if d != "" && strings.HasPrefix(n, d) {
+				skip = true
+				break
+			}
+		}
+		if skip {
 			continue
 		}
 		names = append(names, n)

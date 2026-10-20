@@ -1,0 +1,3 @@
+export function other(): i32 {
+  return 1;
+}
