@@ -2983,6 +2983,23 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 			return nil, false
 		}
 		k := saLitFieldKind(init, scope)
+		if k == "" && init != nil && init.Kind == ast.KindIdentifier {
+			// 绑定名初值：按已定种取域种（str/arr/f64/inst；i32/bool 已由
+			// saLitFieldKind 给出；禁猜未知名）。
+			if bk, ok := scope.types[init.Text()]; ok {
+				switch {
+				case bk == "str":
+					k = "str"
+				case bk == "arr" || bk == "arrStr":
+					k = "arr"
+				case bk == "f64":
+					k = "f64"
+				case len(bk) > 5 && bk[:5] == "inst:":
+					k = "inst"
+					subs[fname] = bk[5:]
+				}
+			}
+		}
 		if k == "" {
 			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
 				return nil, false
