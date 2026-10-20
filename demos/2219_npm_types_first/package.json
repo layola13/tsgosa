@@ -1,0 +1,7 @@
+{
+  "name": "npm_types_first",
+  "version": "1.0.0",
+  "dependencies": {
+    "tf-pkg": "1.0.0"
+  }
+}

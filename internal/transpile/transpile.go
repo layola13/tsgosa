@@ -4360,20 +4360,59 @@ func saProgBuiltinMod(spec string) bool {
 	return strings.HasSuffix(spec, ".wasm") || strings.HasSuffix(spec, ".wit")
 }
 
+// saProgResolvers bundles the base module resolvers used by program mode.
+// rt = runtime semantics (NoDtsResolution: the "types" condition and the
+// package.json "types"/"typings" field are off, so an npm package whose
+// exports put "types" first resolves to its runtime target — Node/ESM
+// semantics); ty = type semantics (default: the "types" condition on, so
+// .d.ts targets resolve). Shape evidence: internal/module/resolver.go
+// newResolutionState:118-124 (extensions), GetConditions:1938-1958
+// (conditions), getPackageFile:1756-1775 (types/typings field gate).
+type saProgResolvers struct {
+	rt *module.Resolver
+	ty *module.Resolver
+}
+
+// resolve resolves spec from importer under the requested semantics:
+// typeOnly uses the type resolver only (the "types" condition on); a value
+// spec uses the runtime resolver first (drops the "types" condition) with
+// the type resolver as fallback (packages shipping .ts sources, e.g. zod's
+// "@zod/source" condition). Both passes are the base resolver, no local
+// candidate list (禁原创调用惯例).
+func (rs *saProgResolvers) resolve(importer, spec, dir string, typeOnly bool) (string, bool) {
+	if rs == nil || dir == "" {
+		return "", false
+	}
+	containing := filepath.Join(dir, filepath.FromSlash(importer))
+	try := func(r *module.Resolver) (string, bool) {
+		if r == nil {
+			return "", false
+		}
+		if resolved, _ := r.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil); resolved.IsResolved() {
+			return resolved.ResolvedFileName, true
+		}
+		return "", false
+	}
+	if typeOnly {
+		return try(rs.ty)
+	}
+	if name, ok := try(rs.rt); ok {
+		return name, true
+	}
+	return try(rs.ty)
+}
+
 // saProgResolveRelative resolves a spec against the file set. Primary is the
 // base module resolver (internal/module, Bundler 口径：含 node_modules、
 // package.json exports、`.js`→`.ts` 回退；形状证据：ata.go:189/419、
 // contentmappers.go:18)；仅底座落到 files 集内才认领（node_modules/.d.ts
 // 目标沿旧 Unresolved 聚合），底座不认再走旧 5 候选回退（保旧行为）。
-func saProgResolveRelative(importer, spec string, files map[string]string, dir string, resolver *module.Resolver) string {
-	if resolver != nil && dir != "" {
-		containing := filepath.Join(dir, filepath.FromSlash(importer))
-		if resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil); resolved.IsResolved() {
-			if rel, err := filepath.Rel(dir, resolved.ResolvedFileName); err == nil {
-				if c := path.Clean(filepath.ToSlash(rel)); c != "" {
-					if _, ok := files[c]; ok {
-						return c
-					}
+func saProgResolveRelative(importer, spec string, files map[string]string, dir string, rs *saProgResolvers, typeOnly bool) string {
+	if name, ok := rs.resolve(importer, spec, dir, typeOnly); ok {
+		if rel, err := filepath.Rel(dir, name); err == nil {
+			if c := path.Clean(filepath.ToSlash(rel)); c != "" {
+				if _, ok := files[c]; ok {
+					return c
 				}
 			}
 		}
@@ -4435,16 +4474,14 @@ func saProgPrefix(p, entry string) string {
 // to files-set `.ts`/`.js` members (node_modules 按需纳入后的真实目标；
 // 包外一律 ""，沿旧 Unresolved 聚合）。`.js` 直转 `.sa`（用户令：落 js
 // 即转 sa；JS 无注解按既有缺省 i32/void，超子集处大声拒）。
-func saProgResolveBare(importer, spec string, files map[string]string, dir string, resolver *module.Resolver) string {
-	if resolver == nil || dir == "" {
+func saProgResolveBare(importer, spec string, files map[string]string, dir string, rs *saProgResolvers, typeOnly bool) string {
+	if rs == nil || dir == "" {
 		return ""
 	}
-	containing := filepath.Join(dir, filepath.FromSlash(importer))
-	resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil)
-	if !resolved.IsResolved() {
+	name, ok := rs.resolve(importer, spec, dir, typeOnly)
+	if !ok {
 		return ""
 	}
-	name := resolved.ResolvedFileName
 	if strings.HasSuffix(name, ".d.ts") {
 		return ""
 	}
@@ -4579,7 +4616,7 @@ func saProgAdoptFileAs(files map[string]string, parsed map[string]*ast.SourceFil
 	return true
 }
 
-func saProgIncludeBare(files map[string]string, dir string, resolver *module.Resolver, parsed map[string]*ast.SourceFile) {
+func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile) {
 	const maxFiles = 64
 	tried := map[string]bool{}
 	adoptRel := func(p, spec string) bool {
@@ -4634,19 +4671,17 @@ func saProgIncludeBare(files map[string]string, dir string, resolver *module.Res
 				tried[key] = true
 				// 相对目标：files 集外但落盘存在即纳入。
 				if strings.HasPrefix(spec, ".") {
-					if _, ok := files[saProgResolveRelative(p, spec, files, dir, resolver)]; !ok {
+					if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; !ok {
 						if adoptRel(p, spec) {
 							progress = true
 						}
 					}
 					continue
 				}
-				containing := filepath.Join(dir, filepath.FromSlash(p))
-				resolved, _ := resolver.ResolveModuleName(spec, containing, core.ModuleKindESNext, nil)
-				if !resolved.IsResolved() {
+				name, ok := rs.resolve(p, spec, dir, false)
+				if !ok {
 					continue
 				}
-				name := resolved.ResolvedFileName
 				if strings.HasSuffix(name, ".d.ts") {
 					continue
 				}
@@ -4699,12 +4734,20 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	// `@zod/source`：包方为 TS 源码加载发布的官方条件（zod package.json
 	// exports "." 首键；底座 GetConditions:1943 原生支持，tsx/strip-types
 	// 同形 honoring；无此条件的包零影响）。
-	var resolver *module.Resolver
+	// 双解析器：rt 运行时口径（NoDtsResolution → 去 "types" 条件与
+	// package.json "types"/"typings" 字段，npm 包 exports 把 "types" 置首
+	// 时仍解到运行时目标）；ty 类型口径（默认，"types" 条件在 → .d.ts
+	// 目标）。形状证据：internal/module/resolver.go newResolutionState:118-124
+	// + GetConditions:1938-1958 + getPackageFile:1756-1775。
+	var rs *saProgResolvers
 	if absDir, err := filepath.Abs(dir); err == nil {
 		func() {
 			defer func() { _ = recover() }()
 			host := compiler.NewCompilerHost(absDir, osvfs.FS(), libDirectory, nil, nil, nil)
-			resolver = module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler, CustomConditions: []string{"@zod/source"}}, "", "", nil)
+			custom := []string{"@zod/source"}
+			ty := module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler, CustomConditions: custom}, "", "", nil)
+			rt := module.NewResolver(host, &core.CompilerOptions{ModuleResolution: core.ModuleResolutionKindBundler, NoDtsResolution: core.TSTrue, CustomConditions: custom}, "", "", nil)
+			rs = &saProgResolvers{rt: rt, ty: ty}
 			dir = absDir
 		}()
 	}
@@ -4716,10 +4759,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	}
 	// bare 第三方按需纳入（resolver 解 node_modules `.ts` 才进集；`.js`/
 	// 包外沿旧 Unresolved；上游 todo/01 node_modules 跟随设计）。
-	if resolver != nil {
+	if rs != nil {
 		func() {
 			defer func() { _ = recover() }()
-			saProgIncludeBare(files, dir, resolver, parsed)
+			saProgIncludeBare(files, dir, rs, parsed)
 		}()
 	}
 	graph := map[string][]string{}
@@ -4728,12 +4771,14 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	starOf := map[string][]string{}
 	impOf := map[string]map[string]string{}
 	unresolved := map[string]bool{}
-	addEdge := func(p, spec string) string {
+	// addEdge links importer→target for spec. typeOnly keeps the type
+	// resolver (纯类型导入/重导出只取类型侧，不链运行时文件，禁静默扩面).
+	addEdge := func(p, spec string, typeOnly bool) string {
 		if !strings.HasPrefix(spec, ".") {
 			// linked bare：已纳入集的真实目标建边（后续 hook B 经 specOf
 			// 绑定）；其余沿旧 Unresolved 聚合。
 			if !saProgBuiltinMod(spec) {
-				if tgt := saProgResolveBare(p, spec, files, dir, resolver); tgt != "" {
+				if tgt := saProgResolveBare(p, spec, files, dir, rs, typeOnly); tgt != "" {
 					graph[p] = append(graph[p], tgt)
 					return tgt
 				}
@@ -4741,7 +4786,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			}
 			return ""
 		}
-		tgt := saProgResolveRelative(p, spec, files, dir, resolver)
+		tgt := saProgResolveRelative(p, spec, files, dir, rs, typeOnly)
 		if tgt == "" {
 			return ""
 		}
@@ -4760,7 +4805,14 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				if spec == "" {
 					continue
 				}
-				tgt := addEdge(p, spec)
+				// 纯类型重导出（`export type *` / 无值成员）走类型解析器，
+				// 不链运行时文件（禁静默扩面）。
+				ed := st.AsExportDeclaration()
+				typeOnly := len(edges) == 0 && !star
+				if ed != nil && ed.IsTypeOnly {
+					typeOnly = true
+				}
+				tgt := addEdge(p, spec, typeOnly)
 				if tgt == "" {
 					continue
 				}
@@ -4788,9 +4840,9 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				continue
 			}
 			if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
-				// 纯类型导入只建可达边（类型文件须进收割域供注解消解；值绑定仍擦除，下游 import 门/发射位沿旧律；k4 实证）。
+				// 纯类型导入只建可达边（类型文件须进收割域供注解消解；值绑定仍擦除，下游 import 门/发射位沿旧律；k4 实证）。走类型解析器（不链运行时文件）。
 				if spec := saProgModuleSpec(st); spec != "" {
-					if tgt := addEdge(p, spec); tgt != "" {
+					if tgt := addEdge(p, spec, true); tgt != "" {
 						if specOf[p] == nil {
 							specOf[p] = map[string]string{}
 						}
@@ -4803,7 +4855,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			if spec == "" {
 				continue
 			}
-			if tgt := addEdge(p, spec); tgt != "" {
+			if tgt := addEdge(p, spec, false); tgt != "" {
 				if specOf[p] == nil {
 					specOf[p] = map[string]string{}
 				}

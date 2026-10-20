@@ -25,6 +25,12 @@ bare 按需纳入 + package.json 读底座 + symlink 穿透 + `.js` 落点直转
   需模块形状识别（CJS/ESM）+ 无类型 JS 的 `any` 化策略（与 T2/故意分歧政策联动）。
 - [ ] E1-3 `package.json` exports / 条件配线：`@zod/source` 已验证跟随；
   通用 exports 映射表未建。验收：fixture 真包 + `--parity` SAME。
+  - [x] E1-3a 运行时/类型双解析（2026-10-20）：底座 `NoDtsResolution` 运行时
+    口径解 npm 包（`exports` `"types"` 置首 / 顶层 `"types"` 字段不再恒
+    Unresolved）；demo `2219_npm_types_first` 真机 42。
+  - [ ] E1-3b `.d.ts` 类型单元：types 侧布局播种（interface/class/enum/别名）。
+  - [ ] E1-3c package.json 入口字段：`main`/`module`/`exports`/`types`/
+    `imports`(`#alias`)/`workspaces` + 依赖报告面（peer/optional）。
 - [ ] E1-4 动态 `require()`/`import()`：现定位拒（step358 `import = require`）。
   需运行时模块表（sci 侧立项）或保持拒收（冻结亦可，需裁决）。
 - [ ] E1-5 Z1 Record 动态字典收尾：读侧已通（232-244：`m[k]` 读脱糖、
