@@ -2622,6 +2622,14 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				kinds[name] = "i32"
 				continue
 			}
+			// 内联对象类型注解（`{a: number}`）：按类型字面量合成布局（复用
+			// saSynthAnonLayout 纪律；合成布局不参与键集命中，禁误吞多命中门）。
+			if pd.Type.Kind == ast.KindTypeLiteral {
+				if lname, ok := saSynthAnonLayout(pd.Type, classes); ok {
+					kinds[name] = "inst:" + lname
+					continue
+				}
+			}
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
 				// 擦除泛型元数组形参（`arr: T[]` 即 arr 柄；裸 `T` 见下；

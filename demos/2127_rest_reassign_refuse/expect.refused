@@ -1,4 +1,0 @@
-# 剩余布局字面量无法匹配：字面量无匹配接口时按自身键集合成布局后，布局不匹配
-# 被精确指出（合成布局参与比较，禁静默塞进异形目标）
-object literal does not match interface Rest_P_y
-refused: resolve subset-report.txt before running sh build.sh

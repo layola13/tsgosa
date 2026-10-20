@@ -2415,6 +2415,28 @@ func saHomomorphicMapped(rhs *ast.TypeNode, base string, classes map[string]*saC
 
 // saIfaceKeyMatch 报告字面量键集是否命中布局（全键在表 + 缺键全可选；
 // 余键/缺必备/合成布局沿旧门；多命中决胜由调用方既有门保障）。
+// saWantKeyMatch 注解直命中的键集核对（允许合成布局：注解显式点名该布局，
+// 即用户自己写出的形状，匹配它正确；键集命中的通用路径仍排除合成布局，
+// 禁误吞多命中门）。
+func saWantKeyMatch(def *saClassDef, keys []string) bool {
+	if def == nil || !def.isIface {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if _, has := def.offsets[k]; !has {
+			return false
+		}
+		seen[k] = true
+	}
+	for _, f := range def.fields {
+		if !seen[f.name] && !def.fopt[f.name] {
+			return false
+		}
+	}
+	return true
+}
+
 func saIfaceKeyMatch(def *saClassDef, keys []string) bool {
 	if def == nil || !def.isIface || def.isSynth {
 		return false
@@ -2475,7 +2497,7 @@ func saMatchWantIface(want string, keys []string, classes map[string]*saClassDef
 		return nil, ""
 	}
 	def, ok := classes[want]
-	if !ok || def == nil || !def.isIface || !saIfaceKeyMatch(def, keys) {
+	if !ok || def == nil || !def.isIface || !saWantKeyMatch(def, keys) {
 		return nil, ""
 	}
 	return def, ""
