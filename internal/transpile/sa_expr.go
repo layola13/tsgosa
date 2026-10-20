@@ -2426,6 +2426,30 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
 			return t, false, ""
 		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			pa.Name() != nil && pa.Name().Text() == "hasOwnProperty" {
+			// `o.hasOwnProperty(k)` 与 `Object.hasOwn(o, k)` 同门（字面量键 +
+			// 已知布局即静态折叠；变量键/未知布局大声拒，禁运行时臆测）。
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return "", false, "hasOwnProperty takes one argument"
+			}
+			key := argNodes[0]
+			if key == nil || key.Kind != ast.KindStringLiteral {
+				return "", false, "hasOwnProperty needs a known-layout object and a literal key"
+			}
+			verdict, ok := saLayoutHasKey(key.Text(), pa.Expression.Text(), scope)
+			if !ok {
+				return "", false, "hasOwnProperty needs a known-layout object and a literal key"
+			}
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s\n", t, verdict))
+			return t, false, ""
+		}
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Object" &&
 			pa.Name() != nil && pa.Name().Text() == "keys" {
 			// `Object.keys(o)` 已知布局字段名序具化串元数组（字段声明序；存取器

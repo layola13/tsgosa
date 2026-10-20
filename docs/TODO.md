@@ -70,8 +70,12 @@ Error 体系 / Node 运行时一律不行。逐项：
 - [ ] E2-2c Set 展开为数组（`[...new Set(xs)]`）：Set 迭代需 sci 侧新符号
   （R 轨道：sci 先落 + harness 验；上游的 Set 迭代是把元素当数组读的错译，
   我方拒收正确，不移植）。
-- [ ] E2-2d 动态 `import()`：运行时模块加载，底座无（`import()` 表达式现落
-  「only direct function calls lowerable」）。
+- [ ] E2-2e `o.hasOwnProperty(k)` 已补（E2-7c，demo 2237）；余项：
+- [ ] E2-2f `str.localeCompare(b)`：需三路串比较（sci 已有 `@ts_str_compare`；
+      端口侧须归一为 JS 的 -1/0/1，禁直接透传原值）。
+- [ ] E2-2g `Object.entries(o)` / `arr.entries()`：pair 数组需 **str+i32 混元**
+      元素（端口数组模型当前同元：arr/arrStr/arrNest 三种标记皆单一种）→
+      需扩「按位元种」或引入 pair 专用标记。
 - [ ] E2-3 `instanceof`（234×，含自定义类）：双边同拒，无 vtable/品牌表底座。
 - [ ] E2-4 `process.env`（319×）：双边同拒，需宿主注入设计（ambient 槽？裁决）。
 - [ ] E2-5 `TextEncoder`（86×）/ `Uint8Array` / `Buffer.from`：双边同拒，
