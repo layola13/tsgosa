@@ -79,8 +79,15 @@ Error 体系 / Node 运行时一律不行。逐项：
       `arr.entries()` 仍落 unknown method。）
 - [ ] E2-2h `Array.from(<string>)`：串→字符数组（`Array.from` 现支持
       `{length}` 零数组 / 数组克隆 / mapper，串源落
-      `array initializer must be literal or array`；端口已有串逐字取字
-      `saLowerStrIndexChar`，需串循环保鲜 + 元素句柄入槽）。
+      `array initializer must be literal or array`；`"abc".split("")` 同拒）。
+      实现要点（已探明，勿重复踩）：逐字核 `saLowerStrIndexChar` 返**字柄
+      （owned）**，而字柄在**循环体内**创建 → 域尾释（函数出口）在体外 →
+      verifier `UnknownRegister`（`!t_10 not declared in the current scope`）。
+      两条出路待决：①字柄入数组即由数组持有（需明确串元数组的句柄归属：
+      现模型为「数组存 4 字节槽（句柄截断）+ 域尾释字柄」，读回靠既有
+      arrStr 路径），字句柄须在**循环体内**释（则数组元素悬垂，须核 arrStr
+      读路径是否重建 {ptr,len}）；②或先解清串元数组的句柄归属模型再落
+      （禁半落地，违铁律 4）。
 - [x] 已核验可用（本轮探针，零改码）：`infer`/映射类型/条件类型/模板字面量
       类型（纯类型擦除全通）、私有字段 + getter、`p?.["a"]` 可选计算下标、
       `catch` 无绑定、`as` 断言、`instanceof` 值位折叠、`hasOwnProperty` 方法形、
