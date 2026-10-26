@@ -4807,18 +4807,23 @@ func saNarrowIfThen(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, ne
 	return out
 }
 
-// saRestoreIfThen restores narrowed identifiers after a non-terminating
-// then branch, before the join jump. Terminating branches (return) skip
-// restore: control never reaches the join, and the next loop iteration
-// rebinds the identifier (same as existing callback params).
-func saRestoreIfThen(w printer.EmitTextWriter, narrowed []saIfNarrowed, scope *saScope, nextTemp *int) {
+// saRestoreIfThen restores narrowed identifiers. Scope types are always
+// restored (code after a terminating then branch is only reachable when
+// the guard is false, so it must see the original jsval type again).
+// SA restore code is emitted only for non-terminating branches: after a
+// terminating branch it would be unreachable, and the register at the
+// join/else entry is already the original (narrowing code lives inside
+// the then label block, bypassed on the false path).
+func saRestoreIfThen(w printer.EmitTextWriter, narrowed []saIfNarrowed, scope *saScope, nextTemp *int, emit bool) {
 	for _, n := range narrowed {
-		w.Write(fmt.Sprintf("  !%s\n", n.name))
-		back := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", back, n.slot))
-		w.Write(fmt.Sprintf("  %s = %s\n", n.name, back))
-		w.Write(fmt.Sprintf("  !%s\n", n.slot))
+		if emit {
+			w.Write(fmt.Sprintf("  !%s\n", n.name))
+			back := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", back, n.slot))
+			w.Write(fmt.Sprintf("  %s = %s\n", n.name, back))
+			w.Write(fmt.Sprintf("  !%s\n", n.slot))
+		}
 		scope.types[n.name] = n.origKind
 	}
 }
@@ -4877,9 +4882,7 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 		if !thenOK {
 			return false
 		}
-		if !saArmTerminates(thenStmts) {
-			saRestoreIfThen(w, narrowed, scope, nextTemp)
-		}
+		saRestoreIfThen(w, narrowed, scope, nextTemp, !saArmTerminates(thenStmts))
 		// then 臂落空直入 else 即错臂执行（fizzbuzz 5,3,1 实证）；非终结臂须跳 end（上游同形）。
 		// 无跳则不落标：双终结臂后裸 endif 标号触 FallthroughForbidden。
 		needEnd := !saArmTerminates(thenStmts)
@@ -4917,9 +4920,7 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 	if !thenOK {
 		return false
 	}
-	if !saArmTerminates(thenStmts) {
-		saRestoreIfThen(w, narrowed, scope, nextTemp)
-	}
+	saRestoreIfThen(w, narrowed, scope, nextTemp, !saArmTerminates(thenStmts))
 	// 臂终结（return/jmp 收尾）则免 join 跳转——落在终结符后即不可达陷阱，
 	// 真机 `FallthroughForbidden`；封存上游同位：终结臂无 `jmp L_endif`。
 	if saContainsIf(thenStmts) && !saArmTerminates(thenStmts) {
