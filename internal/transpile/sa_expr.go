@@ -950,7 +950,52 @@ func saCondOperandMat(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, 
 // 槽归属（saOwnTemp），返前处理器凭 op 例外保留。返回 widened=false
 // 表非宽化情形（调用方沿旧门拒）；widened=true 且 msg 非空表宽化
 // 域错配大声拒，禁静默截断或错布局直返。
+// saWidenCompatible checks field-by-field widening compatibility without
+// emitting code: every source field must exist in the target with the same
+// kind, and nested instance fields with differing sub-layout names must
+// themselves be compatible (JEV recursive_widen 1.0). Depth-capped so
+// cyclic layout pairs refuse loudly instead of recursing forever.
+func saWidenCompatible(srcDef, tgtDef *saClassDef, scope *saScope, depth int) string {
+	if depth > 16 {
+		return "struct widening nested depth exceeded"
+	}
+	for _, f := range srcDef.fields {
+		sk := srcDef.fkinds[f.name]
+		if sk == "" {
+			sk = "i32"
+		}
+		dk, ok := tgtDef.fkinds[f.name]
+		if !ok {
+			return "struct widening refused: source field " + f.name + " missing in target layout"
+		}
+		if dk == "" {
+			dk = "i32"
+		}
+		if sk != dk {
+			return "struct widening refused: field " + f.name + " kind mismatch (" + sk + " vs " + dk + ")"
+		}
+		if sk == "inst" && srcDef.fsub[f.name] != tgtDef.fsub[f.name] {
+			ssub, ok1 := scope.classes[srcDef.fsub[f.name]]
+			tsub, ok2 := scope.classes[tgtDef.fsub[f.name]]
+			if !ok1 || ssub == nil || !ok2 || tsub == nil {
+				return "struct widening refused: field " + f.name + " sub-layout not recorded"
+			}
+			if msg := saWidenCompatible(ssub, tsub, scope, depth+1); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
 func saWidenInstValue(w printer.EmitTextWriter, src, srcKind, tgtKind string, scope *saScope, nextTemp *int) (string, string, bool) {
+	return saWidenInstValueDepth(w, src, srcKind, tgtKind, scope, nextTemp, 0)
+}
+
+func saWidenInstValueDepth(w printer.EmitTextWriter, src, srcKind, tgtKind string, scope *saScope, nextTemp *int, depth int) (string, string, bool) {
+	if depth > 16 {
+		return "", "struct widening nested depth exceeded", true
+	}
 	if len(srcKind) <= 5 || srcKind[:5] != "inst:" || len(tgtKind) <= 5 || tgtKind[:5] != "inst:" {
 		return "", "", false
 	}
@@ -962,24 +1007,8 @@ func saWidenInstValue(w printer.EmitTextWriter, src, srcKind, tgtKind string, sc
 	if !ok {
 		return "", "", false
 	}
-	for _, f := range srcDef.fields {
-		sk := srcDef.fkinds[f.name]
-		if sk == "" {
-			sk = "i32"
-		}
-		dk, ok := tgtDef.fkinds[f.name]
-		if !ok {
-			return "", "struct widening refused: source field " + f.name + " missing in target layout", true
-		}
-		if dk == "" {
-			dk = "i32"
-		}
-		if sk != dk {
-			return "", "struct widening refused: field " + f.name + " kind mismatch (" + sk + " vs " + dk + ")", true
-		}
-		if sk == "inst" && srcDef.fsub[f.name] != tgtDef.fsub[f.name] {
-			return "", "struct widening refused: field " + f.name + " sub-layout mismatch", true
-		}
+	if msg := saWidenCompatible(srcDef, tgtDef, scope, depth); msg != "" {
+		return "", msg, true
 	}
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -1004,7 +1033,39 @@ func saWidenInstValue(w printer.EmitTextWriter, src, srcKind, tgtKind string, sc
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		if sk == "str" || sk == "arr" || sk == "inst" {
+		if sk == "inst" && srcDef.fsub[f.name] != tgtDef.fsub[f.name] {
+			// Recursive widen (JEV recursive_widen 1.0): differing
+			// sub-layouts widen field-by-field; a zero nested handle
+			// (missing optional field) stays zero, never widened from
+			// address 0. Both arms store into the same parent slot,
+			// so no phi conflict at the join.
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src, srcDef.offsets[f.name]))
+			z := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", z, t))
+			zL := fmt.Sprintf("L_wid_z_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nzL := fmt.Sprintf("L_wid_nz_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			joinL := fmt.Sprintf("L_wid_join_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", z, zL, nzL))
+			w.Write(fmt.Sprintf("%s:\n", zL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, tgtDef.offsets[f.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", joinL))
+			w.Write(fmt.Sprintf("%s:\n", nzL))
+			wh, msg, widened := saWidenInstValueDepth(w, t, "inst:"+srcDef.fsub[f.name], "inst:"+tgtDef.fsub[f.name], scope, nextTemp, depth+1)
+			if msg != "" {
+				return "", msg, true
+			}
+			if !widened {
+				return "", "struct widening refused: nested widening unavailable for field " + f.name, true
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, tgtDef.offsets[f.name], wh))
+			saReleaseOwnedTemp(w, scope, wh)
+			w.Write(fmt.Sprintf("  jmp %s\n", joinL))
+			w.Write(fmt.Sprintf("%s:\n", joinL))
+		} else if sk == "str" || sk == "arr" || sk == "inst" {
 			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src, srcDef.offsets[f.name]))
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, tgtDef.offsets[f.name], t))
 		} else if sk == "f64" {
@@ -1140,6 +1201,62 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
 			return saLowerNullishInstNull(w, be, retKind, scope, pos, refusals, nextTemp)
 		}
+	}
+	// Direct call in instance return position (JEV eval_then_widen_zero
+	// 0.98): evaluate the call, return directly on layout match, widen
+	// with a zero-preserving slot join on layout mismatch (a 0 handle,
+	// i.e. miss/undefined, stays 0 instead of becoming a zero-filled
+	// instance, because callers test !result), and refuse loudly on any
+	// other kind or widening mismatch.
+	if strings.HasPrefix(retKind, "inst:") && e != nil && e.Kind == ast.KindCallExpression {
+		ce := e.AsCallExpression()
+		op, _, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		if op == "0" {
+			return "0", ""
+		}
+		k, ok := scope.types[op]
+		if !ok {
+			k, ok = saCallRetKind(ce, scope)
+		}
+		if ok && k == retKind {
+			return op, ""
+		}
+		if ok && len(k) > 5 && k[:5] == "inst:" {
+			rslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", rslot))
+			saOwnTemp(scope, rslot)
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", rslot))
+			rz := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", rz, op))
+			rnzL := fmt.Sprintf("L_ret_nz_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			rendL := fmt.Sprintf("L_ret_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", rz, rendL, rnzL))
+			w.Write(fmt.Sprintf("%s:\n", rnzL))
+			wh, msg, widened := saWidenInstValue(w, op, k, retKind, scope, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if !widened {
+				return "", "struct return needs matching struct value"
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", rslot, wh))
+			saReleaseOwnedTemp(w, scope, wh)
+			w.Write(fmt.Sprintf("  jmp %s\n", rendL))
+			w.Write(fmt.Sprintf("%s:\n", rendL))
+			rout := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", rout, rslot))
+			saReleaseOwnedTemp(w, scope, rslot)
+			return rout, ""
+		}
+		return "", "struct return needs matching struct value"
 	}
 	if retKind == "boolean" {
 		return saEvalBool(w, e, scope, pos, refusals, nextTemp)

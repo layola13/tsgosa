@@ -2006,7 +2006,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 								eleOk = false
 								break
 							}
-							kindOf[k] = "bool"
+							kindOf[k] = "i32"
 							present[k]++
 						}
 						if !eleOk {

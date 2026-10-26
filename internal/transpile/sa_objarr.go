@@ -188,7 +188,7 @@ func saTopObjElemKinds(o saTopObjElem, classes map[string]*saClassDef) ([]string
 		}
 	}
 	for k := range o.boolFields {
-		kinds[k] = "bool"
+		kinds[k] = "i32"
 	}
 	for k := range o.arrFields {
 		kinds[k] = "arr"

@@ -6604,6 +6604,20 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 			return "", nil, msg
 		}
 		h, def = hh, bdef
+	case pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression):
+		// Index/call/new base (JEV eval_chain 0.97): resolve the base
+		// instance through the existing element/call/new evaluator,
+		// which materializes top arrays and releases the array handle
+		// after element extraction, so probing this arm never leaks a
+		// materialized receiver into a fall-through arm.
+		eh, edef, msg := saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" || edef == nil {
+			if msg == "" {
+				msg = "chained base did not resolve to a recorded layout"
+			}
+			return "", nil, msg
+		}
+		h, def = eh, edef
 	default:
 		return "", nil, "chained base is not a bound instance"
 	}
