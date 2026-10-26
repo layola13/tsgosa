@@ -1738,6 +1738,20 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, aliasOf map[str
 				fkind = ak
 			}
 		}
+		// 嵌套匿名布局别名修正（1147）：内联对象字段经 saIfaceFieldKind
+		// 合成的旧布局不带别名表，其别名-字面量联合域落 arr 槽；
+		// 以别名表重合成一次，域种按 saMergedFieldKind 修正（串字面量
+		// 联合即 str，JEV plain_str 1.0），并改指 fsub；同形时返回同名，
+		// 异种时按 _2 后缀另建，旧布局留给无别名上下文复用，不误删。
+		if pd.Type != nil && pd.Type.Kind == ast.KindTypeLiteral {
+			if lname, ok := saSynthAnonLayoutAlias(pd.Type, classes, aliasOf); ok {
+				fkind = "inst"
+				if def.fsub == nil {
+					def.fsub = map[string]string{}
+				}
+				def.fsub[fn.Text()] = lname
+			}
+		}
 		if _, dup := def.offsets[fn.Text()]; dup {
 			// 基展平字段重声明：守基偏移（形状证据同类分支）。
 			if ownIface[fn.Text()] {
@@ -1856,6 +1870,73 @@ func saIfaceFieldKind(ftn *ast.TypeNode, fname string, def *saClassDef, classes 
 // 同名异种 `_2` 递加，全程确定性；同形复用，空域/坏形 false；合成布局记
 // isSynth，不参与键集匹配（保既有多命中拒不变），仅注解直命中可用）。
 func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	return saSynthAnonLayoutAlias(ftn, classes, nil)
+}
+
+// saAnonLayoutEqual 判定既有合成布局与给定域集同形（域数/域名/种全等；
+// 种按当前表重算后比对，表变化致异种即不复用，后缀另建）。
+func saAnonLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.TypeNode, classes map[string]*saClassDef) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	probe := &saClassDef{fsub: map[string]string{}}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		if saIfaceFieldKind(fdefs[fname], fname, probe, classes) != def.fkinds[fname] {
+			return false
+		}
+	}
+	return true
+}
+
+// saAnonFieldKindAlias is the alias-aware field-kind computation for
+// anonymous layouts: inline object fields recurse through the alias-aware
+// synthesis (so doubly nested anonymous objects keep the alias table),
+// other fields go through saMergedFieldKind, which resolves alias-to-scalar
+// unions (string-literal unions -> str) and otherwise falls back to
+// saIfaceFieldKind. With a nil alias table it matches the old behaviour.
+func saAnonFieldKindAlias(ftn *ast.TypeNode, fname string, def *saClassDef, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) string {
+	if ftn != nil && ftn.Kind == ast.KindTypeLiteral {
+		if lname, ok := saSynthAnonLayoutAlias(ftn, classes, aliasOf); ok {
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[fname] = lname
+			return "inst"
+		}
+		return "arr"
+	}
+	return saMergedFieldKind(ftn, fname, def, classes, aliasOf)
+}
+
+// saAnonLayoutEqualAlias is saAnonLayoutEqual with alias-aware kind
+// recomputation: an existing layout whose field kinds differ under the
+// alias table (e.g. delete: arr vs str) is not reused; synthesis then
+// creates a suffixed layout instead of silently reusing the wrong kind.
+func saAnonLayoutEqualAlias(def *saClassDef, fields []string, fdefs map[string]*ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	probe := &saClassDef{fsub: map[string]string{}}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		if saAnonFieldKindAlias(fdefs[fname], fname, probe, classes, aliasOf) != def.fkinds[fname] {
+			return false
+		}
+	}
+	return true
+}
+
+// saSynthAnonLayoutAlias is saSynthAnonLayout with the alias table threaded
+// through (JEV thread_alias_into_synth_anon 0.99): nested alias-union
+// fields resolve to their scalar kind instead of the generic arr slot.
+// The plain saSynthAnonLayout wrapper below keeps the nil-alias behaviour
+// for call sites without an alias table.
+func saSynthAnonLayoutAlias(ftn *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	if ftn == nil || ftn.Kind != ast.KindTypeLiteral {
 		return "", false
 	}
@@ -1897,7 +1978,7 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 			name = fmt.Sprintf("%s_%d", base, n+1)
 		}
 		if def, ok := classes[name]; ok {
-			if saAnonLayoutEqual(def, fields, fdefs, classes) {
+			if saAnonLayoutEqualAlias(def, fields, fdefs, classes, aliasOf) {
 				return def.name, true
 			}
 			continue
@@ -1905,7 +1986,7 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}}
 		off := 0
 		for _, fname := range fields {
-			fkind := saIfaceFieldKind(fdefs[fname], fname, def, classes)
+			fkind := saAnonFieldKindAlias(fdefs[fname], fname, def, classes, aliasOf)
 			off = saAlignOff(off, fkind)
 			def.fields = append(def.fields, saClassField{name: fname, offset: off})
 			def.offsets[fname] = off
@@ -1921,24 +2002,6 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 		classes[name] = def
 		return def.name, true
 	}
-}
-
-// saAnonLayoutEqual 判定既有合成布局与给定域集同形（域数/域名/种全等；
-// 种按当前表重算后比对，表变化致异种即不复用，后缀另建）。
-func saAnonLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.TypeNode, classes map[string]*saClassDef) bool {
-	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
-		return false
-	}
-	probe := &saClassDef{fsub: map[string]string{}}
-	for i, fname := range fields {
-		if i >= len(def.fields) || def.fields[i].name != fname {
-			return false
-		}
-		if saIfaceFieldKind(fdefs[fname], fname, probe, classes) != def.fkinds[fname] {
-			return false
-		}
-	}
-	return true
 }
 
 // saAliasUnionScalarKind resolves a type (following alias chains) to a
