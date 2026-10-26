@@ -1038,6 +1038,17 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		}
 		e = pe.Expression.AsNode()
 	}
+	// Null return into a nullable instance return (TokenUsageRate |
+	// undefined erases to inst:TokenUsageRate): undefined in expression
+	// position is an unbound identifier, not a keyword, so it fell into
+	// the identifier branch below and refused with "struct return needs
+	// matching struct value". The subset rule is undefined ≡ 0 (same as
+	// ??/nullish, string returns, and i32 positions), so a null literal
+	// here is the 0 handle. (NullKeyword already reached "0" via the
+	// i32 fallback; this only closes the identifier form.)
+	if strings.HasPrefix(retKind, "inst:") && saIsNullLit(e, scope) {
+		return "0", ""
+	}
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
 			// 数组绑定直传（`return a`；串元数组同律，返回种 arr/arrStr 皆收；
@@ -3755,6 +3766,83 @@ func saLowerTernaryMapArmHandle(w printer.EmitTextWriter, e *ast.Node, scope *sa
 	return "", "not a map ternary arm"
 }
 
+// saTernaryInstArm classifies one ternary arm for the instance join:
+// ("inst:<layout>", true) for an instance operand, ("", true) for a
+// null/undefined arm, ("", false) otherwise. Kinds are resolved purely
+// (no emission) so the join can check layout agreement before emitting
+// either arm inside its branch.
+func saTernaryInstArm(e *ast.Node, scope *saScope) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	if saIsNullLit(e, scope) {
+		return "", true
+	}
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return "", false
+	}
+	if u.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[u.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			if _, ok := scope.classes[k[5:]]; ok {
+				return k, true
+			}
+		}
+		return "", false
+	}
+	if u.Kind == ast.KindPropertyAccessExpression {
+		pa := u.AsPropertyAccessExpression()
+		if pa != nil && pa.Name() != nil {
+			fname := pa.Name().Text()
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+					if def, ok := scope.classes[k[5:]]; ok {
+						if fk, ok := def.fkinds[fname]; ok && fk == "inst" {
+							if sub, ok := def.fsub[fname]; ok {
+								return "inst:" + sub, true
+							}
+						}
+					}
+				}
+			}
+		}
+		return "", false
+	}
+	if u.Kind == ast.KindCallExpression {
+		ce := u.AsCallExpression()
+		if ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.Name() != nil && (pa.Name().Text() == "find" || pa.Name().Text() == "findLast") {
+				if k, ok := saArrCallRet(ce, scope); ok && len(k) > 5 && k[:5] == "inst:" {
+					return k, true
+				}
+			}
+		}
+		if k, ok := saCallRetKind(ce, scope); ok && len(k) > 5 && k[:5] == "inst:" {
+			return k, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// saLowerTernaryInstArmHandle evaluates one instance ternary arm inside
+// its branch: null arms are the 0 handle, instance arms go through
+// saEvalInstOperand and must match the join layout.
+func saLowerTernaryInstArmHandle(w printer.EmitTextWriter, e *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if saIsNullLit(e, scope) {
+		return "0", ""
+	}
+	h, kind, msg := saEvalInstOperand(w, e, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if kind != want {
+		return "", "ternary instance arms must share a layout"
+	}
+	return h, ""
+}
+
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
 	// env-probe 折叠：未声明名 `typeof` 三元取臂直值（i32 经求值核，串经串核；
 	// 异形臂下探既有 lowering，原拒因不变）。
@@ -4090,6 +4178,55 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 				saSetMapVal(scope, res, vkind)
 			}
 			return res, false, ""
+		}
+	}
+	// Instance ternary join (JEV ptr_slot_join 1.0): same-layout
+	// instance arms, or one instance arm and one null/undefined arm,
+	// join through a ptr slot like the map ternary; different layouts
+	// refuse loudly instead of joining. This is the return-position
+	// counterpart of the ??-instance join (saLowerNullishInst).
+	if tk, tok := saTernaryInstArm(ce.WhenTrue, scope); tok {
+		if fk, fok := saTernaryInstArm(ce.WhenFalse, scope); fok {
+			kind := tk
+			if kind == "" {
+				kind = fk
+			}
+			if kind != "" {
+				if tk != "" && fk != "" && tk != fk {
+					return "", false, "ternary instance arms must share a layout"
+				}
+				slot := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+				tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+				*nextLabel++
+				fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+				*nextLabel++
+				endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+				w.Write(fmt.Sprintf("%s:\n", tL))
+				th, msgA := saLowerTernaryInstArmHandle(w, ce.WhenTrue, kind, scope, pos, refusals, nextTemp)
+				if msgA != "" {
+					return "", false, msgA
+				}
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, th))
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", fL))
+				fh, msgB := saLowerTernaryInstArmHandle(w, ce.WhenFalse, kind, scope, pos, refusals, nextTemp)
+				if msgB != "" {
+					return "", false, msgB
+				}
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fh))
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", endL))
+				res := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+				w.Write(fmt.Sprintf("  !%s\n", slot))
+				scope.types[res] = kind
+				return res, false, ""
+			}
 		}
 	}
 	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).
