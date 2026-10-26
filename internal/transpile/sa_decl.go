@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -2564,6 +2565,117 @@ func saTopRegexPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]
 // 部分纯洁不记半吊子；非纯（require 等）返回 false 留发射环拒。
 // 可变顶层（函数内赋值）无槽，另域 modstate。
 // 形状证据：封存 tryTopLevelConst:2894-2972。
+// saParseFoldIntText 解析可折整数文本：十进制/0x/0b/0o，下划线分隔符
+// 剥离；浮点（含 e/E 指数）与空文本一律拒（禁静默截断为 i32）。
+func saParseFoldIntText(text string) (*big.Int, bool) {
+	if text == "" || saIsFloatLit(text) {
+		return nil, false
+	}
+	t := strings.ReplaceAll(text, "_", "")
+	base := 10
+	if len(t) > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X' || t[1] == 'b' || t[1] == 'B' || t[1] == 'o' || t[1] == 'O') {
+		base = 0
+	}
+	v, ok := new(big.Int).SetString(t, base)
+	if !ok {
+		return nil, false
+	}
+	return v, true
+}
+
+// saFoldConstInt 对顶层 const 折叠求常量整数表达式：数字字面量、已折整
+// 数 const、括号、前缀 +/-、二元 + - * / % **。浮点、串、未知名、
+// 除零、非整除、** 负指数/过大指数、int64 溢出一律拒（ok=false），
+// 语句沿旧 kind-244 门大声拒，禁静默错译。/ 仅整除时折（TS 里 7/2
+// 得 3.5，折成 3 即错译，故拒）；% 符号跟被除数，与 TS 同形。
+func saFoldConstInt(e *ast.Node, consts map[string]string, strs map[string]bool) (*big.Int, bool) {
+	if e == nil {
+		return nil, false
+	}
+	switch e.Kind {
+	case ast.KindNumericLiteral:
+		return saParseFoldIntText(e.Text())
+	case ast.KindIdentifier:
+		if strs[e.Text()] {
+			return nil, false
+		}
+		t, ok := consts[e.Text()]
+		if !ok {
+			return nil, false
+		}
+		return saParseFoldIntText(t)
+	case ast.KindParenthesizedExpression:
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			return nil, false
+		}
+		return saFoldConstInt(pe.Expression.AsNode(), consts, strs)
+	case ast.KindPrefixUnaryExpression:
+		un := e.AsPrefixUnaryExpression()
+		if un == nil || un.Operand == nil {
+			return nil, false
+		}
+		v, ok := saFoldConstInt(un.Operand, consts, strs)
+		if !ok {
+			return nil, false
+		}
+		if un.Operator == ast.KindMinusToken {
+			return new(big.Int).Neg(v), true
+		}
+		if un.Operator == ast.KindPlusToken {
+			return v, true
+		}
+		return nil, false
+	case ast.KindBinaryExpression:
+		be := e.AsBinaryExpression()
+		if be == nil || be.OperatorToken == nil || be.Left == nil || be.Right == nil {
+			return nil, false
+		}
+		l, ok := saFoldConstInt(be.Left, consts, strs)
+		if !ok {
+			return nil, false
+		}
+		r, ok := saFoldConstInt(be.Right, consts, strs)
+		if !ok {
+			return nil, false
+		}
+		v := new(big.Int)
+		switch be.OperatorToken.Kind {
+		case ast.KindPlusToken:
+			v.Add(l, r)
+		case ast.KindMinusToken:
+			v.Sub(l, r)
+		case ast.KindAsteriskToken:
+			v.Mul(l, r)
+		case ast.KindSlashToken:
+			if r.Sign() == 0 {
+				return nil, false
+			}
+			if new(big.Int).Rem(l, r).Sign() != 0 {
+				return nil, false
+			}
+			v.Quo(l, r)
+		case ast.KindPercentToken:
+			if r.Sign() == 0 {
+				return nil, false
+			}
+			v.Rem(l, r)
+		case ast.KindAsteriskAsteriskToken:
+			if r.Sign() < 0 || r.Cmp(big.NewInt(64)) > 0 {
+				return nil, false
+			}
+			v.Exp(l, r, nil)
+		default:
+			return nil, false
+		}
+		if !v.IsInt64() {
+			return nil, false
+		}
+		return v, true
+	}
+	return nil, false
+}
+
 func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
@@ -2664,8 +2776,16 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 			}
 			consts[nm.Text()] = sb.String()
 			strs[nm.Text()] = true
+		case ast.KindBinaryExpression, ast.KindPrefixUnaryExpression, ast.KindParenthesizedExpression:
+			// 常量整数表达式折叠（JEV const_fold 0.65）：`2*60*60*1000`、
+			// `4*1024**2`、`MAX*2`（已折 const 作操作数）等；浮点/串/
+			// 未知名/除零/非整除/溢出一律整句不收，沿旧 kind-244 门。
+			v, ok := saFoldConstInt(init, consts, strs)
+			if !ok {
+				return false
+			}
+			consts[nm.Text()] = v.String()
 		case ast.KindTrueKeyword:
-			consts[nm.Text()] = "1"
 		case ast.KindFalseKeyword:
 			consts[nm.Text()] = "0"
 		case ast.KindPropertyAccessExpression:
