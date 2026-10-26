@@ -606,9 +606,91 @@ func saFoldInstanceOf(be *ast.BinaryExpression, scope *saScope) (string, bool) {
 
 // saCondOperand 求条件操作数：绑定标识符直接用（形状锁）；真/假折 1/0；
 // 其余走 saEvalI32（比较等先行发射临时量）。失败返回定位信息。
+// saCondStrFieldTruthy handles a string field as a condition (`o.f`,
+// `o?.f`): truthy iff the base is non-null and the field handle is a
+// non-empty string. Base-null yields falsy (exact for `?.`, an approximation
+// for direct `.` on a possibly-null base, which in shared code is non-null).
+// Returns handled=false when the field is not a recorded str field, so the
+// caller falls through to the existing i32 condition path.
+func saCondStrFieldTruthy(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, bool) {
+	pa := cond.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Expression == nil {
+		return "", "", false
+	}
+	field := pa.Name().Text()
+	var h string
+	var def *saClassDef
+	if pa.Expression.Kind == ast.KindPropertyAccessExpression {
+		ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" || cdef == nil {
+			return "", "", false
+		}
+		h, def = ch, cdef
+	} else {
+		hh, ddef, msg := saInstBase(pa.Expression, scope)
+		if msg == "" && ddef != nil {
+			h, def = hh, ddef
+		} else if pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindNewExpression {
+			hh2, ddef2, msg2 := saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+			if msg2 != "" || ddef2 == nil {
+				return "", "", false
+			}
+			h, def = hh2, ddef2
+		} else {
+			return "", "", false
+		}
+	}
+	if def.fkinds[field] != "str" {
+		return "", "", false
+	}
+	off, ok := def.offsets[field]
+	if !ok {
+		return "", "", false
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	saOwnTemp(scope, slot)
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, h))
+	nullL := fmt.Sprintf("L_cstrf_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL := fmt.Sprintf("L_cstrf_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_cstrf_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	fh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", fh, h, off))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fh))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	fh2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", fh2, slot))
+	saReleaseOwnedTemp(w, scope, slot)
+	ln := saLowerOptionalLength(w, fh2, scope, nextTemp)
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, ln))
+	saReleaseOwnedTemp(w, scope, ln)
+	return res, "", true
+}
+
 func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if cond == nil {
 		return "", "missing condition"
+	}
+	if cond.Kind == ast.KindPropertyAccessExpression {
+		if res, msg, handled := saCondStrFieldTruthy(w, cond, scope, pos, refusals, nextTemp); handled {
+			return res, msg
+		}
 	}
 	// 条件位串侧逻辑先行（括号透明；纯 i32 原形不动，零漂移）。
 	if inner := saPeelParens(cond); inner != nil && inner.Kind == ast.KindBinaryExpression {
