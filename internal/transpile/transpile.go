@@ -2472,6 +2472,28 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	for _, fn := range pendingFns {
 		out += fn
 	}
+	// Cross-file anon-layout harvest (JEV direct_call_field_load 0.98):
+	// synthesized instance layouts created while lowering this file, e.g. a
+	// function anonymous object return type, are recorded into the file class
+	// harvest under their layout names, so an importing file signature-layout
+	// seeding step can copy the defining layout into its own classes table.
+	// Previously only named classes were harvested, so a linked call returning
+	// an anonymous object left the caller call temp untyped and its field reads
+	// refused. Existing entries are never overwritten; local named definitions
+	// in the importing file still win at hook C-class.
+	if link != nil {
+		if link.classHarvest == nil {
+			link.classHarvest = map[string]saProgClass{}
+		}
+		for name, def := range classes {
+			if def == nil || !def.isSynth {
+				continue
+			}
+			if _, dup := link.classHarvest[name]; !dup {
+				link.classHarvest[name] = saProgClass{def: def, exported: true}
+			}
+		}
+	}
 	return out, refusals, warnings
 }
 

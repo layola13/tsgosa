@@ -1411,6 +1411,18 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 				if sig, ok := scope.funcs[ce.Expression.Text()]; ok {
 					return !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:"
 				}
+				// Cross-file call-result base (JEV direct_call_field_load 0.98):
+				// the callee lives under a qualified name in scope.funcs and
+				// is reachable only via the link table (saIsStrFieldRead already
+				// resolves it this way); without this, an inferred string
+				// declaration of a call-result str field in an importing
+				// file falls through to the i32 evaluator and refuses with
+				// "only .length member access lowerable".
+				if q, linked := saLinkCallee(scope, ce.Expression.Text()); linked {
+					if sig, ok := scope.funcs[q]; ok {
+						return !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:"
+					}
+				}
 			}
 			if ce.Expression.Kind == ast.KindPropertyAccessExpression && saStaticInstClass(e, scope) != "" {
 				return true
