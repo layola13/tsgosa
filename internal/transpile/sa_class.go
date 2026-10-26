@@ -3187,6 +3187,99 @@ func saMappedAliasLayout(ref *ast.TypeReferenceNode, classes map[string]*saClass
 	return "", false
 }
 
+// saPickLayout synthesizes a layout for Pick<Base, keys> (JEV
+// expand_utilities): the layout is the base layout with identical offsets
+// and size, but every non-picked field marked optional (fopt), so a literal
+// built with only the picked fields zero-fills the rest, and readers of
+// picked fields use the base offsets. Base must be a recorded interface;
+// unresolvable bases fall through to the caller's jsval fallback. The
+// layout name embeds the picked keys, so different picks do not collide.
+func saPickLayout(ref *ast.TypeReferenceNode, classes map[string]*saClassDef) (string, bool) {
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Pick" {
+		return "", false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 || ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[1] == nil {
+		return "", false
+	}
+	baseRef := ref.TypeArguments.Nodes[0].AsTypeReferenceNode()
+	if baseRef == nil || baseRef.TypeName == nil || baseRef.TypeName.Kind != ast.KindIdentifier || baseRef.TypeArguments != nil {
+		return "", false
+	}
+	bdef, ok := classes[baseRef.TypeName.Text()]
+	if !ok || !bdef.isIface {
+		return "", false
+	}
+	keys, ok := saPickKeys(ref.TypeArguments.Nodes[1])
+	if !ok || len(keys) == 0 {
+		return "", false
+	}
+	picked := map[string]bool{}
+	for _, k := range keys {
+		picked[k] = true
+	}
+	for _, k := range keys {
+		if _, ok := bdef.offsets[k]; !ok {
+			return "", false
+		}
+	}
+	name := "Pick_" + bdef.name + "_" + saMonoName(strings.Join(keys, "_"))
+	if def, ok := classes[name]; ok {
+		return def.name, true
+	}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}, fsub: map[string]string{}}
+	def.size = bdef.size
+	for _, f := range bdef.fields {
+		def.fields = append(def.fields, f)
+		def.offsets[f.name] = f.offset
+		def.fkinds[f.name] = bdef.fkinds[f.name]
+		def.fdefs[f.name] = bdef.fdefs[f.name]
+		if bdef.fsub != nil {
+			def.fsub[f.name] = bdef.fsub[f.name]
+		}
+		if bdef.fopt[f.name] || !picked[f.name] {
+			def.fopt[f.name] = true
+		}
+	}
+	classes[name] = def
+	return def.name, true
+}
+
+// saPickKeys extracts string-literal keys from a Pick key type (a single
+// string literal or a union of string literals, parenthesized tolerated).
+func saPickKeys(t *ast.TypeNode) ([]string, bool) {
+	if t == nil {
+		return nil, false
+	}
+	if t.Kind == ast.KindParenthesizedType {
+		if pt := t.AsParenthesizedTypeNode(); pt != nil {
+			return saPickKeys(pt.Type)
+		}
+		return nil, false
+	}
+	if t.Kind == ast.KindLiteralType {
+		if lit := t.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindStringLiteral {
+			return []string{lit.Text()}, true
+		}
+		return nil, false
+	}
+	if t.Kind == ast.KindUnionType {
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return nil, false
+		}
+		var keys []string
+		for _, m := range ut.Types.Nodes {
+			ks, ok := saPickKeys(m)
+			if !ok {
+				return nil, false
+			}
+			keys = append(keys, ks...)
+		}
+		return keys, true
+	}
+	return nil, false
+}
+
 // saHomomorphicMapped 验证用户同构映射（`{[K in keyof Y]: Y[K]}`；`?`/只读
 // 饰词容忍（槽位不变）；`as` 仅容无子句与 `as string`；Y 须为实参名或
 // 未记录泛型占位，定目标异名拒）。

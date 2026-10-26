@@ -520,7 +520,7 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf 
 	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
 		return "", false
 	}
-	if ref.TypeName.Text() != "Record" {
+	if ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map" {
 		return "", false
 	}
 	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {

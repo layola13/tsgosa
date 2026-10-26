@@ -6136,6 +6136,24 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				return h, ""
 			}
 		}
+		// Object literal into jsval (return sites delegate here, as do
+		// jsval call args): materialize with an inferred layout, transfer
+		// the fresh handle into the box (consume, so the return/call
+		// release-except-op does not free the box payload), then box via
+		// the sa_std branch helper (no new inline helper).
+		if lit := saUnwrapTransparent(a); lit != nil && lit.Kind == ast.KindObjectLiteralExpression {
+			h, _, msg := saLowerObjectLiteral(w, lit, "", scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			saConsumeOwn(scope, h)
+			scope.addImport("sa_std/ts_jsval.sa")
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_inst(%s)\n", bh, h))
+			saOwnTemp(scope, bh)
+			return bh, ""
+		}
 		// jsval map 读实参直传（`?.` 读经 saEvalI32 沿取长门拒；
 		// 与 (2) 声明位同径，守卫 btree_map_get 直求柄）。
 		if saIsJsValEqOperand(a, scope) {

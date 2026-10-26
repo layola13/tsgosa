@@ -1851,6 +1851,21 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 	if k, ok := saReturnKind(t); ok {
 		return k, true
 	}
+	// Transparent single-arg wrappers (JEV web-return slice 1): Promise<X>
+	// erases to X (async erasure; callers also unwrap, this makes the resolver
+	// robust for direct callers), NonNullable<X>/Readonly<X> have no runtime
+	// effect, so they erase to X. Recursion terminates: the argument is a
+	// strict sub-node.
+	if t != nil && t.Kind == ast.KindTypeReference {
+		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			switch ref.TypeName.Text() {
+			case "Promise", "NonNullable", "Readonly":
+				if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+					return saReturnKindRef(ref.TypeArguments.Nodes[0], classes, aliasOf)
+				}
+			}
+		}
+	}
 	if t == nil {
 		return "", false
 	}
@@ -1906,6 +1921,40 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		if lname, ok := saSynthUnionLayout(t, aliasOf, classes); ok {
 			return "inst:" + lname, true
 		}
+		// Gated union -> jsval (JEV jsval_opaque): a union with at least one
+		// jsval-opaque member and no unresolvable member boxes wholly into
+		// jsval (every member kind has a call-site boxing path). The gate
+		// matters: plain mixed unions (string|number) have no jsval member
+		// and keep refusing loudly, as before.
+		if ut := t.AsUnionTypeNode(); ut != nil && ut.Types != nil {
+			sawJsval := false
+			allOk := true
+			for _, m := range ut.Types.Nodes {
+				if m == nil {
+					allOk = false
+					break
+				}
+				if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+					continue
+				}
+				if m.Kind == ast.KindLiteralType {
+					if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+						continue
+					}
+				}
+				k, ok := saReturnKindRef(m, classes, aliasOf)
+				if !ok {
+					allOk = false
+					break
+				}
+				if k == "jsval" {
+					sawJsval = true
+				}
+			}
+			if allOk && sawJsval {
+				return "jsval", true
+			}
+		}
 		return "", false
 	}
 	if saIsFunctionAnnotation(t, aliasOf) {
@@ -1941,11 +1990,13 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 				return "inst:" + qn, true
 			}
 		}
-		return "", false
+		// Unresolvable qualified named type -> jsval opaque (same JEV rule).
+		return "jsval", true
 	}
 	if ref.TypeArguments != nil {
 		// 泛型返回具化（`(): Box<i32>` 记 `inst:Box_i32`；不可具化沿旧门；
-		// 封存 layoutOfAnnotation 同形）+ Record 返回记 map 种（Z1）。
+		// 封存 layoutOfAnnotation 同形）+ Record/Map 返回记 map 种（Z1；
+		// Map<string,T> mirrors Record<string,T> per JEV expand_utilities).
 		if len(ref.TypeArguments.Nodes) > 0 {
 			if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
 				return "inst:" + lname, true
@@ -1953,6 +2004,24 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 			if _, ok := saRecordValueKind(t, classes, aliasOf); ok {
 				return "map", true
 			}
+			// 同构映射别名（Partial<X>/Required<X>/Readonly<X> 布局恒等）。
+			if lname, ok := saMappedAliasLayout(ref, classes, aliasOf); ok {
+				return "inst:" + lname, true
+			}
+			// Pick<X, keys> 合成布局（基布局恒等， 非 picked 域记可选零填）。
+			if lname, ok := saPickLayout(ref, classes); ok {
+				return "inst:" + lname, true
+			}
+			// Set<T> -> arr / arrStr (JEV expand_utilities).
+			if ref.TypeName.Text() == "Set" && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+				if ref.TypeArguments.Nodes[0].Kind == ast.KindStringKeyword {
+					return "arrStr", true
+				}
+				return "arr", true
+			}
+			// Unresolvable generic named type -> jsval opaque (JEV
+			// jsval_opaque 0.94: external/builtin generic definitions).
+			return "jsval", true
 		}
 		return "", false
 	}
@@ -1967,7 +2036,12 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 	if lname, ok := saSynthUnionLayout(t, aliasOf, classes); ok {
 		return "inst:" + lname, true
 	}
-	return "", false
+	// Unresolvable named return type -> jsval opaque (JEV jsval_opaque
+	// 0.94): imported/external/builtin definitions outside the scanned
+	// program, e.g. Promise<CodexCompatibleCliSettings>, Blob, Uint8Array.
+	// Reached only for TypeReference kinds (the non-reference kinds return
+	// false above), and only after every layout/alias/synth attempt fails.
+	return "jsval", true
 }
 
 // saGenericHandleKind 认未记录泛型/用户类型注解为句柄种（`Box<i32>`、裸 `Box`
