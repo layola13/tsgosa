@@ -409,6 +409,93 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 	return v, ""
 }
 
+// saSetSpreadSrc detects `new Set(array)` as a spread source, returning
+// the source array node. Other Set constructions (literal seeds, etc.)
+// return nil and follow the existing Set path.
+func saSetSpreadSrc(e *ast.Node) *ast.Node {
+	if e == nil {
+		return nil
+	}
+	// Unwrap parens transparently.
+	for e != nil && e.Kind == ast.KindParenthesizedExpression {
+		pe := e.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		e = pe.Expression.AsNode()
+	}
+	if e == nil || e.Kind != ast.KindNewExpression {
+		return nil
+	}
+	ne := e.AsNewExpression()
+	if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+		return nil
+	}
+	if ne.Expression.Text() != "Set" {
+		return nil
+	}
+	if ne.Arguments == nil || len(ne.Arguments.Nodes) != 1 || ne.Arguments.Nodes[0] == nil {
+		return nil
+	}
+	return ne.Arguments.Nodes[0].AsNode()
+}
+
+// saLowerSetSpreadDedup emits a dedup loop for `[...new Set(src)]` (JEV
+// dedup_loop, 0.92): iterate src, push each element into h only if h
+// does not already contain it (string content equality via
+// @ts_str_arr_scan, i32 equality via @ts_arr_scan). First-occurrence
+// order matches JS Set. srcIsStr reports whether src elements are strings.
+func saLowerSetSpreadDedup(w printer.EmitTextWriter, h, src string, srcIsStr bool, scope *saScope, nextTemp *int) {
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, src))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, src))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_dedup_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_dedup_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	pushL := fmt.Sprintf("L_dedup_push_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nextL := fmt.Sprintf("L_dedup_next_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_dedup_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	found := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if srcIsStr {
+		scope.addImport("sa_std/ts_string.sa")
+		np, nl := saExpandStr(w, el, nextTemp)
+		w.Write(fmt.Sprintf("  %s = call @ts_str_arr_scan(%s, %s, %s, 0, 0, 0, 0)\n", found, h, np, nl))
+	} else {
+		scope.addImport("sa_std/ts_array.sa")
+		w.Write(fmt.Sprintf("  %s = call @ts_arr_scan(%s, %s, 0, 0, 0, 0)\n", found, h, el))
+	}
+	// found is an i32 scan result, not a heap handle: no release here.
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", found, nextL, pushL))
+	w.Write(fmt.Sprintf("%s:\n", pushL))
+	saLowerArrayPush(w, h, el, scope, nextTemp)
+	w.Write(fmt.Sprintf("  jmp %s\n", nextL))
+	w.Write(fmt.Sprintf("%s:\n", nextL))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+}
+
 func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	al := n.AsArrayLiteralExpression()
 	// spread 字面量（`[...a, 3]`）经空数组 + 逐元 push/整片合并
@@ -427,6 +514,20 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		isStr := false
 		for _, el := range al.Elements.Nodes {
 			if el.Kind == ast.KindSpreadElement {
+				// `[...new Set(src)]` dedup loop (JEV dedup_loop): no Set is
+				// constructed; src elements are deduplicated by content.
+				if setSrc := saSetSpreadSrc(el.AsSpreadElement().Expression.AsNode()); setSrc != nil {
+					src, msg := saArrValueOf(w, setSrc, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					srcIsStr := scope.arrStr != nil && scope.arrStr[src]
+					if srcIsStr {
+						isStr = true
+					}
+					saLowerSetSpreadDedup(w, h, src, srcIsStr, scope, nextTemp)
+					continue
+				}
 				sv, msg := saArrValueOf(w, el.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
 				if msg != "" {
 					// 顶层 const 数组展开：i32 与串元快照均可物化后整片合并
