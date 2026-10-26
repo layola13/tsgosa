@@ -3165,6 +3165,19 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			if len(argNodes) != 1 {
 				return "", false, "Number.isInteger/isSafeInteger takes one argument"
 			}
+			// f64 isSafeInteger (JEV f64_safe_check 1.0): NaN +
+			// ±(2^53-1) range + fptosi/sitofp round-trip integrality;
+			// fptosi runs only after the NaN/range guards pass, so
+			// NaN/Inf never reach it. isInteger on f64 keeps refusing
+			// (no range-free finite check in this batch; only
+			// isSafeInteger is a shared blocker).
+			if pa.Name() != nil && pa.Name().Text() == "isSafeInteger" && saIsF64Operand(argNodes[0], scope) {
+				fv, fmsg := saEvalF64(w, argNodes[0], scope, pos, refusals, nextTemp)
+				if fmsg != "" {
+					return "", false, fmsg
+				}
+				return saLowerIsSafeIntegerF64(w, fv, nextTemp), false, ""
+			}
 			if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
 				return "", false, msg
 			}

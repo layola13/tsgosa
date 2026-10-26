@@ -46,6 +46,70 @@ func saIsNumberIsInteger(ce *ast.CallExpression) bool {
 	return nm == "isInteger" || nm == "isSafeInteger"
 }
 
+// saLowerIsSafeIntegerF64 lowers Number.isSafeInteger(v) for an f64
+// operand v (JEV f64_safe_check 1.0): NaN via fcmp_ne v,v, range via
+// fcmp_ge/le against ±(2^53-1), integrality via fptosi/sitofp
+// round-trip fcmp_eq. Branch chain: fptosi is reached only after the
+// NaN and range guards pass, so NaN/Inf never reach fptosi. Result is
+// an i32 0/1 temp joined through an i32 slot (f64 ternary join analog).
+func saLowerIsSafeIntegerF64(w printer.EmitTextWriter, v string, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 4\n", slot))
+	loL := fmt.Sprintf("L_safe_lo_%d", *nextTemp)
+	*nextTemp++
+	hiL := fmt.Sprintf("L_safe_hi_%d", *nextTemp)
+	*nextTemp++
+	intL := fmt.Sprintf("L_safe_int_%d", *nextTemp)
+	*nextTemp++
+	trueL := fmt.Sprintf("L_safe_t_%d", *nextTemp)
+	*nextTemp++
+	falseL := fmt.Sprintf("L_safe_f_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_safe_end_%d", *nextTemp)
+	*nextTemp++
+	isnan := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", isnan, v, v))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnan, falseL, loL))
+	w.Write(fmt.Sprintf("%s:\n", loL))
+	nb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fneg 9007199254740991.0\n", nb))
+	lo := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ge %s, %s\n", lo, v, nb))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", lo, hiL, falseL))
+	w.Write(fmt.Sprintf("%s:\n", hiL))
+	hi := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_le %s, 9007199254740991.0\n", hi, v))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hi, intL, falseL))
+	w.Write(fmt.Sprintf("%s:\n", intL))
+	ti := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fptosi %s\n", ti, v))
+	back := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sitofp %s\n", back, ti))
+	eq := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_eq %s, %s\n", eq, v, back))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, trueL, falseL))
+	w.Write(fmt.Sprintf("%s:\n", trueL))
+	w.Write(fmt.Sprintf("  store %s + 0, 1 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", falseL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res
+}
+
 // saEvalMathAbs 求 `Math.abs(x)`（形状证据：封存 lowerMathInline abs:5754-5780
 // 分支汇合原样：alloc 8 槽 + `sge x, 0` + br + 两臂 store + end load + 释放。
 // 其余 Math.* 本薄口大声拒；`Math.abs` 别名调用不认（无 mathAliases 表，拒）。
@@ -306,6 +370,21 @@ func saEvalMathMinMax(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	if len(args) != 2 {
 		return "", false, "Math." + method + " takes two scalars or one spread slice"
 	}
+	// f64 min/max (JEV fcmp_slot 0.98): either side float forces the
+	// fcmp branch + f64 slot join (NaN arms store the NaN side itself,
+	// so Math.min(NaN, x) stays NaN as in JS); i32 sides convert via
+	// sitofp, int literals pass through in fcmp position.
+	if saIsF64Operand(args[0], scope) || saIsF64Operand(args[1], scope) {
+		fa, fmsg := saLowerMathMinMaxF64Arg(w, args[0], scope, pos, refusals, nextTemp)
+		if fmsg != "" {
+			return "", false, fmsg
+		}
+		fb, fmsg := saLowerMathMinMaxF64Arg(w, args[1], scope, pos, refusals, nextTemp)
+		if fmsg != "" {
+			return "", false, fmsg
+		}
+		return saLowerMathMinMaxF64(w, method, fa, fb, scope, nextTemp), false, ""
+	}
 	a0, msg0 := saMathI32Arg(w, args[0], scope, pos, refusals, nextTemp)
 	if msg0 != "" {
 		return "", false, msg0
@@ -326,6 +405,89 @@ func saEvalMathMinMax(w printer.EmitTextWriter, method string, ce *ast.CallExpre
 	w.Write(fmt.Sprintf("  %s = call @ts_math_minmax(%s, %s, %s)\n", out, a0, a1, ismax))
 	saOwnTemp(scope, out)
 	return out, false, ""
+}
+
+// saLowerMathMinMaxF64Arg evaluates one Math.min/max side in f64
+// position: f64 operands via saF64Side, int literals pass through in
+// fcmp position, i32 bindings convert via sitofp (an i32 register in
+// fcmp position would be a type error).
+func saLowerMathMinMaxF64Arg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if saIsF64Operand(a, scope) {
+		return saF64Side(w, a, scope, pos, refusals, nextTemp)
+	}
+	v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if saIsPureIntText(v) {
+		return v, ""
+	}
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sitofp %s\n", t, v))
+	return t, ""
+}
+
+// saLowerMathMinMaxF64 lowers Math.min/max with f64 operands (JEV
+// fcmp_slot 0.98): fcmp branch joining the arms through an f64 slot
+// (f64 ternary join analog). NaN arms store the NaN side itself, so
+// Math.min(NaN, x) stays NaN as in JS (a plain fcmp branch would
+// wrongly pick the other side).
+func saLowerMathMinMaxF64(w printer.EmitTextWriter, method, a, b string, scope *saScope, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	chkBL := fmt.Sprintf("L_mm_chkB_%d", *nextTemp)
+	*nextTemp++
+	cmpL := fmt.Sprintf("L_mm_cmp_%d", *nextTemp)
+	*nextTemp++
+	aL := fmt.Sprintf("L_mm_a_%d", *nextTemp)
+	*nextTemp++
+	bL := fmt.Sprintf("L_mm_b_%d", *nextTemp)
+	*nextTemp++
+	nanAL := fmt.Sprintf("L_mm_nanA_%d", *nextTemp)
+	*nextTemp++
+	nanBL := fmt.Sprintf("L_mm_nanB_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_mm_end_%d", *nextTemp)
+	*nextTemp++
+	nanA := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", nanA, a, a))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nanA, nanAL, chkBL))
+	w.Write(fmt.Sprintf("%s:\n", chkBL))
+	nanB := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", nanB, b, b))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nanB, nanBL, cmpL))
+	w.Write(fmt.Sprintf("%s:\n", cmpL))
+	cmp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if method == "max" {
+		w.Write(fmt.Sprintf("  %s = fcmp_gt %s, %s\n", cmp, a, b))
+	} else {
+		w.Write(fmt.Sprintf("  %s = fcmp_lt %s, %s\n", cmp, a, b))
+	}
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, aL, bL))
+	w.Write(fmt.Sprintf("%s:\n", aL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, a))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", bL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, b))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", nanAL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, a))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", nanBL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, b))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[res] = "f64"
+	return res
 }
 
 // saEvalMathSqrt 求 `Math.sqrt(x)`（形状证据：封存 lowerMathSqrt:5841-5891

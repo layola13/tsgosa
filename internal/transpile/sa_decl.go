@@ -1382,7 +1382,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
 			be.OperatorToken.Kind == ast.KindBarBarToken &&
-			saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
+			((saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope)) ||
+				(saIsStrValue(be.Left, scope) && saIsNullLit(be.Right, scope)) ||
+				(saIsNullLit(be.Left, scope) && saIsStrValue(be.Right, scope))) {
 			// 无注解 `||` 串推断（双臂皆串值即串；与空合/拼接分支同形；
 			// 求值走 saLowerOrStr 真值槽，混种沿求值门大声拒）。
 			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)

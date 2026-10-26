@@ -163,8 +163,11 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken {
 			// `||` 串位（双臂皆串值即串；求值走 saLowerOrStr 真值槽；
-			// 混种沿求值门大声拒，禁误路由）。
-			return saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope)
+			// 串 || null 亦串（求值走 saLowerOrStrNull 真值槽，假臂
+			// 为 0 句柄即 null）；混种沿求值门大声拒，禁误路由）。
+			return (saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope)) ||
+				(saIsStrValue(be.Left, scope) && saIsNullLit(be.Right, scope)) ||
+				(saIsNullLit(be.Left, scope) && saIsStrValue(be.Right, scope))
 		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken {
 			// A + chain is string only if some operand is string-VALUED (i32-returning string
@@ -615,6 +618,17 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken &&
 			saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
 			return saLowerOrStr(w, be, scope, pos, refusals, nextTemp)
+		}
+		// str || null (JEV truthy_ptr_slot 0.92): truthy left keeps the
+		// string, otherwise the 0 handle (null); mirrors saLowerOrStr.
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken &&
+			saIsStrValue(be.Left, scope) && saIsNullLit(be.Right, scope) {
+			return saLowerOrStrNull(w, be, scope, pos, refusals, nextTemp)
+		}
+		// null || str: left is constant falsy, result is the right arm.
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken &&
+			saIsNullLit(be.Left, scope) && saIsStrValue(be.Right, scope) {
+			return saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
 		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
 			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
@@ -1469,7 +1483,58 @@ func saLowerOrStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saS
 	return out, ""
 }
 
-// saStringContentEq 串内容相等（等长 + 零偏 indexOf 命中；negate 取反。
+// saStringContentEq
+// saLowerOrStrNull lowers str || null (JEV truthy_ptr_slot 0.92):
+// saLowerOrStr with a null false arm — left truthy (handle != 0 AND
+// len != 0) keeps the string, otherwise the result is the 0 handle
+// (null), joined through a ptr slot exactly like saLowerOrStr.
+func saLowerOrStrNull(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	l, msg := saEvalStr(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if l == "0" {
+		return "0", ""
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	nonNull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	checkL := fmt.Sprintf("L_orn_check_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	tL := fmt.Sprintf("L_orn_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_orn_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_orn_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonNull, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonNull, checkL, fL))
+	w.Write(fmt.Sprintf("%s:\n", checkL))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", bl, l))
+	nonEmpty := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonEmpty, bl))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonEmpty, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	saOwnTemp(scope, out)
+	return out, ""
+}
+
+// 串内容相等（等长 + 零偏 indexOf 命中；negate 取反。
 // 形状证据：封存 stringContentEq:9146-9166）。
 func saStringContentEq(w printer.EmitTextWriter, l, r string, negate bool, scope *saScope, nextTemp *int) string {
 	// R2 回迁映射：内容判等语义由 `sci/sa_std/ts_string.sa` `@ts_str_equals`
