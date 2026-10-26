@@ -1541,7 +1541,7 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 
 // saRecordIface 记录接口布局（i32 字段；无码。形状证据：封存
 // lowerTypeDecl 的布局记录一半；方法/索引签名大声拒）。
-func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saRecordIface(st *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	decl := st.AsInterfaceDeclaration()
 	nm := st.Name()
 	if nm == nil || nm.Kind != ast.KindIdentifier {
@@ -1675,6 +1675,15 @@ func saRecordIface(st *ast.Node, classes map[string]*saClassDef, pos func(int) (
 		}
 		pd := m.AsPropertySignatureDeclaration()
 		fkind := saIfaceFieldKind(pd.Type, fn.Text(), def, classes)
+		// 别名字段种修正（1612）：接口域为未记录别名引用时，saIfaceFieldKind
+		// 落 arr 句柄槽；若该别名消解为标量（串字面量联合等），按标量种
+		// 重记（与 saRecordTypeAlias 的 saResolveAliasKind 门同律；inst
+		// 域不走此支，因其 fkind 已为 inst 而非 arr）。
+		if fkind == "arr" {
+			if ak, ok := saResolveAliasKind(pd.Type, aliasOf); ok && (ak == "str" || ak == "i32" || ak == "bool" || ak == "f64") {
+				fkind = ak
+			}
+		}
 		if _, dup := def.offsets[fn.Text()]; dup {
 			// 基展平字段重声明：守基偏移（形状证据同类分支）。
 			if ownIface[fn.Text()] {

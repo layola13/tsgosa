@@ -1661,7 +1661,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		if st.Kind == ast.KindInterfaceDeclaration {
 			// 接口布局预扫成表（对象字面量匹配用；无码）。
-			saRecordIface(st, classes, pos, &refusals)
+			saRecordIface(st, classes, aliasOf, pos, &refusals)
 			continue
 		}
 		if st.Kind == ast.KindTypeAliasDeclaration {
