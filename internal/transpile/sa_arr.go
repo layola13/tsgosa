@@ -425,6 +425,630 @@ func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
 	return paramName, fieldName, neg, other, true
 }
 
+// saOrDisjunct is one arm of a .find OR predicate (JEV inline_loop_or
+// 0.98): either a field equality (isIncludes false) or an optional-chain
+// string-array includes check (isIncludes true). other is the equality
+// right-hand side or the includes argument; neg applies to equalities only.
+type saOrDisjunct struct {
+	isIncludes bool
+	field      string
+	neg        bool
+	other      *ast.Node
+}
+
+// saParseEqDisjunct parses one equality between a field of paramName and
+// another expression (either side may hold the field), mirroring
+// saFindEqGuard's single-equality shape.
+func saParseEqDisjunct(expr *ast.Node, paramName string) (string, bool, *ast.Node, bool) {
+	expr = saUnwrapTransparent(expr)
+	if expr == nil || expr.Kind != ast.KindBinaryExpression {
+		return "", false, nil, false
+	}
+	be := expr.AsBinaryExpression()
+	if be == nil {
+		return "", false, nil, false
+	}
+	neg := false
+	switch saBinaryOpKind(be) {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		neg = true
+	default:
+		return "", false, nil, false
+	}
+	var fieldName string
+	var other *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindPropertyAccessExpression {
+			pa := side.AsPropertyAccessExpression()
+			if pa != nil && pa.QuestionDotToken == nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier &&
+				pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == paramName {
+				if fieldName != "" {
+					return "", false, nil, false
+				}
+				fieldName = pa.Name().Text()
+				continue
+			}
+		}
+		if other != nil {
+			return "", false, nil, false
+		}
+		other = side
+	}
+	if fieldName == "" || other == nil {
+		return "", false, nil, false
+	}
+	if other.Kind == ast.KindIdentifier && other.Text() == paramName {
+		return "", false, nil, false
+	}
+	return fieldName, neg, other, true
+}
+
+// saParseIncludesDisjunct parses `param.field?.includes(arg)`: an optional
+// chain over a field of paramName, exactly one argument, not the parameter
+// itself. The ?. token may sit on the method property access or on the
+// call node depending on the parser's chain representation; either counts.
+func saParseIncludesDisjunct(expr *ast.Node, paramName string) (string, *ast.Node, bool) {
+	expr = saUnwrapTransparent(expr)
+	if expr == nil || expr.Kind != ast.KindCallExpression {
+		return "", nil, false
+	}
+	ce := expr.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", nil, false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "includes" {
+		return "", nil, false
+	}
+	if pa.QuestionDotToken == nil && ce.QuestionDotToken == nil {
+		return "", nil, false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", nil, false
+	}
+	base := pa.Expression.AsPropertyAccessExpression()
+	if base == nil || base.QuestionDotToken != nil || base.Name() == nil || base.Name().Kind != ast.KindIdentifier ||
+		base.Expression == nil || base.Expression.Kind != ast.KindIdentifier || base.Expression.Text() != paramName {
+		return "", nil, false
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return "", nil, false
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg == nil || (arg.Kind == ast.KindIdentifier && arg.Text() == paramName) {
+		return "", nil, false
+	}
+	return base.Name().Text(), arg, true
+}
+
+// saFindOrGuard detects a .find callback whose body is a || chain (or a
+// single includes check) of equality disjuncts and optional-chain includes
+// disjuncts over the first parameter. A single equality is left to
+// saFindEqGuard's branch, so this guard declines it.
+func saFindOrGuard(cb *ast.Node) (string, []saOrDisjunct, bool) {
+	if cb == nil {
+		return "", nil, false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return "", nil, false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", nil, false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	paramName := nm.Text()
+	body := cb.Body()
+	if body == nil {
+		return "", nil, false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", nil, false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return "", nil, false
+		}
+		expr = rs.Expression
+	}
+	var parts []*ast.Node
+	var flatten func(n *ast.Node) bool
+	flatten = func(n *ast.Node) bool {
+		n = saUnwrapTransparent(n)
+		if n != nil && n.Kind == ast.KindBinaryExpression {
+			if be := n.AsBinaryExpression(); be != nil && saBinaryOpKind(be) == ast.KindBarBarToken {
+				return flatten(be.Left) && flatten(be.Right)
+			}
+		}
+		parts = append(parts, n)
+		return true
+	}
+	if !flatten(expr) || len(parts) == 0 {
+		return "", nil, false
+	}
+	if len(parts) == 1 {
+		if _, _, _, ok := saParseEqDisjunct(parts[0], paramName); ok {
+			return "", nil, false
+		}
+	}
+	var out []saOrDisjunct
+	for _, part := range parts {
+		if f, neg, other, ok := saParseEqDisjunct(part, paramName); ok {
+			out = append(out, saOrDisjunct{field: f, neg: neg, other: other})
+			continue
+		}
+		if f, arg, ok := saParseIncludesDisjunct(part, paramName); ok {
+			out = append(out, saOrDisjunct{isIncludes: true, field: f, other: arg})
+			continue
+		}
+		return "", nil, false
+	}
+	return paramName, out, true
+}
+
+// saEmitEqDisjunct emits one equality disjunct's evaluation for element
+// handle el, branching to trueL on match and falseL otherwise. It mirrors
+// the equality-find loop's arms exactly, including the zero-handle arm for
+// missing str fields (a zero field equals only a zero right-hand side, so
+// ts_str_equals never sees a null handle) and the both-arms release rule
+// for per-iteration owned right-hand sides (hoisted handles, keyed by
+// hoistKey in hoisted, are released once after the loop by the caller).
+func saEmitEqDisjunct(w printer.EmitTextWriter, el string, def *saClassDef, d saOrDisjunct, hoisted map[string]string, hoistKey, trueL, falseL string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) string {
+	fkind, ok := def.fkinds[d.field]
+	if !ok {
+		return "find OR equality field not in element layout"
+	}
+	off, ok := def.offsets[d.field]
+	if !ok {
+		return "find OR equality field has no layout offset"
+	}
+	if fkind == "str" {
+		var rhs string
+		rhsPerIter := false
+		if h, ok := hoisted[hoistKey]; ok {
+			rhs = h
+		} else {
+			h, msg := saEvalStr(w, d.other, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			rhs, rhsPerIter = h, true
+		}
+		rhsOwned := false
+		if rhsPerIter {
+			if b := saOwnOf(scope, rhs); b != nil && b.heap && !b.consumed && !b.released {
+				rhsOwned = true
+			}
+		}
+		releaseRhs := func() {
+			if rhsOwned {
+				w.Write(fmt.Sprintf("  !%s\n", rhs))
+			}
+		}
+		fh := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", fh, el, off))
+		fz := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fz, fh))
+		fzL := fmt.Sprintf("L_feq_fz_%d", *nextLabel)
+		*nextLabel++
+		fnzL := fmt.Sprintf("L_feq_fnz_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fz, fzL, fnzL))
+		w.Write(fmt.Sprintf("%s:\n", fzL))
+		eqv := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
+		if d.neg {
+			pz := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+			releaseRhs()
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, trueL, falseL))
+		} else {
+			releaseRhs()
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, trueL, falseL))
+		}
+		w.Write(fmt.Sprintf("%s:\n", fnzL))
+		pred := saStringContentEq(w, fh, rhs, d.neg, scope, nextTemp)
+		releaseRhs()
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, trueL, falseL))
+		if rhsOwned {
+			if b := saOwnOf(scope, rhs); b != nil {
+				b.released = true
+			}
+		}
+		return ""
+	}
+	if fkind == "i32" || fkind == "bool" {
+		fv := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", fv, el, off))
+		rv, msg := saEvalI32(w, d.other, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		op := "eq"
+		if d.neg {
+			op = "ne"
+		}
+		pred := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", pred, op, fv, rv))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, trueL, falseL))
+		return ""
+	}
+	return "find OR equality field kind not supported: " + fkind
+}
+
+// saEmitIncludesDisjunct emits one optional-chain includes disjunct's
+// evaluation for element handle el, branching to trueL when the element's
+// string-array field contains the argument and to falseL otherwise. A
+// missing (zero) field handle means false, never a fault. The inner scan
+// reuses the string-array header layout (+0 data ptr, +8 u64 length) and
+// 4-byte element slots, exactly as saArrElemAt reads them.
+func saEmitIncludesDisjunct(w printer.EmitTextWriter, el string, def *saClassDef, d saOrDisjunct, hoisted map[string]string, hoistKey, trueL, falseL string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) string {
+	fkind, ok := def.fkinds[d.field]
+	if !ok {
+		return "find OR includes field not in element layout"
+	}
+	if fkind != "arr" {
+		return "find OR includes field is not a string array field"
+	}
+	off, ok := def.offsets[d.field]
+	if !ok {
+		return "find OR includes field has no layout offset"
+	}
+	var rhs string
+	rhsPerIter := false
+	if h, ok := hoisted[hoistKey]; ok {
+		rhs = h
+	} else {
+		h, msg := saEvalStr(w, d.other, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		rhs, rhsPerIter = h, true
+	}
+	rhsOwned := false
+	if rhsPerIter {
+		if b := saOwnOf(scope, rhs); b != nil && b.heap && !b.consumed && !b.released {
+			rhsOwned = true
+		}
+	}
+	releaseRhs := func() {
+		if rhsOwned {
+			w.Write(fmt.Sprintf("  !%s\n", rhs))
+		}
+	}
+	arrH := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", arrH, el, off))
+	z := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", z, arrH))
+	zL := fmt.Sprintf("L_inc_z_%d", *nextLabel)
+	*nextLabel++
+	nzL := fmt.Sprintf("L_inc_nz_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", z, zL, nzL))
+	w.Write(fmt.Sprintf("%s:\n", zL))
+	releaseRhs()
+	w.Write(fmt.Sprintf("  jmp %s\n", falseL))
+	w.Write(fmt.Sprintf("%s:\n", nzL))
+	ln2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln2, arrH))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, arrH))
+	j := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", j))
+	topL := fmt.Sprintf("L_inc_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_inc_body_%d", *nextLabel)
+	*nextLabel++
+	hitL := fmt.Sprintf("L_inc_hit_%d", *nextLabel)
+	*nextLabel++
+	nextJL := fmt.Sprintf("L_inc_next_%d", *nextLabel)
+	*nextLabel++
+	missL := fmt.Sprintf("L_inc_miss_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, j, ln2))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, missL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	elemH := saArrElemAt(w, data, j, nextTemp)
+	pred := saStringContentEq(w, elemH, rhs, false, scope, nextTemp)
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, hitL, nextJL))
+	w.Write(fmt.Sprintf("%s:\n", hitL))
+	releaseRhs()
+	w.Write(fmt.Sprintf("  jmp %s\n", trueL))
+	w.Write(fmt.Sprintf("%s:\n", nextJL))
+	jnext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", jnext, j))
+	w.Write(fmt.Sprintf("  %s = %s\n", j, jnext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	releaseRhs()
+	w.Write(fmt.Sprintf("  jmp %s\n", falseL))
+	if rhsOwned {
+		if b := saOwnOf(scope, rhs); b != nil {
+			b.released = true
+		}
+	}
+	return ""
+}
+
+// saBoolPredShape reports whether n is a boolean predicate over paramName:
+// a field-chain read rooted at the parameter, a ! negation, or a &&/||
+// combination of such predicates. Pure reads only, so eager evaluation of
+// both sides of &&/|| is semantically identical to short-circuiting.
+func saBoolPredShape(n *ast.Node, paramName string) bool {
+	n = saUnwrapTransparent(n)
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case ast.KindPrefixUnaryExpression:
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || un.Operator != ast.KindExclamationToken {
+			return false
+		}
+		return saBoolPredShape(un.Operand, paramName)
+	case ast.KindBinaryExpression:
+		be := n.AsBinaryExpression()
+		if be == nil {
+			return false
+		}
+		op := saBinaryOpKind(be)
+		if op != ast.KindBarBarToken && op != ast.KindAmpersandAmpersandToken {
+			return false
+		}
+		return saBoolPredShape(be.Left, paramName) && saBoolPredShape(be.Right, paramName)
+	case ast.KindPropertyAccessExpression:
+		_, msg := saBoolPredChainFields(n, paramName)
+		return msg == ""
+	}
+	return false
+}
+
+// saBoolPredChainFields collects the field names of a property-access chain
+// rooted at paramName, outermost last (e.g. capabilities, chatRuntime).
+func saBoolPredChainFields(n *ast.Node, paramName string) ([]string, string) {
+	var fields []string
+	cur := n
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		pa := cur.AsPropertyAccessExpression()
+		if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+			return nil, "filter bool predicate has an unsupported field access"
+		}
+		fields = append([]string{pa.Name().Text()}, fields...)
+		cur = saUnwrapTransparent(pa.Expression)
+	}
+	if cur == nil || cur.Kind != ast.KindIdentifier || cur.Text() != paramName {
+		return nil, "filter bool predicate is not rooted at the callback parameter"
+	}
+	if len(fields) == 0 {
+		return nil, "filter bool predicate has no field"
+	}
+	return fields, ""
+}
+
+// saBoolPredFieldLeaf walks a field chain through layout defs and returns
+// the leaf field's kind ("" plus a message on failure). Intermediate fields
+// must be inst fields with a recorded sub-layout.
+func saBoolPredFieldLeaf(n *ast.Node, paramName string, def *saClassDef, scope *saScope) (string, string) {
+	fields, msg := saBoolPredChainFields(n, paramName)
+	if msg != "" {
+		return "", msg
+	}
+	curDef := def
+	for i, fname := range fields {
+		fk, ok := curDef.fkinds[fname]
+		if !ok {
+			return "", "filter bool predicate field not in element layout"
+		}
+		if i < len(fields)-1 {
+			if fk != "inst" {
+				return "", "filter bool predicate field is not a nested instance"
+			}
+			sub, ok := curDef.fsub[fname]
+			if !ok {
+				return "", "filter bool predicate nested field has no sub-layout"
+			}
+			next, ok := scope.classes[sub]
+			if !ok || next == nil {
+				return "", "filter bool predicate nested layout not recorded"
+			}
+			curDef = next
+			continue
+		}
+		return fk, ""
+	}
+	return "", "filter bool predicate has no field"
+}
+
+// saCheckBoolPred validates a filter boolean predicate against the element
+// layout: every leaf must be a bool or i32 field (i32 truthiness is
+// nonzero, matching JS number truthiness for 0/1-valued fields).
+func saCheckBoolPred(n *ast.Node, paramName string, def *saClassDef, scope *saScope) string {
+	n = saUnwrapTransparent(n)
+	if n == nil {
+		return "filter bool predicate is empty"
+	}
+	switch n.Kind {
+	case ast.KindPrefixUnaryExpression:
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || un.Operator != ast.KindExclamationToken {
+			return "filter bool predicate has unsupported unary operator"
+		}
+		return saCheckBoolPred(un.Operand, paramName, def, scope)
+	case ast.KindBinaryExpression:
+		be := n.AsBinaryExpression()
+		if be == nil {
+			return "filter bool predicate has no operator"
+		}
+		op := saBinaryOpKind(be)
+		if op != ast.KindBarBarToken && op != ast.KindAmpersandAmpersandToken {
+			return "filter bool predicate has unsupported binary operator"
+		}
+		if msg := saCheckBoolPred(be.Left, paramName, def, scope); msg != "" {
+			return msg
+		}
+		return saCheckBoolPred(be.Right, paramName, def, scope)
+	case ast.KindPropertyAccessExpression:
+		kind, msg := saBoolPredFieldLeaf(n, paramName, def, scope)
+		if msg != "" {
+			return msg
+		}
+		if kind != "bool" && kind != "i32" {
+			return "filter bool predicate field kind not supported: " + kind
+		}
+		return ""
+	}
+	return "filter bool predicate shape not supported"
+}
+
+// saEvalBoolPred evaluates a validated filter boolean predicate for element
+// handle el to an i32 temp (0/1). Field chains load through nested instance
+// ptr slots; ! inverts; &&/|| combine eagerly (pure reads, no side effects).
+func saEvalBoolPred(w printer.EmitTextWriter, n *ast.Node, paramName string, el string, def *saClassDef, scope *saScope, nextTemp *int) (string, string) {
+	n = saUnwrapTransparent(n)
+	if n == nil {
+		return "", "filter bool predicate is empty"
+	}
+	switch n.Kind {
+	case ast.KindPrefixUnaryExpression:
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || un.Operator != ast.KindExclamationToken {
+			return "", "filter bool predicate has unsupported unary operator"
+		}
+		v, msg := saEvalBoolPred(w, un.Operand, paramName, el, def, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, v))
+		return t, ""
+	case ast.KindBinaryExpression:
+		be := n.AsBinaryExpression()
+		if be == nil {
+			return "", "filter bool predicate has no operator"
+		}
+		op := saBinaryOpKind(be)
+		if op != ast.KindBarBarToken && op != ast.KindAmpersandAmpersandToken {
+			return "", "filter bool predicate has unsupported binary operator"
+		}
+		l, msg := saEvalBoolPred(w, be.Left, paramName, el, def, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		r, msg := saEvalBoolPred(w, be.Right, paramName, el, def, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		sop := "or"
+		if op == ast.KindAmpersandAmpersandToken {
+			sop = "and"
+		}
+		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, sop, l, r))
+		return t, ""
+	case ast.KindPropertyAccessExpression:
+		fields, msg := saBoolPredChainFields(n, paramName)
+		if msg != "" {
+			return "", msg
+		}
+		handle := el
+		curDef := def
+		for i, fname := range fields {
+			off, ok := curDef.offsets[fname]
+			if !ok {
+				return "", "filter bool predicate field has no layout offset"
+			}
+			if i < len(fields)-1 {
+				nh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", nh, handle, off))
+				next, ok := scope.classes[curDef.fsub[fname]]
+				if !ok || next == nil {
+					return "", "filter bool predicate nested layout not recorded"
+				}
+				handle = nh
+				curDef = next
+				continue
+			}
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, handle, off))
+			return v, ""
+		}
+		return "", "filter bool predicate has no field"
+	}
+	return "", "filter bool predicate shape not supported"
+}
+
+// saFilterBoolGuard extracts a .filter callback's boolean predicate: the
+// first parameter name and the body expression (direct or single-return
+// block), claimed only when the body is a boolean-predicate shape over the
+// parameter (field chains, !, &&, ||). Other callbacks fall through to the
+// generic filter path unchanged.
+func saFilterBoolGuard(cb *ast.Node) (string, *ast.Node, bool) {
+	if cb == nil {
+		return "", nil, false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return "", nil, false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", nil, false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	paramName := nm.Text()
+	body := cb.Body()
+	if body == nil {
+		return "", nil, false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", nil, false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return "", nil, false
+		}
+		expr = rs.Expression
+	}
+	expr = saUnwrapTransparent(expr)
+	if !saBoolPredShape(expr, paramName) {
+		return "", nil, false
+	}
+	return paramName, expr, true
+}
+
 // saMarkArrJsVal records a jsval-element array handle (mirror of saMarkArrStr).
 func saMarkArrJsVal(scope *saScope, name string) {
 	if name == "" {
@@ -6963,6 +7587,64 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return "0", "i32", ""
 	case "filter":
+		if bpParam, bpPred, bpOk := saFilterBoolGuard(cb); bpOk {
+			// Bool-predicate filter (JEV inline_loop_bool_pred 0.98):
+			// iterate the array handle buffer, evaluate the predicate
+			// per element by layout-offset field loads (chaining through
+			// nested instance ptr slots), and push matching element
+			// handles into a new array. The generic callback path binds
+			// the parameter as i32, so nested bool field reads refuse
+			// there; this branch never routes through saCallbackValue.
+			if elemLayout == "" {
+				return "", "", "filter bool predicate needs a known instance element layout"
+			}
+			bdef, ok := scope.classes[elemLayout]
+			if !ok || bdef == nil {
+				return "", "", "filter bool predicate element layout not recorded"
+			}
+			if msg := saCheckBoolPred(bpPred, bpParam, bdef, scope); msg != "" {
+				return "", "", msg
+			}
+			bh := saNewEmptyArray(w, nextTemp)
+			bi := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", bi))
+			btopL := fmt.Sprintf("L_fbp_top_%d", *nextLabel)
+			*nextLabel++
+			bbodyL := fmt.Sprintf("L_fbp_body_%d", *nextLabel)
+			*nextLabel++
+			bendL := fmt.Sprintf("L_fbp_end_%d", *nextLabel)
+			*nextLabel++
+			btakeL := fmt.Sprintf("L_fbp_take_%d", *nextLabel)
+			*nextLabel++
+			bskipL := fmt.Sprintf("L_fbp_skip_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", btopL))
+			bc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", bc, bi, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bc, bbodyL, bendL))
+			w.Write(fmt.Sprintf("%s:\n", bbodyL))
+			bel := emitElem(bi)
+			bv, bmsg := saEvalBoolPred(w, bpPred, bpParam, bel, bdef, scope, nextTemp)
+			if bmsg != "" {
+				return "", "", bmsg
+			}
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bv, btakeL, bskipL))
+			w.Write(fmt.Sprintf("%s:\n", btakeL))
+			saLowerArrayPush(w, bh, bel, scope, nextTemp)
+			w.Write(fmt.Sprintf("  jmp %s\n", bskipL))
+			w.Write(fmt.Sprintf("%s:\n", bskipL))
+			binext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", binext, bi))
+			w.Write(fmt.Sprintf("  %s = %s\n", bi, binext))
+			w.Write(fmt.Sprintf("  jmp %s\n", btopL))
+			w.Write(fmt.Sprintf("%s:\n", bendL))
+			saOwnTemp(scope, bh)
+			saReleaseOwnedTemp(w, scope, recv)
+			return bh, "arr", ""
+		}
 		h := saNewEmptyArray(w, nextTemp)
 		i := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -7191,6 +7873,137 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			}
 			return out, "inst:" + elemLayout, ""
 		}
+		if orParam, orDisj, orOk := saFindOrGuard(cb); orOk {
+			// OR find (JEV inline_loop_or 0.98): per-element disjunction
+			// over equality arms and optional-chain includes arms. Each
+			// arm branches to the shared hit label or to the next arm's
+			// label; the last arm's false branch is the next-iteration
+			// label. Loop-invariant string right-hand sides are hoisted
+			// once before the loop and released once after it, exactly
+			// as in the single-equality find.
+			if elemLayout == "" {
+				return "", "", "find OR predicate needs a known instance element layout"
+			}
+			odef, ok := scope.classes[elemLayout]
+			if !ok || odef == nil {
+				return "", "", "find OR element layout not recorded"
+			}
+			for _, d := range orDisj {
+				fkind, ok := odef.fkinds[d.field]
+				if !ok {
+					return "", "", "find OR field not in element layout"
+				}
+				if d.isIncludes {
+					if fkind != "arr" {
+						return "", "", "find OR includes field is not a string array field"
+					}
+				} else if fkind != "str" && fkind != "i32" && fkind != "bool" {
+					return "", "", "find OR equality field kind not supported: " + fkind
+				}
+				if _, ok := odef.offsets[d.field]; !ok {
+					return "", "", "find OR field has no layout offset"
+				}
+			}
+			ohoisted := map[string]string{}
+			for di, d := range orDisj {
+				if saFindEqRhsHoistable(d.other, orParam) {
+					h, msg := saEvalStr(w, d.other, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
+					ohoisted[fmt.Sprintf("d%d", di)] = h
+				}
+			}
+			oisIndex := method == "findIndex" || method == "findLastIndex"
+			olast := method == "findLast" || method == "findLastIndex"
+			oslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", oslot))
+			saOwnTemp(scope, oslot)
+			oinit := "0"
+			if oisIndex {
+				oinit = "-1"
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", oslot, oinit))
+			oi := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", oi))
+			otopL := fmt.Sprintf("L_for_top_%d", *nextLabel)
+			*nextLabel++
+			obodyL := fmt.Sprintf("L_for_body_%d", *nextLabel)
+			*nextLabel++
+			oendL := fmt.Sprintf("L_for_end_%d", *nextLabel)
+			*nextLabel++
+			ohitL := fmt.Sprintf("L_for_hit_%d", *nextLabel)
+			*nextLabel++
+			onextL := fmt.Sprintf("L_for_next_%d", *nextLabel)
+			*nextLabel++
+			odLabels := make([]string, len(orDisj))
+			for di := range orDisj {
+				odLabels[di] = fmt.Sprintf("L_for_d%d_%d", di, *nextLabel)
+				*nextLabel++
+			}
+			w.Write(fmt.Sprintf("%s:\n", otopL))
+			oc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", oc, oi, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", oc, obodyL, oendL))
+			w.Write(fmt.Sprintf("%s:\n", obodyL))
+			oel := emitElem(oi)
+			for di, d := range orDisj {
+				if di > 0 {
+					w.Write(fmt.Sprintf("%s:\n", odLabels[di]))
+				}
+				ofalseL := onextL
+				if di+1 < len(orDisj) {
+					ofalseL = odLabels[di+1]
+				}
+				var omsg string
+				if d.isIncludes {
+					omsg = saEmitIncludesDisjunct(w, oel, odef, d, ohoisted, fmt.Sprintf("d%d", di), ohitL, ofalseL, scope, pos, refusals, nextLabel, nextTemp)
+				} else {
+					omsg = saEmitEqDisjunct(w, oel, odef, d, ohoisted, fmt.Sprintf("d%d", di), ohitL, ofalseL, scope, pos, refusals, nextLabel, nextTemp)
+				}
+				if omsg != "" {
+					return "", "", omsg
+				}
+			}
+			w.Write(fmt.Sprintf("%s:\n", ohitL))
+			if oisIndex {
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", oslot, oi))
+			} else {
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", oslot, oel))
+			}
+			if !olast {
+				w.Write(fmt.Sprintf("  jmp %s\n", oendL))
+			} else {
+				w.Write(fmt.Sprintf("  jmp %s\n", onextL))
+			}
+			w.Write(fmt.Sprintf("%s:\n", onextL))
+			oinext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", oinext, oi))
+			w.Write(fmt.Sprintf("  %s = %s\n", oi, oinext))
+			w.Write(fmt.Sprintf("  jmp %s\n", otopL))
+			w.Write(fmt.Sprintf("%s:\n", oendL))
+			for _, h := range ohoisted {
+				saReleaseOwnedTemp(w, scope, h)
+			}
+			oout := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if oisIndex {
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", oout, oslot))
+			} else {
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", oout, oslot))
+				scope.types[oout] = "inst:" + elemLayout
+			}
+			saReleaseOwnedTemp(w, scope, oslot)
+			saReleaseOwnedTemp(w, scope, recv)
+			if oisIndex {
+				return oout, "i32", ""
+			}
+			return oout, "inst:" + elemLayout, ""
+		}
 		if method == "find" || method == "findLast" {
 			if _, typeofName, neg, ok := saFindTypeofGuard(cb); ok {
 				if typeofName != "string" && typeofName != "number" {
@@ -7369,6 +8182,108 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return out, "i32", ""
 	case "some", "every":
+		if eqParam, eqField, eqNeg, eqOther, eqOk := saFindEqGuard(cb); eqOk {
+			// Equality some/every (JEV inline_loop_eq_some 1.0): the
+			// single-equality loop from the find branch, with boolean
+			// result semantics (some: true on first match; every: false
+			// on first non-match). The generic callback path binds the
+			// parameter as i32, so a string field read refuses there;
+			// this branch reuses saEmitEqDisjunct and never routes
+			// through saCallbackValue.
+			if elemLayout == "" {
+				return "", "", "some/every equality needs a known instance element layout"
+			}
+			sdef, ok := scope.classes[elemLayout]
+			if !ok || sdef == nil {
+				return "", "", "some/every equality element layout not recorded"
+			}
+			sd := saOrDisjunct{field: eqField, neg: eqNeg, other: eqOther}
+			sfkind, ok := sdef.fkinds[eqField]
+			if !ok {
+				return "", "", "some/every equality field not in element layout"
+			}
+			if sfkind != "str" && sfkind != "i32" && sfkind != "bool" {
+				return "", "", "some/every equality field kind not supported: " + sfkind
+			}
+			if _, ok := sdef.offsets[eqField]; !ok {
+				return "", "", "some/every equality field has no layout offset"
+			}
+			shoisted := map[string]string{}
+			if sfkind == "str" && saFindEqRhsHoistable(eqOther, eqParam) {
+				h, msg := saEvalStr(w, eqOther, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				shoisted["d0"] = h
+			}
+			_ = sfkind
+			sslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", sslot))
+			saOwnTemp(scope, sslot)
+			sinit := "0"
+			if method == "every" {
+				sinit = "1"
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", sslot, sinit))
+			si := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", si))
+			stopL := fmt.Sprintf("L_seq_top_%d", *nextLabel)
+			*nextLabel++
+			sbodyL := fmt.Sprintf("L_seq_body_%d", *nextLabel)
+			*nextLabel++
+			sendL := fmt.Sprintf("L_seq_end_%d", *nextLabel)
+			*nextLabel++
+			shitL := fmt.Sprintf("L_seq_hit_%d", *nextLabel)
+			*nextLabel++
+			snextL := fmt.Sprintf("L_seq_next_%d", *nextLabel)
+			*nextLabel++
+			smissL := fmt.Sprintf("L_seq_miss_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", stopL))
+			sc := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", sc, si, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", sc, sbodyL, sendL))
+			w.Write(fmt.Sprintf("%s:\n", sbodyL))
+			sel := emitElem(si)
+			var smsg string
+			if method == "some" {
+				smsg = saEmitEqDisjunct(w, sel, sdef, sd, shoisted, "d0", shitL, snextL, scope, pos, refusals, nextLabel, nextTemp)
+			} else {
+				smsg = saEmitEqDisjunct(w, sel, sdef, sd, shoisted, "d0", snextL, smissL, scope, pos, refusals, nextLabel, nextTemp)
+			}
+			if smsg != "" {
+				return "", "", smsg
+			}
+			if method == "some" {
+				w.Write(fmt.Sprintf("%s:\n", shitL))
+				w.Write(fmt.Sprintf("  store %s + 0, 1 as ptr\n", sslot))
+				w.Write(fmt.Sprintf("  jmp %s\n", sendL))
+			}
+			if method == "every" {
+				w.Write(fmt.Sprintf("%s:\n", smissL))
+				w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", sslot))
+				w.Write(fmt.Sprintf("  jmp %s\n", sendL))
+			}
+			w.Write(fmt.Sprintf("%s:\n", snextL))
+			sinext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", sinext, si))
+			w.Write(fmt.Sprintf("  %s = %s\n", si, sinext))
+			w.Write(fmt.Sprintf("  jmp %s\n", stopL))
+			w.Write(fmt.Sprintf("%s:\n", sendL))
+			for _, h := range shoisted {
+				saReleaseOwnedTemp(w, scope, h)
+			}
+			sout := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", sout, sslot))
+			saReleaseOwnedTemp(w, scope, sslot)
+			saReleaseOwnedTemp(w, scope, recv)
+			return sout, "i32", ""
+		}
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
