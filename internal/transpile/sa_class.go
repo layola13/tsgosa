@@ -1397,6 +1397,17 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 				return true
 			}
 		}
+		// Plain array-index element base (xs[i]): the element layout is
+		// recorded in arrElemLayout for params, literals, and
+		// filter/slice/map results bound to names. saInstBaseElem's
+		// index-load branch then tags the loaded handle inst:layout,
+		// so field reads on xs[i] resolve exactly like bound elements.
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if _, ok := scope.arrElemLayout[ea.Expression.Text()]; ok {
+				return true
+			}
+		}
 	}
 	if e != nil && e.Kind == ast.KindNewExpression {
 		// `new C()` 临时实例基（`new C().m()`；类已记布局才放行，构造与

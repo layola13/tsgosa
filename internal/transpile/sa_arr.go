@@ -1420,6 +1420,20 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 			return el.Text(), ""
 		}
 	}
+	if el.Kind == ast.KindObjectLiteralExpression {
+		// Object-literal elements (JEV inline_materialize 1.0):
+		// materialize each element with the object-literal materializer
+		// (recorded interface on unique key-set match, else a synthesized
+		// layout from the literal keys) and store the handle as a word,
+		// exactly like string elements. The element layout is recorded
+		// for the enclosing array by saLowerArrayLiteral's tail.
+		h, lname, msg := saLowerObjectLiteral(w, el, "", scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		scope.types[h] = "inst:" + lname
+		return h, ""
+	}
 	if el.Kind == ast.KindSatisfiesExpression || el.Kind == ast.KindAsExpression {
 		var inner *ast.Node
 		var tnode *ast.TypeNode
@@ -1650,6 +1664,32 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	w.Write(fmt.Sprintf("  !%s\n", hm))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
+	if len(elems) > 0 {
+		// Uniform instance elements: record the layout so index reads
+		// (xs[0].field) resolve through arrElemLayout. Mixed layouts
+		// stay unmarked and refuse loudly at use sites, as before.
+		elemLayout := ""
+		uniform := true
+		for _, ev := range elems {
+			if k, ok := scope.types[ev]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if elemLayout == "" {
+					elemLayout = k[5:]
+				} else if elemLayout != k[5:] {
+					uniform = false
+					break
+				}
+			} else {
+				uniform = false
+				break
+			}
+		}
+		if uniform && elemLayout != "" {
+			if scope.arrElemLayout == nil {
+				scope.arrElemLayout = map[string]string{}
+			}
+			scope.arrElemLayout[h] = elemLayout
+		}
+	}
 	if len(elems) > 0 {
 		allJsVal := true
 		for _, ev := range elems {
@@ -4864,6 +4904,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saPropArrNest(scope, h, name)
 		saPropArrStr(scope, h, name)
 		saPropArrInnerStr(scope, h, name)
+		saPropArrElemLayout(scope, h, name)
 		// 嵌套串字面量内叶直记（`const ss = [["x"]]` 无注解亦定种；
 		// 标注形由声明位注解门记，此处只看字面量）。
 		if saLiteralIsNestedStrArray(vd.Initializer, scope) {
