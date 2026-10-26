@@ -7455,6 +7455,27 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return saLowerTypeofCompare(w, be, scope, pos, refusals, nextTemp)
 		}
 		if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
+			// jsval-串相等（JEV tag_and_content_guarded 1.0）：jsval 侧为
+			// Record<string, unknown> 读/具名 jsval，串侧为串值；单边串
+			// 沿旧门（双边串在下，余算符同门拒）。
+			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+				if jsNode, strNode, ok := saSplitJsValStrEq(be, scope); ok {
+					h, msgH := saEvalJsValHandle(w, jsNode, scope, pos, refusals, nextTemp)
+					if msgH != "" {
+						return "", msgH
+					}
+					sv, msgS := saEvalStr(w, strNode, scope, pos, refusals, nextTemp)
+					if msgS != "" {
+						return "", msgS
+					}
+					neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+						be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+					return saLowerJsValStrEq(w, h, sv, neg, scope, nextTemp), ""
+				}
+			}
 			// 串位仅 `+`（拼接）与 `==/!=`（内容相等）可走；其余算符大声拒。
 			if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
 				be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
@@ -8100,6 +8121,190 @@ func saLowerNullishInstNull(w printer.EmitTextWriter, be *ast.BinaryExpression, 
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	saOwnTemp(scope, out)
 	return out, ""
+}
+
+// saSplitJsValStrEq 拆分 jsval-串相等对（单边 jsval 表达式 + 单边串值；
+// 括号/As/Satisfies/NonNull 透明；余形 false，调用方沿旧门）。
+func saSplitJsValStrEq(be *ast.BinaryExpression, scope *saScope) (*ast.Node, *ast.Node, bool) {
+	if be == nil {
+		return nil, nil, false
+	}
+	l, r := saPeelParens(be.Left), saPeelParens(be.Right)
+	if saIsJsValEqOperand(l, scope) && saIsStrValue(r, scope) {
+		return l, r, true
+	}
+	if saIsJsValEqOperand(r, scope) && saIsStrValue(l, scope) {
+		return r, l, true
+	}
+	return nil, nil, false
+}
+
+// saIsJsValEqOperand 判定表达式是否为 jsval 柄源（具名 jsval；
+// mapVals jsval 的 map 属性读/串字面量下标读；透明包装递归）。
+func saIsJsValEqOperand(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindIdentifier:
+		k, ok := scope.types[e.Text()]
+		return ok && k == "jsval"
+	case ast.KindPropertyAccessExpression:
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+			return false
+		}
+		if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "map" {
+			return false
+		}
+		return scope.mapVals[pa.Expression.Text()] == "jsval"
+	case ast.KindElementAccessExpression:
+		ea := e.AsElementAccessExpression()
+		if ea == nil || ea.Expression == nil || ea.Expression.Kind != ast.KindIdentifier || ea.ArgumentExpression == nil {
+			return false
+		}
+		if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "map" {
+			return false
+		}
+		if scope.mapVals[ea.Expression.Text()] != "jsval" {
+			return false
+		}
+		arg := saPeelParens(ea.ArgumentExpression)
+		return arg != nil && (arg.Kind == ast.KindStringLiteral || arg.Kind == ast.KindNoSubstitutionTemplateLiteral)
+	case ast.KindParenthesizedExpression:
+		return saIsJsValEqOperand(e.AsParenthesizedExpression().Expression, scope)
+	case ast.KindAsExpression:
+		return saIsJsValEqOperand(e.AsAsExpression().Expression, scope)
+	case ast.KindSatisfiesExpression:
+		return saIsJsValEqOperand(e.AsSatisfiesExpression().Expression, scope)
+	case ast.KindNonNullExpression:
+		return saIsJsValEqOperand(e.AsNonNullExpression().Expression, scope)
+	}
+	return false
+}
+
+// saEvalJsValHandle 求 jsval 柄源为句柄（具名直传；map 读经
+// btree_map_get，空基守卫归 0（缺键亦 0，与 map-get 语义同形；
+// 平面 `.` 读同守卫，抛错不可表，JEV 守卫口径同认）。
+func saEvalJsValHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e == nil {
+		return "", "missing jsval operand"
+	}
+	switch e.Kind {
+	case ast.KindIdentifier:
+		return e.Text(), ""
+	case ast.KindPropertyAccessExpression:
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil {
+			return "", "bad jsval field read"
+		}
+		return saEvalJsValMapRead(w, pa.Expression.Text(), pa.Name().Text(), scope, nextTemp)
+	case ast.KindElementAccessExpression:
+		ea := e.AsElementAccessExpression()
+		if ea == nil || ea.Expression == nil || ea.ArgumentExpression == nil {
+			return "", "bad jsval index read"
+		}
+		arg := saPeelParens(ea.ArgumentExpression)
+		if arg == nil {
+			return "", "bad jsval index read"
+		}
+		return saEvalJsValMapRead(w, ea.Expression.Text(), arg.Text(), scope, nextTemp)
+	case ast.KindParenthesizedExpression:
+		return saEvalJsValHandle(w, e.AsParenthesizedExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindAsExpression:
+		return saEvalJsValHandle(w, e.AsAsExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindSatisfiesExpression:
+		return saEvalJsValHandle(w, e.AsSatisfiesExpression().Expression, scope, pos, refusals, nextTemp)
+	case ast.KindNonNullExpression:
+		return saEvalJsValHandle(w, e.AsNonNullExpression().Expression, scope, pos, refusals, nextTemp)
+	}
+	return "", "jsval operand not lowerable"
+}
+
+// saEvalJsValMapRead 求 map 字段为 jsval 柄（空基/缺键归 0；
+// 槽汇合，get 临时量存槽后即释，槽载出后释槽）。
+func saEvalJsValMapRead(w printer.EmitTextWriter, base, field string, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/btree_map.sa")
+	kh := saLowerStringLiteral(w, field, scope, nextTemp)
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	getL := fmt.Sprintf("L_jvmap_get_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_jvmap_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jvmap_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, base))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, getL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", getL))
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", v, base, kh))
+	saOwnTemp(scope, v)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	saReleaseOwnedTemp(w, scope, v)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", h, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[h] = "jsval"
+	return h, ""
+}
+
+// saLowerJsValStrEq lowering jsval-串相等（JEV tag_and_content_guarded 1.0）：
+// 柄 0 即非串（== 假/!= 真）；tag 非 1 即非串；tag 1 方比内容。
+func saLowerJsValStrEq(w printer.EmitTextWriter, h, s string, neg bool, scope *saScope, nextTemp *int) string {
+	missVal := "0"
+	if neg {
+		missVal = "1"
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tagL := fmt.Sprintf("L_jveq_tag_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_jveq_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	eqL := fmt.Sprintf("L_jveq_eq_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jveq_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, h))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, missVal))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", tagL))
+	tag := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, h))
+	isStr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 1\n", isStr, tag))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isStr, eqL, missL))
+	w.Write(fmt.Sprintf("%s:\n", eqL))
+	pay := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", pay, h))
+	ce := saStringContentEq(w, pay, s, neg, scope, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, ce))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out
 }
 
 // saJsValKind codes: 0 undefined, 1 string, 2 number, 3 boolean, 4 object, 5 array, 6 null, 7 function.
