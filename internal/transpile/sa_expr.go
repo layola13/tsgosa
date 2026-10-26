@@ -5953,6 +5953,13 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				return h, ""
 			}
 		}
+		// jsval map 读实参直传（`?.` 读经 saEvalI32 沿取长门拒；
+		// 与 (2) 声明位同径，守卫 btree_map_get 直求柄）。
+		if saIsJsValEqOperand(a, scope) {
+			if h, msg := saEvalJsValHandle(w, a, scope, pos, refusals, nextTemp); msg == "" {
+				return h, ""
+			}
+		}
 		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
 			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
 			// (e.g. a Record<string, unknown> field read) passes through
