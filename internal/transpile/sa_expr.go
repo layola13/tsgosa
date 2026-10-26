@@ -692,6 +692,25 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			return res, msg
 		}
 	}
+	// Non-identifier string-expression conditions (trim() calls,
+	// templates, joins; identifier str has its own case below and
+	// PropertyAccess str fields have the case above): evaluate as
+	// a string and take length != 0 as truthiness, mirroring the
+	// identifier str case and the ?? str case; a call-result temp
+	// is released after use like the ?? case releases its handle.
+	if cond.Kind != ast.KindIdentifier && cond.Kind != ast.KindPropertyAccessExpression && saIsStrExpr(cond, scope) {
+		h, msg := saEvalStr(w, cond, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		ln0 := saLowerOptionalLength(w, h, scope, nextTemp)
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+		saReleaseOwnedTemp(w, scope, ln0)
+		saReleaseOwnedTemp(w, scope, h)
+		return t, ""
+	}
 	// 条件位串侧逻辑先行（括号透明；纯 i32 原形不动，零漂移）。
 	if inner := saPeelParens(cond); inner != nil && inner.Kind == ast.KindBinaryExpression {
 		if be := inner.AsBinaryExpression(); be != nil && (saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken || saBinaryOpKind(be) == ast.KindBarBarToken) {

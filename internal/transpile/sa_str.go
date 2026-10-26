@@ -312,6 +312,13 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		}
 		return false
 	}
+	// Array .join returns a string (saArrCallRet == "str");
+	// without this, chained str methods on join results
+	// (.slice on a join result) fell to
+	// "only direct function calls lowerable".
+	if pa.Name() != nil && pa.Name().Text() == "join" && saIsArrJoinCall(ce, scope) {
+		return true
+	}
 	// JSON.stringify 恒返新串柄（writer 直写后拷出具化；标量/数组/对象三形见
 	// saLowerJSONStringify；V05 直调 console.log 误走 i32 打印堆地址实证修）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "JSON" &&

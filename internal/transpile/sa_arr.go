@@ -7647,6 +7647,44 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 							if retCount == 1 && retExpr != nil {
 								bodyExpr = retExpr
 							}
+							// Resolve a bare-identifier return through body locals
+							// (up to 8 steps): `const s = [...].join(); return s;`
+							// and `const n = role.name.trim(); return n;` detect
+							// as string results via their initializers.
+							for step := 0; step < 8 && bodyExpr != nil && bodyExpr.Kind == ast.KindIdentifier; step++ {
+								found := false
+								for _, st := range bd.Statements.Nodes {
+									if st == nil || st.Kind != ast.KindVariableStatement {
+										continue
+									}
+									vs := st.AsVariableStatement()
+									if vs == nil || vs.DeclarationList == nil {
+										continue
+									}
+									dl := vs.DeclarationList.AsVariableDeclarationList()
+									if dl == nil {
+										continue
+									}
+									for _, d := range dl.Declarations.Nodes {
+										if d == nil || d.Kind != ast.KindVariableDeclaration {
+											continue
+										}
+										vd := d.AsVariableDeclaration()
+										if vd == nil || vd.Initializer == nil {
+											continue
+										}
+										nm := vd.Name()
+										if nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != bodyExpr.Text() {
+											continue
+										}
+										bodyExpr = vd.Initializer
+										found = true
+									}
+								}
+								if !found {
+									break
+								}
+							}
 						}
 					}
 					oldKind, hadOld := scope.types[nm.Text()]
