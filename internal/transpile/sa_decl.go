@@ -2004,7 +2004,12 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 			if _, ok := saRecordValueKind(t, classes, aliasOf); ok {
 				return "map", true
 			}
-			// 同构映射别名（Partial<X>/Required<X>/Readonly<X> 布局恒等）。
+			// Partial<X> 全可选布局（基布局恒等，全域可选；映射别名返基布局
+			// 本身，缺域字面量会在 want-key 匹配失败，故 Partial 须先行）。
+			if lname, ok := saPartialLayout(ref, classes); ok {
+				return "inst:" + lname, true
+			}
+			// 同构映射别名（Required<X>/Readonly<X> 布局恒等）。
 			if lname, ok := saMappedAliasLayout(ref, classes, aliasOf); ok {
 				return "inst:" + lname, true
 			}

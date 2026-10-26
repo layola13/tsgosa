@@ -6146,7 +6146,6 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 			if msg != "" {
 				return "", msg
 			}
-			saConsumeOwn(scope, h)
 			scope.addImport("sa_std/ts_jsval.sa")
 			bh := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++

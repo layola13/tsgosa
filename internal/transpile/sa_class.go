@@ -3244,6 +3244,47 @@ func saPickLayout(ref *ast.TypeReferenceNode, classes map[string]*saClassDef) (s
 	return def.name, true
 }
 
+// saPartialLayout synthesizes a layout for Partial<Base> (JEV
+// expand_utilities): identical offsets and size to the base layout, but
+// every field marked optional (fopt), so a literal with only a subset of
+// fields zero-fills the rest instead of failing the want-key match. This
+// differs from saMappedAliasLayout, which returns the base layout itself
+// (correct for Required/Readonly, wrong for Partial literals).
+func saPartialLayout(ref *ast.TypeReferenceNode, classes map[string]*saClassDef) (string, bool) {
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Partial" {
+		return "", false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 || ref.TypeArguments.Nodes[0] == nil {
+		return "", false
+	}
+	baseRef := ref.TypeArguments.Nodes[0].AsTypeReferenceNode()
+	if baseRef == nil || baseRef.TypeName == nil || baseRef.TypeName.Kind != ast.KindIdentifier || baseRef.TypeArguments != nil {
+		return "", false
+	}
+	bdef, ok := classes[baseRef.TypeName.Text()]
+	if !ok || !bdef.isIface {
+		return "", false
+	}
+	name := "Partial_" + bdef.name
+	if def, ok := classes[name]; ok {
+		return def.name, true
+	}
+	def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}, fsub: map[string]string{}}
+	def.size = bdef.size
+	for _, f := range bdef.fields {
+		def.fields = append(def.fields, f)
+		def.offsets[f.name] = f.offset
+		def.fkinds[f.name] = bdef.fkinds[f.name]
+		def.fdefs[f.name] = bdef.fdefs[f.name]
+		if bdef.fsub != nil {
+			def.fsub[f.name] = bdef.fsub[f.name]
+		}
+		def.fopt[f.name] = true
+	}
+	classes[name] = def
+	return def.name, true
+}
+
 // saPickKeys extracts string-literal keys from a Pick key type (a single
 // string literal or a union of string literals, parenthesized tolerated).
 func saPickKeys(t *ast.TypeNode) ([]string, bool) {
@@ -3944,9 +3985,57 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 	names := []string{}
 	kinds := map[string]string{}
 	subs := map[string]string{}
+	addField := func(fname, kind, sub string) {
+		if _, ok := kinds[fname]; !ok {
+			names = append(names, fname)
+		}
+		kinds[fname] = kind
+		if sub != "" {
+			subs[fname] = sub
+		} else {
+			delete(subs, fname)
+		}
+	}
 	for _, p := range ol.Properties.Nodes {
-		if p == nil || p.Kind == ast.KindSpreadAssignment {
-			// spread 源须已记布局（无命中时不可合成）。
+		if p == nil {
+			return nil, false
+		}
+		if p.Kind == ast.KindSpreadAssignment {
+			// spread 源须已记布局（无命中时不可合成；jsval/map/调用展开
+			// 沿旧门大声拒）。显式域后写覆盖展开域（JS 语义：后者胜，
+			// 但域序保持展开在先）。
+			se := saUnwrapTransparent(p.AsSpreadAssignment().Expression.AsNode())
+			if se == nil {
+				return nil, false
+			}
+			if se.Kind == ast.KindIdentifier {
+				k, ok := scope.types[se.Text()]
+				if !ok || len(k) <= 5 || k[:5] != "inst:" {
+					return nil, false
+				}
+				sdef, ok := scope.classes[k[5:]]
+				if !ok {
+					return nil, false
+				}
+				for _, f := range sdef.fields {
+					sk := sdef.fkinds[f.name]
+					if sk == "" {
+						sk = "i32"
+					}
+					addField(f.name, sk, sdef.fsub[f.name])
+				}
+				continue
+			}
+			if se.Kind == ast.KindObjectLiteralExpression {
+				sub, ok := saSynthLiteralLayout(se.AsObjectLiteralExpression(), scope)
+				if !ok {
+					return nil, false
+				}
+				for _, f := range sub.fields {
+					addField(f.name, sub.fkinds[f.name], sub.fsub[f.name])
+				}
+				continue
+			}
 			return nil, false
 		}
 		var fname string
@@ -4020,8 +4109,7 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 			k = "inst"
 			subs[fname] = sub.name
 		}
-		names = append(names, fname)
-		kinds[fname] = k
+		addField(fname, k, subs[fname])
 	}
 	if len(names) == 0 {
 		return nil, false
