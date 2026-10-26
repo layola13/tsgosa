@@ -4518,8 +4518,9 @@ func RunBuild(args []string) int {
 		}
 		// `.d.ts` 声明文件入集（类型单元：只提供类型侧布局，无运行时代码；
 		// 形状证据：TS 语义 .d.ts 与 .ts 同为模块候选，底座解析器优先
-		// .ts（priorityExtensions TS|DTS））。非 .ts 一律跳过。
-		if !strings.HasSuffix(p, ".ts") {
+		// .ts（priorityExtensions TS|DTS））。非 .ts/.tsx 一律跳过；
+		// .tsx 入集是 apps/web 的入口前提（src/main.tsx），JSX 降低另见 saJsx。
+		if !strings.HasSuffix(p, ".ts") && !strings.HasSuffix(p, ".tsx") {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, p)
@@ -4537,7 +4538,7 @@ func RunBuild(args []string) int {
 		return nil
 	})
 	if len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "error: no .ts sources under %s\n", dir)
+		fmt.Fprintf(os.Stderr, "error: no .ts/.tsx sources under %s\n", dir)
 		return 2
 	}
 	entry := entryFlag
@@ -4684,7 +4685,7 @@ func saDetectEntry(dir string, files map[string]string) string {
 			}
 		}
 	}
-	for _, c := range []string{"src/main.ts", "main.ts", "src/index.ts", "index.ts"} {
+	for _, c := range []string{"src/main.ts", "src/main.tsx", "main.ts", "main.tsx", "src/index.ts", "src/index.tsx", "index.ts", "index.tsx"} {
 		if _, ok := files[c]; ok {
 			return c
 		}
@@ -4818,7 +4819,7 @@ func saProgResolveRelative(importer, spec string, files map[string]string, dir s
 		}
 		return path.Clean(dir2 + "/" + base)
 	}
-	for _, c := range []string{join(spec) + ".ts", join(spec) + ".js", join(spec), join(spec) + "/index.ts", join(spec) + "/index.js"} {
+	for _, c := range []string{join(spec) + ".ts", join(spec) + ".tsx", join(spec) + ".js", join(spec), join(spec) + "/index.ts", join(spec) + "/index.tsx", join(spec) + "/index.js"} {
 		if _, ok := files[c]; ok {
 			return c
 		}
@@ -4854,6 +4855,7 @@ func saProgPrefix(p, entry string) string {
 		base = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(base, ".d.ts"), ".d.mts"), ".d.cts") + "_d"
 	} else {
 		base = strings.TrimSuffix(base, ".ts")
+		base = strings.TrimSuffix(base, ".tsx")
 		base = strings.TrimSuffix(base, ".mts")
 		base = strings.TrimSuffix(base, ".cts")
 		base = strings.TrimSuffix(base, ".js")
@@ -4886,7 +4888,7 @@ func saProgResolveBare(importer, spec string, files map[string]string, dir strin
 	if saIsDTSPath(name) {
 		return ""
 	}
-	if !saIsTSPath(name) && !saIsJSPath(name) {
+	if !saIsTSPath(name) && !saIsJSPath(name) && !strings.HasSuffix(name, ".tsx") {
 		return ""
 	}
 	if c, ok := saProgKeyFor(dir, name); ok {
@@ -5022,14 +5024,16 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 	tried := map[string]bool{}
 	adoptRel := func(p, spec string) bool {
 		base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
-		cands := []string{base, base + ".ts", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.js")}
+		cands := []string{base, base + ".ts", base + ".tsx", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"), filepath.Join(base, "index.js")}
 		// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
 		if strings.HasSuffix(base, ".js") {
 			cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
 		}
 		for _, cand := range cands {
 			kind := core.ScriptKindTS
-			if strings.HasSuffix(cand, ".js") {
+			if strings.HasSuffix(cand, ".tsx") {
+				kind = core.ScriptKindTSX
+			} else if strings.HasSuffix(cand, ".js") {
 				kind = core.ScriptKindJS
 			}
 			if saProgAdoptFile(files, parsed, dir, cand, kind) {
@@ -5089,6 +5093,8 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				kind := core.ScriptKindTS
 				if saIsJSPath(name) {
 					kind = core.ScriptKindJS
+				} else if strings.HasSuffix(name, ".tsx") {
+					kind = core.ScriptKindTSX
 				} else if !saIsTSPath(name) {
 					continue
 				}
@@ -5276,7 +5282,11 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	parsed := map[string]*ast.SourceFile{}
 	for p, text := range files {
 		abs := "/" + strings.TrimPrefix(p, "/")
-		sf := parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, text, core.ScriptKindTS)
+		kind := core.ScriptKindTS
+		if strings.HasSuffix(p, ".tsx") {
+			kind = core.ScriptKindTSX
+		}
+		sf := parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, text, kind)
 		parsed[path.Clean(p)] = sf
 	}
 	// bare 第三方按需纳入（resolver 解 node_modules `.ts` 才进集；`.js`/
