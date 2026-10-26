@@ -6443,9 +6443,13 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	}
 	recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
-		// 顶层 const 数组纯读方法接收器（纯读性由调用点门控，此处复判；
-		// 变异/未知方法沿旧门；708）。
-		if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
+		// jsval 接收器（JEV unbox_at_call, 0.83）：调用点才拆箱，标识符种
+		// 不变；载荷 ptr 即数组句柄（kind 5；非数组运行时 JS 本会抛错，
+		// 此处与既有未检 cast 同律，不另做 kind 校验）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval" {
+			recv = saUnboxJsValPtr(w, pa.Expression.Text(), nextTemp)
+			msg = ""
+		} else if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
 			recv = h
 		} else {
 			return "", "", msg
