@@ -2159,6 +2159,22 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		if init == nil {
 			return false
 		}
+		// `as`/`satisfies` 透明剥离（编译期断言，无运行时语义；JEV peel_as 1.0）：
+		// `"x" as const` 与裸字面量同折（串量记 strs），非字面量内层沿旧门拒。
+		for init.Kind == ast.KindAsExpression || init.Kind == ast.KindSatisfiesExpression {
+			if init.Kind == ast.KindAsExpression {
+				if ae := init.AsAsExpression(); ae != nil && ae.Expression != nil {
+					init = ae.Expression
+					continue
+				}
+			} else {
+				if se := init.AsSatisfiesExpression(); se != nil && se.Expression != nil {
+					init = se.Expression
+					continue
+				}
+			}
+			break
+		}
 		// env-probe 取臂（`typeof U==="undefined"?A:B` 未声明名化纯量；
 		// 封存 probeFoldedInit:212-222；已声明/异形沿旧门）。
 		if init.Kind == ast.KindConditionalExpression {
