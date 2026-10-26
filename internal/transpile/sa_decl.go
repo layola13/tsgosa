@@ -1354,8 +1354,9 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	if init.Kind == ast.KindBinaryExpression {
 		if be := init.AsBinaryExpression(); be != nil && be.OperatorToken != nil &&
 			be.OperatorToken.Kind == ast.KindQuestionQuestionToken &&
-			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
-			// 无注解空合推断（串臂即串；与三元分支同形）。
+			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) && !saIsJsValOperand(be.Left, scope) {
+			// 无注解空合推断（串臂即串；与三元分支同形；jsval 左臂
+			// 落通用径经 jsval 空合，禁串门误收）。
 			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(init.Pos())
@@ -1499,6 +1500,13 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saCopyInstFn(scope, op, name)
 		saPropArrNest(scope, op, name)
 		saPropArrElemLayout(scope, op, name)
+	} else if k, ok := scope.types[op]; ok && k == "jsval" {
+		// jsval 空合/读回种传递（`??` jsval 槽结果；与 arr/str/inst
+		// 直传同形，名不释，禁默认 i32 误种）。
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		scope.types[name] = "jsval"
+		saConsumeOwn(scope, op)
+		saDeclareOwned(scope, name)
 	} else {
 		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "i32"

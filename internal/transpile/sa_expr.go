@@ -1355,6 +1355,22 @@ func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(
 			return out, ""
 		}
 	}
+	// 非具名串表达式真值（`&&` 右臂经 typeof 窄化后的 trim() 调用等；
+	// 与 saCondOperand 串条件同律：saEvalStr + length != 0；
+	// 具名串由 saCondOperand 具名分支先行，此处不收）。
+	if e != nil && e.Kind != ast.KindIdentifier && saIsStrExpr(e, scope) {
+		h, msg := saEvalStr(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		ln0 := saLowerOptionalLength(w, h, scope, nextTemp)
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, ln0))
+		saReleaseOwnedTemp(w, scope, ln0)
+		saReleaseOwnedTemp(w, scope, h)
+		return t, ""
+	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
 }
 
@@ -3229,6 +3245,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				return saLowerIsSafeIntegerF64(w, fv, nextTemp), false, ""
 			}
+			if pa.Name() != nil && pa.Name().Text() == "isInteger" && saIsF64Operand(argNodes[0], scope) {
+				fv, fmsg := saEvalF64(w, argNodes[0], scope, pos, refusals, nextTemp)
+				if fmsg != "" {
+					return "", false, fmsg
+				}
+				return saLowerIsIntegerF64(w, fv, nextTemp), false, ""
+			}
 			if _, msg := saEvalI32(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" {
 				return "", false, msg
 			}
@@ -4048,6 +4071,54 @@ func saLowerTernaryInstArmHandle(w printer.EmitTextWriter, e *ast.Node, want str
 		return "", "ternary instance arms must share a layout"
 	}
 	return h, ""
+}
+
+// saLowerTernaryJsVal lowers a ternary in jsval return position:
+// each arm is boxed to a jsval handle (f64/str/jsval passthrough via
+// saEvalJsValOperand) and joined through a ptr slot, mirroring the
+// str/arr ternary join idiom. Only used when the function return kind
+// is jsval, so heterogeneous arms (number vs string) are legal here.
+func saLowerTernaryJsVal(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
+	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+	*nextLabel++
+	fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	base := len(scope.ownOrder)
+	tv, msg := saEvalJsValOperand(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
+	base = len(scope.ownOrder)
+	fv, msg := saEvalJsValOperand(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+	saReleaseArmTemps(w, scope, base)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[res] = "jsval"
+	saOwnTemp(scope, res)
+	return res, ""
 }
 
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
@@ -7689,6 +7760,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if saIsInstOperandSyntax(be.Left, scope) && (saIsNullLit(be.Right, scope) || saIsInstOperandSyntax(be.Right, scope)) {
 				return saLowerNullishInst(w, be, scope, pos, refusals, nextTemp)
 			}
+			// jsval 空合（`record?.status ?? ...`；JEV tag_aware 0.86；
+			// i32 槽载 ptr 会截断，故不用通用 saLowerNullish；
+			// 右实例臂沿旧混合拒）。
+			if saIsJsValOperand(be.Left, scope) && !saIsInstOperandSyntax(be.Right, scope) {
+				return saLowerNullishJsVal(w, be, scope, pos, refusals, nextTemp)
+			}
 			// 混合臂禁入 i32 槽（实例句柄误作整数即静默错码；与串门同形大声拒）。
 			if saIsInstOperandSyntax(be.Left, scope) || saIsInstOperandSyntax(be.Right, scope) ||
 				saCouldBeInst(be.Left, scope) || saCouldBeInst(be.Right, scope) {
@@ -8292,6 +8369,139 @@ func saLayoutKeyCount(ce *ast.CallExpression, scope *saScope) (int, bool) {
 
 // saLowerNullish `??` 空合槽（左非零直通，否则右惰性求值；子集 null 即 0；
 // i32 位；形状证据：封存 lowerBinary:3182-3206）。
+// saIsJsValOperand 判断表达式是否可直接求为 jsval 柄（具名 jsval、
+// jsval 值 map 的 `.`/`?.` 读、元素读；括号/as/satisfies/非空剥离）。
+func saIsJsValOperand(e *ast.Node, scope *saScope) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindIdentifier:
+		if k, ok := scope.types[e.Text()]; ok && k == "jsval" {
+			return true
+		}
+		return false
+	case ast.KindPropertyAccessExpression:
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil {
+			return false
+		}
+		if pa.Expression.Kind != ast.KindIdentifier {
+			return false
+		}
+		if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "map" {
+			return false
+		}
+		return scope.mapVals[pa.Expression.Text()] == "jsval"
+	case ast.KindBinaryExpression:
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+			return saIsJsValOperand(be.Left, scope)
+		}
+		return false
+	case ast.KindElementAccessExpression:
+		return saIsJsValEqOperand(e, scope)
+	case ast.KindParenthesizedExpression:
+		return saIsJsValOperand(e.AsParenthesizedExpression().Expression, scope)
+	case ast.KindAsExpression:
+		return saIsJsValOperand(e.AsAsExpression().Expression, scope)
+	case ast.KindSatisfiesExpression:
+		return saIsJsValOperand(e.AsSatisfiesExpression().Expression, scope)
+	case ast.KindNonNullExpression:
+		return saIsJsValOperand(e.AsNonNullExpression().Expression, scope)
+	}
+	return false
+}
+
+// saEvalJsValOperand 求 jsval 臂（`??` 链递归、jsval 直读、余形经
+// 调用参 ladder 装箱；装箱失败大声拒，禁错种直通）。
+func saEvalJsValOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindBinaryExpression {
+		if be := e.AsBinaryExpression(); be != nil && be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+			return saLowerNullishJsVal(w, be, scope, pos, refusals, nextTemp)
+		}
+	}
+	if saIsJsValOperand(e, scope) {
+		return saEvalJsValHandle(w, e, scope, pos, refusals, nextTemp)
+	}
+	// f64 臂 kind 2 装箱（payload f64；ladder 经 saEvalI32 拒 f64，
+	// 故单列在前；三元与 ?? 臂同享）。
+	if saIsF64Operand(e, scope) {
+		fv, msg := saEvalF64(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		h := saBoxJsVal(w, 2, "", fv, true, nextTemp)
+		saOwnTemp(scope, h)
+		return h, ""
+	}
+	fakeSig := saFuncSig{paramKinds: []string{"jsval"}}
+	return saEvalCallArg(w, fakeSig, 0, e, 1, scope, pos, refusals, nextTemp)
+}
+
+// saLowerNullishJsVal jsval 空合槽（JEV tag_aware 0.86：柄零、
+// undefined 标签 0、null 标签 6 皆落右臂，余标签皆 present；
+// 指针槽载 ptr，禁 i32 槽截断；右臂惰性，臂内临时量随槽消费）。
+func saLowerNullishJsVal(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	l, msg := saEvalJsValOperand(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	tagL := fmt.Sprintf("L_null_tag_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	tag2L := fmt.Sprintf("L_null_tag2_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	presentL := fmt.Sprintf("L_null_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_null_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_null_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+	w.Write(fmt.Sprintf("%s:\n", tagL))
+	tg := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tg, l))
+	u := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", u, tg))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", u, missL, tag2L))
+	w.Write(fmt.Sprintf("%s:\n", tag2L))
+	n := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 6\n", n, tg))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", n, missL, presentL))
+	w.Write(fmt.Sprintf("%s:\n", presentL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	mark := len(scope.ownOrder)
+	r, msg := saEvalJsValOperand(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
+	for _, nm := range scope.ownOrder[mark:] {
+		if saIsTempOp(nm) {
+			saConsumeOwn(scope, nm)
+		}
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[out] = "jsval"
+	saOwnTemp(scope, out)
+	return out, ""
+}
+
 func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	l, msg := saEvalI32(w, be.Left, scope, pos, refusals, nextTemp)
 	if msg != "" {

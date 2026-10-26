@@ -125,6 +125,75 @@ func saMathI32Arg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos fun
 	return v, ""
 }
 
+// saLowerIsIntegerF64 lowers Number.isInteger(v) for an f64 operand v
+// (JEV finite_magnitude_roundtrip 0.99): finite via fmul v,0.0 then
+// fcmp_ne against itself (NaN*0 and Inf*0 are NaN, finite*0 is +-0);
+// |v| >= 2^52 is integral (52-bit mantissa); otherwise integrality
+// via fptosi/sitofp round-trip fcmp_eq. fptosi is reached only for
+// finite |v| < 2^52, inside the range already proven by the
+// isSafeInteger lowering. Result is an i32 0/1 temp joined through
+// an i32 slot (safe-integer join analog).
+func saLowerIsIntegerF64(w printer.EmitTextWriter, v string, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 4\n", slot))
+	finL := fmt.Sprintf("L_int_fin_%d", *nextTemp)
+	*nextTemp++
+	negL := fmt.Sprintf("L_int_neg_%d", *nextTemp)
+	*nextTemp++
+	intL := fmt.Sprintf("L_int_int_%d", *nextTemp)
+	*nextTemp++
+	trueL := fmt.Sprintf("L_int_t_%d", *nextTemp)
+	*nextTemp++
+	falseL := fmt.Sprintf("L_int_f_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_int_end_%d", *nextTemp)
+	*nextTemp++
+	z := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fmul %s, 0.0\n", z, v))
+	bad := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ne %s, %s\n", bad, z, z))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bad, falseL, finL))
+	w.Write(fmt.Sprintf("%s:\n", finL))
+	ge := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_ge %s, 4503599627370496.0\n", ge, v))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ge, trueL, negL))
+	w.Write(fmt.Sprintf("%s:\n", negL))
+	nb := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fneg 4503599627370496.0\n", nb))
+	le := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_le %s, %s\n", le, v, nb))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", le, trueL, intL))
+	w.Write(fmt.Sprintf("%s:\n", intL))
+	ti := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fptosi %s\n", ti, v))
+	back := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sitofp %s\n", back, ti))
+	eq := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = fcmp_eq %s, %s\n", eq, v, back))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, trueL, falseL))
+	w.Write(fmt.Sprintf("%s:\n", trueL))
+	w.Write(fmt.Sprintf("  store %s + 0, 1 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", falseL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res
+}
+
 func saEvalMathAbs(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	args := []*ast.Node{}
 	if ce.Arguments != nil {

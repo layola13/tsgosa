@@ -4150,6 +4150,19 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	}
 	if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
 		ce := rs.Expression.AsConditionalExpression()
+		if scope.retKind == "jsval" {
+			// jsval 返回三元（异形臂各装箱后 ptr 槽汇合；
+			// 禁 saLowerTernaryValue 的串/非串臂拒）。
+			t, msg := saLowerTernaryJsVal(w, ce, s, scope, pos, refusals, nextLabel, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
+			saReleaseExceptOp(w, scope, t)
+			w.Write(fmt.Sprintf("  ret %s\n", t))
+			return true, false
+		}
 		t, _, msg := saLowerTernaryValue(w, ce, s, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
 			ln, col := pos(s.Pos())
