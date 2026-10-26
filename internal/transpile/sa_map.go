@@ -56,6 +56,12 @@ func saMapCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	}
 	kind, ok := saMapBaseKind(pa.Expression, scope)
 	if !ok {
+		// 顶层 Set 快照调用种（.has 等皆 i32；非 Set 成员沿旧门）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if _, ok := saTopSetLookup(scope, pa.Expression); ok && saIsSetMethod(pa.Name().Text()) {
+				return "i32", true
+			}
+		}
 		return "", false
 	}
 	m := pa.Name().Text()
@@ -745,6 +751,196 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", name, kh, v))
 	}
 	return true
+}
+
+// saTopSet 顶层 const Set 快照（名→ new 表达式；用点经 btree_set 物化；
+// 仅同种字面量元；JEV snapshot_guarded 0.91：导出形禁认领（跨文件
+// 变异不可见），文件内 .add/.delete/.clear/.set 任一出现即禁认领，
+// 空 Map 变异形不在此列，沿旧 kind-244 门）。
+type saTopSet struct {
+	init     *ast.Node
+	elemKind string
+}
+
+// saTopSetLookup 查顶层 Set 快照（标识符直指、无局部遮蔽；不落字）。
+func saTopSetLookup(scope *saScope, e *ast.Node) (saTopSet, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return saTopSet{}, false
+	}
+	if _, shadowed := scope.types[e.Text()]; shadowed {
+		return saTopSet{}, false
+	}
+	ts, ok := scope.topSets[e.Text()]
+	if !ok {
+		return saTopSet{}, false
+	}
+	return ts, true
+}
+
+// saTopSetMutated 报告文件内任一语句是否以变异成员访问给定名
+// （.add/.delete/.clear/.set，调用与否皆算；.has/.size 等读访问
+// 不算；递归进函数体/箭头体；ForEachChild 回调恒返 false 以遍历
+// 全部子节点，禁 saNodeContainsIdent 式倒置提前停）。
+func saTopSetMutated(stmts []*ast.Node, name string) bool {
+	mutated := false
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || mutated {
+			return
+		}
+		if n.Kind == ast.KindPropertyAccessExpression {
+			pa := n.AsPropertyAccessExpression()
+			if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == name && pa.Name() != nil {
+				switch pa.Name().Text() {
+				case "add", "delete", "clear", "set":
+					mutated = true
+					return
+				}
+			}
+		}
+		n.ForEachChild(func(child *ast.Node) bool {
+			if child != nil {
+				walk(child)
+			}
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+		if mutated {
+			return true
+		}
+	}
+	return false
+}
+
+// saTopSetPrescan 收顶层 `const S = new Set([...])` 快照（名→快照；
+// 构造器须为 Set 标识符（类型实参忽略），实参须恰一数组字面量，
+// 元须全串或全 i32 字面量（混元/非字面量整句不收）；const 永收，
+// let/var 须未被赋值；导出形与文件内变异形不收，沿旧 kind-244 门。
+func saTopSetPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, assigned map[string]bool) (map[string]saTopSet, map[*ast.Node]bool) {
+	out := map[string]saTopSet{}
+	claimed := map[*ast.Node]bool{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		if ast.HasModifier(st, ast.ModifierFlagsExport) {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+			continue
+		}
+		isConst := vdl.AsNode().Flags&ast.NodeFlagsConst != 0
+		type pend struct {
+			name string
+			set  saTopSet
+		}
+		var pends []pend
+		okAll := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			name := nm.Text()
+			if _, dup := out[name]; dup {
+				okAll = false
+				break
+			}
+			if _, dup := funcs[name]; dup {
+				okAll = false
+				break
+			}
+			if !isConst && assigned[name] {
+				okAll = false
+				break
+			}
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindNewExpression {
+				okAll = false
+				break
+			}
+			ce := init.AsNewExpression()
+			if ce == nil || ce.Expression == nil {
+				okAll = false
+				break
+			}
+			ctor := saUnwrapTransparent(ce.Expression)
+			if ctor == nil || ctor.Kind != ast.KindIdentifier || ctor.Text() != "Set" {
+				okAll = false
+				break
+			}
+			if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 || ce.Arguments.Nodes[0] == nil {
+				okAll = false
+				break
+			}
+			arg := ce.Arguments.Nodes[0]
+			if arg.Kind != ast.KindArrayLiteralExpression {
+				okAll = false
+				break
+			}
+			al := arg.AsArrayLiteralExpression()
+			if al == nil || al.Elements == nil {
+				okAll = false
+				break
+			}
+			elemKind := ""
+			elOk := true
+			for _, el := range al.Elements.Nodes {
+				if el == nil {
+					elOk = false
+					break
+				}
+				if _, sok := saTopArrStrText(el); sok {
+					if elemKind == "" {
+						elemKind = "str"
+					} else if elemKind != "str" {
+						elOk = false
+						break
+					}
+				} else if _, iok := saTopArrElemText(el); iok {
+					if elemKind == "" {
+						elemKind = "i32"
+					} else if elemKind != "i32" {
+						elOk = false
+						break
+					}
+				} else {
+					elOk = false
+					break
+				}
+			}
+			if !elOk {
+				okAll = false
+				break
+			}
+			if saTopSetMutated(stmts, name) {
+				okAll = false
+				break
+			}
+			pends = append(pends, pend{name: name, set: saTopSet{init: init, elemKind: elemKind}})
+		}
+		if !okAll {
+			continue
+		}
+		for _, p := range pends {
+			out[p.name] = p.set
+		}
+		claimed[st] = true
+	}
+	return out, claimed
 }
 
 // saLowerMapNew `new Map()`/`new Set()`（参数忽略容忍；形状证据：封存 lowerNew:8579-8592 不看参数）。

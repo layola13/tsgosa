@@ -3192,6 +3192,22 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 			}
 			if base := saUnwrapTransparent(pa.Expression); base != nil && base.Kind == ast.KindIdentifier {
+				// 顶层 const Set 快照 .has（JEV snapshot_guarded）：用点经
+				// btree_set 物化后 contains，用后即释；非 has 成员沿旧门
+				// 大声拒（saMapBaseKind 不认顶层快照，故此处先行拦截）。
+				if ts, ok := saTopSetLookup(scope, base); ok && pa.Name() != nil && pa.Name().Text() == "has" {
+					h, msg := saLowerMapNew(w, "Set", ts.init.AsNewExpression(), scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					saOwnTemp(scope, h)
+					op, _, msg := saLowerMapCall(w, h, "set", "has", ce, scope, pos, refusals, nextTemp)
+					saReleaseOwnedTemp(w, scope, h)
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, false, ""
+				}
 				if kind, ok := saMapBaseKind(base, scope); ok {
 					op, _, msg := saLowerMapCall(w, base.Text(), kind, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
 					if msg != "" {
