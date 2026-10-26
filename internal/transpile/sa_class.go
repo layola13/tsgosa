@@ -3726,6 +3726,215 @@ func saLowerCondObj(w printer.EmitTextWriter, ce *ast.ConditionalExpression, sco
 	return tmp, uniDef, ""
 }
 
+// saFESpread is a collected Object.fromEntries spread: the source array
+// handle (materialized during collection), the map callback parameter
+// name, and the pair key/value expressions. The pair loop itself is
+// emitted later, once the target layout is known, by
+// saEmitFromEntriesSpread, which calls the sa_std helper
+// @ts_obj_set_field_by_name per pair instead of re-emitting a
+// field-match chain at every spread site (JEV sa_std_pair_setter).
+type saFESpread struct {
+	src   string
+	param string
+	key   *ast.Node
+	val   *ast.Node
+}
+
+// saIsFromEntriesCall reports whether se is Object.fromEntries(x) with
+// exactly one argument (light predicate; strict shape validation lives
+// in saCollectFromEntriesSpread).
+func saIsFromEntriesCall(se *ast.Node) bool {
+	if se == nil || se.Kind != ast.KindCallExpression {
+		return false
+	}
+	ce := se.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "fromEntries" {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Expression.Text() != "Object" {
+		return false
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return false
+	}
+	return true
+}
+
+// saCollectFromEntriesSpread validates the strict lowerable shape
+// Object.fromEntries(SRC.map((k) => [k, v])) and materializes the
+// source array handle. The map itself is never evaluated: the emitter
+// loop binds k per element and evaluates the pair expressions inline,
+// which matches JS evaluation order (callback per element, pairs in
+// order). Anything else refuses loudly here, never silently.
+func saCollectFromEntriesSpread(se *ast.Node, scope *saScope, w printer.EmitTextWriter, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (*saFESpread, string) {
+	ce := se.AsCallExpression()
+	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return nil, "fromEntries spread needs exactly one argument"
+	}
+	arg := saUnwrapTransparent(ce.Arguments.Nodes[0])
+	if arg == nil || arg.Kind != ast.KindCallExpression {
+		return nil, "fromEntries spread needs a .map call argument (only SRC.map((k) => [k, v]) is lowerable)"
+	}
+	mce := arg.AsCallExpression()
+	if mce == nil || mce.Expression == nil || mce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return nil, "fromEntries spread needs a .map call argument (only SRC.map((k) => [k, v]) is lowerable)"
+	}
+	mpa := mce.Expression.AsPropertyAccessExpression()
+	if mpa == nil || mpa.Name() == nil || mpa.Name().Text() != "map" {
+		return nil, "fromEntries spread needs a .map call argument (only SRC.map((k) => [k, v]) is lowerable)"
+	}
+	if mce.Arguments == nil || len(mce.Arguments.Nodes) != 1 {
+		return nil, "fromEntries spread needs a .map call with exactly one callback argument"
+	}
+	cb := mce.Arguments.Nodes[0]
+	if cb == nil || (cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression) {
+		return nil, "fromEntries map callback must be an inline arrow or function expression"
+	}
+	params := cb.Parameters()
+	if len(params) != 1 {
+		return nil, "fromEntries map callback takes exactly one parameter"
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil || pd.Name() == nil || pd.Name().Kind != ast.KindIdentifier {
+		return nil, "fromEntries map callback parameter must be a single identifier"
+	}
+	paramName := pd.Name().Text()
+	if _, shadowed := scope.types[paramName]; shadowed {
+		return nil, "fromEntries map parameter shadows a live binding (rename it)"
+	}
+	body := cb.Body()
+	if body == nil {
+		return nil, "fromEntries map callback has no body"
+	}
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return nil, "fromEntries map callback block must have exactly one return"
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return nil, "fromEntries map callback block must have exactly one return"
+		}
+		body = rs.Expression
+	}
+	body = saUnwrapTransparent(body)
+	if body == nil || body.Kind != ast.KindArrayLiteralExpression {
+		return nil, "fromEntries map callback must return a [key, value] pair literal"
+	}
+	al := body.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) != 2 {
+		return nil, "fromEntries map callback must return a [key, value] pair literal"
+	}
+	for _, el := range al.Elements.Nodes {
+		if el == nil || el.Kind == ast.KindSpreadElement || el.Kind == ast.KindOmittedExpression {
+			return nil, "fromEntries map callback must return a [key, value] pair literal"
+		}
+	}
+	recvExpr := mpa.Expression
+	var src string
+	if recvExpr != nil && recvExpr.Kind == ast.KindIdentifier {
+		if arr, ok := saTopArrLookup(scope, recvExpr); ok {
+			src = saMaterializeTopArr(w, arr, scope, nextTemp)
+		}
+	}
+	if src == "" {
+		h, msg := saArrValueOf(w, recvExpr, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return nil, msg
+		}
+		src = h
+	}
+	return &saFESpread{src: src, param: paramName, key: al.Elements.Nodes[0], val: al.Elements.Nodes[1]}, ""
+}
+
+// saEmitFromEntriesSpread lowers one collected fromEntries spread into
+// the target object h with layout def: a loop over the source array
+// binds the map parameter per element, evaluates the pair key (string)
+// and value (i32), and calls @ts_obj_set_field_by_name (sa_std) to
+// store into the matching field. The loop itself is site-specific
+// control flow (it inlines the map callback); the reusable
+// match-and-store step is the library call. Only i32/bool target
+// fields are lowerable: an i32 pair value cannot soundly fill a
+// str/arr/inst/f64 slot, so such layouts refuse loudly. Unmatched
+// pairs are dropped by the helper (they have no static slot); the
+// caller zero-fills the target up front, so dropped pairs read as
+// missing optional fields, never garbage.
+func saEmitFromEntriesSpread(w printer.EmitTextWriter, h string, def *saClassDef, fe *saFESpread, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	for _, f := range def.fields {
+		fk := def.fkinds[f.name]
+		if fk == "" {
+			fk = "i32"
+		}
+		if fk != "i32" && fk != "bool" {
+			return "fromEntries spread over non-i32 field " + f.name + " is not lowerable (i32 pair values only)"
+		}
+	}
+	var nameHs []string
+	for _, f := range def.fields {
+		nameHs = append(nameHs, saLowerStringLiteral(w, f.name, scope, nextTemp))
+	}
+	namesArr := saAssembleHandles(w, nameHs, scope, nextTemp)
+	var offTexts []string
+	for _, f := range def.fields {
+		offTexts = append(offTexts, strconv.Itoa(def.offsets[f.name]))
+	}
+	offsetsArr := saBuildI32Array(w, offTexts, scope, nextTemp)
+	scope.addImport("sa_std/ts_object.sa")
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, fe.src))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, fe.src))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_fe_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_fe_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_fe_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	w.Write(fmt.Sprintf("  %s = add %s, 0\n", fe.param, el))
+	scope.types[fe.param] = "str"
+	saDeclarePlain(scope, fe.param)
+	keyH, msg := saEvalStr(w, fe.key, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return msg
+	}
+	kp, kl := saExpandStr(w, keyH, nextTemp)
+	v, msg := saEvalI32(w, fe.val, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return msg
+	}
+	w.Write(fmt.Sprintf("  call @ts_obj_set_field_by_name(%s, %s, %s, %s, %s, %s, %d)\n", h, kp, kl, v, namesArr, offsetsArr, len(def.fields)))
+	if keyH != fe.param {
+		saReleaseOwnedTemp(w, scope, keyH)
+	}
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	delete(scope.types, fe.param)
+	saReleaseOwnedTemp(w, scope, namesArr)
+	saReleaseOwnedTemp(w, scope, offsetsArr)
+	saReleaseOwnedTemp(w, scope, fe.src)
+	return ""
+}
+
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
 	type spreadSrc struct {
@@ -3736,6 +3945,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		spread int // spreads 下标，-1 为普通 store
 		fname  string
 		init   *ast.Node
+		fe     *saFESpread // non-nil for a fromEntries spread
 	}
 	var spreads []spreadSrc
 	var ops []op
@@ -3792,6 +4002,13 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				for _, f := range sdef.fields {
 					keys = append(keys, f.name)
 				}
+				continue
+			case saIsFromEntriesCall(se):
+				fe, msg := saCollectFromEntriesSpread(se, scope, w, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				ops = append(ops, op{spread: -1, fe: fe})
 				continue
 			case se.Kind == ast.KindCallExpression:
 				// 工厂调用展开（`{...mk()}` 经签名返回种得布局；封存
@@ -3906,7 +4123,35 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	// 头槽归属（嵌套递归同记；具名绑定时消费，余下返前释放；
 	// 封存 lowerObjectLiteral 尾 declareOwned(h) 同形）。
 	saOwnTemp(scope, h)
+	// fromEntries spreads need an upfront zero-fill: their fields are
+	// set dynamically (pairs may cover any subset), and the trailing
+	// zero-fill below is skipped for fe-covered fields, so defaults
+	// must be zero before any op replays (later props still win, as
+	// they overwrite zeros; earlier props survive unless a pair key
+	// matches them, exactly as JS spread order requires).
+	hasFE := false
 	for _, o := range ops {
+		if o.fe != nil {
+			hasFE = true
+			break
+		}
+	}
+	if hasFE {
+		for _, f := range def.fields {
+			if fk := def.fkinds[f.name]; fk == "i32" || fk == "" || fk == "bool" {
+				w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+			} else {
+				w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+			}
+		}
+	}
+	for _, o := range ops {
+		if o.fe != nil {
+			if msg := saEmitFromEntriesSpread(w, h, def, o.fe, scope, pos, refusals, nextTemp); msg != "" {
+				return "", "", msg
+			}
+			continue
+		}
 		if o.spread >= 0 {
 			// spread 逐域复制（源序；后者覆盖前者；种错配拒，封存 9095 原文）。
 			src := spreads[o.spread]
@@ -4042,6 +4287,12 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	// 空柄表示；匹配门已保缺键全可选）。
 	filled := map[string]bool{}
 	for _, o := range ops {
+		if o.fe != nil {
+			for _, f := range def.fields {
+				filled[f.name] = true
+			}
+			continue
+		}
 		if o.spread >= 0 {
 			for _, f := range spreads[o.spread].def.fields {
 				filled[f.name] = true
