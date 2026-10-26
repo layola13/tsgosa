@@ -6047,10 +6047,34 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
 	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	// Map 结果串元判定（纯查表，无发射）：输入为串元数组时，回调首参
+	// 临时绑 str，回调体经 saIsStrExpr 判串（trim/toLowerCase/恒等/字面量
+	// 等），则结果记 arrStr，使链式 .filter/.map 续按串元绑定；i32
+	// 结果（length 等）不记，避免误标。
+	mapStr := false
+	if scope.arrStr != nil && scope.arrStr[recv] {
+		if params := cb.Parameters(); len(params) > 0 {
+			if pd := params[0].AsParameterDeclaration(); pd != nil {
+				if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+					oldKind, hadOld := scope.types[nm.Text()]
+					scope.types[nm.Text()] = "str"
+					mapStr = saIsStrExpr(cb.Body(), scope)
+					if hadOld {
+						scope.types[nm.Text()] = oldKind
+					} else {
+						delete(scope.types, nm.Text())
+					}
+				}
+			}
+		}
+	}
 	el := saArrElemAt(w, data, i, nextTemp)
 	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 	if msg != "" {
 		return "", msg
+	}
+	if mapStr {
+		saMarkArrStr(scope, h)
 	}
 	saLowerArrayPush(w, h, v, scope, nextTemp)
 	inext := fmt.Sprintf("t_%d", *nextTemp)
