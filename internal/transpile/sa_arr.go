@@ -7624,10 +7624,28 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 				}
 				if bindKind != "" {
 					bodyExpr := cb.Body()
+					// Multi-statement blocks (JEV extend_mapstr_unwrap 0.82):
+					// a block with exactly one return statement unwraps to
+					// that return's expression for the string-result test,
+					// so `const x = ...; return "<str>"` maps route through
+					// the str slot instead of being evaluated as i32.
 					if bodyExpr != nil && bodyExpr.Kind == ast.KindBlock {
-						if bd := bodyExpr.AsBlock(); bd != nil && bd.Statements != nil && len(bd.Statements.Nodes) == 1 {
-							if rs := bd.Statements.Nodes[0].AsReturnStatement(); rs != nil {
-								bodyExpr = rs.Expression
+						if bd := bodyExpr.AsBlock(); bd != nil && bd.Statements != nil {
+							var retExpr *ast.Node
+							retCount := 0
+							for _, st := range bd.Statements.Nodes {
+								if st == nil {
+									continue
+								}
+								if st.Kind == ast.KindReturnStatement {
+									if rs := st.AsReturnStatement(); rs != nil {
+										retCount++
+										retExpr = rs.Expression
+									}
+								}
+							}
+							if retCount == 1 && retExpr != nil {
+								bodyExpr = retExpr
 							}
 						}
 					}
@@ -9403,10 +9421,16 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			sep = ns
 		}
 		sp, sl := saExpandStr(w, sep, nextTemp)
-		// 串元数组 join 大声拒（`ts_arr_join_vals` 只读 i32 元；串元柄误作 i32
-		// 即拼地址（1188 p2/p4 实证 "1-2" 变双地址）；i32 join 沿旧路；改写循环 concat。
+		// 串元数组 join 经 sa_std 分隔 helper（JEV sa_std_sep_helper 1.0）：
+		// `@ts_arr_join_str_sep` 循元拼段、元间插分隔符；i32 join 仍沿旧路。
 		if _, ok := scope.arrStr[recv]; ok {
-			return "", "", "join on string-element arrays is not lowerable (join formats i32 elements; concat in a loop)"
+			scope.addImport("sa_std/ts_string.sa")
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_arr_join_str_sep(%s, %s, %s)\n", out, recv, sp, sl))
+			saReleaseOwnedTemp(w, scope, sep)
+			saOwnTemp(scope, out)
+			return out, "str", ""
 		}
 		// 嵌套数组 join 大声拒（内层柄误作 i32 即拼地址：`[[1,2]].join()` 真机
 		// 印句柄（1040470688 vs "1,2"）实证；与串元门同律；1418）。

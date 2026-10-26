@@ -5925,6 +5925,45 @@ func saLinkCallee(scope *saScope, name string) (string, bool) {
 // saEvalCallArg 形参种导向实参求值（自 saEvalFuncCall 内联闭包原样抽出，
 // 零语义变，供标签模板脱糖复用：str 形参走串求值，arr 形参走句柄值，
 // 实例须同类相授，余下走 bool 兼容求值）。
+// saArgIsInstField reports whether a is a field read whose recorded layout
+// kind is inst (JEV sa_std_branch_box 0.96; covers optional instance fields
+// such as role.workspace passed to an unknown/jsval parameter, where the
+// field load is a borrowed handle or 0 when missing).
+func saArgIsInstField(a *ast.Node, scope *saScope) bool {
+	for a != nil && (a.Kind == ast.KindParenthesizedExpression || a.Kind == ast.KindAsExpression || a.Kind == ast.KindSatisfiesExpression || a.Kind == ast.KindNonNullExpression) {
+		switch a.Kind {
+		case ast.KindParenthesizedExpression:
+			a = a.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			a = a.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			a = a.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			a = a.AsNonNullExpression().Expression
+		}
+	}
+	if a == nil || a.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := a.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Name() == nil {
+		return false
+	}
+	if pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	k, ok := scope.types[pa.Expression.Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return false
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil {
+		return false
+	}
+	fk, ok := def.fkinds[pa.Name().Text()]
+	return ok && fk == "inst"
+}
+
 func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "jsval" {
 		if a != nil && a.Kind == ast.KindIdentifier {
@@ -5981,12 +6020,38 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				return h, ""
 			}
 		}
+		// Instance field as jsval argument (JEV sa_std_branch_box 0.96):
+		// an optional instance field load is a borrowed handle or 0 when
+		// missing; the sa_std branch box maps 0 -> kind 0 (undefined) and
+		// non-zero -> kind 4 (object) with the handle as payload.
+		if saArgIsInstField(a, scope) {
+			op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			scope.addImport("sa_std/ts_jsval.sa")
+			bh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_inst(%s)\n", bh, op))
+			saOwnTemp(scope, bh)
+			return bh, ""
+		}
 		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
 			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
 			// (e.g. a Record<string, unknown> field read) passes through
 			// unchanged; boxing it as a number would corrupt the handle.
 			if k, ok := scope.types[op]; ok && k == "jsval" {
 				return op, ""
+			}
+			// Any other instance-typed value (e.g. a call returning an
+			// instance) boxes through the same branch helper.
+			if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
+				scope.addImport("sa_std/ts_jsval.sa")
+				bh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_inst(%s)\n", bh, op))
+				saOwnTemp(scope, bh)
+				return bh, ""
 			}
 			if msg2 := saCheckI32Value(scope, op); msg2 == "" {
 				h := saBoxJsVal(w, 2, "", op, false, nextTemp)
