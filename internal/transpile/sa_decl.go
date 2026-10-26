@@ -977,6 +977,35 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclarePlain(scope, name)
 		return true
 	}
+	// Record cast from jsval (JEV record_as_map_with_sidecar 0.75): the
+	// cast is a borrowed map view of the jsval sidecar, NOT an i32 value.
+	// Intercept before saUnwrapTransparent peels the AsExpression away.
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindAsExpression {
+		if ae := vd.Initializer.AsAsExpression(); ae != nil {
+			if vkind, ok := saRecordCastKind(ae.Type); ok {
+				inner := ae.Expression
+				for inner != nil && (inner.Kind == ast.KindParenthesizedExpression || inner.Kind == ast.KindNonNullExpression) {
+					if inner.Kind == ast.KindParenthesizedExpression {
+						inner = inner.AsParenthesizedExpression().Expression
+					} else {
+						inner = inner.AsNonNullExpression().Expression
+					}
+				}
+				if inner == nil || inner.Kind != ast.KindIdentifier {
+					ln, col := pos(vd.Initializer.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Record cast needs a jsval (unknown) identifier source"})
+					return false
+				}
+				if k, ok := scope.types[inner.Text()]; !ok || k != "jsval" {
+					ln, col := pos(vd.Initializer.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Record cast needs a jsval (unknown) source"})
+					return false
+				}
+				saLowerRecordView(w, name, inner.Text(), vkind, scope, nextTemp)
+				return true
+			}
+		}
+	}
 	// transparent wrappers peel before kind dispatch (type-level only).
 	init := saUnwrapTransparent(vd.Initializer)
 	if init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression {
@@ -1212,7 +1241,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			// that ptr-slot join (when string handles were misread as i32 words).
 			// Mixed str/non-str arms are still refused: the element kind would
 			// be ambiguous for later element reads.
-			if tok && fok && tstr != fstr {
+			if tok && fok && tstr != fstr && !saIsEmptyArrayLiteral(ce.WhenTrue) && !saIsEmptyArrayLiteral(ce.WhenFalse) {
 				ln, col := pos(init.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: string-element array ternary arms must agree"})
 				return false

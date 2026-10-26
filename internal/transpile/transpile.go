@@ -3535,6 +3535,11 @@ type saScope struct {
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
 	mapVals map[string]string
+	// recordView maps a Record-view variable name to the origin jsval handle
+	// it was cast from (value as Record<string, unknown>). The view itself is
+	// a borrowed btree_map handle (sidecar or empty fallback); returning or
+	// passing the view as unknown must use the origin jsval, not the map.
+	recordView map[string]string
 	// setVals records Set handle element kinds ("i32"/"str", seeded at
 	// `new Set<T>`/first add; mixed adds delete the entry back to unknown;
 	// for-of iteration gates on "i32", mirroring mapVals policy).

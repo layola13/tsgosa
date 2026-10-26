@@ -211,6 +211,97 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 	return ""
 }
 
+// saSetRecordView records a Record-view origin jsval handle (nil-safe).
+func saSetRecordView(scope *saScope, name, origin string) {
+	if scope.recordView == nil {
+		scope.recordView = map[string]string{}
+	}
+	scope.recordView[name] = origin
+}
+
+// saRecordCastKind parses `Record<string, T>` as a cast target, returning the
+// map value kind: unknown/any -> jsval, string -> str, number -> i32,
+// boolean -> bool. Any other shape is not a Record cast.
+func saRecordCastKind(tn *ast.TypeNode) (string, bool) {
+	if tn == nil || tn.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := tn.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Record" {
+		return "", false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
+		return "", false
+	}
+	if ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[0].Kind != ast.KindStringKeyword {
+		return "", false
+	}
+	vt := ref.TypeArguments.Nodes[1]
+	if vt == nil {
+		return "", false
+	}
+	switch vt.Kind {
+	case ast.KindUnknownKeyword, ast.KindAnyKeyword:
+		return "jsval", true
+	case ast.KindStringKeyword:
+		return "str", true
+	case ast.KindNumberKeyword:
+		return "i32", true
+	case ast.KindBooleanKeyword:
+		return "bool", true
+	}
+	return "", false
+}
+
+// saLowerRecordView binds `name` as a borrowed Record view of the jsval
+// `origin`: the view map is the jsval +24 sidecar when present, otherwise a
+// fresh empty btree_map (external jsval objects have no sidecar; their
+// fields then read as missing/undefined, which is loud only in the sense
+// that it is a documented approximation, never a crash). The view is NOT
+// owned: releasing it would double-free the sidecar while the origin jsval
+// still points at it, and the empty-fallback map leak is accepted over a
+// double-free. Field reads go through the existing map PropertyAccess path
+// (btree_map_get, missing key -> 0).
+func saLowerRecordView(w printer.EmitTextWriter, name, origin, vkind string, scope *saScope, nextTemp *int) {
+	scope.addImport("sa_std/btree_map.sa")
+	side := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 24 as ptr\n", side, origin))
+	cond := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", cond, side))
+	hasL := fmt.Sprintf("L_rec_has_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	emptyL := fmt.Sprintf("L_rec_empty_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_rec_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	saOwnTemp(scope, slot)
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cond, hasL, emptyL))
+	w.Write(fmt.Sprintf("%s:\n", hasL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, side))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", emptyL))
+	nm := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_map_new()\n", nm))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, nm))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	view := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", view, slot))
+	saReleaseOwnedTemp(w, scope, slot)
+	w.Write(fmt.Sprintf("  %s = %s\n", name, view))
+	scope.types[name] = "map"
+	saSetMapVal(scope, name, vkind)
+	saSetRecordView(scope, name, origin)
+	saDeclarePlain(scope, name)
+}
+
 // saSetMapVal records a map handle value kind (lazy table; nil-safe reads).
 func saSetMapVal(scope *saScope, name, vkind string) {
 	if scope.mapVals == nil {

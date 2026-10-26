@@ -975,6 +975,13 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			}
 			return "", "struct return needs matching struct value"
 		}
+		// Record-view 返回进 unknown 位：返原 jsval，不返 map 柄（map 柄
+		// 不是 jsval 柄；签名 `-> ptr` 须为原对象句柄）。
+		if retKind == "jsval" {
+			if origin, ok := scope.recordView[e.Text()]; ok {
+				return origin, ""
+			}
+		}
 		// Map 返回：同种句柄直传（`return m`；字面量仍须声明绑定，沿旧门）。
 		if retKind == "map" {
 			if k, ok := scope.types[e.Text()]; ok && k == "map" {
@@ -5276,6 +5283,9 @@ func saLinkCallee(scope *saScope, name string) (string, bool) {
 func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "jsval" {
 		if a != nil && a.Kind == ast.KindIdentifier {
+			if origin, ok := scope.recordView[a.Text()]; ok {
+				return origin, ""
+			}
 			if k, ok := scope.types[a.Text()]; ok && k == "jsval" {
 				return a.Text(), ""
 			}

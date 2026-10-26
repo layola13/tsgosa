@@ -402,6 +402,11 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 		}
 		return v, ""
 	}
+	if el.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[el.Text()]; ok && k == "jsval" {
+			return el.Text(), ""
+		}
+	}
 	v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
@@ -602,6 +607,18 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	w.Write(fmt.Sprintf("  !%s\n", hm))
 	w.Write(fmt.Sprintf("  !%s\n", buf))
 	saOwnTemp(scope, h)
+	if len(elems) > 0 {
+		allJsVal := true
+		for _, ev := range elems {
+			if k, ok := scope.types[ev]; !ok || k != "jsval" {
+				allJsVal = false
+				break
+			}
+		}
+		if allJsVal {
+			saMarkArrJsVal(scope, h)
+		}
+	}
 	if nested {
 		if scope.arrNest == nil {
 			scope.arrNest = map[string]bool{}
@@ -2033,6 +2050,31 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 // element scan, identifiers by bound marking, wrappers/nested ternaries by
 // recursion; calls and exotic shapes are unknown (loud refusal downstream—no
 // silent handle-kind guess; cf h4/h5 pointer-as-int, UP same-wrong).
+// saIsEmptyArrayLiteral reports a (possibly parenthesized/as-wrapped) empty
+// array literal. An empty arm carries no element kind, so it is a wildcard
+// in array-ternary str agreement: `cond ? [str] : []` is a string array,
+// not a mixed-kind ternary.
+func saIsEmptyArrayLiteral(e *ast.Node) bool {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindParenthesizedExpression:
+			e = e.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			e = e.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			e = e.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			e = e.AsNonNullExpression().Expression
+		case ast.KindArrayLiteralExpression:
+			al := e.AsArrayLiteralExpression()
+			return al != nil && (al.Elements == nil || len(al.Elements.Nodes) == 0)
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func saTernaryArrArm(e *ast.Node, scope *saScope) (bool, bool) {
 	for e != nil {
 		switch e.Kind {
@@ -4542,7 +4584,13 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	// 顶层 const 数组纯读方法调用种（快照接收器；变异/未知方法沿旧门；708）。
-	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) {
+	// jsval receiver (unknown array, e.g. values.flatMap(...).map(...)):
+	// saEvalCall already dispatches array methods on jsval identifiers
+	// (unbox_at_call), but saArrCallRet refused them here, so a chained
+	// .map/.filter on the flatMap result was not recognised as an array
+	// and fell through to "only direct function calls lowerable".
+	isJsValRecv := pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval"
+	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) && !isJsValRecv {
 		return "", false
 	}
 	if (m == "find" || m == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
@@ -4705,7 +4753,7 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		if !tok || !fok {
 			return "", "array ternary arm shape is not lowerable"
 		}
-		if tstr != fstr {
+		if tstr != fstr && !saIsEmptyArrayLiteral(tce.WhenTrue) && !saIsEmptyArrayLiteral(tce.WhenFalse) {
 			return "", "string-element array ternary arms must agree"
 		}
 		condOp, msg := saCondOperandMat(w, tce.Condition, scope, pos, refusals, nextTemp)
@@ -4742,7 +4790,7 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
 		w.Write(fmt.Sprintf("  !%s\n", slot))
 		scope.types[res] = "arr"
-		if tstr {
+		if tstr || fstr {
 			saMarkArrStr(scope, res)
 		}
 		return res, ""
