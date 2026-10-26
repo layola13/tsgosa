@@ -2643,6 +2643,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					continue
 				}
 			}
+			// 交集形参记合并实例布局（与返回位同律；别名交集见下 TypeReference 分支）。
+			if pd.Type.Kind == ast.KindIntersectionType {
+				if lname, ok := saSynthMergedLayout(pd.Type, aliasOf, classes); ok {
+					kinds[name] = "inst:" + lname
+					continue
+				}
+			}
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
 				// 擦除泛型元数组形参（`arr: T[]` 即 arr 柄；裸 `T` 见下；
@@ -2697,6 +2704,11 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						}
 						if _, ok := classes[ref.TypeName.Text()]; ok {
 							kinds[name] = "inst:" + ref.TypeName.Text()
+							continue
+						}
+						// 别名交集/字面量形参记合并实例布局（与返回位同律）。
+						if lname, ok := saSynthMergedLayout(pd.Type, aliasOf, classes); ok {
+							kinds[name] = "inst:" + lname
 							continue
 						}
 						// enum 形参记 i32（成员整数；传值/返回/比较皆 i32 位；声明位 585 同律；585b）。

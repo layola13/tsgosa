@@ -1887,6 +1887,247 @@ func saAnonLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.T
 	return true
 }
 
+// saAliasUnionScalarKind resolves a type (following alias chains) to a
+// scalar union kind when the endpoint is a union of literals/keywords
+// (e.g. TokenUsageSource = "openai" | "anthropic" -> str). Alias cycles
+// and non-union endpoints return false; callers fall back to
+// saIfaceFieldKind.
+func saAliasUnionScalarKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	cur := t
+	seen := map[string]bool{}
+	for i := 0; i <= len(aliasOf)+2 && cur != nil; i++ {
+		switch cur.Kind {
+		case ast.KindUnionType:
+			return saUnionScalarKind(cur.AsNode())
+		case ast.KindParenthesizedType:
+			pt := cur.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return "", false
+			}
+			cur = pt.Type
+		case ast.KindTypeReference:
+			ref := cur.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil || len(aliasOf) == 0 {
+				return "", false
+			}
+			nm := ref.TypeName.Text()
+			if seen[nm] {
+				return "", false
+			}
+			seen[nm] = true
+			nxt, ok := aliasOf[nm]
+			if !ok || nxt == nil {
+				return "", false
+			}
+			cur = nxt
+		default:
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// saMergedFieldKind is saIfaceFieldKind with one correction: a field whose
+// type is an alias to a scalar union takes the union kind (a string-literal
+// union field is a str handle, not the arr slot saIfaceFieldKind assigns to
+// an unrecorded TypeReference). Bool unions land in i32 slots, matching
+// saIfaceFieldKind's bool handling.
+func saMergedFieldKind(ftn *ast.TypeNode, fname string, def *saClassDef, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) string {
+	if uk, ok := saAliasUnionScalarKind(ftn, aliasOf); ok {
+		switch uk {
+		case "str":
+			return "str"
+		case "arr":
+			return "arr"
+		case "f64":
+			return "f64"
+		default:
+			return "i32"
+		}
+	}
+	return saIfaceFieldKind(ftn, fname, def, classes)
+}
+
+// saCollectMergedFields unions the fields of an intersection's constituents
+// (in order, first wins on duplicates): type literals contribute their
+// property signatures, named interfaces contribute their recorded fields,
+// and named aliases are followed (cycle-guarded). Anything else fails.
+func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef, fields *[]string, fdefs map[string]*ast.TypeNode, fopt map[string]bool, fkinds map[string]string, fsub map[string]string, seen map[string]bool) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return false
+		}
+		return saCollectMergedFields(pt.Type, aliasOf, classes, fields, fdefs, fopt, fkinds, fsub, seen)
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return false
+		}
+		added := false
+		for _, m := range lit.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			nm := m.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				continue
+			}
+			if _, dup := fdefs[nm.Text()]; dup {
+				continue
+			}
+			*fields = append(*fields, nm.Text())
+			fdefs[nm.Text()] = pd.Type
+			if m.QuestionToken() != nil {
+				fopt[nm.Text()] = true
+			}
+			added = true
+		}
+		return added
+	case ast.KindIntersectionType:
+		it := t.AsIntersectionTypeNode()
+		if it == nil || it.Types == nil {
+			return false
+		}
+		any := false
+		for _, m := range it.Types.Nodes {
+			if m == nil || !saCollectMergedFields(m, aliasOf, classes, fields, fdefs, fopt, fkinds, fsub, seen) {
+				return false
+			}
+			any = true
+		}
+		return any
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return false
+		}
+		nm := ref.TypeName.Text()
+		if def, ok := classes[nm]; ok && def.isIface {
+			for _, f := range def.fields {
+				if _, dup := fdefs[f.name]; dup {
+					continue
+				}
+				*fields = append(*fields, f.name)
+				if def.fdefs != nil {
+					fdefs[f.name] = def.fdefs[f.name]
+				}
+				if def.fkinds != nil {
+					fkinds[f.name] = def.fkinds[f.name]
+				}
+				if def.fsub != nil {
+					if sub, ok := def.fsub[f.name]; ok {
+						fsub[f.name] = sub
+					}
+				}
+				if def.fopt != nil && def.fopt[f.name] {
+					fopt[f.name] = true
+				}
+			}
+			return len(def.fields) > 0
+		}
+		if seen[nm] {
+			return false
+		}
+		seen[nm] = true
+		tgt, ok := aliasOf[nm]
+		if !ok || tgt == nil {
+			return false
+		}
+		return saCollectMergedFields(tgt, aliasOf, classes, fields, fdefs, fopt, fkinds, fsub, seen)
+	default:
+		return false
+	}
+}
+
+// saMergedLayoutEqual mirrors saAnonLayoutEqual for merged layouts, using
+// the alias-aware field kind (a stored str field for a string-literal-union
+// alias must compare equal, or every lookup would mint a new layout).
+func saMergedLayoutEqual(def *saClassDef, fields []string, fdefs map[string]*ast.TypeNode, fkinds map[string]string, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	probe := &saClassDef{fsub: map[string]string{}}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		var k string
+		if v, ok := fkinds[fname]; ok {
+			k = v
+		} else {
+			k = saMergedFieldKind(fdefs[fname], fname, probe, classes, aliasOf)
+		}
+		if k != def.fkinds[fname] {
+			return false
+		}
+	}
+	return true
+}
+
+// saSynthMergedLayout synthesizes an instance layout for an intersection
+// type (direct, or reached through a type-alias reference), named
+// Inter_<fields> with _2 suffixes on kind mismatch, following the
+// saSynthAnonLayout discipline. A plain alias to a type literal is also
+// accepted (same merged shape, one constituent).
+func saSynthMergedLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	var fields []string
+	fdefs := map[string]*ast.TypeNode{}
+	fopt := map[string]bool{}
+	fkinds := map[string]string{}
+	fsub := map[string]string{}
+	if !saCollectMergedFields(t, aliasOf, classes, &fields, fdefs, fopt, fkinds, fsub, map[string]bool{}) {
+		return "", false
+	}
+	if len(fields) == 0 {
+		return "", false
+	}
+	base := "Inter_" + saMonoName(strings.Join(fields, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if saMergedLayoutEqual(def, fields, fdefs, fkinds, classes, aliasOf) {
+				return def.name, true
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}, fsub: fsub}
+		off := 0
+		for _, fname := range fields {
+			var fkind string
+			if k, ok := fkinds[fname]; ok {
+				fkind = k
+			} else {
+				fkind = saMergedFieldKind(fdefs[fname], fname, def, classes, aliasOf)
+			}
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			def.fdefs[fname] = fdefs[fname]
+			if fopt[fname] {
+				def.fopt[fname] = true
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def.name, true
+	}
+}
+
 // saRestLayoutEqual 判定既有剩余布局与给定源域集同形（域序/种全等；
 // 子布局名随种走，不等即不复用，后缀另建，与匿名合成同律）。
 func saRestLayoutEqual(def, src *saClassDef, fields []string) bool {

@@ -1780,6 +1780,14 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		}
 		return "", false
 	}
+	if t.Kind == ast.KindIntersectionType {
+		// 交集返回记合并实例布局（JEV synth_merged_inst 0.80：
+		// `A & {extra}` 即全部域的合成布局，null 联合由外层吸收）。
+		if lname, ok := saSynthMergedLayout(t, aliasOf, classes); ok {
+			return "inst:" + lname, true
+		}
+		return "", false
+	}
 	if t.Kind == ast.KindUnionType {
 		// 单类+空联合返回记实例句柄（`Size|null` 即 Size 布局，空吸收为 0 句柄；
 		// 与形参 1979-1989 同形；封存 union 首个已知布局；其余联合沿旧门）。
@@ -1841,6 +1849,11 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 	}
 	if _, ok := classes[ref.TypeName.Text()]; ok {
 		return "inst:" + ref.TypeName.Text(), true
+	}
+	// 别名交集/字面量返回记合并实例布局（`Norm = Breakdown & {...}`；
+	// 标量别名已在 saResolveAliasKind 上方处理，至此方为对象形）。
+	if lname, ok := saSynthMergedLayout(t, aliasOf, classes); ok {
+		return "inst:" + lname, true
 	}
 	return "", false
 }
