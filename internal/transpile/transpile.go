@@ -2658,46 +2658,6 @@ func saAliasLiteralLayout(t *ast.TypeNode, classes map[string]*saClassDef, alias
 	return "", false
 }
 
-// saDestructurePatternKindsOK reports whether every destructured field
-// that is in the layout can be bound by saDrainDestructuredParams: i32/bool
-// as i32, str as ptr. Fields absent from the layout are left to drain's
-// own loud refusal; rest/nested elements are likewise left to drain.
-func saDestructurePatternKindsOK(pat *ast.Node, def *saClassDef) bool {
-	if pat == nil || def == nil {
-		return false
-	}
-	if pat.Kind != ast.KindObjectBindingPattern {
-		return true
-	}
-	bp := pat.AsBindingPattern()
-	if bp == nil || bp.Elements == nil {
-		return false
-	}
-	for _, el := range bp.Elements.Nodes {
-		if el == nil || el.Kind != ast.KindBindingElement {
-			continue
-		}
-		be := el.AsBindingElement()
-		if be == nil || be.DotDotDotToken != nil {
-			continue
-		}
-		nm := be.Name()
-		if nm == nil || nm.Kind != ast.KindIdentifier {
-			continue
-		}
-		field := nm.Text()
-		if be.PropertyName != nil {
-			if pn := be.PropertyName.AsNode(); pn != nil && (pn.Kind == ast.KindIdentifier || pn.Kind == ast.KindStringLiteral) {
-				field = pn.Text()
-			}
-		}
-		if k, ok := def.fkinds[field]; ok && k != "i32" && k != "bool" && k != "str" {
-			return false
-		}
-	}
-	return true
-}
-
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if fn.Parameters != nil {
@@ -3011,11 +2971,6 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 			}
 		} else {
 			return nil, nil, nil, false
-		}
-		if playout != "" {
-			if def, ok := classes[playout]; !ok || !saDestructurePatternKindsOK(nm.AsNode(), def) {
-				return nil, nil, nil, false
-			}
 		}
 		kinds[hid] = kind
 		pendings = append(pendings, saDestructurePending{hid: hid, pat: nm.AsNode(), annot: pd.Type, layout: playout})
