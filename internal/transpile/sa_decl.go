@@ -1876,6 +1876,9 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		if kind, ok := saUnionEraseKind(t.AsUnionTypeNode(), classes, aliasOf); ok {
 			return kind, true
 		}
+		if saUnionScalarJsValKind(t.AsUnionTypeNode()) {
+			return "jsval", true
+		}
 		if lname, ok := saSynthUnionLayout(t, aliasOf, classes); ok {
 			return "inst:" + lname, true
 		}

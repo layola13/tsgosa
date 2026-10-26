@@ -1133,6 +1133,30 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	if (strings.HasPrefix(retKind, "inst:") || retKind == "map") && saIsNullLit(e, scope) {
 		return "0", ""
 	}
+	if retKind == "jsval" {
+		// Box the operand through the existing jsval call-arg ladder.
+		// f64 operands and bare (non-record-view) map handles keep the
+		// existing tail behavior instead of being force-boxed.
+		skip := false
+		if e != nil && e.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[e.Text()]; ok && k == "f64" {
+				skip = true
+			}
+			if k, ok := scope.types[e.Text()]; ok && k == "map" {
+				if _, ok := scope.recordView[e.Text()]; !ok {
+					skip = true
+				}
+			}
+		}
+		if !skip {
+			fakeSig := saFuncSig{paramKinds: []string{"jsval"}}
+			h, msg := saEvalCallArg(w, fakeSig, 0, e, 1, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return h, ""
+		}
+	}
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "arr" {
 			// 数组绑定直传（`return a`；串元数组同律，返回种 arr/arrStr 皆收；

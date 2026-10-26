@@ -2474,6 +2474,52 @@ func saUnionLayoutEqual(def *saClassDef, fields []string, fkinds map[string]stri
 	return true
 }
 
+// saUnionScalarJsValKind reports whether a union's non-null members are all
+// direct scalars (number/boolean/string keywords, string/numeric/bool
+// literals, parenthesized forms). Such heterogeneous scalar unions (e.g.
+// number | string | null) cannot erase to one base kind, so they resolve
+// to jsval with per-arm boxing at return sites.
+func saUnionScalarJsValKind(ut *ast.UnionTypeNode) bool {
+	if ut == nil || ut.Types == nil {
+		return false
+	}
+	saw := false
+	for _, m := range ut.Types.Nodes {
+		if saIsUnionNullMember(m) {
+			continue
+		}
+		if m == nil {
+			return false
+		}
+		cur := m
+		if cur.Kind == ast.KindParenthesizedType {
+			pt := cur.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return false
+			}
+			cur = pt.Type
+		}
+		switch cur.Kind {
+		case ast.KindNumberKeyword, ast.KindBooleanKeyword, ast.KindStringKeyword:
+			saw = true
+		case ast.KindLiteralType:
+			lit := cur.AsLiteralTypeNode().Literal
+			if lit == nil {
+				return false
+			}
+			switch lit.Kind {
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+				saw = true
+			default:
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return saw
+}
+
 // saSynthUnionLayout synthesizes a merged inst layout for a union of object
 // literals (JEV merged_layout 0.98): fields unioned in first-seen order,
 // variant-specific fields optional and zero-filled on match, kinds unified
