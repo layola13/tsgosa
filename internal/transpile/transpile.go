@@ -2707,6 +2707,24 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 		}
 		obj = pt.Type
 	}
+	// NonNullable<T> 透明解包（JEV unwrap 0.95；运行时无操作，与注解核
+	// NoInfer 透明同律）：基为 NonNullable<...> 时以内层为准，可嵌套。
+	for obj != nil && obj.Kind == ast.KindTypeReference {
+		ref := obj.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+			ref.TypeName.Text() != "NonNullable" || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 ||
+			ref.TypeArguments.Nodes[0] == nil {
+			break
+		}
+		obj = ref.TypeArguments.Nodes[0]
+		for obj != nil && obj.Kind == ast.KindParenthesizedType {
+			pt := obj.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return "", false
+			}
+			obj = pt.Type
+		}
+	}
 	// 链式索引访问（JEV jsval_chain 1.0）：内层解为 jsval（如未知基
 	// ClientState["threads"]）则外层亦 jsval；内层为数组句柄且外层以
 	// number 索引时，元种已不可由种串恢复，亦记 jsval；内层为实例
@@ -3089,6 +3107,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					// 即擦为该种，空吸收为 0 句柄；种不同仍大声拒，禁缺省 i32。
 					if ek, ok := saUnionParamEraseKind(pd.Type.AsUnionTypeNode(), classes, aliasOf, enums); ok {
 						kinds[name] = ek
+						continue
+					}
+					// 可装箱联合记 jsval（JEV jsval_boxable 0.96）：全部非空成员
+					// 皆可装箱入 jsval（map 除外，其裸柄跳过装箱梯）即整体 jsval；
+					// 装箱保值精确，体用位需成员种时仍大声拒或经 typeof 收窄。
+					if saUnionBoxable(pd.Type.AsUnionTypeNode(), classes, aliasOf, enums) {
+						kinds[name] = "jsval"
 						continue
 					}
 					return nil, nil, nil, false
@@ -3686,6 +3711,15 @@ func saUnionMemberKind(m *ast.TypeNode, classes map[string]*saClassDef, aliasOf 
 	if m == nil {
 		return "", false
 	}
+	// 括号成员透明解包（联合中函数类型恒加括号，如 `T | ((c) => R)`；
+	// 注解核亦同律解包，但其内层函数类型无种，故此处须自解包）。
+	for m != nil && m.Kind == ast.KindParenthesizedType {
+		pt := m.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return "", false
+		}
+		m = pt.Type
+	}
 	if k, ok := saAnnotKind(m); ok {
 		return k, true
 	}
@@ -3780,6 +3814,32 @@ func saUnionParamEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef
 		return "", false
 	}
 	return kind, true
+}
+
+// saUnionBoxable 报告一联合的全部非空成员是否皆可装箱入 jsval：成员
+// 须经 saUnionMemberKind 可解且种非 map（裸 map 柄跳过装箱梯，见上）。
+// 空联合为假。
+func saUnionBoxable(ut *ast.UnionTypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) bool {
+	if ut == nil || ut.Types == nil {
+		return false
+	}
+	seen := false
+	for _, m := range ut.Types.Nodes {
+		if m == nil || m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+		}
+		seen = true
+		k, ok := saUnionMemberKind(m, classes, aliasOf, enums)
+		if !ok || k == "map" {
+			return false
+		}
+	}
+	return seen
 }
 
 // saUnionInstKind 取单类+空联合的实例种（`Box|null` 即 `inst:Box`，空吸收为 0
