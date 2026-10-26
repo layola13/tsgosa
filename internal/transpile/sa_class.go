@@ -1386,6 +1386,12 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 				return true
 			}
 		}
+		// 顶层对象数组域元基（`GROUPS.typecheck[i]` 经域合成布局消解）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+			if _, _, _, ok := saTopObjArrField(scope, ea.Expression); ok {
+				return true
+			}
+		}
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
 			if _, ok := saStructArrElemLayout(ea.Expression, scope); ok {
 				return true
@@ -2899,6 +2905,11 @@ func saStaticLiteral(n *ast.Node) (string, string, bool) {
 type saTopObj struct {
 	layout string
 	init   *ast.Node
+	// arrObjs/arrLayouts 为内联类型对象 + 数组对象域形（JEV
+	// synth_layout_arr_fields 0.84）：每域为一对象数组快照，值
+	// 为该域诸元解析，布局为该域元合成布局；标量形此二域为空。
+	arrObjs    map[string][]saTopObjElem
+	arrLayouts map[string]string
 }
 
 // saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：
@@ -2965,6 +2976,13 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			def, ok := classes[layout]
 			if !ok || def == nil || !def.isIface {
+				// 内联类型对象 + 数组对象域形（JEV
+				// synth_layout_arr_fields 0.84）：标量接口径不收
+				// 时，试数组域径；成则本声明直接认领，败则沿旧门。
+				if to2, ok2 := saTopObjArrFieldsParse(vd, classes); ok2 {
+					pends = append(pends, pend{name: name, obj: to2})
+					continue
+				}
 				okAll = false
 				break
 			}

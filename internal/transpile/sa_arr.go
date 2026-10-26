@@ -335,6 +335,9 @@ func saFindReceiverLayout(base *ast.Node, scope *saScope) (string, bool) {
 		return "", false
 	}
 	if u.Kind == ast.KindPropertyAccessExpression {
+		if _, _, layout, ok := saTopObjArrField(scope, u); ok {
+			return layout, true
+		}
 		return saStructArrElemLayout(u, scope)
 	}
 	return "", false
@@ -3192,11 +3195,17 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 		// `a?.[i]` (null base reads 0, otherwise checked-index join).
 		out := saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
 		saReleaseOwnedTemp(w, scope, base)
+		if layout, ok := scope.arrElemLayout[base]; ok {
+			scope.types[out] = "inst:" + layout
+		}
 		return out, ""
 	}
 	out := saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
 	// 下标读后链式基即释（具名/借用基 no-op；值已物化为 i32）。
 	saReleaseOwnedTemp(w, scope, base)
+	if layout, ok := scope.arrElemLayout[base]; ok {
+		scope.types[out] = "inst:" + layout
+	}
 	return out, ""
 }
 
@@ -5744,7 +5753,13 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	// .map/.filter on the flatMap result was not recognised as an array
 	// and fell through to "only direct function calls lowerable".
 	isJsValRecv := pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval"
-	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) && !isJsValRecv {
+	// 顶层对象数组域接收器（`GROUPS.typecheck.find`：域柄经
+	// saArrValueOf 顶层对象径，元布局经 saFindReceiverLayout 同径）。
+	isTopObjArrRecv := false
+	if _, _, _, ok := saTopObjArrField(scope, pa.Expression); ok {
+		isTopObjArrRecv = true
+	}
+	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) && !isJsValRecv && !isTopObjArrRecv {
 		return "", false
 	}
 	if (m == "find" || m == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
@@ -5819,6 +5834,30 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
 					return t, ""
 				}
+			}
+		}
+		// 顶层对象数组域基（`GROUPS.typecheck`：外层物化后读 arr 域；
+		// 元布局记入 arrElemLayout 供下标元读消解；外层柄归属沿
+		// 域外释放口径，域柄为借用读）。
+		if pa.Name() != nil && pa.QuestionDotToken == nil {
+			if to, field, layout, ok := saTopObjArrField(scope, e); ok {
+				def, ok2 := scope.classes[to.layout]
+				if !ok2 || def == nil {
+					return "", "unknown top object layout " + to.layout
+				}
+				h, msg := saMaterializeTopObjArrFields(w, to, scope, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				t, msg := saLowerClassFieldLoad(w, h, def, field, scope, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if scope.arrElemLayout == nil {
+					scope.arrElemLayout = map[string]string{}
+				}
+				scope.arrElemLayout[t] = layout
+				return t, ""
 			}
 		}
 		// 嵌套链 arr 基（`q.r.a` 经内层句柄；叶子须 arr；与链读同形）。

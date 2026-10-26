@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
+	"github.com/microsoft/typescript-go/internal/printer"
 )
 
 // saTopObjElemParse parses one object literal element of a top-level const
@@ -328,6 +329,235 @@ func saTopObjArrFind(pa *ast.PropertyAccessExpression, scope *saScope) (saTopArr
 		return saTopArr{}, "", nil, false
 	}
 	return arr, field, arg, true
+}
+
+// saTopObjArrField 报告属性读是否为顶层对象数组域读（GROUPS 形）：
+// 基为无局部遮蔽的顶层对象标识符，域为其数组对象域；返回快照、
+// 域名与元合成布局。
+func saTopObjArrField(scope *saScope, e *ast.Node) (saTopObj, string, string, bool) {
+	if e == nil || e.Kind != ast.KindPropertyAccessExpression {
+		return saTopObj{}, "", "", false
+	}
+	pa := e.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil ||
+		pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return saTopObj{}, "", "", false
+	}
+	to, ok := saTopObjLookup(scope, pa.Expression)
+	if !ok || to.arrObjs == nil {
+		return saTopObj{}, "", "", false
+	}
+	field := pa.Name().Text()
+	layout, ok := to.arrLayouts[field]
+	if !ok {
+		return saTopObj{}, "", "", false
+	}
+	if _, ok := to.arrObjs[field]; !ok {
+		return saTopObj{}, "", "", false
+	}
+	return to, field, layout, true
+}
+
+// saTopObjArrElemLitOfType 报告注解类型是否为对象数组形（Array<对象字
+// 面> 或 对象字面[]），返回元对象字面类型节点。
+func saTopObjArrElemLitOfType(t *ast.TypeNode) (*ast.TypeNode, bool) {
+	if t == nil {
+		return nil, false
+	}
+	if t.Kind == ast.KindTypeReference {
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+			ref.TypeName.Text() != "Array" || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+			return nil, false
+		}
+		arg := ref.TypeArguments.Nodes[0]
+		if arg == nil || arg.Kind != ast.KindTypeLiteral {
+			return nil, false
+		}
+		return arg, true
+	}
+	if t.Kind == ast.KindArrayType {
+		at := t.AsArrayTypeNode()
+		if at == nil || at.ElementType == nil || at.ElementType.Kind != ast.KindTypeLiteral {
+			return nil, false
+		}
+		return at.ElementType, true
+	}
+	return nil, false
+}
+
+// saTopObjArrFieldsParse 认领内联类型对象 + 数组对象域形（JEV
+// synth_layout_arr_fields 0.84）：注解为内联对象字面类型，每域皆为
+// 对象数组；初值为对象字面量，每域皆为对象数组字面量，每元皆为
+// 全串域对象字面量且域集与注解元域集精确相等；外层域集与注解域集
+// 精确相等。元布局按域合成，外层布局按域合成（arr 槽，fsub 记元
+// 布局）。余形（可选域、非串元域、域集不齐、混合形）一律不收，
+// 沿旧 kind244 门大声拒，禁半认领。
+func saTopObjArrFieldsParse(vd *ast.VariableDeclaration, classes map[string]*saClassDef) (saTopObj, bool) {
+	if vd == nil || vd.Type == nil || vd.Type.Kind != ast.KindTypeLiteral || vd.Initializer == nil {
+		return saTopObj{}, false
+	}
+	lit := vd.Type.AsTypeLiteralNode()
+	if lit == nil || lit.Members == nil || len(lit.Members.Nodes) == 0 {
+		return saTopObj{}, false
+	}
+	annotFields := map[string]bool{}
+	elemFields := map[string][]string{}
+	for _, m := range lit.Members.Nodes {
+		if m == nil || m.Kind != ast.KindPropertySignature {
+			return saTopObj{}, false
+		}
+		nm := m.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			return saTopObj{}, false
+		}
+		if m.QuestionToken() != nil {
+			return saTopObj{}, false
+		}
+		pd := m.AsPropertySignatureDeclaration()
+		if pd == nil || pd.Type == nil {
+			return saTopObj{}, false
+		}
+		elemLit, ok := saTopObjArrElemLitOfType(pd.Type)
+		if !ok {
+			return saTopObj{}, false
+		}
+		elit := elemLit.AsTypeLiteralNode()
+		if elit == nil || elit.Members == nil || len(elit.Members.Nodes) == 0 {
+			return saTopObj{}, false
+		}
+		var efs []string
+		seen := map[string]bool{}
+		for _, em := range elit.Members.Nodes {
+			if em == nil || em.Kind != ast.KindPropertySignature {
+				return saTopObj{}, false
+			}
+			enm := em.Name()
+			if enm == nil || enm.Kind != ast.KindIdentifier || em.QuestionToken() != nil {
+				return saTopObj{}, false
+			}
+			if seen[enm.Text()] {
+				return saTopObj{}, false
+			}
+			seen[enm.Text()] = true
+			efs = append(efs, enm.Text())
+		}
+		sort.Strings(efs)
+		if annotFields[nm.Text()] {
+			return saTopObj{}, false
+		}
+		annotFields[nm.Text()] = true
+		elemFields[nm.Text()] = efs
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+		return saTopObj{}, false
+	}
+	ol := init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil {
+		return saTopObj{}, false
+	}
+	arrObjs := map[string][]saTopObjElem{}
+	arrLayouts := map[string]string{}
+	for _, pr := range ol.Properties.Nodes {
+		if pr == nil || pr.Kind != ast.KindPropertyAssignment {
+			return saTopObj{}, false
+		}
+		fname, ok := saObjPropName(pr)
+		if !ok || !annotFields[fname] {
+			return saTopObj{}, false
+		}
+		if _, dup := arrObjs[fname]; dup {
+			return saTopObj{}, false
+		}
+		aval := saUnwrapTransparent(pr.AsPropertyAssignment().Initializer)
+		if aval == nil || aval.Kind != ast.KindArrayLiteralExpression {
+			return saTopObj{}, false
+		}
+		al := aval.AsArrayLiteralExpression()
+		var objs []saTopObjElem
+		if al.Elements != nil {
+			for _, el := range al.Elements.Nodes {
+				o, ok := saTopObjElemParse(el, map[string]saTopObjElem{})
+				if !ok || o.regexField != "" || len(o.numFields) != 0 || len(o.boolFields) != 0 || len(o.arrFields) != 0 || len(o.instFields) != 0 {
+					return saTopObj{}, false
+				}
+				var got []string
+				for k := range o.strFields {
+					got = append(got, k)
+				}
+				sort.Strings(got)
+				want := elemFields[fname]
+				if len(got) != len(want) {
+					return saTopObj{}, false
+				}
+				for i := range got {
+					if got[i] != want[i] {
+						return saTopObj{}, false
+					}
+				}
+				objs = append(objs, o)
+			}
+		}
+		arrObjs[fname] = objs
+		kinds := map[string]string{}
+		for _, f := range elemFields[fname] {
+			kinds[f] = "str"
+		}
+		arrLayouts[fname] = saSynthTopObjLayout(elemFields[fname], kinds, map[string]bool{}, map[string]string{}, classes)
+	}
+	if len(arrObjs) != len(annotFields) {
+		return saTopObj{}, false
+	}
+	var outer []string
+	outerKinds := map[string]string{}
+	outerSubs := map[string]string{}
+	for f := range annotFields {
+		outer = append(outer, f)
+		outerKinds[f] = "arr"
+		outerSubs[f] = arrLayouts[f]
+	}
+	sort.Strings(outer)
+	outerLayout := saSynthTopObjLayout(outer, outerKinds, map[string]bool{}, outerSubs, classes)
+	return saTopObj{layout: outerLayout, init: init, arrObjs: arrObjs, arrLayouts: arrLayouts}, true
+}
+
+// saMaterializeTopObjArrFields 按快照物化顶层对象数组域实例（JEV
+// synth_layout_arr_fields 0.84）：外层实例每 arr 域存一物化对象数组
+// 柄（元经元布局物化，柄存槽后即释归属如 saMaterializeTopObjElem
+// 的 arr 域同律）；外层柄归属登记，调用方读后沿域外释放口径。
+func saMaterializeTopObjArrFields(w printer.EmitTextWriter, to saTopObj, scope *saScope, nextTemp *int) (string, string) {
+	def, ok := scope.classes[to.layout]
+	if !ok || def == nil {
+		return "", "unknown top object layout " + to.layout
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if def.size == 0 {
+		w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+	} else {
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+	}
+	saOwnTemp(scope, h)
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "arr" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+			continue
+		}
+		objs, ok := to.arrObjs[f.name]
+		if !ok {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+			continue
+		}
+		layout, ok := to.arrLayouts[f.name]
+		if !ok {
+			return "", "unknown top object array field layout " + f.name
+		}
+		ah := saMaterializeTopArr(w, saTopArr{objs: objs, layout: layout}, scope, nextTemp)
+		w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ah))
+		saReleaseOwnedTemp(w, scope, ah)
+	}
+	return h, ""
 }
 
 // saSynthTopObjLayout builds (or reuses) a synthesized instance layout for a

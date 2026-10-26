@@ -1013,6 +1013,27 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// 局部分支 :1058-1254）。
 		return saLowerLocalArrow(w, name, init, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 	}
+	// 顶层对象数组域绑定（`const tc = GROUPS.typecheck`：域柄经
+	// saArrValueOf 顶层对象径，借用绑定（外层柄归属沿域外释放
+	// 口径）；元布局按名记入 arrElemLayout 供下标元读消解）。
+	if init.Kind == ast.KindPropertyAccessExpression {
+		if _, _, layout, ok := saTopObjArrField(scope, init); ok {
+			h, msg := saArrValueOf(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "arr"
+			saDeclarePlain(scope, name)
+			if scope.arrElemLayout == nil {
+				scope.arrElemLayout = map[string]string{}
+			}
+			scope.arrElemLayout[name] = layout
+			return true
+		}
+	}
 	// jsval 值位（JEV eval_jsval_handle_value 0.95）：jsval 值域 map 读
 	// （?. 或 .；串字面量下标同形）经既有守卫 btree_map_get 径求柄，
 	// 空基/缺键归 0 柄，绑定为借用 jsval（map 拥有值，名不释；

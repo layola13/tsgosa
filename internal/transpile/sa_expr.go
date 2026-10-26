@@ -2895,7 +2895,8 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			m := pa.Name().Text()
 			// 顶层 const 数组纯读方法开门（快照物化后走既有方法径；变异/未知
 			// 方法沿旧门大声拒；708）。
-			if (saIsArrMethod(m) && (saIsArrValue(pa.Expression, scope) || (pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval"))) || saTopArrPureCall(pa, scope, m) {
+			_, _, _, isTopObjArrRecv := saTopObjArrField(scope, pa.Expression)
+			if (saIsArrMethod(m) && (saIsArrValue(pa.Expression, scope) || (pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval") || isTopObjArrRecv)) || saTopArrPureCall(pa, scope, m) {
 				op, kind, msg := saLowerArrCall(w, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 				if msg != "" {
 					return "", false, msg
