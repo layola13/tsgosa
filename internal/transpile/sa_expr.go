@@ -4145,6 +4145,68 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported ternary condition: " + msg})
 		return "", false, "unsupported ternary condition: " + msg
 	}
+	// jsval-eq-string narrowed str ternary (JEV narrow_true_arm_str 0.92):
+	// every condition leaf ==/=== on the same jsval expr, true arm is that
+	// expr, false arm str/undef: true branch unboxes the payload as str
+	// (lazy arms; eager unbox would load a possibly-0/non-string handle
+	// when the condition is false).
+	if nkeys := saJsValEqNarrowKeys(ce.Condition, scope); len(nkeys) > 0 &&
+		nkeys[saJsValExprKey(ce.WhenTrue, scope)] {
+		isUndefArm := func(e *ast.Node) bool {
+			if e == nil {
+				return false
+			}
+			if e.Kind == ast.KindUndefinedKeyword || e.Kind == ast.KindNullKeyword {
+				return true
+			}
+			return e.Kind == ast.KindIdentifier && e.Text() == "undefined"
+		}
+		if saIsStrValue(ce.WhenFalse, scope) || isUndefArm(ce.WhenFalse) {
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+			*nextLabel++
+			fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+			*nextLabel++
+			endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+			w.Write(fmt.Sprintf("%s:\n", tL))
+			base := len(scope.ownOrder)
+			h, msgH := saEvalJsValHandle(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+			if msgH != "" {
+				return "", false, msgH
+			}
+			pay := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", pay, h))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, pay))
+			saReleaseArmTemps(w, scope, base)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			base = len(scope.ownOrder)
+			var fv string
+			if isUndefArm(ce.WhenFalse) {
+				fv = "0"
+			} else {
+				var msgB string
+				fv, msgB = saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+				if msgB != "" {
+					return "", false, msgB
+				}
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+			saReleaseArmTemps(w, scope, base)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			return res, true, ""
+		}
+	}
 	if saIsStrValue(ce.WhenTrue, scope) || saIsStrValue(ce.WhenFalse, scope) {
 		isUndef := func(e *ast.Node) bool {
 			if e == nil {
@@ -8305,6 +8367,140 @@ func saLowerJsValStrEq(w printer.EmitTextWriter, h, s string, neg bool, scope *s
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	return out
+}
+
+// saJsValExprKey canonical key for a jsval expression usable in ternary
+// narrowing: id:<name> for jsval identifiers, map:<base>.<field> for
+// jsval-valued map reads (?. or .; element reads with a string literal).
+func saJsValExprKey(e *ast.Node, scope *saScope) string {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindParenthesizedExpression:
+			e = e.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			e = e.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			e = e.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			e = e.AsNonNullExpression().Expression
+		default:
+			goto peeled
+		}
+	}
+peeled:
+	if e == nil {
+		return ""
+	}
+	switch e.Kind {
+	case ast.KindIdentifier:
+		if k, ok := scope.types[e.Text()]; ok && k == "jsval" {
+			return "id:" + e.Text()
+		}
+	case ast.KindPropertyAccessExpression:
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+			return ""
+		}
+		if k, ok := scope.types[pa.Expression.Text()]; !ok || k != "map" {
+			return ""
+		}
+		if scope.mapVals[pa.Expression.Text()] != "jsval" {
+			return ""
+		}
+		return "map:" + pa.Expression.Text() + "." + pa.Name().Text()
+	case ast.KindElementAccessExpression:
+		ea := e.AsElementAccessExpression()
+		if ea == nil || ea.Expression == nil || ea.Expression.Kind != ast.KindIdentifier || ea.ArgumentExpression == nil {
+			return ""
+		}
+		if k, ok := scope.types[ea.Expression.Text()]; !ok || k != "map" {
+			return ""
+		}
+		if scope.mapVals[ea.Expression.Text()] != "jsval" {
+			return ""
+		}
+		arg := saPeelParens(ea.ArgumentExpression)
+		if arg == nil || (arg.Kind != ast.KindStringLiteral && arg.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return ""
+		}
+		return "map:" + ea.Expression.Text() + "." + arg.Text()
+	}
+	return ""
+}
+
+// saJsValEqNarrowKeys reports the jsval keys proven to be strings in a
+// ternary condition true branch: a ==/=== leaf proves its key; &&
+// unions child proven keys (true branch implies every leaf true),
+// || intersects them (true branch implies some leaf true, so only keys
+// proven by every side are certain). Any other shape proves nothing.
+func saJsValEqNarrowKeys(cond *ast.Node, scope *saScope) map[string]bool {
+	if cond == nil {
+		return nil
+	}
+	c := cond
+	for c != nil {
+		switch c.Kind {
+		case ast.KindParenthesizedExpression:
+			c = c.AsParenthesizedExpression().Expression
+		case ast.KindAsExpression:
+			c = c.AsAsExpression().Expression
+		case ast.KindSatisfiesExpression:
+			c = c.AsSatisfiesExpression().Expression
+		case ast.KindNonNullExpression:
+			c = c.AsNonNullExpression().Expression
+		default:
+			goto cpeeled
+		}
+	}
+cpeeled:
+	if c == nil || c.Kind != ast.KindBinaryExpression {
+		return nil
+	}
+	be := c.AsBinaryExpression()
+	if be == nil {
+		return nil
+	}
+	op := saBinaryOpKind(be)
+	if op == ast.KindAmpersandAmpersandToken {
+		out := map[string]bool{}
+		for k := range saJsValEqNarrowKeys(be.Left, scope) {
+			out[k] = true
+		}
+		for k := range saJsValEqNarrowKeys(be.Right, scope) {
+			out[k] = true
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if op == ast.KindBarBarToken {
+		l := saJsValEqNarrowKeys(be.Left, scope)
+		r := saJsValEqNarrowKeys(be.Right, scope)
+		if len(l) == 0 || len(r) == 0 {
+			return nil
+		}
+		out := map[string]bool{}
+		for k := range l {
+			if r[k] {
+				out[k] = true
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if op != ast.KindEqualsEqualsToken && op != ast.KindEqualsEqualsEqualsToken {
+		return nil
+	}
+	if k := saJsValExprKey(be.Left, scope); k != "" && saIsStrValue(be.Right, scope) {
+		return map[string]bool{k: true}
+	}
+	if k := saJsValExprKey(be.Right, scope); k != "" && saIsStrValue(be.Left, scope) {
+		return map[string]bool{k: true}
+	}
+	return nil
 }
 
 // saJsValKind codes: 0 undefined, 1 string, 2 number, 3 boolean, 4 object, 5 array, 6 null, 7 function.
