@@ -161,6 +161,11 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			// `??` 空合串位（任一臂串值即串；求值走 saEvalStr 空合串槽）。
 			return saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)
 		}
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken {
+			// `||` 串位（双臂皆串值即串；求值走 saLowerOrStr 真值槽；
+			// 混种沿求值门大声拒，禁误路由）。
+			return saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope)
+		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken {
 			// A + chain is string only if some operand is string-VALUED (i32-returning string
 			// calls like charCodeAt do not count; otherwise nested arithmetic misroutes to concat).
@@ -601,6 +606,10 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
 			// `??` 空合串位（与 i32 槽同形，宽按 ptr；封存 lowerBinary:3182-3206）。
 			return saLowerNullishStr(w, be, scope, pos, refusals, nextTemp)
+		}
+		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindBarBarToken &&
+			saIsStrValue(be.Left, scope) && saIsStrValue(be.Right, scope) {
+			return saLowerOrStr(w, be, scope, pos, refusals, nextTemp)
 		}
 		if be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindPlusToken &&
 			(saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) {
@@ -1292,6 +1301,66 @@ func saLowerNullishStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 	// 右臂快照点（臂内惰性求值新建的归属临时量一律随槽消费，否则返前释放
 	// 在直通臂上引用未定义寄存器；具名绑定非臂内定义，留归属；左值无条件
 	// 求值，无此问题）。
+	mark := len(scope.ownOrder)
+	r, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
+	for _, nm := range scope.ownOrder[mark:] {
+		if saIsTempOp(nm) {
+			saConsumeOwn(scope, nm)
+		}
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	saOwnTemp(scope, out)
+	return out, ""
+}
+
+// saLowerOrStr 串 `||` 真值槽（JEV truthy_len, confidence 1.0）:
+// 左臂真值 = 句柄非零且长度非零（JS || 对 ” 与 undefined 皆落右臂；
+// ?? 只判句柄非零，与此不同）。右臂惰性求值，仅在左臂假时执行，
+// 与 JS 短路语义一致。左臂静态 0 句柄时直接走右臂，避免对 0 地址取长。
+func saLowerOrStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	l, msg := saEvalStr(w, be.Left, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	if l == "0" {
+		return saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	nonNull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	checkL := fmt.Sprintf("L_or_check_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	tL := fmt.Sprintf("L_or_t_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	fL := fmt.Sprintf("L_or_f_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_or_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonNull, l))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonNull, checkL, fL))
+	w.Write(fmt.Sprintf("%s:\n", checkL))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", bl, l))
+	nonEmpty := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nonEmpty, bl))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nonEmpty, tL, fL))
+	w.Write(fmt.Sprintf("%s:\n", tL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, l))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", fL))
 	mark := len(scope.ownOrder)
 	r, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
