@@ -4545,6 +4545,11 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	if !saIsArrValue(pa.Expression, scope) && !saTopArrPureCall(pa, scope, m) {
 		return "", false
 	}
+	if (m == "find" || m == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+		if _, typeofName, _, ok := saFindTypeofGuard(ce.Arguments.Nodes[0]); ok && typeofName == "string" {
+			return "str", true
+		}
+	}
 	switch m {
 	case "push", "pop", "shift", "unshift", "indexOf", "lastIndexOf", "includes", "at",
 		"forEach", "find", "findIndex", "findLast", "findLastIndex", "some", "every",
@@ -6254,6 +6259,81 @@ func saArrElemAt(w printer.EmitTextWriter, data, idx string, nextTemp *int) stri
 
 // saHigherOrder взвод通用扫描骨架：forEach/filter/find 系/some/every 共用
 // （各按命中语义收尾；形状证据：封存 lowerHigherOrder:4926-5119）。
+// saFindTypeofGuard detects a find callback whose body is exactly a typeof
+// guard on its first parameter: typeof entry === "string" (or !==, or a block
+// with a single return of that). JEV find_predicate_as_typeof_guard 0.99:
+// do not evaluate the guard via saCallbackValue (which binds the param by
+// element kind and then hits the tcx any/unknown guard in saTypeofKind);
+// lower it directly from element kind in saHigherOrderScan.
+func saFindTypeofGuard(cb *ast.Node) (string, string, bool, bool) {
+	if cb == nil {
+		return "", "", false, false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return "", "", false, false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", "", false, false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", "", false, false
+	}
+	paramName := nm.Text()
+	body := cb.Body()
+	if body == nil {
+		return "", "", false, false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", "", false, false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return "", "", false, false
+		}
+		expr = rs.Expression
+	}
+	if expr.Kind != ast.KindBinaryExpression {
+		return "", "", false, false
+	}
+	be := expr.AsBinaryExpression()
+	if be == nil {
+		return "", "", false, false
+	}
+	opKind := saBinaryOpKind(be)
+	neg := false
+	switch opKind {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+		neg = false
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		neg = true
+	default:
+		return "", "", false, false
+	}
+	var typeOp, litNode *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindTypeOfExpression {
+			typeOp = side
+		}
+		if side != nil && side.Kind == ast.KindStringLiteral {
+			litNode = side
+		}
+	}
+	if typeOp == nil || litNode == nil {
+		return "", "", false, false
+	}
+	inner := typeOp.AsTypeOfExpression().Expression
+	if inner == nil || inner.Kind != ast.KindIdentifier || inner.Text() != paramName {
+		return "", "", false, false
+	}
+	return paramName, litNode.Text(), neg, true
+}
+
 func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string, string) {
 	ln := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -6334,6 +6414,124 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return h, "arr", ""
 	case "find", "findIndex", "findLast", "findLastIndex":
+		if method == "find" || method == "findLast" {
+			if _, typeofName, neg, ok := saFindTypeofGuard(cb); ok {
+				if typeofName != "string" && typeofName != "number" {
+					return "", "", "find typeof guard only supports string/number in this step"
+				}
+				elemKind := "i32"
+				if scope.arrStr != nil && scope.arrStr[recv] {
+					elemKind = "str"
+				} else if scope.arrJsVal != nil && scope.arrJsVal[recv] {
+					elemKind = "jsval"
+				}
+				resultKind := "i32"
+				if typeofName == "string" {
+					resultKind = "str"
+				}
+				last := method == "findLast"
+				slot := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+				saOwnTemp(scope, slot)
+				w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+				i := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = 0\n", i))
+				topL := fmt.Sprintf("L_fd_top_%d", *nextLabel)
+				*nextLabel++
+				bodyL := fmt.Sprintf("L_fd_body_%d", *scope.nextLabel)
+				*scope.nextLabel++
+				endL := fmt.Sprintf("L_fd_end_%d", *nextLabel)
+				*nextLabel++
+				hitL := fmt.Sprintf("L_fd_hit_%d", *nextLabel)
+				*nextLabel++
+				nextL := fmt.Sprintf("L_fd_next_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("%s:\n", topL))
+				c := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+				w.Write(fmt.Sprintf("%s:\n", bodyL))
+				el := emitElem(i)
+				var pred string
+				if elemKind == "jsval" {
+					tag := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, el))
+					code, _ := saJsValKindCode(typeofName)
+					base := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = eq %s, %d\n", base, tag, code))
+					if neg {
+						inv := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 0\n", inv, base))
+						pred = inv
+					} else {
+						pred = base
+					}
+				} else {
+					baseIs := false
+					if elemKind == "str" && typeofName == "string" {
+						baseIs = true
+					}
+					if elemKind == "i32" && typeofName == "number" {
+						baseIs = true
+					}
+					if neg {
+						baseIs = !baseIs
+					}
+					if baseIs {
+						pred = "1"
+					} else {
+						pred = "0"
+					}
+				}
+				if pred == "0" || pred == "1" {
+					pt := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s\n", pt, pred))
+					pred = pt
+				}
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, hitL, nextL))
+				w.Write(fmt.Sprintf("%s:\n", hitL))
+				storeVal := el
+				if elemKind == "jsval" {
+					if typeofName == "string" {
+						ub := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", ub, el))
+						storeVal = ub
+					} else {
+						ub := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", ub, el))
+						storeVal = ub
+					}
+				}
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, storeVal))
+				if !last {
+					w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				} else {
+					w.Write(fmt.Sprintf("  jmp %s\n", nextL))
+				}
+				w.Write(fmt.Sprintf("%s:\n", nextL))
+				inext := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+				w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+				w.Write(fmt.Sprintf("  jmp %s\n", topL))
+				w.Write(fmt.Sprintf("%s:\n", endL))
+				out := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+				saReleaseOwnedTemp(w, scope, slot)
+				saReleaseOwnedTemp(w, scope, recv)
+				return out, resultKind, ""
+			}
+		}
 		last := method == "findLast" || method == "findLastIndex"
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++

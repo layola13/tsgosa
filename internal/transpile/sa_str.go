@@ -315,6 +315,11 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		pa.Name() != nil && pa.Name().Text() == "stringify" {
 		return true
 	}
+	if pa.Name() != nil && (pa.Name().Text() == "find" || pa.Name().Text() == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+		if _, typeofName, _, ok := saFindTypeofGuard(ce.Arguments.Nodes[0]); ok && typeofName == "string" {
+			return true
+		}
+	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
 		// crypto Hash 终结即串值（`h.digest()` hex 串柄；update 值位另行拒）。
 		if pa.Name() != nil && pa.Name().Text() == "digest" {
