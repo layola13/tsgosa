@@ -2310,7 +2310,11 @@ func saTopArrPureCall(pa *ast.PropertyAccessExpression, scope *saScope, m string
 	if !ok {
 		return false
 	}
-	if arr.str && m != "indexOf" && m != "includes" {
+	// Str snapshots also allow some/every (JEV inline_loop_indexed_read
+	// 0.98): the materialized handle is arrStr-marked, so the callback
+	// parameter binds as str and indexed interface reads in the predicate
+	// lower exactly as in for-of loops. Other str methods stay gated.
+	if arr.str && m != "indexOf" && m != "includes" && m != "some" && m != "every" {
 		return false
 	}
 	return saTopArrPureMethod(m)
@@ -2329,7 +2333,7 @@ func saTopArrPureRecv(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression
 	if pa.Name() == nil || !saTopArrPureMethod(pa.Name().Text()) {
 		return "", false
 	}
-	if arr.str && pa.Name().Text() != "indexOf" && pa.Name().Text() != "includes" {
+	if arr.str && pa.Name().Text() != "indexOf" && pa.Name().Text() != "includes" && pa.Name().Text() != "some" && pa.Name().Text() != "every" {
 		return "", false
 	}
 	return saMaterializeTopArr(w, arr, scope, nextTemp), true
