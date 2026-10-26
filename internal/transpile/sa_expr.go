@@ -6222,9 +6222,9 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in i32 expression"
 			}
-			if k != "i32" {
-				return "", "boolean " + nm + " in i32 expression"
-			}
+			// bool registers hold 0/1 and are valid i32 operands (JEV
+			// allow_bool_in_i32, 0.91; JS bool-to-number coercion; bool
+			// fields already use 4-byte i32 slots).
 			return nm, ""
 		}
 		// 顶层可变槽读（局部遮蔽优先上；被赋值名永不折叠故与 topConsts 无交；
