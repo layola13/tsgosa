@@ -1721,6 +1721,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		pendingAlias = rest
 	}
+	// 接口前向引用补正（1147 续，JEV harvest_fixup_pass 0.97）：接口按
+	// 文件序单遍记录，后声明的具名接口域初记 arr；表齐后将已落表的
+	// 引用域改 inst + 登记 fsub。未知引用仍 arr，与单遍回退同形；
+	// arr 与 inst 同为 8 字节槽，偏移/尺寸不动。仅接口与合成布局。
+	saFixupForwardIfaceFields(classes)
 	// 预扫二：函数签名（形参种含实例注解，须类型表先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st.Kind == ast.KindClassDeclaration || st.Kind == ast.KindInterfaceDeclaration ||

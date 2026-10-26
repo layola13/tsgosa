@@ -2004,6 +2004,47 @@ func saSynthAnonLayoutAlias(ftn *ast.TypeNode, classes map[string]*saClassDef, a
 	}
 }
 
+// saFixupForwardIfaceFields corrects forward-referenced interface fields
+// (1147 follow-up, JEV harvest_fixup_pass 0.97): interfaces are recorded
+// in a single file-order pass, so a field referencing a layout declared
+// later in the file is first recorded as arr (generic handle slot). Once
+// the table is complete, any such field whose stored type node is a plain
+// reference to a now-recorded interface/synth layout is upgraded to inst
+// with its sub-layout registered. Unknown references stay arr, exactly as
+// the single-pass fallback. arr and inst slots are both 8 bytes, so
+// offsets and layout sizes do not move. Scope is interface and synthesized
+// layouts only (isIface); class layouts are excluded. Inherited fields
+// carry copied fdefs (except mono bases), so they are fixed up too.
+func saFixupForwardIfaceFields(classes map[string]*saClassDef) {
+	for _, def := range classes {
+		if def == nil || !def.isIface {
+			continue
+		}
+		for _, fld := range def.fields {
+			if def.fkinds[fld.name] != "arr" {
+				continue
+			}
+			ftn, ok := def.fdefs[fld.name]
+			if !ok || ftn == nil || ftn.Kind != ast.KindTypeReference {
+				continue
+			}
+			ref := ftn.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+				continue
+			}
+			tgt, ok := classes[ref.TypeName.Text()]
+			if !ok || tgt == nil || !tgt.isIface {
+				continue
+			}
+			def.fkinds[fld.name] = "inst"
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[fld.name] = tgt.name
+		}
+	}
+}
+
 // saAliasUnionScalarKind resolves a type (following alias chains) to a
 // scalar union kind when the endpoint is a union of literals/keywords
 // (e.g. TokenUsageSource = "openai" | "anthropic" -> str). Alias cycles
