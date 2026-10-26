@@ -7564,7 +7564,7 @@ func saLowerNullishInstNull(w printer.EmitTextWriter, be *ast.BinaryExpression, 
 }
 
 // saJsValKind codes: 0 undefined, 1 string, 2 number, 3 boolean, 4 object, 5 array, 6 null, 7 function.
-// Layout: alloc 24, +0 kind i32, +8 payload ptr, +16 payload i32/f64.
+// Layout: alloc 32, +0 kind i32, +8 payload ptr, +16 payload i32/f64, +24 map sidecar ptr (Record cast, JEV record_as_map_with_sidecar 0.75; not yet populated, 0 = no sidecar).
 func saJsValKindCode(typeofName string) (int, bool) {
 	switch typeofName {
 	case "undefined":
@@ -7585,7 +7585,7 @@ func saJsValKindCode(typeofName string) (int, bool) {
 func saBoxJsVal(w printer.EmitTextWriter, kind int, payloadPtr string, payloadVal string, payloadIsF64 bool, nextTemp *int) string {
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 24\n", h))
+	w.Write(fmt.Sprintf("  %s = alloc 32\n", h))
 	w.Write(fmt.Sprintf("  store %s + 0, %d as i32\n", h, kind))
 	if payloadPtr == "" {
 		payloadPtr = "0"
@@ -7599,6 +7599,7 @@ func saBoxJsVal(w printer.EmitTextWriter, kind int, payloadPtr string, payloadVa
 	} else {
 		w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", h, payloadVal))
 	}
+	w.Write(fmt.Sprintf("  store %s + 24, 0 as ptr\n", h))
 	return h
 }
 func saUnboxJsValPtr(w printer.EmitTextWriter, handle string, nextTemp *int) string {
