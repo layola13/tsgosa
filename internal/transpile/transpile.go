@@ -455,7 +455,7 @@ type saFileLink struct {
 	ambHarvests      map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
 	constHarvest     map[string]saProgConst            // out: own folded consts for dependents
 	constHarvests    map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
-	topConstHarvest  map[string]bool                   // out: own exported top const array/object/regex names claimed by this file's lowering (re-export claim use)
+	topConstHarvest  map[string]bool                   // out: own top const array/object/regex names claimed by this file's lowering, value = export modifier (re-export claim use)
 	topConstHarvests map[string]map[string]bool        // all files: target -> name -> harvested top const (driver fills)
 	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
 	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
@@ -784,7 +784,7 @@ func saProgConstChase(link *saFileLink, tgt, remote string, seen map[string]bool
 	if _, ok := link.constHarvests[tgt][remote]; ok {
 		return true
 	}
-	if link.topConstHarvests[tgt][remote] {
+	if exp, ok := link.topConstHarvests[tgt][remote]; ok && exp {
 		return true
 	}
 	if edge, ok := link.reexps[tgt][remote]; ok {
@@ -805,14 +805,20 @@ func saProgConstChase(link *saFileLink, tgt, remote string, seen map[string]bool
 // scalar in constHarvest, or claimed array/object/regex snapshot in
 // topConstHarvest) bears the name; used by the local-list claim only, where
 // driver-filled all-file maps for this file do not exist yet.
-func saProgOwnConst(link *saFileLink, name string) bool {
+func saProgOwnConst(link *saFileLink, topConsts map[string]string, name string) bool {
 	if link == nil {
 		return false
 	}
 	if _, ok := link.constHarvest[name]; ok {
 		return true
 	}
-	return link.topConstHarvest[name]
+	if _, ok := link.topConstHarvest[name]; ok {
+		return true
+	}
+	if _, ok := topConsts[name]; ok {
+		return true
+	}
+	return false
 }
 
 // saProgReexpEdges parses `export {a [, b as c]} from "spec"` into the
@@ -2125,9 +2131,6 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if st == nil || st.Kind != ast.KindVariableStatement {
 				continue
 			}
-			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
-				continue
-			}
 			if !topArrStmts[st] && !topObjStmts[st] && !topRegexStmts[st] {
 				continue
 			}
@@ -2151,7 +2154,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				if link.topConstHarvest == nil {
 					link.topConstHarvest = map[string]bool{}
 				}
-				link.topConstHarvest[nm.Text()] = true
+				link.topConstHarvest[nm.Text()] = ast.HasModifier(st, ast.ModifierFlagsExport)
 			}
 		}
 		// Program hook A-slot: harvest ns slot descriptors (pointer shared
@@ -2308,7 +2311,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
 							if hv, ok := link.harvest[exported]; !ok || !hv.exported {
-								if !saProgTypeForwarded(link, exported) && !saProgOwnConst(link, exported) {
+								if !saProgTypeForwarded(link, exported) && !saProgOwnConst(link, topConsts, exported) {
 									okAll = false
 									break
 								}
