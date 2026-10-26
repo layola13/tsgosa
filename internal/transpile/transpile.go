@@ -2958,6 +2958,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					kinds[name] = "inst:" + lname
 					continue
 				}
+				// 合并失败且含不可解成员（外部/未知类型，如 ComposerCoreInput &
+				// {inline}）时记 jsval 不透明句柄（JEV jsval_opaque 0.98；部分布局
+				// 会因调用位无布局校验而静默错位，故不用；已知成员冲突时仍拒）。
+				if saIntersectionHasUnknownMember(pd.Type, classes, aliasOf, enums) {
+					kinds[name] = "jsval"
+					continue
+				}
 			}
 			k, ok := saAnnotKind(pd.Type)
 			if !ok {
@@ -3053,6 +3060,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					// 禁静默错码；上游同位对未知联合拒收）。
 					if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), classes); ok {
 						kinds[name] = inst
+						continue
+					}
+					// 全成员不可解的联合记 jsval（联合的 jsval 即 jsval；混合联合
+					// 仍大声拒，见 JEV union_unknown 弱置信说明）。
+					if saUnionAllUnknown(pd.Type.AsUnionTypeNode(), classes, aliasOf, enums) {
+						kinds[name] = "jsval"
 						continue
 					}
 					return nil, nil, nil, false
@@ -3507,6 +3520,138 @@ func saUnionSelfKind(ut *ast.UnionTypeNode, self string) (string, bool) {
 		return "", false
 	}
 	return self, true
+}
+
+// saTypeMemberUnknown 报告一联合/交集成员是否不可解（外部/未知类型）。
+// 已知：标量（saAnnotKind）、对象字面量（可合成布局）、类/枚举具名、
+// 别名可解（标量/字面量/合并布局/Record/具化）、数组/元组（arr 种）。
+// 未知：不可解具名引用、函数类型、不可解索引访问、含未知成员的嵌套
+// 交集、不可表联合；其余未识别种按未知计（仅在外层已无法布局时才用，
+// 此时 jsval 透传、体用位大声拒，优于静默错码）。
+func saTypeMemberUnknown(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) bool {
+	if t == nil {
+		return true
+	}
+	if _, ok := saAnnotKind(t); ok {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindTypeLiteral:
+		return false
+	case ast.KindArrayType, ast.KindTupleType:
+		return false
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil {
+			return true
+		}
+		if ref.TypeName.Kind == ast.KindIdentifier {
+			if _, ok := classes[ref.TypeName.Text()]; ok {
+				return false
+			}
+			if _, ok := enums[ref.TypeName.Text()]; ok {
+				return false
+			}
+		} else if qn, ok := saQualifiedTypeName(t); ok {
+			if _, ok := classes[qn]; ok {
+				return false
+			}
+		}
+		if _, ok := saResolveAliasKind(t, aliasOf); ok {
+			return false
+		}
+		if _, ok := saAliasLiteralLayout(t, classes, aliasOf); ok {
+			return false
+		}
+		if _, ok := saSynthMergedLayout(t, aliasOf, classes); ok {
+			return false
+		}
+		if _, ok := saRecordValueKind(t, classes, aliasOf); ok {
+			return false
+		}
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+			ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			if _, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
+				return false
+			}
+		}
+		return true
+	case ast.KindIndexedAccessType:
+		_, ok := saIndexedAccessParamKind(t, classes, aliasOf)
+		return !ok
+	case ast.KindIntersectionType:
+		return saIntersectionHasUnknownMember(t, classes, aliasOf, enums)
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return true
+		}
+		for _, m := range ut.Types.Nodes {
+			if m == nil || m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if m.Kind == ast.KindLiteralType {
+				if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+					continue
+				}
+			}
+			if saTypeMemberUnknown(m, classes, aliasOf, enums) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// saIntersectionHasUnknownMember 报告一交集是否含不可解成员（嵌套交集展平）。
+func saIntersectionHasUnknownMember(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) bool {
+	if t == nil || t.Kind != ast.KindIntersectionType {
+		return false
+	}
+	it := t.AsIntersectionTypeNode()
+	if it == nil || it.Types == nil {
+		return false
+	}
+	for _, m := range it.Types.Nodes {
+		if m == nil {
+			continue
+		}
+		if m.Kind == ast.KindIntersectionType {
+			if saIntersectionHasUnknownMember(m, classes, aliasOf, enums) {
+				return true
+			}
+			continue
+		}
+		if saTypeMemberUnknown(m, classes, aliasOf, enums) {
+			return true
+		}
+	}
+	return false
+}
+
+// saUnionAllUnknown 报告一联合的全部非空成员是否皆不可解（空联合为假）。
+func saUnionAllUnknown(ut *ast.UnionTypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) bool {
+	if ut == nil || ut.Types == nil {
+		return false
+	}
+	seen := false
+	for _, m := range ut.Types.Nodes {
+		if m == nil || m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+		}
+		seen = true
+		if !saTypeMemberUnknown(m, classes, aliasOf, enums) {
+			return false
+		}
+	}
+	return seen
 }
 
 // saUnionInstKind 取单类+空联合的实例种（`Box|null` 即 `inst:Box`，空吸收为 0
