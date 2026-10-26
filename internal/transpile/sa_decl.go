@@ -1013,6 +1013,22 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// 局部分支 :1058-1254）。
 		return saLowerLocalArrow(w, name, init, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 	}
+	// jsval 值位（JEV eval_jsval_handle_value 0.95）：jsval 值域 map 读
+	// （?. 或 .；串字面量下标同形）经既有守卫 btree_map_get 径求柄，
+	// 空基/缺键归 0 柄，绑定为借用 jsval（map 拥有值，名不释；
+	// 定型 map 读 mapVals 非 jsval，沿旧门不受影响）。
+	if (init.Kind == ast.KindPropertyAccessExpression || init.Kind == ast.KindElementAccessExpression) && saIsJsValEqOperand(init, scope) {
+		h, msg := saEvalJsValHandle(w, init, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "jsval"
+		saDeclarePlain(scope, name)
+		return true
+	}
 	if init.Kind == ast.KindArrayLiteralExpression {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}
@@ -1294,6 +1310,14 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		} else if k, ok := scope.types[t]; ok && k == "f64" {
 			scope.types[name] = "f64"
 			saDeclarePlain(scope, name)
+		} else if k, ok := scope.types[t]; ok && k == "arr" {
+			// Array.isArray-narrowed jsval 三元结果（saLowerTernaryValue
+			// 槽汇合返 arr 柄；既有 arr 三元由上 arrPos 径拦截，此处仅
+			// 承接窄化形；结果为借用柄，名不释，串元/嵌套标记透传）。
+			scope.types[name] = "arr"
+			saDeclarePlain(scope, name)
+			saPropArrNest(scope, t, name)
+			saPropArrStr(scope, t, name)
 		} else {
 			// i32 三元值记种(str/f64 臂已记；缺此行下游报 unknown).
 			scope.types[name] = "i32"

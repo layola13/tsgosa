@@ -762,7 +762,7 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return nm, ""
 			}
 			if k == "jsval" {
-				return saJsValTruthy(w, nm, nextTemp), ""
+				return saJsValTruthy(w, nm, scope, nextTemp), ""
 			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in condition"
@@ -1301,7 +1301,7 @@ func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(
 			return nm, ""
 		}
 		if k, ok := scope.types[nm]; ok && k == "jsval" {
-			return saJsValTruthy(w, nm, nextTemp), ""
+			return saJsValTruthy(w, nm, scope, nextTemp), ""
 		}
 	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
@@ -2949,13 +2949,38 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				}
 				if arg != nil && arg.Kind == ast.KindIdentifier {
 					if k, ok := scope.types[arg.Text()]; ok && k == "jsval" {
+						// 0 柄守卫（map 读绑定可为 0 柄；裸读零址不可表，0 柄即非数组；非零柄按 tag 判 5）。
+						slot := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+						tagL := fmt.Sprintf("L_isarr_tag_%d", *scope.nextLabel)
+						*scope.nextLabel++
+						missL := fmt.Sprintf("L_isarr_miss_%d", *scope.nextLabel)
+						*scope.nextLabel++
+						endL := fmt.Sprintf("L_isarr_end_%d", *scope.nextLabel)
+						*scope.nextLabel++
+						nz := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, arg.Text()))
+						w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+						w.Write(fmt.Sprintf("%s:\n", missL))
+						w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+						w.Write(fmt.Sprintf("  jmp %s\n", endL))
+						w.Write(fmt.Sprintf("%s:\n", tagL))
 						tag := fmt.Sprintf("t_%d", *nextTemp)
 						*nextTemp++
 						w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, arg.Text()))
 						res := fmt.Sprintf("t_%d", *nextTemp)
 						*nextTemp++
 						w.Write(fmt.Sprintf("  %s = eq %s, 5\n", res, tag))
-						return res, false, ""
+						w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, res))
+						w.Write(fmt.Sprintf("  jmp %s\n", endL))
+						w.Write(fmt.Sprintf("%s:\n", endL))
+						out := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+						w.Write(fmt.Sprintf("  !%s\n", slot))
+						return out, false, ""
 					}
 					if k, ok := scope.types[arg.Text()]; ok && (k == "i32" || k == "bool") {
 						// checker 真 any/unknown 或未消解裸形参禁折叠（`unknown`/裸 `T`
@@ -4270,6 +4295,52 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	// arm result is consumed before saReleaseArmTemps so a newly built
 	// array is not freed in its own branch; borrowed field arrays are
 	// not heap temps, so the consume is a no-op for them).
+	// Array.isArray-narrowed jsval ternary (JEV eval_jsval_handle_value 0.95
+	// downstream): condition is exactly Array.isArray(nm) for a jsval
+	// identifier nm, true arm is nm, false arm is an arr value. The true
+	// branch unboxes the jsval payload ptr (kind 5 array head) lazily, so
+	// a 0/non-array handle is never unboxed when the condition is false,
+	// and joins with the false arm through a ptr slot like the array
+	// ternary. The result is typed arr; its elements are jsval handles
+	// (no instance layout), so layout-needing element reads still refuse.
+	if nm, ok := saArrayIsGuardIdent(ce.Condition); ok {
+		if tp := saUnwrapTransparent(ce.WhenTrue); tp != nil && tp.Kind == ast.KindIdentifier && tp.Text() == nm {
+			if k, ok2 := scope.types[nm]; ok2 && k == "jsval" && saIsArrValue(ce.WhenFalse, scope) {
+				slot := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+				tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+				*nextLabel++
+				fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+				*nextLabel++
+				endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+				w.Write(fmt.Sprintf("%s:\n", tL))
+				base := len(scope.ownOrder)
+				unboxed := saUnboxJsValPtr(w, nm, nextTemp)
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, unboxed))
+				saReleaseArmTemps(w, scope, base)
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", fL))
+				base = len(scope.ownOrder)
+				bv, msgB := saArrValueOf(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+				if msgB != "" {
+					return "", false, msgB
+				}
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, bv))
+				saReleaseArmTemps(w, scope, base)
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", endL))
+				res := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+				w.Write(fmt.Sprintf("  !%s\n", slot))
+				scope.types[res] = "arr"
+				return res, false, ""
+			}
+		}
+	}
 	if saIsArrValue(ce.WhenTrue, scope) && saIsArrValue(ce.WhenFalse, scope) {
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -8481,6 +8552,34 @@ func saLowerJsValNullEq(w printer.EmitTextWriter, h string, target int, neg bool
 	return out
 }
 
+// saArrayIsGuardIdent 报告条件是否为恰好 Array.isArray(nm) 调用（单
+// 标识符实参；括号透明）；余形返回 ""。
+func saArrayIsGuardIdent(cond *ast.Node) (string, bool) {
+	c := saUnwrapTransparent(cond)
+	if c == nil || c.Kind != ast.KindCallExpression {
+		return "", false
+	}
+	ce := c.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "isArray" || pa.QuestionDotToken != nil {
+		return "", false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Expression.Text() != "Array" {
+		return "", false
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return "", false
+	}
+	arg := saUnwrapTransparent(ce.Arguments.Nodes[0])
+	if arg == nil || arg.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	return arg.Text(), true
+}
+
 // saJsValExprKey canonical key for a jsval expression usable in ternary
 // narrowing: id:<name> for jsval identifiers, map:<base>.<field> for
 // jsval-valued map reads (?. or .; element reads with a string literal).
@@ -8667,7 +8766,25 @@ func saUnboxJsValI32(w printer.EmitTextWriter, handle string, nextTemp *int) str
 	return t
 }
 
-func saJsValTruthy(w printer.EmitTextWriter, handle string, nextTemp *int) string {
+func saJsValTruthy(w printer.EmitTextWriter, handle string, scope *saScope, nextTemp *int) string {
+	// 0 柄守卫（map 读绑定可为 0 柄；0 柄即 falsy，裸读零址不可表）。
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tagL := fmt.Sprintf("L_jvtruth_tag_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_jvtruth_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jvtruth_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, handle))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", tagL))
 	tag := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, handle))
@@ -8722,7 +8839,14 @@ func saJsValTruthy(w printer.EmitTextWriter, handle string, nextTemp *int) strin
 	res := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = and %s, %s\n", res, r2, strPass))
-	return res
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, res))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out
 }
 
 func saRightNeedsJsVal(n *ast.Node, nm string) bool {
