@@ -198,6 +198,16 @@ func saLowerMapIndexStore(w printer.EmitTextWriter, recv string, key, rhs *ast.N
 		saReleaseKeySlice(w, ks, kcell)
 		return ""
 	}
+	if scope.mapVals[recv] == "jsval" {
+		fakeSig := saFuncSig{paramKinds: []string{"jsval"}}
+		v, msg := saEvalCallArg(w, fakeSig, 0, rhs, 1, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", recv, ks, v))
+		saReleaseKeySlice(w, ks, kcell)
+		return ""
+	}
 	v, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return msg
@@ -304,11 +314,11 @@ func saLowerRecordView(w printer.EmitTextWriter, name, origin, vkind string, sco
 
 // saReturnMapVal derives a map return's value kind: direct Record, or a
 // union whose only non-null member is a Record (null absorbed as 0).
-func saReturnMapVal(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+func saReturnMapVal(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	if t == nil {
 		return "", false
 	}
-	if v, ok := saRecordValueKind(t, classes); ok {
+	if v, ok := saRecordValueKind(t, classes, aliasOf); ok {
 		return v, true
 	}
 	if t.Kind == ast.KindUnionType {
@@ -329,7 +339,7 @@ func saReturnMapVal(t *ast.TypeNode, classes map[string]*saClassDef) (string, bo
 					continue
 				}
 			}
-			v, ok := saRecordValueKind(m, classes)
+			v, ok := saRecordValueKind(m, classes, aliasOf)
 			if !ok {
 				return "", false
 			}
@@ -494,7 +504,7 @@ func saSeedParamMapVals(paramNodes []*ast.Node, kinds map[string]string, classes
 		if pd.Type == nil {
 			continue
 		}
-		if vkind, ok := saRecordValueKind(pd.Type, classes); ok {
+		if vkind, ok := saRecordValueKind(pd.Type, classes, scope.aliasOf); ok {
 			saSetMapVal(scope, nm.Text(), vkind)
 		}
 	}
@@ -502,7 +512,7 @@ func saSeedParamMapVals(paramNodes []*ast.Node, kinds map[string]string, classes
 
 // saRecordValueKind 认 `Record<string, T>` 值种（T 经 `saAnnotKind` i32/bool
 // 即 `"i32"`，string 即 `"str"`；具名接口即 `"inst:T"`；余形 false 沿旧门）。
-func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	if t == nil || t.Kind != ast.KindTypeReference {
 		return "", false
 	}
@@ -545,7 +555,96 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 			}
 		}
 	}
+	if ref.TypeArguments.Nodes[1] != nil && saIsJsValAbleType(ref.TypeArguments.Nodes[1], aliasOf, map[string]bool{}) {
+		return "jsval", true
+	}
 	return "", false
+}
+
+// saIsJsValAbleType reports whether a type is representable as jsval map
+// values: every JSON-like shape. Arrays and index-signature objects are
+// containers (their payload is a handle regardless of element type), so
+// element recursion is unnecessary there; alias cycles through containers
+// resolve to true, and a direct self-alias cycle also resolves to true
+// (degenerate aliases carry no value shape to check).
+func saIsJsValAbleType(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, seen map[string]bool) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword, ast.KindBooleanKeyword, ast.KindNumberKeyword, ast.KindStringKeyword, ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindVoidKeyword:
+		return true
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		return pt != nil && saIsJsValAbleType(pt.Type, aliasOf, seen)
+	case ast.KindArrayType, ast.KindTupleType:
+		return true
+	case ast.KindLiteralType:
+		lit := t.AsLiteralTypeNode()
+		if lit == nil || lit.Literal == nil {
+			return false
+		}
+		switch lit.Literal.Kind {
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword:
+			return true
+		}
+		return false
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return false
+		}
+		for _, m := range lit.Members.Nodes {
+			if m == nil {
+				continue
+			}
+			if m.Kind == ast.KindIndexSignature {
+				continue
+			}
+			if m.Kind != ast.KindPropertySignature {
+				return false
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				return false
+			}
+			if !saIsJsValAbleType(pd.Type, aliasOf, seen) {
+				return false
+			}
+		}
+		return true
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return false
+		}
+		if ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "Record" {
+			return true
+		}
+		nm := ref.TypeName.Text()
+		if seen[nm] {
+			return true
+		}
+		seen[nm] = true
+		nxt, ok := aliasOf[nm]
+		if !ok || nxt == nil {
+			return false
+		}
+		return saIsJsValAbleType(nxt, aliasOf, seen)
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return false
+		}
+		for _, m := range ut.Types.Nodes {
+			if m == nil || !saIsJsValAbleType(m, aliasOf, seen) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // saLowerRecordLiteral lowering `const m: Record<string,T> = {a: v}`
@@ -604,6 +703,15 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 		} else if vkind == "i32" {
 			var msg string
 			v, msg = saEvalI32(w, init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+		} else if vkind == "jsval" {
+			fakeSig := saFuncSig{paramKinds: []string{"jsval"}}
+			var msg string
+			v, msg = saEvalCallArg(w, fakeSig, 0, init, 1, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(p.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})

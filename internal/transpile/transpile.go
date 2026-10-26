@@ -2725,7 +2725,7 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						}
 						// `Record<string,T>` 形参记 map 种（值种绑定点播种；
 						// 不可识别沿旧门拒；封存 annotationType 用户类型面）。
-						if _, ok := saRecordValueKind(pd.Type, classes); ok {
+						if _, ok := saRecordValueKind(pd.Type, classes, aliasOf); ok {
 							kinds[name] = "map"
 							continue
 						}

@@ -6833,7 +6833,7 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			if pd.Type.Kind == ast.KindTypeReference {
 				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 					// `Record<string,T>` 形参记 map 种（值种播种与函数序同形）。
-					if vkind, ok := saRecordValueKind(pd.Type, scope.classes); ok {
+					if vkind, ok := saRecordValueKind(pd.Type, scope.classes, scope.aliasOf); ok {
 						kinds[i] = "map"
 						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 							saSetMapVal(scope, nm.Text(), vkind)

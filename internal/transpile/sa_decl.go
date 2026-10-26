@@ -224,7 +224,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// 对象字面量声明（注解须为同名接口；无注解按键集匹配）。
 			// `Record<string,T>` 注解走 Map 具化（Z1；余形沿旧门）。
 			if vd.Type != nil {
-				if vkind, ok := saRecordValueKind(vd.Type, scope.classes); ok {
+				if vkind, ok := saRecordValueKind(vd.Type, scope.classes, scope.aliasOf); ok {
 					if !saLowerRecordLiteral(w, name, vkind, vd.Initializer, scope, pos, refusals, nextTemp) {
 						return false
 					}
@@ -1923,7 +1923,7 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 			if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
 				return "inst:" + lname, true
 			}
-			if _, ok := saRecordValueKind(t, classes); ok {
+			if _, ok := saRecordValueKind(t, classes, aliasOf); ok {
 				return "map", true
 			}
 		}
@@ -2418,7 +2418,7 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 	}
 	retMapVal := ""
 	if retKind == "map" {
-		if v, ok := saReturnMapVal(rtype, classes); ok {
+		if v, ok := saReturnMapVal(rtype, classes, aliasOf); ok {
 			retMapVal = v
 		}
 	}

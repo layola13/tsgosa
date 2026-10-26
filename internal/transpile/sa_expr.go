@@ -1130,7 +1130,7 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	// ??/nullish, string returns, and i32 positions), so a null literal
 	// here is the 0 handle. (NullKeyword already reached "0" via the
 	// i32 fallback; this only closes the identifier form.)
-	if strings.HasPrefix(retKind, "inst:") && saIsNullLit(e, scope) {
+	if (strings.HasPrefix(retKind, "inst:") || retKind == "map") && saIsNullLit(e, scope) {
 		return "0", ""
 	}
 	if e != nil && e.Kind == ast.KindIdentifier {
