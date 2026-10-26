@@ -762,7 +762,11 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				return nm, ""
 			}
 			if k == "jsval" {
-				return saJsValTruthy(w, nm, scope, nextTemp), ""
+				scope.addImport("sa_std/ts_jsval.sa")
+				out := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, nm))
+				return out, ""
 			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in condition"
@@ -1301,7 +1305,11 @@ func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(
 			return nm, ""
 		}
 		if k, ok := scope.types[nm]; ok && k == "jsval" {
-			return saJsValTruthy(w, nm, scope, nextTemp), ""
+			scope.addImport("sa_std/ts_jsval.sa")
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, nm))
+			return out, ""
 		}
 	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
@@ -8785,89 +8793,6 @@ func saUnboxJsValI32(w printer.EmitTextWriter, handle string, nextTemp *int) str
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", t, handle))
 	return t
-}
-
-func saJsValTruthy(w printer.EmitTextWriter, handle string, scope *saScope, nextTemp *int) string {
-	// 0 柄守卫（map 读绑定可为 0 柄；0 柄即 falsy，裸读零址不可表）。
-	slot := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
-	tagL := fmt.Sprintf("L_jvtruth_tag_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	missL := fmt.Sprintf("L_jvtruth_miss_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	endL := fmt.Sprintf("L_jvtruth_end_%d", *scope.nextLabel)
-	*scope.nextLabel++
-	nz := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, handle))
-	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
-	w.Write(fmt.Sprintf("%s:\n", missL))
-	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", tagL))
-	tag := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, handle))
-	payI32 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", payI32, handle))
-	payPtr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", payPtr, handle))
-	notUndef := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", notUndef, tag))
-	notNull := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 6\n", notNull, tag))
-	base := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", base, notUndef, notNull))
-	notBool := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 3\n", notBool, tag))
-	boolOk := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", boolOk, payI32))
-	boolPass := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = or %s, %s\n", boolPass, notBool, boolOk))
-	notNum := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 2\n", notNum, tag))
-	numOk := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", numOk, payI32))
-	numPass := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = or %s, %s\n", numPass, notNum, numOk))
-	notStr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 1\n", notStr, tag))
-	strOk := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", strOk, payPtr))
-	strPass := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = or %s, %s\n", strPass, notStr, strOk))
-	r1 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", r1, base, boolPass))
-	r2 := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", r2, r1, numPass))
-	res := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = and %s, %s\n", res, r2, strPass))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, res))
-	w.Write(fmt.Sprintf("  jmp %s\n", endL))
-	w.Write(fmt.Sprintf("%s:\n", endL))
-	out := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
-	w.Write(fmt.Sprintf("  !%s\n", slot))
-	return out
 }
 
 func saRightNeedsJsVal(n *ast.Node, nm string) bool {
