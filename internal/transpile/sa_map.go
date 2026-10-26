@@ -475,6 +475,12 @@ func saRecordValueKind(t *ast.TypeNode, classes map[string]*saClassDef) (string,
 	if ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[0].Kind != ast.KindStringKeyword {
 		return "", false
 	}
+	if ref.TypeArguments.Nodes[1] != nil && (ref.TypeArguments.Nodes[1].Kind == ast.KindUnknownKeyword || ref.TypeArguments.Nodes[1].Kind == ast.KindAnyKeyword) {
+		// Record<string, unknown/any> values are jsval handles (JEV
+		// map_with_jsval_values 0.98); the map handle itself is the
+		// return kind, null absorbed as 0 by union erasure.
+		return "jsval", true
+	}
 	if k, ok := saAnnotKind(ref.TypeArguments.Nodes[1]); ok && (k == "i32" || k == "bool") {
 		return "i32", true
 	}
