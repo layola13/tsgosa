@@ -2707,6 +2707,23 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 		}
 		obj = pt.Type
 	}
+	// 链式索引访问（JEV jsval_chain 1.0）：内层解为 jsval（如未知基
+	// ClientState["threads"]）则外层亦 jsval；内层为数组句柄且外层以
+	// number 索引时，元种已不可由种串恢复，亦记 jsval；内层为实例
+	// 布局加字段的情形仍拒（需布局直通，未见于 web 残量）。
+	if obj != nil && obj.Kind == ast.KindIndexedAccessType {
+		innerKind, ok := saIndexedAccessParamKind(obj, classes, aliasOf)
+		if !ok {
+			return "", false
+		}
+		if innerKind == "jsval" {
+			return "jsval", true
+		}
+		if innerKind == "arr" && ia.IndexType != nil && ia.IndexType.Kind == ast.KindNumberKeyword {
+			return "jsval", true
+		}
+		return "", false
+	}
 	// Keyword-number index (T[number]): element type of an array base.
 	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindNumberKeyword {
 		if obj != nil && obj.Kind == ast.KindArrayType {
@@ -3066,6 +3083,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					// 仍大声拒，见 JEV union_unknown 弱置信说明）。
 					if saUnionAllUnknown(pd.Type.AsUnionTypeNode(), classes, aliasOf, enums) {
 						kinds[name] = "jsval"
+						continue
+					}
+					// 同种联合擦除（JEV erase_same_kind 0.99）：全部非空成员同种
+					// 即擦为该种，空吸收为 0 句柄；种不同仍大声拒，禁缺省 i32。
+					if ek, ok := saUnionParamEraseKind(pd.Type.AsUnionTypeNode(), classes, aliasOf, enums); ok {
+						kinds[name] = ek
 						continue
 					}
 					return nil, nil, nil, false
@@ -3652,6 +3675,111 @@ func saUnionAllUnknown(ut *ast.UnionTypeNode, classes map[string]*saClassDef, al
 		}
 	}
 	return seen
+}
+
+// saUnionMemberKind 解析一联合成员的 SA 种（擦除用；失败即不可表）。
+// 顺序：注解核（标量/数组/Array<T>/元组/括号/模板）优先；具名引用按
+// 类/枚举/别名/字面量/合并布局/Record/具化消解，未知引用即 jsval；
+// 字面量合成布局；交集按合并布局或含未知成员即 jsval；索引访问沿既有
+// 助手；函数类型即 jsval；嵌套联合递归擦除。
+func saUnionMemberKind(m *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	if k, ok := saAnnotKind(m); ok {
+		return k, true
+	}
+	switch m.Kind {
+	case ast.KindTypeLiteral:
+		if lname, ok := saSynthAnonLayout(m, classes); ok {
+			return "inst:" + lname, true
+		}
+		return "", false
+	case ast.KindTypeReference:
+		ref := m.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil {
+			return "", false
+		}
+		if ref.TypeName.Kind == ast.KindIdentifier {
+			if _, ok := classes[ref.TypeName.Text()]; ok {
+				return "inst:" + ref.TypeName.Text(), true
+			}
+			if _, ok := enums[ref.TypeName.Text()]; ok {
+				return "i32", true
+			}
+		} else if qn, ok := saQualifiedTypeName(m); ok {
+			if _, ok := classes[qn]; ok {
+				return "inst:" + qn, true
+			}
+		}
+		if k, ok := saResolveAliasKind(m, aliasOf); ok {
+			return k, true
+		}
+		if lname, ok := saAliasLiteralLayout(m, classes, aliasOf); ok {
+			return "inst:" + lname, true
+		}
+		if lname, ok := saSynthMergedLayout(m, aliasOf, classes); ok {
+			return "inst:" + lname, true
+		}
+		if _, ok := saRecordValueKind(m, classes, aliasOf); ok {
+			return "map", true
+		}
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+			ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			if lname, ok := saInstantiateIface(ref.TypeName.Text(), ref.TypeArguments.Nodes, classes); ok {
+				return "inst:" + lname, true
+			}
+		}
+		return "jsval", true
+	case ast.KindIntersectionType:
+		if lname, ok := saSynthMergedLayout(m, aliasOf, classes); ok {
+			return "inst:" + lname, true
+		}
+		if saIntersectionHasUnknownMember(m, classes, aliasOf, enums) {
+			return "jsval", true
+		}
+		return "", false
+	case ast.KindIndexedAccessType:
+		return saIndexedAccessParamKind(m, classes, aliasOf)
+	case ast.KindFunctionType, ast.KindConstructorType:
+		return "jsval", true
+	case ast.KindUnionType:
+		return saUnionParamEraseKind(m.AsUnionTypeNode(), classes, aliasOf, enums)
+	default:
+		return "", false
+	}
+}
+
+// saUnionParamEraseKind 擦除同种联合：全部非空成员同种即该种，空联合为假，
+// 种不同为假（bool 与 i32 不互通，禁缺省 i32）。
+func saUnionParamEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) (string, bool) {
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	kind := ""
+	for _, m := range ut.Types.Nodes {
+		if m == nil || m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+		}
+		k, ok := saUnionMemberKind(m, classes, aliasOf, enums)
+		if !ok {
+			return "", false
+		}
+		if kind == "" {
+			kind = k
+		} else if kind != k {
+			return "", false
+		}
+	}
+	if kind == "" {
+		return "", false
+	}
+	return kind, true
 }
 
 // saUnionInstKind 取单类+空联合的实例种（`Box|null` 即 `inst:Box`，空吸收为 0
