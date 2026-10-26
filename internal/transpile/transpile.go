@@ -2689,6 +2689,118 @@ func saUnknownOpaqueBase(t *ast.TypeNode, classes map[string]*saClassDef, enums 
 	return "", false
 }
 
+// saIndexedAccessParamKind resolves a param annotation of the form
+// Base["field"] (or Arr[number] for array bases) to a final param kind.
+// Layout bases are recorded classes, inline literals, alias literals, and
+// intersections; an unresolvable base is jsval opaque (JEV jsval_opaque).
+// inst fields need a recorded sub-layout, otherwise they refuse loudly.
+func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	ia := t.AsIndexedAccessTypeNode()
+	if ia == nil || ia.ObjectType == nil || ia.IndexType == nil {
+		return "", false
+	}
+	obj := ia.ObjectType
+	for obj != nil && obj.Kind == ast.KindParenthesizedType {
+		pt := obj.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return "", false
+		}
+		obj = pt.Type
+	}
+	// Keyword-number index (T[number]): element type of an array base.
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindNumberKeyword {
+		if obj != nil && obj.Kind == ast.KindArrayType {
+			el := obj.AsArrayTypeNode().ElementType
+			if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "bool" || k == "str" || k == "f64" || k == "arr") {
+				return k, true
+			}
+			if el != nil && el.Kind == ast.KindTypeReference {
+				if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+					if _, ok := classes[ref.TypeName.Text()]; ok {
+						return "inst:" + ref.TypeName.Text(), true
+					}
+				}
+				return "jsval", true
+			}
+		}
+		return "", false
+	}
+	// Numeric index: only array bases with a scalar element kind.
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+		if lit := idx.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNumericLiteral {
+			if obj != nil && obj.Kind == ast.KindArrayType {
+				el := obj.AsArrayTypeNode().ElementType
+				if k, ok := saAnnotKind(el); ok && (k == "i32" || k == "bool" || k == "str" || k == "f64") {
+					return k, true
+				}
+			}
+			return "", false
+		}
+	}
+	// String field name.
+	var field string
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+		if lit := idx.AsLiteralTypeNode().Literal; lit != nil {
+			if lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral {
+				field = lit.Text()
+			}
+		}
+	}
+	if field == "" {
+		return "", false
+	}
+	var def *saClassDef
+	switch obj.Kind {
+	case ast.KindTypeLiteral:
+		if lname, ok := saSynthAnonLayoutAlias(obj, classes, aliasOf); ok {
+			def = classes[lname]
+		}
+	case ast.KindTypeReference:
+		if ref := obj.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if d, ok := classes[ref.TypeName.Text()]; ok {
+				def = d
+			} else if lname, ok := saAliasLiteralLayout(obj, classes, aliasOf); ok {
+				def = classes[lname]
+			} else if lname, ok := saSynthMergedLayout(obj, aliasOf, classes); ok {
+				def = classes[lname]
+			} else {
+				return "jsval", true
+			}
+		} else {
+			return "", false
+		}
+	case ast.KindIntersectionType:
+		if lname, ok := saSynthMergedLayout(obj, aliasOf, classes); ok {
+			def = classes[lname]
+		}
+	default:
+		return "", false
+	}
+	if def == nil {
+		return "", false
+	}
+	fk, ok := def.fkinds[field]
+	if !ok {
+		return "", false
+	}
+	switch fk {
+	case "i32", "bool", "str", "arr", "f64", "map", "jsval":
+		return fk, true
+	case "inst":
+		if sub, ok := def.fsub[field]; ok {
+			if _, ok2 := classes[sub]; ok2 {
+				return "inst:" + sub, true
+			}
+		}
+		return "", false
+	default:
+		if len(fk) > 5 && fk[:5] == "inst:" {
+			return fk, true
+		}
+		return "", false
+	}
+}
+
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if fn.Parameters != nil {
@@ -2941,6 +3053,13 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					// 禁静默错码；上游同位对未知联合拒收）。
 					if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), classes); ok {
 						kinds[name] = inst
+						continue
+					}
+					return nil, nil, nil, false
+				}
+				if pd.Type.Kind == ast.KindIndexedAccessType {
+					if k2, ok2 := saIndexedAccessParamKind(pd.Type, classes, aliasOf); ok2 {
+						kinds[name] = k2
 						continue
 					}
 					return nil, nil, nil, false
