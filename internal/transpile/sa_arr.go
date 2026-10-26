@@ -7432,6 +7432,17 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			if k, ok := scope.types[body.Text()]; ok && k == "arr" {
 				// bare handle bodies pass the word through (filter predicates, identity maps).
 				v = body.Text()
+			} else if wantKind == "i32" {
+				// bool-position bare predicate: str identifiers coerce
+				// by truthiness (saEvalBool); all other identifier
+				// kinds delegate to saEvalI32 inside saEvalBool,
+				// so this is a pure widening for str predicates.
+				op, msg := saEvalBool(w, body, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					done()
+					return "", msg
+				}
+				v = op
 			} else {
 				op, msg := saEvalI32(w, body, scope, pos, refusals, nextTemp)
 				if msg != "" {

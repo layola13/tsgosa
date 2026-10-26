@@ -1355,10 +1355,12 @@ func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(
 			return out, ""
 		}
 	}
-	// 非具名串表达式真值（`&&` 右臂经 typeof 窄化后的 trim() 调用等；
-	// 与 saCondOperand 串条件同律：saEvalStr + length != 0；
-	// 具名串由 saCondOperand 具名分支先行，此处不收）。
-	if e != nil && e.Kind != ast.KindIdentifier && saIsStrExpr(e, scope) {
+	// 串表达式真值（`&&` 臂经 typeof 窄化后的 trim() 调用、过滤谓词
+	// 的串具名臂等；与 saCondOperand 串条件同律：saEvalStr +
+	// length != 0；具名串亦收（具名读只读，释临时量时
+	// saReleaseOwnedTemp 对非临时量 no-op）；条件位具名串仍由
+	// saCondOperand 具名分支先行，此处只收逻辑值/谓词臂）。
+	if e != nil && saIsStrExpr(e, scope) {
 		h, msg := saEvalStr(w, e, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -7818,7 +7820,7 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return saLowerJsValNullEq(w, h, target, neg, scope, nextTemp), ""
 			}
 		}
-		if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
+		if (saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope)) && saBinaryOpKind(be) != ast.KindAmpersandAmpersandToken && saBinaryOpKind(be) != ast.KindBarBarToken {
 			// jsval-串相等（JEV tag_and_content_guarded 1.0）：jsval 侧为
 			// Record<string, unknown> 读/具名 jsval，串侧为串值；单边串
 			// 沿旧门（双边串在下，余算符同门拒）。
