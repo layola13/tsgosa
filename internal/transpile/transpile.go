@@ -2658,6 +2658,37 @@ func saAliasLiteralLayout(t *ast.TypeNode, classes map[string]*saClassDef, alias
 	return "", false
 }
 
+// saUnknownOpaqueBase reports the base name of an unresolvable named type
+// reference (JEV web param slice: unknown_representation jsval_opaque).
+// It returns false for known layouts/enums (those keep refusing loudly,
+// a different, more specific failure) and for non-reference types.
+func saUnknownOpaqueBase(t *ast.TypeNode, classes map[string]*saClassDef, enums map[string]map[string]int64) (string, bool) {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil {
+		return "", false
+	}
+	if ref.TypeName.Kind == ast.KindIdentifier {
+		nm := ref.TypeName.Text()
+		if _, ok := classes[nm]; ok {
+			return "", false
+		}
+		if _, ok := enums[nm]; ok {
+			return "", false
+		}
+		return nm, true
+	}
+	if qn, ok := saQualifiedTypeName(t); ok {
+		if _, ok := classes[qn]; ok {
+			return "", false
+		}
+		return qn, true
+	}
+	return "", false
+}
+
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if fn.Parameters != nil {
@@ -2795,6 +2826,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				kinds[name] = "jsval"
 				continue
 			}
+			if pd.Type.Kind == ast.KindFunctionType || pd.Type.Kind == ast.KindConstructorType {
+				// 函数类型形参记 jsval 函数句柄（kind 7；SA 无函数指针种；
+				// 调用位若不支持 jsval 被调仍大声拒，透传则直通）。
+				kinds[name] = "jsval"
+				continue
+			}
 			// 内联对象类型注解（`{a: number}`）：按类型字面量合成布局（复用
 			// saSynthAnonLayout 纪律；合成布局不参与键集命中，禁误吞多命中门）。
 			if pd.Type.Kind == ast.KindTypeLiteral {
@@ -2912,6 +2949,12 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				// 别名词消解同形；inst 别名/未知沿旧门拒）。
 				if ak, aok := saResolveAliasKind(pd.Type, aliasOf); aok {
 					k, ok = ak, true
+				} else if _, okBase := saUnknownOpaqueBase(pd.Type, classes, enums); okBase {
+					// 未知具名类型形参记 jsval 不透明句柄（JEV jsval_opaque 0.86；
+					// 已穷尽具化/Record/类/合并布局/枚举/形参/别名消解；
+					// 透传直通，需布局的体用位仍大声拒）。
+					kinds[name] = "jsval"
+					continue
 				} else {
 					return nil, nil, nil, false
 				}
