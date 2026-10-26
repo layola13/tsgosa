@@ -1874,6 +1874,190 @@ func saUnionEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, ali
 	return found, true
 }
 
+// saIndexedAccessRetKind resolves an indexed-access return annotation
+// (T["field"], T[number], chained NonNullable<T["f"]>["g"]) to a return
+// kind, mirroring saIndexedAccessParamKind's field projection but in
+// return vocabulary (number/boolean/string/f64/jsval/arr/arrStr/inst:/map).
+// Unresolvable bases (external types like ChannelGroupConfig) are jsval
+// opaque (JEV jsval_opaque); a chained inner inst layout projects its
+// field too (NonNullable<C["image"]>["modelPrices"]).
+func saIndexedAccessRetKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	ia := t.AsIndexedAccessTypeNode()
+	if ia == nil || ia.ObjectType == nil || ia.IndexType == nil {
+		return "", false
+	}
+	obj := ia.ObjectType
+	for obj != nil && obj.Kind == ast.KindParenthesizedType {
+		pt := obj.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return "", false
+		}
+		obj = pt.Type
+	}
+	for obj != nil && obj.Kind == ast.KindTypeReference {
+		ref := obj.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+			ref.TypeName.Text() != "NonNullable" || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 ||
+			ref.TypeArguments.Nodes[0] == nil {
+			break
+		}
+		obj = ref.TypeArguments.Nodes[0]
+		for obj != nil && obj.Kind == ast.KindParenthesizedType {
+			pt := obj.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return "", false
+			}
+			obj = pt.Type
+		}
+	}
+	retFieldKind := func(def *saClassDef, field string) (string, bool) {
+		if def == nil {
+			return "", false
+		}
+		fk, ok := def.fkinds[field]
+		if !ok {
+			return "", false
+		}
+		switch fk {
+		case "i32":
+			return "number", true
+		case "bool":
+			return "boolean", true
+		case "str":
+			return "string", true
+		case "arr", "f64", "map", "jsval":
+			return fk, true
+		case "inst":
+			if sub, ok := def.fsub[field]; ok {
+				if _, ok2 := classes[sub]; ok2 {
+					return "inst:" + sub, true
+				}
+			}
+			return "", false
+		default:
+			if len(fk) > 5 && fk[:5] == "inst:" {
+				return fk, true
+			}
+			return "", false
+		}
+	}
+	// Chained indexed access: recurse on the inner access.
+	if obj != nil && obj.Kind == ast.KindIndexedAccessType {
+		innerKind, ok := saIndexedAccessRetKind(obj, classes, aliasOf)
+		if !ok {
+			return "", false
+		}
+		if innerKind == "jsval" {
+			return "jsval", true
+		}
+		if innerKind == "arr" && ia.IndexType != nil && ia.IndexType.Kind == ast.KindNumberKeyword {
+			return "jsval", true
+		}
+		if len(innerKind) > 5 && innerKind[:5] == "inst:" {
+			if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+				if lit := idx.AsLiteralTypeNode().Literal; lit != nil && (lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					if def, ok := classes[innerKind[5:]]; ok {
+						return retFieldKind(def, lit.Text())
+					}
+				}
+			}
+			return "", false
+		}
+		return "", false
+	}
+	// Keyword-number index (T[number]): element type of an array base.
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindNumberKeyword {
+		if obj != nil && obj.Kind == ast.KindArrayType {
+			el := obj.AsArrayTypeNode().ElementType
+			if k, ok := saAnnotKind(el); ok {
+				switch k {
+				case "i32":
+					return "number", true
+				case "bool":
+					return "boolean", true
+				case "str":
+					return "string", true
+				case "f64", "arr":
+					return k, true
+				}
+			}
+			if el != nil && el.Kind == ast.KindTypeReference {
+				if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+					if _, ok := classes[ref.TypeName.Text()]; ok {
+						return "inst:" + ref.TypeName.Text(), true
+					}
+				}
+				return "jsval", true
+			}
+		}
+		return "", false
+	}
+	// Numeric literal index on an array base: scalar element kind only.
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+		if lit := idx.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNumericLiteral {
+			if obj != nil && obj.Kind == ast.KindArrayType {
+				el := obj.AsArrayTypeNode().ElementType
+				if k, ok := saAnnotKind(el); ok {
+					switch k {
+					case "i32":
+						return "number", true
+					case "bool":
+						return "boolean", true
+					case "str":
+						return "string", true
+					case "f64":
+						return k, true
+					}
+				}
+			}
+			return "", false
+		}
+	}
+	// String field name.
+	var field string
+	if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+		if lit := idx.AsLiteralTypeNode().Literal; lit != nil {
+			if lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral {
+				field = lit.Text()
+			}
+		}
+	}
+	if field == "" {
+		return "", false
+	}
+	var def *saClassDef
+	switch obj.Kind {
+	case ast.KindTypeLiteral:
+		if lname, ok := saSynthAnonLayoutAlias(obj, classes, aliasOf); ok {
+			def = classes[lname]
+		}
+	case ast.KindTypeReference:
+		if ref := obj.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if d, ok := classes[ref.TypeName.Text()]; ok {
+				def = d
+			} else if lname, ok := saAliasLiteralLayout(obj, classes, aliasOf); ok {
+				def = classes[lname]
+			} else if lname, ok := saSynthMergedLayout(obj, aliasOf, classes); ok {
+				def = classes[lname]
+			} else {
+				return "jsval", true
+			}
+		} else {
+			return "", false
+		}
+	case ast.KindIntersectionType:
+		if lname, ok := saSynthMergedLayout(obj, aliasOf, classes); ok {
+			def = classes[lname]
+		}
+	default:
+		return "", false
+	}
+	if def == nil {
+		return "", false
+	}
+	return retFieldKind(def, field)
+}
+
 // saReturnKindRef 消解返回注解（saReturnKind 标量集之外）：单标识符别名经
 // 别名表映回 number/boolean/string（`type Count = i32`；arr 别名在返回位仍拒，
 // 无用例）；具名接口/类经 classes 表记 `inst:Name`（`-> ptr`，封存上游实发
@@ -1900,6 +2084,9 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 				}
 			}
 		}
+	}
+	if t != nil && t.Kind == ast.KindIndexedAccessType {
+		return saIndexedAccessRetKind(t, classes, aliasOf)
 	}
 	if t == nil {
 		return "", false

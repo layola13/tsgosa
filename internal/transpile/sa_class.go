@@ -2165,10 +2165,43 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 		return any
 	case ast.KindTypeReference:
 		ref := t.AsTypeReferenceNode()
-		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
 			return false
 		}
 		nm := ref.TypeName.Text()
+		// Generic instantiation member (Partial<T>, Pick<T,..>, ...): resolve
+		// it to its synthesized layout and merge that layout's fields, so
+		// `TopicTranscriptDiagnostics & Partial<TopicUsageDiagnostics>` merges
+		// instead of refusing. Non-inst resolutions (jsval/map/...) still fail
+		// the merge loudly, as before.
+		if ref.TypeArguments != nil {
+			if k, ok := saReturnKindRef(t, classes, aliasOf); ok && len(k) > 5 && k[:5] == "inst:" {
+				if def, ok := classes[k[5:]]; ok {
+					for _, f := range def.fields {
+						if _, dup := fdefs[f.name]; dup {
+							continue
+						}
+						*fields = append(*fields, f.name)
+						if def.fdefs != nil {
+							fdefs[f.name] = def.fdefs[f.name]
+						}
+						if def.fkinds != nil {
+							fkinds[f.name] = def.fkinds[f.name]
+						}
+						if def.fsub != nil {
+							if sub, ok := def.fsub[f.name]; ok {
+								fsub[f.name] = sub
+							}
+						}
+						if def.fopt != nil && def.fopt[f.name] {
+							fopt[f.name] = true
+						}
+					}
+					return len(def.fields) > 0
+				}
+			}
+			return false
+		}
 		if def, ok := classes[nm]; ok && def.isIface {
 			for _, f := range def.fields {
 				if _, dup := fdefs[f.name]; dup {
