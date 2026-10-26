@@ -1169,6 +1169,18 @@ func saLowerFloatConvert(w printer.EmitTextWriter, name string, ce *ast.CallExpr
 		scope.types[t] = "f64"
 		return t, ""
 	}
+	if name == "Number" && saIsJsValEqOperand(a, scope) {
+		// Number(jsval)（JEV tagged_convert_else_zero 0.88）：tag 2 数值 payload
+		// i32 经 sitofp 入 f64（与 Number() 既有 f64 返回种同形）；tag 1 串
+		// payload 经既有 sa_parse_float 径；0 柄/余 tag 归 0（文档化近似：
+		// 下游 isSafeInteger/>=1 守卫将 0 映回 null 臂，与 NaN/空串情形
+		// 同果；布尔 true 输入为已知偏离，JS 得 1 此处得 0）。
+		h, msgH := saEvalJsValHandle(w, a, scope, pos, refusals, nextTemp)
+		if msgH != "" {
+			return "", msgH
+		}
+		return saLowerNumberJsVal(w, h, scope, nextTemp), ""
+	}
 	if !saIsStrValue(a, scope) {
 		return "", name + " takes a string or integer argument"
 	}
@@ -1187,6 +1199,76 @@ func saLowerFloatConvert(w printer.EmitTextWriter, name string, ce *ast.CallExpr
 	saOwnTemp(scope, t)
 	scope.types[t] = "f64"
 	return t, ""
+}
+
+// saLowerNumberJsVal lowering Number(jsval)（JEV tagged_convert_else_zero
+// 0.88）：槽汇合 f64 结果；0 柄/非数非串 tag 归 0.0；tag 2 sitofp；tag 1
+// sa_parse_float。串 payload 柄为 jsval 借用，不释。
+func saLowerNumberJsVal(w printer.EmitTextWriter, h string, scope *saScope, nextTemp *int) string {
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tagL := fmt.Sprintf("L_numjv_tag_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_numjv_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	numL := fmt.Sprintf("L_numjv_num_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	strL := fmt.Sprintf("L_numjv_str_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_numjv_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, h))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0.0 as f64\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", tagL))
+	tag := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, h))
+	isNum := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 2\n", isNum, tag))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isNum, numL, strL))
+	w.Write(fmt.Sprintf("%s:\n", numL))
+	pay := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", pay, h))
+	fv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sitofp %s\n", fv, pay))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, fv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", strL))
+	isStr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 1\n", isStr, tag))
+	strOkL := fmt.Sprintf("L_numjv_strok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isStr, strOkL, missL))
+	w.Write(fmt.Sprintf("%s:\n", strOkL))
+	sp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", sp, h))
+	bp, bl := saExpandStr(w, sp, nextTemp)
+	scope.addImport("sa_std/string.sai")
+	pv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_parse_float(&%s, %s)\n", pv, bp, bl))
+	saOwnTemp(scope, pv)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, pv))
+	saReleaseOwnedTemp(w, scope, pv)
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	scope.types[out] = "f64"
+	return out
 }
 
 // saLowerStrCompare 串字典序比较（双边串求值展开后经 `@ts_str_compare`

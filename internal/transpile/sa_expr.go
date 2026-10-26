@@ -7516,6 +7516,23 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			// typeof 比较对（守卫 + 常量折叠；形状证据：封存 typeof_guard.go 全文件）。
 			return saLowerTypeofCompare(w, be, scope, pos, refusals, nextTemp)
 		}
+		if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+			// jsval-空相等（JEV missing_as_undef 0.97）：jsval 侧为 Record 读/具名
+			// jsval，空侧为 null/undefined 字面量；0 柄即 undefined（===undefined
+			// 真、===null 假），非零柄按 tag 判（6 null、0 undefined）；!=/!== 取反。
+			if jsNode, target, ok := saSplitJsValNullEq(be, scope); ok {
+				h, msgH := saEvalJsValHandle(w, jsNode, scope, pos, refusals, nextTemp)
+				if msgH != "" {
+					return "", msgH
+				}
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				return saLowerJsValNullEq(w, h, target, neg, scope, nextTemp), ""
+			}
+		}
 		if saIsStrValue(be.Left, scope) || saIsStrValue(be.Right, scope) {
 			// jsval-串相等（JEV tag_and_content_guarded 1.0）：jsval 侧为
 			// Record<string, unknown> 读/具名 jsval，串侧为串值；单边串
@@ -8360,6 +8377,101 @@ func saLowerJsValStrEq(w printer.EmitTextWriter, h, s string, neg bool, scope *s
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", pay, h))
 	ce := saStringContentEq(w, pay, s, neg, scope, nextTemp)
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, ce))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	out := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return out
+}
+
+// saJsValNullTarget 报告空字面量对应的 jsval tag：null -> 6，undefined
+// （关键字或未绑定标识符）-> 0；余形 false。
+func saJsValNullTarget(e *ast.Node, scope *saScope) (int, bool) {
+	if e == nil {
+		return 0, false
+	}
+	switch e.Kind {
+	case ast.KindNullKeyword:
+		return 6, true
+	case ast.KindUndefinedKeyword:
+		return 0, true
+	case ast.KindIdentifier:
+		if e.Text() == "undefined" {
+			if _, ok := scope.types["undefined"]; !ok {
+				return 0, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// saSplitJsValNullEq 拆分 jsval-空相等对（单边 jsval 表达式 + 单边
+// null/undefined 字面量；括号/As/Satisfies/NonNull 经 saIsJsValEqOperand 透明）。
+func saSplitJsValNullEq(be *ast.BinaryExpression, scope *saScope) (*ast.Node, int, bool) {
+	if be == nil {
+		return nil, 0, false
+	}
+	l, r := saPeelParens(be.Left), saPeelParens(be.Right)
+	if saIsJsValEqOperand(l, scope) {
+		if t, ok := saJsValNullTarget(r, scope); ok {
+			return l, t, true
+		}
+	}
+	if saIsJsValEqOperand(r, scope) {
+		if t, ok := saJsValNullTarget(l, scope); ok {
+			return r, t, true
+		}
+	}
+	return nil, 0, false
+}
+
+// saLowerJsValNullEq lowering jsval-空相等（JEV missing_as_undef 0.97）：
+// 柄 0 即 undefined（target 0 真、target 6 假）；非零柄读 tag 与 target 比；
+// !=/!== 取反。槽汇合与 saLowerJsValStrEq 同形。
+func saLowerJsValNullEq(w printer.EmitTextWriter, h string, target int, neg bool, scope *saScope, nextTemp *int) string {
+	missVal := "0"
+	if target == 0 {
+		missVal = "1"
+	}
+	if neg {
+		if missVal == "0" {
+			missVal = "1"
+		} else {
+			missVal = "0"
+		}
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	tagL := fmt.Sprintf("L_jvnull_tag_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	missL := fmt.Sprintf("L_jvnull_miss_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jvnull_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, h))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+	w.Write(fmt.Sprintf("%s:\n", missL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, missVal))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", tagL))
+	tag := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, h))
+	isT := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, %d\n", isT, tag, target))
+	res := isT
+	if neg {
+		res = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", res, isT))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, res))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	out := fmt.Sprintf("t_%d", *nextTemp)
