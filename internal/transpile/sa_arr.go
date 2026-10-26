@@ -1063,6 +1063,14 @@ type saTopObjElem struct {
 	// numFields holds numeric-literal texts for numeric-shape elements
 	// (sign folded in for unary minus/plus); empty for the regex shape.
 	numFields map[string]string
+	// boolFields holds boolean-literal values (JEV synth_inst_nested).
+	boolFields map[string]bool
+	// arrFields holds string-array literals (JEV synth_inst_nested).
+	arrFields map[string][]string
+	// instFields holds nested object literals and identifier-expanded const
+	// object literals (JEV synth_inst_nested); each gets its own synthesized
+	// layout behind a ptr slot.
+	instFields map[string]*saTopObjElem
 }
 
 // saTopArrDepth 快照深度（平/i32 空为 1；嵌套为子树深 + 1，同构故取 max 即确值）。
@@ -1129,6 +1137,42 @@ func saTopNestKid(el *ast.Node) (saTopArr, bool) {
 func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool) (map[string]saTopArr, map[*ast.Node]bool) {
 	out := map[string]saTopArr{}
 	claimed := map[*ast.Node]bool{}
+	// Top-level const object literals (name -> parsed element), for
+	// identifier-valued nested fields in top object arrays (JEV
+	// synth_inst_nested): CAP_CODEX-style consts expanded at prescan time.
+	// Only non-regex object literals are collected; anything else in the
+	// field position refuses loudly at the array claim below.
+	objConsts := map[string]saTopObjElem{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil {
+				continue
+			}
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+				continue
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if o, ok := saTopObjElemParse(init, objConsts); ok && o.regexField == "" {
+				objConsts[nm.Text()] = o
+			}
+		}
+	}
 	for _, st := range stmts {
 		if st == nil || st.Kind != ast.KindVariableStatement {
 			continue
@@ -1218,7 +1262,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					}
 					// 嵌套子树（i32 同构；串内层/异构/深浅不一整句不收；808）。
 					// Object element (regex field + string-literal fields; same field set; .find inline at use site, not materialised as a runtime object array).
-					if obj, objok := saTopObjElemParse(el); objok {
+					if obj, objok := saTopObjElemParse(el, objConsts); objok {
 						objs = append(objs, obj)
 						continue
 					}
@@ -1297,6 +1341,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					// fields take f64 slots when any value is fractional.
 					kindOf := map[string]string{}
 					present := map[string]int{}
+					instSub := map[string]string{}
 					for _, o := range objs {
 						if o.regexField != "" {
 							eleOk = false
@@ -1332,6 +1377,53 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 						if !eleOk {
 							break
 						}
+						for k := range o.boolFields {
+							if prev, dup := kindOf[k]; dup && prev != "bool" {
+								eleOk = false
+								break
+							}
+							kindOf[k] = "bool"
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
+						for k := range o.arrFields {
+							if prev, dup := kindOf[k]; dup && prev != "arr" {
+								eleOk = false
+								break
+							}
+							kindOf[k] = "arr"
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
+						for k, sub := range o.instFields {
+							if prev, dup := kindOf[k]; dup && prev != "inst" {
+								eleOk = false
+								break
+							}
+							if sub == nil {
+								eleOk = false
+								break
+							}
+							lname, lok := saTopObjLayoutOfElem(*sub, classes)
+							if !lok {
+								eleOk = false
+								break
+							}
+							if prev, dup := instSub[k]; dup && prev != lname {
+								eleOk = false
+								break
+							}
+							instSub[k] = lname
+							kindOf[k] = "inst"
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
 					}
 					if !eleOk {
 						okAll = false
@@ -1348,7 +1440,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 							fopt[f] = true
 						}
 					}
-					arr = saTopArr{objs: objs, layout: saSynthTopObjLayout(fields, kindOf, fopt, classes)}
+					arr = saTopArr{objs: objs, layout: saSynthTopObjLayout(fields, kindOf, fopt, instSub, classes)}
 				}
 			}
 			pends = append(pends, pend{name: name, arr: arr})
@@ -1369,6 +1461,76 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 // 16 字节头逐元具化 + 4 字节槽存柄 + arrStr 标记，与本地串字面量数组同形；嵌套：
 // 内层逐个具化 + 外层 4 字节槽存内层柄 + arrNest 标记；新柄归属登记，调用方读后
 // 即释；698/758/798）。
+// saMaterializeTopObjElem materializes one materialized-shape top object
+// element as an owned instance handle of def's layout (JEV
+// synth_inst_nested): string fields via string literals, numeric fields by
+// kind, boolean fields as 0/1 i32, string-array fields as a materialized
+// string array handle, nested instance fields as recursively materialized
+// instance handles, all stored as ptr slots; missing optional fields are
+// zero-filled (0 handle for ptr slots, 0 for i32 slots).
+func saMaterializeTopObjElem(w printer.EmitTextWriter, o saTopObjElem, def *saClassDef, scope *saScope, nextTemp *int) string {
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if def.size == 0 {
+		w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+	} else {
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+	}
+	saOwnTemp(scope, h)
+	for _, f := range def.fields {
+		if v, ok := o.strFields[f.name]; ok {
+			sh := saLowerStringLiteral(w, v, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], sh))
+			saReleaseOwnedTemp(w, scope, sh)
+			continue
+		}
+		if v, ok := o.numFields[f.name]; ok {
+			if def.fkinds[f.name] == "f64" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[f.name], v))
+			} else {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v))
+			}
+			continue
+		}
+		if v, ok := o.boolFields[f.name]; ok {
+			bv := "0"
+			if v {
+				bv = "1"
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], bv))
+			continue
+		}
+		if vals, ok := o.arrFields[f.name]; ok {
+			var hs []string
+			for _, sv := range vals {
+				hs = append(hs, saLowerStringLiteral(w, sv, scope, nextTemp))
+			}
+			ah := saAssembleHandles(w, hs, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ah))
+			saReleaseOwnedTemp(w, scope, ah)
+			continue
+		}
+		if sub, ok := o.instFields[f.name]; ok && sub != nil {
+			if subName, ok2 := def.fsub[f.name]; ok2 {
+				if subDef, ok3 := scope.classes[subName]; ok3 && subDef != nil {
+					nh := saMaterializeTopObjElem(w, *sub, subDef, scope, nextTemp)
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], nh))
+					saReleaseOwnedTemp(w, scope, nh)
+					continue
+				}
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+			continue
+		}
+		if def.fkinds[f.name] == "str" || def.fkinds[f.name] == "f64" || def.fkinds[f.name] == "arr" || def.fkinds[f.name] == "inst" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+		} else {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+		}
+	}
+	return h
+}
+
 func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope, nextTemp *int) string {
 	if arr.objs != nil && arr.layout != "" {
 		def, ok := scope.classes[arr.layout]
@@ -1377,36 +1539,7 @@ func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope,
 		}
 		var hs []string
 		for _, o := range arr.objs {
-			h := fmt.Sprintf("t_%d", *nextTemp)
-			*nextTemp++
-			if def.size == 0 {
-				w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
-			} else {
-				w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
-			}
-			saOwnTemp(scope, h)
-			for _, f := range def.fields {
-				if v, ok := o.strFields[f.name]; ok {
-					sh := saLowerStringLiteral(w, v, scope, nextTemp)
-					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], sh))
-					saReleaseOwnedTemp(w, scope, sh)
-					continue
-				}
-				if v, ok := o.numFields[f.name]; ok {
-					if def.fkinds[f.name] == "f64" {
-						w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[f.name], v))
-					} else {
-						w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v))
-					}
-					continue
-				}
-				if def.fkinds[f.name] == "str" || def.fkinds[f.name] == "f64" {
-					w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
-				} else {
-					w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
-				}
-			}
-			hs = append(hs, h)
+			hs = append(hs, saMaterializeTopObjElem(w, o, def, scope, nextTemp))
 		}
 		return saAssembleHandles(w, hs, scope, nextTemp)
 	}

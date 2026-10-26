@@ -2,6 +2,7 @@ package transpile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -17,7 +18,21 @@ import (
 //     shorthand. Numeric-shape elements are materialized as instances of a
 //     synthesized layout, so fractional values keep f64 slots instead of
 //     being truncated into i32 slots.
-func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
+//
+// saTopObjElemParse parses one object literal element of a top-level const
+// object array. Accepted shapes, never mixed with the regex shape:
+//   - regex shape: exactly one RegExp field and any number of string-literal
+//     fields (snapshot-only, lowered at regex-test .find use sites);
+//   - materialized shape (JEV synth_inst_array 0.95, synth_inst_nested 0.98):
+//     string-literal, numeric-literal (sign folded), boolean-literal,
+//     string-array-literal, nested object-literal, and identifier fields
+//     naming an earlier top-level const object literal (objConsts, expanded
+//     to a nested instance at prescan time). No other property kinds, no
+//     spread, no methods, no shorthand. Materialized-shape elements become
+//     instances of a synthesized layout, so fractional values keep f64 slots
+//     instead of being truncated into i32 slots, and nested objects keep
+//     their own synthesized layout behind a ptr slot.
+func saTopObjElemParse(el *ast.Node, objConsts map[string]saTopObjElem) (saTopObjElem, bool) {
 	if el == nil || el.Kind != ast.KindObjectLiteralExpression {
 		return saTopObjElem{}, false
 	}
@@ -25,7 +40,7 @@ func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
 	if ol == nil || ol.Properties == nil {
 		return saTopObjElem{}, false
 	}
-	out := saTopObjElem{strFields: map[string]string{}, numFields: map[string]string{}}
+	out := saTopObjElem{strFields: map[string]string{}, numFields: map[string]string{}, boolFields: map[string]bool{}, arrFields: map[string][]string{}, instFields: map[string]*saTopObjElem{}}
 	for _, pr := range ol.Properties.Nodes {
 		if pr == nil || pr.Kind != ast.KindPropertyAssignment {
 			return saTopObjElem{}, false
@@ -77,18 +92,135 @@ func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
 				continue
 			}
 		}
+		if init.Kind == ast.KindTrueKeyword || init.Kind == ast.KindFalseKeyword {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			out.boolFields[fname] = init.Kind == ast.KindTrueKeyword
+			continue
+		}
+		if init.Kind == ast.KindArrayLiteralExpression {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			vals, ok := saTopStrArrTexts(init)
+			if !ok {
+				return saTopObjElem{}, false
+			}
+			out.arrFields[fname] = vals
+			continue
+		}
+		if init.Kind == ast.KindObjectLiteralExpression {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			sub, ok := saTopObjElemParse(init, objConsts)
+			if !ok || sub.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			cp := sub
+			out.instFields[fname] = &cp
+			continue
+		}
+		if init.Kind == ast.KindIdentifier {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			ref, ok := objConsts[init.Text()]
+			if !ok || ref.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			cp := ref
+			out.instFields[fname] = &cp
+			continue
+		}
 		return saTopObjElem{}, false
 	}
 	if out.regexField != "" {
-		if len(out.strFields) == 0 || len(out.numFields) != 0 {
+		if len(out.strFields) == 0 || len(out.numFields) != 0 || len(out.boolFields) != 0 || len(out.arrFields) != 0 || len(out.instFields) != 0 {
 			return saTopObjElem{}, false
 		}
 		return out, true
 	}
-	if len(out.strFields) == 0 {
+	if len(out.strFields) == 0 && len(out.numFields) == 0 && len(out.boolFields) == 0 && len(out.arrFields) == 0 && len(out.instFields) == 0 {
 		return saTopObjElem{}, false
 	}
 	return out, true
+}
+
+// saTopStrArrTexts reads a string-array literal (all string literals;
+// empty arrays give an empty, non-nil slice).
+func saTopStrArrTexts(n *ast.Node) ([]string, bool) {
+	al := n.AsArrayLiteralExpression()
+	if al == nil {
+		return nil, false
+	}
+	vals := []string{}
+	if al.Elements != nil {
+		for _, e := range al.Elements.Nodes {
+			if e == nil || e.Kind != ast.KindStringLiteral {
+				return nil, false
+			}
+			vals = append(vals, e.Text())
+		}
+	}
+	return vals, true
+}
+
+// saTopObjElemKinds computes the sorted field list, field kinds, and nested
+// layout names (subs) for one materialized-shape element: str, i32/f64,
+// bool, arr (string array, ptr slot), inst (nested synthesized layout,
+// ptr slot + fsub entry). Regex-shape elements are refused here.
+func saTopObjElemKinds(o saTopObjElem, classes map[string]*saClassDef) ([]string, map[string]string, map[string]string, bool) {
+	if o.regexField != "" {
+		return nil, nil, nil, false
+	}
+	kinds := map[string]string{}
+	subs := map[string]string{}
+	for k := range o.strFields {
+		kinds[k] = "str"
+	}
+	for k, v := range o.numFields {
+		if saIsFloatLit(v) {
+			kinds[k] = "f64"
+		} else {
+			kinds[k] = "i32"
+		}
+	}
+	for k := range o.boolFields {
+		kinds[k] = "bool"
+	}
+	for k := range o.arrFields {
+		kinds[k] = "arr"
+	}
+	for k, sub := range o.instFields {
+		if sub == nil {
+			return nil, nil, nil, false
+		}
+		lname, ok := saTopObjLayoutOfElem(*sub, classes)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		kinds[k] = "inst"
+		subs[k] = lname
+	}
+	var fields []string
+	for k := range kinds {
+		fields = append(fields, k)
+	}
+	sort.Strings(fields)
+	return fields, kinds, subs, true
+}
+
+// saTopObjLayoutOfElem synthesizes (or reuses) the instance layout for one
+// materialized-shape element; all of its fields are present, so none is
+// optional at this level.
+func saTopObjLayoutOfElem(o saTopObjElem, classes map[string]*saClassDef) (string, bool) {
+	fields, kinds, subs, ok := saTopObjElemKinds(o, classes)
+	if !ok || len(fields) == 0 {
+		return "", false
+	}
+	return saSynthTopObjLayout(fields, kinds, map[string]bool{}, subs, classes), true
 }
 
 // saTopObjArrFind parses `TOP.find(cb)?.field` where TOP is a top-level const
@@ -205,7 +337,7 @@ func saTopObjArrFind(pa *ast.PropertyAccessExpression, scope *saScope) (saTopArr
 // element are optional and zero-filled at materialization. A same-named
 // layout with different fields, kinds, or optional flags gets a numeric
 // suffix, mirroring the anonymous-layout discipline.
-func saSynthTopObjLayout(fields []string, kinds map[string]string, fopt map[string]bool, classes map[string]*saClassDef) string {
+func saSynthTopObjLayout(fields []string, kinds map[string]string, fopt map[string]bool, subs map[string]string, classes map[string]*saClassDef) string {
 	base := "TopObj_" + saMonoName(strings.Join(fields, "_"))
 	for n := 0; ; n++ {
 		name := base
@@ -218,7 +350,7 @@ func saSynthTopObjLayout(fields []string, kinds map[string]string, fopt map[stri
 			}
 			match := true
 			for i, fname := range fields {
-				if def.fields[i].name != fname || def.fkinds[fname] != kinds[fname] || def.fopt[fname] != fopt[fname] {
+				if def.fields[i].name != fname || def.fkinds[fname] != kinds[fname] || def.fopt[fname] != fopt[fname] || def.fsub[fname] != subs[fname] {
 					match = false
 					break
 				}
@@ -228,7 +360,10 @@ func saSynthTopObjLayout(fields []string, kinds map[string]string, fopt map[stri
 			}
 			continue
 		}
-		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, fsub: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}}
+		for sf, sl := range subs {
+			def.fsub[sf] = sl
+		}
 		off := 0
 		for _, fname := range fields {
 			fkind := kinds[fname]
