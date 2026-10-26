@@ -4733,7 +4733,8 @@ func saDetectModName(dir string) string {
 type saProgResult struct {
 	files      []string
 	perFile    map[string]string
-	deps       map[string][]string // direct link edges per file (for member @imports)
+	deps       map[string][]string        // direct link edges per file (for member @imports)
+	backEdges  map[string]map[string]bool // DFS back edges: import-cycle edges whose @import is omitted
 	diags      []string
 	unresolved []string
 	refused    bool
@@ -5454,23 +5455,35 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	visited := map[string]bool{}
 	onStack := map[string]bool{}
 	var stack []string
-	var cycle []string
+	cycleSet := map[string]bool{}
+	backEdges := map[string]map[string]bool{}
 	var dfs func(p string)
 	dfs = func(p string) {
 		visited[p] = true
 		onStack[p] = true
 		stack = append(stack, p)
 		for _, q := range graph[p] {
-			if cycle != nil {
-				break
-			}
 			if onStack[q] {
+				// Back edge: closes a directed cycle. Record every
+				// member of the cycle segment plus the target, and
+				// remember the edge itself so the SA workspace can
+				// omit its @import (sci flattening forbids import
+				// cycles; the target stays reachable through the
+				// DFS tree path, and calls into it resolve globally
+				// once the entry's transitive imports are loaded).
 				i := 0
 				for i < len(stack) && stack[i] != q {
 					i++
 				}
-				cycle = append(append([]string{}, stack[i:]...), q)
-				break
+				for _, n := range stack[i:] {
+					cycleSet[n] = true
+				}
+				cycleSet[q] = true
+				if backEdges[p] == nil {
+					backEdges[p] = map[string]bool{}
+				}
+				backEdges[p][q] = true
+				continue
 			}
 			if !visited[q] {
 				dfs(q)
@@ -5481,11 +5494,15 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		reachable = append(reachable, p)
 	}
 	dfs(entry)
-	if cycle != nil {
-		res.refused = true
-		res.diags = append(res.diags, fmt.Sprintf("import cycle: %s", strings.Join(cycle, " -> ")))
-		return res
-	}
+	// Import-cycle tolerance (JEV visited_tolerate_retry, 0.49, confidence
+	// 0.32; prescan_signatures_first was close at 0.38): the back edge is
+	// already skipped by the onStack guard above, exactly like SLA's
+	// visited set in plugin_import_expand.zig (visited.contains returns
+	// early instead of refusing). Do NOT refuse the whole program here;
+	// the only breakage a cycle can cause is a back-edge import whose
+	// target harvest does not exist yet at first-lowering time, and that
+	// is repaired by the single retry pass below, once per cycle file.
+	// A cycle that still refuses after the retry stays loud in diags.
 	prefixOf := map[string]string{}
 	for _, p := range reachable {
 		prefixOf[p] = saProgPrefix(p, entry)
@@ -5499,7 +5516,13 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	constHarvests := map[string]map[string]saProgConst{}
 	topConstHarvests := map[string]map[string]bool{}
 	declHarvests := map[string]map[string]saFuncSig{}
-	for _, p := range reachable {
+	// lowerOne lowers one file with the currently accumulated harvests
+	// and records its harvests for dependents. It is called once per file
+	// in post-order, then at most once more per cycle file in the retry
+	// pass below. Re-lowering is safe: the harvest it recomputes is
+	// deterministic, perFile output is replaced (not appended), and later
+	// files' already-emitted bindings are not rewritten.
+	lowerOne := func(p string) *SAOutput {
 		lk := &saFileLink{
 			defPrefix:        prefixOf[p],
 			isEntry:          p == entry,
@@ -5543,18 +5566,70 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		constHarvests[p] = lk.constHarvest
 		topConstHarvests[p] = lk.topConstHarvest
 		declHarvests[p] = lk.declHarvest
+		return out
+	}
+	perFileDiags := map[string][]string{}
+	perFileRefused := map[string]bool{}
+	recordDiags := func(p string, out *SAOutput) {
+		diags := []string{}
 		for _, r := range out.Refusals {
-			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
+			diags = append(diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
 		}
 		for _, wr := range out.Warnings {
-			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: warning: %s", p, wr.Line, wr.Col, wr.Msg))
+			diags = append(diags, fmt.Sprintf("%s:%d:%d: warning: %s", p, wr.Line, wr.Col, wr.Msg))
 		}
-		if len(out.Refusals) > 0 {
-			res.refused = true
-		}
+		perFileDiags[p] = diags
+		perFileRefused[p] = len(out.Refusals) > 0
 		res.perFile[p] = out.SAI
 	}
+	for _, p := range reachable {
+		recordDiags(p, lowerOne(p))
+	}
+	// Retry pass: a back-edge file's first lowering can only fail on
+	// import links whose target harvest did not exist yet (the target is
+	// a cycle ancestor, lowered later in post-order). Re-lower such a
+	// file once, now that every cycle member has been harvested, and
+	// replace its diagnostics wholesale: unrelated refusals in the same
+	// file are recomputed by the fresh lowering and persist, so the
+	// retry can never hide a real failure. Files outside the cycle
+	// whose import edge points into it are retried on the same
+	// condition, in case DFS order put them before their target.
+	saCycleLinkRefusal := func(msg string) bool {
+		return strings.Contains(msg, "is not exported by") || strings.Contains(msg, "link in a later stage")
+	}
+	for _, p := range reachable {
+		if !cycleSet[p] {
+			hit := false
+			for _, q := range graph[p] {
+				if cycleSet[q] {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				continue
+			}
+		}
+		needsRetry := false
+		for _, d := range perFileDiags[p] {
+			if saCycleLinkRefusal(d) {
+				needsRetry = true
+				break
+			}
+		}
+		if !needsRetry {
+			continue
+		}
+		recordDiags(p, lowerOne(p))
+	}
+	for _, p := range reachable {
+		res.diags = append(res.diags, perFileDiags[p]...)
+		if perFileRefused[p] {
+			res.refused = true
+		}
+	}
 	res.deps = graph
+	res.backEdges = backEdges
 	res.files = append([]string{}, reachable...)
 	for spec := range unresolved {
 		// Only specs reachable from the entry program surface.
@@ -5630,6 +5705,16 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 		}
 		var b strings.Builder
 		for _, q := range res.deps[p] {
+			// Omit DFS back edges: keeping them would emit an SA
+			// @import cycle, which sci flattening rejects with
+			// ForbiddenSyntax. The target is already loaded through
+			// the entry's transitive imports, so cross-file calls
+			// into it still resolve (verified on the minimal cycle
+			// repro: dropping the back-edge @import turns a
+			// ForbiddenSyntax into check ok).
+			if res.backEdges != nil && res.backEdges[p][q] {
+				continue
+			}
 			dn, ok := saName[q]
 			if !ok || dn == name {
 				continue
