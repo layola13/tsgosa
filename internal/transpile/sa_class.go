@@ -1435,6 +1435,23 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 			if ce.Expression.Kind == ast.KindPropertyAccessExpression && saStaticInstClass(e, scope) != "" {
 				return true
 			}
+			// Equality-find call result (JEV inline_loop_eq 0.98): the
+			// scan types its result temp inst:<element layout>, so a
+			// find call over a known-layout array is an instance operand
+			// for ?? / return / condition dispatch; unknown layouts stay
+			// refused by the scan itself, never silently typed.
+			if ce.Expression.Kind == ast.KindPropertyAccessExpression {
+				pa := ce.Expression.AsPropertyAccessExpression()
+				if pa != nil && pa.Name() != nil && pa.QuestionDotToken == nil &&
+					(pa.Name().Text() == "find" || pa.Name().Text() == "findLast") &&
+					ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+					if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+						if _, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+							return true
+						}
+					}
+				}
+			}
 		}
 	}
 	return false

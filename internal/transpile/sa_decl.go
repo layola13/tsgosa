@@ -1116,6 +1116,24 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
+		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
+			// Standalone equality find (e.g. `const preset = PRESETS.find(...)`):
+			// the scan types its result temp inst:<layout>; bind it owned
+			// like the ??-instance branch below, not via the i32 fallback
+			// (which would refuse it as an array value in i32 position).
+			h, _, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = k
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			saCopyInstFn(scope, h, name)
+			return true
+		}
 		// 同文件数组函数返回句柄（`const a = get()`；签名预扫记 arr/arrStr）。
 		if k, ok := saCallRetKind(init.AsCallExpression(), scope); ok && (k == "arr" || k == "arrStr") {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)

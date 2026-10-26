@@ -188,6 +188,243 @@ func saMarkArrStr(scope *saScope, name string) {
 	scope.arrStr[name] = true
 }
 
+// saArrElemLayoutOfType resolves an array annotation to a recorded element
+// instance layout name: T[] / readonly T[] / Array<T> / ReadonlyArray<T>
+// where T is a recorded class/interface (including a type-alias literal,
+// which saRecordTypeAlias stores under the alias name), or an inline type
+// literal (synthesized anon layout, seed time only). Anything else is not
+// an instance-element array. JEV inline_loop_eq 0.98 / reconcile_layout 1.0.
+func saArrElemLayoutOfType(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	switch t.Kind {
+	case ast.KindParenthesizedType:
+		if pt := t.AsParenthesizedTypeNode(); pt != nil {
+			return saArrElemLayoutOfType(pt.Type, classes, aliasOf)
+		}
+	case ast.KindTypeOperator:
+		if to := t.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saArrElemLayoutOfType(to.Type, classes, aliasOf)
+		}
+	case ast.KindArrayType:
+		if at := t.AsArrayTypeNode(); at != nil {
+			return saArrElemLayoutOfElem(at.ElementType, classes, aliasOf)
+		}
+	case ast.KindTypeReference:
+		if ref := t.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			if ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "ReadonlyArray" {
+				if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 {
+					return saArrElemLayoutOfElem(ref.TypeArguments.Nodes[0], classes, aliasOf)
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func saArrElemLayoutOfElem(el *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if el == nil {
+		return "", false
+	}
+	switch el.Kind {
+	case ast.KindParenthesizedType:
+		if pt := el.AsParenthesizedTypeNode(); pt != nil {
+			return saArrElemLayoutOfElem(pt.Type, classes, aliasOf)
+		}
+	case ast.KindTypeOperator:
+		if to := el.AsTypeOperatorNode(); to != nil && to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saArrElemLayoutOfElem(to.Type, classes, aliasOf)
+		}
+	case ast.KindTypeReference:
+		if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+			name := ref.TypeName.Text()
+			if _, ok := classes[name]; ok {
+				return name, true
+			}
+			if lname, ok := saSynthMergedLayout(el, aliasOf, classes); ok {
+				return lname, true
+			}
+		}
+	case ast.KindTypeLiteral:
+		return saSynthAnonLayout(el, classes)
+	}
+	return "", false
+}
+
+// saSeedParamArrElemLayout records param array element layouts (mirror of
+// saSeedParamArrStr); called at function entry alongside the other seeds.
+func saSeedParamArrElemLayout(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
+	for _, pn := range paramNodes {
+		if pn == nil {
+			continue
+		}
+		pd := pn.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || kinds[nm.Text()] != "arr" {
+			continue
+		}
+		if pd.Type == nil {
+			continue
+		}
+		if layout, ok := saArrElemLayoutOfType(pd.Type, scope.classes, scope.aliasOf); ok {
+			if scope.arrElemLayout == nil {
+				scope.arrElemLayout = map[string]string{}
+			}
+			scope.arrElemLayout[nm.Text()] = layout
+		}
+	}
+}
+
+// saFindEqRhsHoistable reports whether the equality operand can be
+// evaluated once before the find loop: it must not mention the callback
+// parameter (element-dependent) and must contain no call or assignment
+// (side effects that JS would repeat per element). Identifiers, literals
+// and outer field reads are loop-invariant: the loop assigns nothing but
+// its own index/slot temporaries.
+func saFindEqRhsHoistable(n *ast.Node, paramName string) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == ast.KindIdentifier && n.Text() == paramName {
+		return false
+	}
+	if n.Kind == ast.KindCallExpression {
+		return false
+	}
+	if n.Kind == ast.KindBinaryExpression {
+		if be := n.AsBinaryExpression(); be != nil && be.OperatorToken != nil && be.OperatorToken.Kind == ast.KindEqualsToken {
+			return false
+		}
+	}
+	ok := true
+	n.ForEachChild(func(c *ast.Node) bool {
+		if !saFindEqRhsHoistable(c, paramName) {
+			ok = false
+			return true
+		}
+		return false
+	})
+	return ok
+}
+
+// saFindReceiverLayout resolves the element instance layout for a .find
+// receiver expression, purely (no emission): annotated array bindings via
+// scope.arrElemLayout, top-level const object arrays via their snapshot
+// layout, struct array fields via saStructArrElemLayout. Anything else has
+// no known element layout and the equality find refuses loudly.
+func saFindReceiverLayout(base *ast.Node, scope *saScope) (string, bool) {
+	if base == nil {
+		return "", false
+	}
+	u := saUnwrapTransparent(base)
+	if u == nil {
+		return "", false
+	}
+	if u.Kind == ast.KindIdentifier {
+		nm := u.Text()
+		if layout, ok := scope.arrElemLayout[nm]; ok {
+			return layout, true
+		}
+		if arr, ok := saTopArrLookup(scope, u); ok && arr.layout != "" {
+			return arr.layout, true
+		}
+		return "", false
+	}
+	if u.Kind == ast.KindPropertyAccessExpression {
+		return saStructArrElemLayout(u, scope)
+	}
+	return "", false
+}
+
+// saFindEqGuard detects a find callback whose body is exactly one equality
+// (===/==/!==/!=) between a field of its first parameter and another
+// expression: (x) => x.field === other, or a block with a single return of
+// that. It returns the parameter name, field name, negation flag, the other
+// operand node, and true. The other operand must not be the parameter
+// itself (an element-handle comparison is not an equality find).
+func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
+	if cb == nil {
+		return "", "", false, nil, false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return "", "", false, nil, false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", "", false, nil, false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", "", false, nil, false
+	}
+	paramName := nm.Text()
+	body := cb.Body()
+	if body == nil {
+		return "", "", false, nil, false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", "", false, nil, false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return "", "", false, nil, false
+		}
+		expr = rs.Expression
+	}
+	expr = saUnwrapTransparent(expr)
+	if expr == nil || expr.Kind != ast.KindBinaryExpression {
+		return "", "", false, nil, false
+	}
+	be := expr.AsBinaryExpression()
+	if be == nil {
+		return "", "", false, nil, false
+	}
+	opKind := saBinaryOpKind(be)
+	neg := false
+	switch opKind {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+		neg = false
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		neg = true
+	default:
+		return "", "", false, nil, false
+	}
+	var fieldName string
+	var other *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindPropertyAccessExpression {
+			pa := side.AsPropertyAccessExpression()
+			if pa != nil && pa.QuestionDotToken == nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier &&
+				pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == paramName {
+				if fieldName != "" {
+					return "", "", false, nil, false
+				}
+				fieldName = pa.Name().Text()
+				continue
+			}
+		}
+		if other != nil {
+			return "", "", false, nil, false
+		}
+		other = side
+	}
+	if fieldName == "" || other == nil {
+		return "", "", false, nil, false
+	}
+	if other.Kind == ast.KindIdentifier && other.Text() == paramName {
+		return "", "", false, nil, false
+	}
+	return paramName, fieldName, neg, other, true
+}
+
 // saMarkArrJsVal records a jsval-element array handle (mirror of saMarkArrStr).
 func saMarkArrJsVal(scope *saScope, name string) {
 	if name == "" {
@@ -4754,8 +4991,20 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	if (m == "find" || m == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+		if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+			if layout, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+				return "inst:" + layout, true
+			}
+		}
 		if _, typeofName, _, ok := saFindTypeofGuard(ce.Arguments.Nodes[0]); ok && typeofName == "string" {
 			return "str", true
+		}
+	}
+	if (m == "findIndex" || m == "findLastIndex") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
+		if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+			if _, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+				return "i32", true
+			}
 		}
 	}
 	switch m {
@@ -6542,7 +6791,7 @@ func saFindTypeofGuard(cb *ast.Node) (string, string, bool, bool) {
 	return paramName, litNode.Text(), neg, true
 }
 
-func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string, string) {
+func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, elemLayout string) (string, string, string) {
 	ln := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
@@ -6622,6 +6871,193 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return h, "arr", ""
 	case "find", "findIndex", "findLast", "findLastIndex":
+		if eqParam, eqField, eqNeg, eqOther, eqOk := saFindEqGuard(cb); eqOk {
+			// Equality find (JEV inline_loop_eq 0.98): inline loop over the
+			// element handles, loading the compared field from each element
+			// instance by layout offset. The generic callback path binds the
+			// parameter as i32, so a string field read there refuses with
+			// "only +/==/!= operate on strings"; this branch never routes
+			// through saCallbackValue. Miss is the 0 handle (undefined);
+			// findIndex variants store the index (miss -1) instead.
+			if elemLayout == "" {
+				return "", "", "find equality needs a known instance element layout"
+			}
+			def, ok := scope.classes[elemLayout]
+			if !ok || def == nil {
+				return "", "", "find equality element layout not recorded"
+			}
+			fkind, ok := def.fkinds[eqField]
+			if !ok {
+				return "", "", "find equality field not in element layout"
+			}
+			if fkind != "str" && fkind != "i32" && fkind != "bool" {
+				return "", "", "find equality field kind not supported: " + fkind
+			}
+			off, ok := def.offsets[eqField]
+			if !ok {
+				return "", "", "find equality field has no layout offset"
+			}
+			isIndex := method == "findIndex" || method == "findLastIndex"
+			last := method == "findLast" || method == "findLastIndex"
+			// Hoisted string operand (evaluated once before the loop when
+			// loop-invariant; released once after the loop on the single
+			// straight-line path, so join states agree).
+			var rhsHoisted string
+			rhsHoistedOk := false
+			if fkind == "str" && saFindEqRhsHoistable(eqOther, eqParam) {
+				h, msg := saEvalStr(w, eqOther, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				rhsHoisted, rhsHoistedOk = h, true
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			saOwnTemp(scope, slot)
+			init := "0"
+			if isIndex {
+				init = "-1"
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, init))
+			i := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", i))
+			topL := fmt.Sprintf("L_feq_top_%d", *nextLabel)
+			*nextLabel++
+			bodyL := fmt.Sprintf("L_feq_body_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_feq_end_%d", *nextLabel)
+			*nextLabel++
+			hitL := fmt.Sprintf("L_feq_hit_%d", *nextLabel)
+			*nextLabel++
+			nextL := fmt.Sprintf("L_feq_next_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", topL))
+			c := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+			w.Write(fmt.Sprintf("%s:\n", bodyL))
+			el := emitElem(i)
+			if fkind == "str" {
+				var rhs string
+				rhsPerIter := false
+				if rhsHoistedOk {
+					rhs = rhsHoisted
+				} else {
+					h, msg := saEvalStr(w, eqOther, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
+					rhs, rhsPerIter = h, true
+				}
+				// Per-iteration owned temporaries must be released on BOTH
+				// arms: saReleaseOwnedTemp would suppress the second arm
+				// statically while only one arm runs dynamically, which
+				// the verifier reports as PhiStateConflict at the join.
+				// Hoisted handles are released once after the loop instead.
+				rhsOwned := false
+				if rhsPerIter {
+					if b := saOwnOf(scope, rhs); b != nil && b.heap && !b.consumed && !b.released {
+						rhsOwned = true
+					}
+				}
+				releaseRhs := func() {
+					if rhsOwned {
+						w.Write(fmt.Sprintf("  !%s\n", rhs))
+					}
+				}
+				fh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", fh, el, off))
+				fz := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fz, fh))
+				fzL := fmt.Sprintf("L_feq_fz_%d", *nextLabel)
+				*nextLabel++
+				fnzL := fmt.Sprintf("L_feq_fnz_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fz, fzL, fnzL))
+				// Missing (zero-filled) field handle: it equals only a
+				// zero right-hand side, never a live string; this also
+				// keeps ts_str_equals off a null handle.
+				w.Write(fmt.Sprintf("%s:\n", fzL))
+				eqv := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
+				if eqNeg {
+					pz := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+					releaseRhs()
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, hitL, nextL))
+				} else {
+					releaseRhs()
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, hitL, nextL))
+				}
+				w.Write(fmt.Sprintf("%s:\n", fnzL))
+				pred := saStringContentEq(w, fh, rhs, eqNeg, scope, nextTemp)
+				releaseRhs()
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, hitL, nextL))
+				if rhsOwned {
+					if b := saOwnOf(scope, rhs); b != nil {
+						b.released = true
+					}
+				}
+			} else {
+				fv := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", fv, el, off))
+				rv, msg := saEvalI32(w, eqOther, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				op := "eq"
+				if eqNeg {
+					op = "ne"
+				}
+				pred := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", pred, op, fv, rv))
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, hitL, nextL))
+			}
+			w.Write(fmt.Sprintf("%s:\n", hitL))
+			if isIndex {
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, i))
+			} else {
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, el))
+			}
+			if !last {
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			} else {
+				w.Write(fmt.Sprintf("  jmp %s\n", nextL))
+			}
+			w.Write(fmt.Sprintf("%s:\n", nextL))
+			inext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+			w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+			w.Write(fmt.Sprintf("  jmp %s\n", topL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			if rhsHoistedOk {
+				saReleaseOwnedTemp(w, scope, rhsHoisted)
+			}
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if isIndex {
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+			} else {
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+				scope.types[out] = "inst:" + elemLayout
+			}
+			saReleaseOwnedTemp(w, scope, slot)
+			saReleaseOwnedTemp(w, scope, recv)
+			if isIndex {
+				return out, "i32", ""
+			}
+			return out, "inst:" + elemLayout, ""
+		}
 		if method == "find" || method == "findLast" {
 			if _, typeofName, neg, ok := saFindTypeofGuard(cb); ok {
 				if typeofName != "string" && typeofName != "number" {
@@ -7765,7 +8201,12 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			}
 			return h, "arr", ""
 		}
-		out, kind, msg := saHigherOrderScan(w, recv, method, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		out, kind, msg := saHigherOrderScan(w, recv, method, cb, scope, pos, refusals, needImport, nextLabel, nextTemp, func() string {
+			if layout, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+				return layout
+			}
+			return ""
+		}())
 		if msg != "" {
 			return "", "", msg
 		}
