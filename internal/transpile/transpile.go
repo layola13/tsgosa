@@ -2606,9 +2606,10 @@ func saFuncName(fn *ast.FunctionDeclaration) (string, bool) {
 // 形状证据：封存 destructurePending:5335-5341 + hiddenDestructuredParam:5347-5371
 // + drainDestructuredParams:5376-5410（体顶 field-wise，与声明解构同形同拒）。
 type saDestructurePending struct {
-	hid   string
-	pat   *ast.Node
-	annot *ast.TypeNode
+	hid    string
+	pat    *ast.Node
+	annot  *ast.TypeNode
+	layout string
 }
 
 // saSynthParams 合成形参表（标识符直通；`{x,y}`/`[a,b]` 模式合成隐藏句柄形参；
@@ -2617,6 +2618,86 @@ type saDestructurePending struct {
 // （`__darg` 冲突追 `_`，封存 :5359-5368）。模式种：数组注解 `i32[]` 记 arr，
 // 类/接口注解记 `inst:Name`（调用点句柄直传，复用 arr/inst 求值位）；无注解数组
 // 模式记 arr，无注解对象模式无布局可查、大声拒。
+// saAliasLiteralLayout follows an alias chain (cycle-guarded, parens
+// transparent) to an object-literal target and synthesizes its anonymous
+// layout (JEV web param slice: destructured_literal). A direct literal
+// annotation synthesizes directly. Non-literal targets refuse.
+func saAliasLiteralLayout(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	cur := t
+	seen := map[string]bool{}
+	for cur != nil {
+		if cur.Kind == ast.KindParenthesizedType {
+			pt := cur.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return "", false
+			}
+			cur = pt.Type
+			continue
+		}
+		if cur.Kind == ast.KindTypeLiteral {
+			return saSynthAnonLayoutAlias(cur, classes, aliasOf)
+		}
+		if cur.Kind != ast.KindTypeReference {
+			return "", false
+		}
+		ref := cur.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return "", false
+		}
+		nm := ref.TypeName.Text()
+		if seen[nm] {
+			return "", false
+		}
+		seen[nm] = true
+		tgt, ok := aliasOf[nm]
+		if !ok || tgt == nil {
+			return "", false
+		}
+		cur = tgt
+	}
+	return "", false
+}
+
+// saDestructurePatternKindsOK reports whether every destructured field
+// that is in the layout can be bound by saDrainDestructuredParams: i32/bool
+// as i32, str as ptr. Fields absent from the layout are left to drain's
+// own loud refusal; rest/nested elements are likewise left to drain.
+func saDestructurePatternKindsOK(pat *ast.Node, def *saClassDef) bool {
+	if pat == nil || def == nil {
+		return false
+	}
+	if pat.Kind != ast.KindObjectBindingPattern {
+		return true
+	}
+	bp := pat.AsBindingPattern()
+	if bp == nil || bp.Elements == nil {
+		return false
+	}
+	for _, el := range bp.Elements.Nodes {
+		if el == nil || el.Kind != ast.KindBindingElement {
+			continue
+		}
+		be := el.AsBindingElement()
+		if be == nil || be.DotDotDotToken != nil {
+			continue
+		}
+		nm := be.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		field := nm.Text()
+		if be.PropertyName != nil {
+			if pn := be.PropertyName.AsNode(); pn != nil && (pn.Kind == ast.KindIdentifier || pn.Kind == ast.KindStringLiteral) {
+				field = pn.Text()
+			}
+		}
+		if k, ok := def.fkinds[field]; ok && k != "i32" && k != "bool" && k != "str" {
+			return false
+		}
+	}
+	return true
+}
+
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
 	var nodes []*ast.Node
 	if fn.Parameters != nil {
@@ -2890,6 +2971,7 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 		}
 		taken[hid] = true
 		kind := ""
+		playout := ""
 		if pd.Type == nil {
 			if nm.Kind == ast.KindArrayBindingPattern {
 				kind = "arr"
@@ -2904,14 +2986,39 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 					kind = "inst:" + ref.TypeName.Text()
 				}
 			}
+			if kind == "" && nm.Kind == ast.KindObjectBindingPattern {
+				if lname, ok := saAliasLiteralLayout(pd.Type, classes, aliasOf); ok {
+					kind = "inst:" + lname
+					playout = lname
+				}
+			}
 			if kind == "" {
+				return nil, nil, nil, false
+			}
+		} else if pd.Type.Kind == ast.KindTypeLiteral && nm.Kind == ast.KindObjectBindingPattern {
+			if lname, ok := saSynthAnonLayoutAlias(pd.Type, classes, aliasOf); ok {
+				kind = "inst:" + lname
+				playout = lname
+			} else {
+				return nil, nil, nil, false
+			}
+		} else if pd.Type.Kind == ast.KindIntersectionType && nm.Kind == ast.KindObjectBindingPattern {
+			if lname, ok := saSynthMergedLayout(pd.Type, aliasOf, classes); ok {
+				kind = "inst:" + lname
+				playout = lname
+			} else {
 				return nil, nil, nil, false
 			}
 		} else {
 			return nil, nil, nil, false
 		}
+		if playout != "" {
+			if def, ok := classes[playout]; !ok || !saDestructurePatternKindsOK(nm.AsNode(), def) {
+				return nil, nil, nil, false
+			}
+		}
 		kinds[hid] = kind
-		pendings = append(pendings, saDestructurePending{hid: hid, pat: nm.AsNode(), annot: pd.Type})
+		pendings = append(pendings, saDestructurePending{hid: hid, pat: nm.AsNode(), annot: pd.Type, layout: playout})
 	}
 	var out []string
 	if paramNodes != nil {
@@ -3057,7 +3164,25 @@ func saDrainDestructuredParams(w printer.EmitTextWriter, pendings []saDestructur
 		}
 		if q.pat.Kind == ast.KindObjectBindingPattern {
 			var def *saClassDef
-			if q.annot != nil && q.annot.Kind == ast.KindTypeReference {
+			if q.layout != "" {
+				def = scope.classes[q.layout]
+			}
+			if def == nil && q.annot != nil && q.annot.Kind == ast.KindTypeReference {
+				if ref := q.annot.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
+					def, _ = scope.classes[ref.TypeName.Text()]
+				}
+			}
+			if def == nil && q.annot != nil && q.annot.Kind == ast.KindTypeLiteral {
+				if lname, ok := saSynthAnonLayoutAlias(q.annot, scope.classes, scope.aliasOf); ok {
+					def = scope.classes[lname]
+				}
+			}
+			if def == nil && q.annot != nil && q.annot.Kind == ast.KindTypeReference {
+				if lname, ok := saAliasLiteralLayout(q.annot, scope.classes, scope.aliasOf); ok {
+					def = scope.classes[lname]
+				}
+			}
+			if def == nil && q.annot != nil && q.annot.Kind == ast.KindTypeReference {
 				if ref := q.annot.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil {
 					def, _ = scope.classes[ref.TypeName.Text()]
 				}
