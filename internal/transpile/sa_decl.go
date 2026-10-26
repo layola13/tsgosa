@@ -1815,13 +1815,48 @@ func saUnionEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, ali
 		if m == nil {
 			return "", false
 		}
+		for m != nil && m.Kind == ast.KindParenthesizedType {
+			if pt := m.AsParenthesizedTypeNode(); pt != nil {
+				m = pt.Type
+			} else {
+				break
+			}
+		}
+		if m == nil {
+			return "", false
+		}
 		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
 			continue
 		}
 		if m.Kind == ast.KindLiteralType {
-			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
-				continue
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil {
+				switch lit.Kind {
+				case ast.KindNullKeyword:
+					continue
+				case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+					if found == "" {
+						found = "string"
+					} else if found != "string" {
+						return "", false
+					}
+					continue
+				case ast.KindNumericLiteral:
+					if found == "" {
+						found = "number"
+					} else if found != "number" {
+						return "", false
+					}
+					continue
+				case ast.KindTrueKeyword, ast.KindFalseKeyword:
+					if found == "" {
+						found = "boolean"
+					} else if found != "boolean" {
+						return "", false
+					}
+					continue
+				}
 			}
+			return "", false
 		}
 		k, ok := saReturnKindRef(m, classes, aliasOf)
 		if !ok {
