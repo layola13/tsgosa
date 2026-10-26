@@ -6090,41 +6090,41 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				return a.Text(), ""
 			}
 			if k, ok := scope.types[a.Text()]; ok && k == "str" {
-				h := saBoxJsVal(w, 1, a.Text(), "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 1, a.Text(), nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
 			if k, ok := scope.types[a.Text()]; ok && k == "arr" {
-				h := saBoxJsVal(w, 5, a.Text(), "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 5, a.Text(), nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
 			if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-				h := saBoxJsVal(w, 4, a.Text(), "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 4, a.Text(), nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
 		}
 		if saIsNullLit(a, scope) {
 			if a != nil && a.Kind == ast.KindNullKeyword {
-				h := saBoxJsVal(w, 6, "", "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 6, "0", nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
-			h := saBoxJsVal(w, 0, "", "", false, nextTemp)
+			h := saBoxJsValStd(w, scope, "ptr", 0, "0", nextTemp)
 			saOwnTemp(scope, h)
 			return h, ""
 		}
 		if saIsStrValue(a, scope) {
 			if sv, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp); msg == "" {
-				h := saBoxJsVal(w, 1, sv, "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 1, sv, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
 		}
 		if saIsArrValue(a, scope) {
 			if av, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg == "" {
-				h := saBoxJsVal(w, 5, av, "", false, nextTemp)
+				h := saBoxJsValStd(w, scope, "ptr", 5, av, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
@@ -6170,7 +6170,7 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				return bh, ""
 			}
 			if msg2 := saCheckI32Value(scope, op); msg2 == "" {
-				h := saBoxJsVal(w, 2, "", op, false, nextTemp)
+				h := saBoxJsValStd(w, scope, "i32", 2, op, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
 			}
@@ -8432,7 +8432,7 @@ func saEvalJsValOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, p
 		if msg != "" {
 			return "", msg
 		}
-		h := saBoxJsVal(w, 2, "", fv, true, nextTemp)
+		h := saBoxJsValStd(w, scope, "f64", 2, fv, nextTemp)
 		saOwnTemp(scope, h)
 		return h, ""
 	}
@@ -9082,24 +9082,18 @@ func saJsValKindCode(typeofName string) (int, bool) {
 	}
 	return 0, false
 }
-func saBoxJsVal(w printer.EmitTextWriter, kind int, payloadPtr string, payloadVal string, payloadIsF64 bool, nextTemp *int) string {
+
+// saBoxJsValStd emits a call to the sa_std split box helper
+// (@ts_jsval_box_ptr / @ts_jsval_box_i32 / @ts_jsval_box_f64 in
+// sci/sa_std/ts_jsval.sa), replacing the former inline saBoxJsVal
+// alloc/store sequence (JEV split_by_payload 0.88). Ownership is
+// unchanged: callers still saOwnTemp the returned handle, exactly as
+// before; this helper only emits the call and adds the import.
+func saBoxJsValStd(w printer.EmitTextWriter, scope *saScope, box string, kind int, arg string, nextTemp *int) string {
+	scope.addImport("sa_std/ts_jsval.sa")
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 32\n", h))
-	w.Write(fmt.Sprintf("  store %s + 0, %d as i32\n", h, kind))
-	if payloadPtr == "" {
-		payloadPtr = "0"
-	}
-	w.Write(fmt.Sprintf("  store %s + 8, %s as ptr\n", h, payloadPtr))
-	if payloadVal == "" {
-		payloadVal = "0"
-	}
-	if payloadIsF64 {
-		w.Write(fmt.Sprintf("  store %s + 16, %s as f64\n", h, payloadVal))
-	} else {
-		w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", h, payloadVal))
-	}
-	w.Write(fmt.Sprintf("  store %s + 24, 0 as ptr\n", h))
+	w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_%s(%d, %s)\n", h, box, kind, arg))
 	return h
 }
 func saUnboxJsValPtr(w printer.EmitTextWriter, handle string, nextTemp *int) string {
