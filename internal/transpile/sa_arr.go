@@ -45,6 +45,20 @@ func saPropArrStr(scope *saScope, from, to string) {
 	}
 }
 
+// saPropArrElemLayout propagates element instance-layout marking across
+// handle bindings (mirror of saPropArrNest; element kind only, never
+// ownership). Filter/slice results previously dropped the layout, so
+// element field reads and chained higher-order calls on the result
+// refused even though the source array carried it.
+func saPropArrElemLayout(scope *saScope, from, to string) {
+	if scope.arrElemLayout == nil || to == "" || from == to {
+		return
+	}
+	if layout, ok := scope.arrElemLayout[from]; ok {
+		scope.arrElemLayout[to] = layout
+	}
+}
+
 // saMarkArrInnerStr records a nested string-array handle (map init inline).
 func saMarkArrInnerStr(scope *saScope, name string) {
 	if name == "" {
@@ -796,6 +810,41 @@ func saEmitIncludesDisjunct(w printer.EmitTextWriter, el string, def *saClassDef
 	return ""
 }
 
+// saBoolPredTrimLeaf extracts a trim-call leaf over a parameter-rooted
+// field chain (JEV inline_loop_method_calls 0.98): returns the receiver
+// chain node and the trim mode (0/1/2). Other call shapes return ok=false.
+func saBoolPredTrimLeaf(n *ast.Node, paramName string) (*ast.Node, string, bool) {
+	if n == nil || n.Kind != ast.KindCallExpression {
+		return nil, "", false
+	}
+	ce := n.AsCallExpression()
+	if ce == nil || ce.QuestionDotToken != nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return nil, "", false
+	}
+	if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
+		return nil, "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return nil, "", false
+	}
+	mode := ""
+	switch pa.Name().Text() {
+	case "trim":
+		mode = "0"
+	case "trimStart":
+		mode = "1"
+	case "trimEnd":
+		mode = "2"
+	default:
+		return nil, "", false
+	}
+	if _, msg := saBoolPredChainFields(pa.Expression, paramName); msg != "" {
+		return nil, "", false
+	}
+	return pa.Expression, mode, true
+}
+
 // saBoolPredShape reports whether n is a boolean predicate over paramName:
 // a field-chain read rooted at the parameter, a ! negation, or a &&/||
 // combination of such predicates. Pure reads only, so eager evaluation of
@@ -822,6 +871,9 @@ func saBoolPredShape(n *ast.Node, paramName string) bool {
 			return false
 		}
 		return saBoolPredShape(be.Left, paramName) && saBoolPredShape(be.Right, paramName)
+	case ast.KindCallExpression:
+		_, _, ok := saBoolPredTrimLeaf(n, paramName)
+		return ok
 	case ast.KindPropertyAccessExpression:
 		_, msg := saBoolPredChainFields(n, paramName)
 		return msg == ""
@@ -913,6 +965,19 @@ func saCheckBoolPred(n *ast.Node, paramName string, def *saClassDef, scope *saSc
 			return msg
 		}
 		return saCheckBoolPred(be.Right, paramName, def, scope)
+	case ast.KindCallExpression:
+		recv, _, ok := saBoolPredTrimLeaf(n, paramName)
+		if !ok {
+			return "filter bool predicate shape not supported"
+		}
+		kind, msg := saBoolPredFieldLeaf(recv, paramName, def, scope)
+		if msg != "" {
+			return msg
+		}
+		if kind != "str" {
+			return "filter bool predicate trim field kind not supported: " + kind
+		}
+		return ""
 	case ast.KindPropertyAccessExpression:
 		kind, msg := saBoolPredFieldLeaf(n, paramName, def, scope)
 		if msg != "" {
@@ -973,6 +1038,89 @@ func saEvalBoolPred(w printer.EmitTextWriter, n *ast.Node, paramName string, el 
 		}
 		w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, sop, l, r))
 		return t, ""
+	case ast.KindCallExpression:
+		recv, mode, ok := saBoolPredTrimLeaf(n, paramName)
+		if !ok {
+			return "", "filter bool predicate shape not supported"
+		}
+		fields, msg := saBoolPredChainFields(recv, paramName)
+		if msg != "" {
+			return "", msg
+		}
+		handle := el
+		curDef := def
+		for i, fname := range fields {
+			off, ok := curDef.offsets[fname]
+			if !ok {
+				return "", "filter bool predicate field has no layout offset"
+			}
+			if i < len(fields)-1 {
+				nh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", nh, handle, off))
+				next, ok := scope.classes[curDef.fsub[fname]]
+				if !ok || next == nil {
+					return "", "filter bool predicate nested layout not recorded"
+				}
+				handle = nh
+				curDef = next
+				continue
+			}
+			fh := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", fh, handle, off))
+			// Trimmed-string truthiness: a 0 (missing) field handle is
+			// falsy; otherwise trim exactly via @ts_str_trim and test
+			// the trimmed length at header +8 (string/array header
+			// layout). The trimmed handle is released on the single
+			// straight-line trim path before the join, mirroring the
+			// checked-index slot discipline for per-iteration temps.
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			saOwnTemp(scope, slot)
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+			fz := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fz, fh))
+			zeroL := fmt.Sprintf("L_trimf_zero_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			trimL := fmt.Sprintf("L_trimf_trim_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_trimf_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fz, zeroL, trimL))
+			w.Write(fmt.Sprintf("%s:\n", zeroL))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", trimL))
+			scope.addImport("sa_std/ts_string.sa")
+			bp := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", bp, fh))
+			bl := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", bl, fh))
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_str_trim(%s, %s, %s)\n", out, bp, bl, mode))
+			saOwnTemp(scope, out)
+			tl := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", tl, out))
+			tv := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", tv, tl))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+			saReleaseOwnedTemp(w, scope, out)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+			saReleaseOwnedTemp(w, scope, slot)
+			return res, ""
+		}
+		return "", "filter bool predicate has no field"
 	case ast.KindPropertyAccessExpression:
 		fields, msg := saBoolPredChainFields(n, paramName)
 		if msg != "" {
@@ -1010,7 +1158,7 @@ func saEvalBoolPred(w printer.EmitTextWriter, n *ast.Node, paramName string, el 
 // saFilterBoolGuard extracts a .filter callback's boolean predicate: the
 // first parameter name and the body expression (direct or single-return
 // block), claimed only when the body is a boolean-predicate shape over the
-// parameter (field chains, !, &&, ||). Other callbacks fall through to the
+// parameter (field chains, !, &&, ||, trim-call leaves). Other callbacks fall through to the
 // generic filter path unchanged.
 func saFilterBoolGuard(cb *ast.Node) (string, *ast.Node, bool) {
 	if cb == nil {
@@ -4756,6 +4904,7 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saPropArrNest(scope, src, name)
 		saPropArrStr(scope, src, name)
 		saPropArrInnerStr(scope, src, name)
+		saPropArrElemLayout(scope, src, name)
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
 			if ce := vd.Initializer.AsCallExpression(); ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
 				if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && pa.Name().Text() == "match" {
@@ -6395,6 +6544,7 @@ func saLowerArraySlice(w printer.EmitTextWriter, recv, start, end string, scope 
 	saPropArrNest(scope, recv, dest)
 	saPropArrStr(scope, recv, dest)
 	saPropArrInnerStr(scope, recv, dest)
+	saPropArrElemLayout(scope, recv, dest)
 	// 切片柄归属(返前释放；上游同形).
 	saOwnTemp(scope, dest)
 	return dest
@@ -6838,7 +6988,7 @@ func saLowerArrayFrom(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 	// 克隆/预分配新柄入 mapper 前登记归属（mapper 内链式释放新柄前释基；
 	// 无 mapper 径调用方收基；具名借用基不受影响（本处恒新柄）；R1 同纪律）。
 	saOwnTemp(scope, base)
-	return saHigherOrderMap(w, base, mapper, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return saHigherOrderMap(w, base, mapper, scope, pos, refusals, needImport, nextLabel, nextTemp, "")
 }
 
 // saCallbackValue 内联一次回调应用（形参绑循环值，体落值或槽汇合；
@@ -7387,7 +7537,7 @@ func saTruncateBodyOwned(scope *saScope, base int) {
 }
 
 // saHigherOrderMap `map` 内联（新数组逐元回调值压栈；形状证据：封存 lowerHigherOrder:4945-4965）。
-func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, elemLayout string) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
 	ln := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -7414,14 +7564,35 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	// 临时绑 str，回调体经 saIsStrExpr 判串（trim/toLowerCase/恒等/字面量
 	// 等），则结果记 arrStr，使链式 .filter/.map 续按串元绑定；i32
 	// 结果（length 等）不记，避免误标。
+	// Map result string-element detection (pure lookup, no emission):
+	// string-element receivers bind the parameter as str, and
+	// instance-element receivers bind it as inst:layout, then the
+	// callback result expression (a block body unwraps to its single
+	// return) is tested as a string expression. This marks str results
+	// (field reads, trim calls) arrStr so chained reads treat elements
+	// as strings.
 	mapStr := false
-	if scope.arrStr != nil && scope.arrStr[recv] {
-		if params := cb.Parameters(); len(params) > 0 {
-			if pd := params[0].AsParameterDeclaration(); pd != nil {
-				if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+	if params := cb.Parameters(); len(params) > 0 {
+		if pd := params[0].AsParameterDeclaration(); pd != nil {
+			if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				bindKind := ""
+				if scope.arrStr != nil && scope.arrStr[recv] {
+					bindKind = "str"
+				} else if elemLayout != "" {
+					bindKind = "inst:" + elemLayout
+				}
+				if bindKind != "" {
+					bodyExpr := cb.Body()
+					if bodyExpr != nil && bodyExpr.Kind == ast.KindBlock {
+						if bd := bodyExpr.AsBlock(); bd != nil && bd.Statements != nil && len(bd.Statements.Nodes) == 1 {
+							if rs := bd.Statements.Nodes[0].AsReturnStatement(); rs != nil {
+								bodyExpr = rs.Expression
+							}
+						}
+					}
 					oldKind, hadOld := scope.types[nm.Text()]
-					scope.types[nm.Text()] = "str"
-					mapStr = saIsStrExpr(cb.Body(), scope)
+					scope.types[nm.Text()] = bindKind
+					mapStr = saIsStrExpr(bodyExpr, scope)
 					if hadOld {
 						scope.types[nm.Text()] = oldKind
 					} else {
@@ -7432,7 +7603,23 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		}
 	}
 	el := saArrElemAt(w, data, i, nextTemp)
-	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
+	paramKinds := saNestedElemKinds(scope, recv, 0, 2)
+	if elemLayout != "" {
+		// Instance-element receivers bind the callback parameter as
+		// inst:layout (mirror of the find/filter inline loops, which
+		// never route through the i32 callback binding); the
+		// per-iteration release discipline is saCallbackValue's own
+		// inst-param path, the same shape as for-of row release.
+		paramKinds = []string{"inst:" + elemLayout, "i32"}
+	}
+	cbKind := "i32"
+	if mapStr {
+		// String-result callbacks (expression or block body) evaluate
+		// through the str path so block returns land in the ptr slot;
+		// i32 results keep the existing i32 path.
+		cbKind = "str"
+	}
+	v, msg := saCallbackValue(w, cb, []string{el, i}, true, cbKind, scope, pos, refusals, needImport, nextLabel, nextTemp, true, paramKinds)
 	if msg != "" {
 		return "", msg
 	}
@@ -9286,7 +9473,11 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return h, "arr", ""
 		}
 		if method == "map" {
-			h, msg := saHigherOrderMap(w, recv, cb, scope, pos, refusals, needImport, nextLabel, nextTemp)
+			mapLayout := ""
+			if layout, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+				mapLayout = layout
+			}
+			h, msg := saHigherOrderMap(w, recv, cb, scope, pos, refusals, needImport, nextLabel, nextTemp, mapLayout)
 			if msg != "" {
 				return "", "", msg
 			}
@@ -9306,6 +9497,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			saPropArrStr(scope, recv, out)
 			saPropArrInnerStr(scope, recv, out)
 			saPropArrJsVal(scope, recv, out)
+			saPropArrElemLayout(scope, recv, out)
 		}
 		return out, kind, ""
 	case "reduce", "reduceRight":

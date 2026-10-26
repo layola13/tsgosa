@@ -1314,6 +1314,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 				saDeclareOwned(scope, name)
 				saPropArrNest(scope, h, name)
 				saPropArrStr(scope, h, name)
+				saPropArrElemLayout(scope, h, name)
 				return true
 			}
 		}
@@ -1339,6 +1340,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saDeclarePlain(scope, name)
 			saPropArrNest(scope, t, name)
 			saPropArrStr(scope, t, name)
+			saPropArrElemLayout(scope, t, name)
 		} else {
 			// i32 三元值记种(str/f64 臂已记；缺此行下游报 unknown).
 			scope.types[name] = "i32"
@@ -1493,6 +1495,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclareOwned(scope, name)
 		saCopyInstFn(scope, op, name)
 		saPropArrNest(scope, op, name)
+		saPropArrElemLayout(scope, op, name)
 	} else {
 		saEmitScalarInit(w, name, op, scope)
 		scope.types[name] = "i32"
