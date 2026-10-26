@@ -943,6 +943,81 @@ func saCondOperandMat(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, 
 	return t, ""
 }
 
+// saWidenInstValue 基布局值宽化进域超集宽布局（JEV copy_fields_zero_fill 0.99）：
+// 按名将源域拷入目标偏移（种校验：fkinds 须相等，inst 域 fsub 亦须相等），
+// 目标多余域零填（str/arr/inst/f64 八字段 0 as ptr，其余 0 as i32，
+// 与条件 spread 布局零填同律）。源柄为借用不释；新生宽柄按字面量头
+// 槽归属（saOwnTemp），返前处理器凭 op 例外保留。返回 widened=false
+// 表非宽化情形（调用方沿旧门拒）；widened=true 且 msg 非空表宽化
+// 域错配大声拒，禁静默截断或错布局直返。
+func saWidenInstValue(w printer.EmitTextWriter, src, srcKind, tgtKind string, scope *saScope, nextTemp *int) (string, string, bool) {
+	if len(srcKind) <= 5 || srcKind[:5] != "inst:" || len(tgtKind) <= 5 || tgtKind[:5] != "inst:" {
+		return "", "", false
+	}
+	srcDef, ok := scope.classes[srcKind[5:]]
+	if !ok {
+		return "", "", false
+	}
+	tgtDef, ok := scope.classes[tgtKind[5:]]
+	if !ok {
+		return "", "", false
+	}
+	for _, f := range srcDef.fields {
+		sk := srcDef.fkinds[f.name]
+		if sk == "" {
+			sk = "i32"
+		}
+		dk, ok := tgtDef.fkinds[f.name]
+		if !ok {
+			return "", "struct widening refused: source field " + f.name + " missing in target layout", true
+		}
+		if dk == "" {
+			dk = "i32"
+		}
+		if sk != dk {
+			return "", "struct widening refused: field " + f.name + " kind mismatch (" + sk + " vs " + dk + ")", true
+		}
+		if sk == "inst" && srcDef.fsub[f.name] != tgtDef.fsub[f.name] {
+			return "", "struct widening refused: field " + f.name + " sub-layout mismatch", true
+		}
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if tgtDef.size == 0 {
+		w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+	} else {
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", h, tgtDef.size))
+	}
+	saOwnTemp(scope, h)
+	for _, f := range tgtDef.fields {
+		fk := tgtDef.fkinds[f.name]
+		if fk == "str" || fk == "arr" || fk == "inst" || fk == "f64" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, tgtDef.offsets[f.name]))
+		} else {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, tgtDef.offsets[f.name]))
+		}
+	}
+	for _, f := range srcDef.fields {
+		sk := srcDef.fkinds[f.name]
+		if sk == "" {
+			sk = "i32"
+		}
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if sk == "str" || sk == "arr" || sk == "inst" {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src, srcDef.offsets[f.name]))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, tgtDef.offsets[f.name], t))
+		} else if sk == "f64" {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", t, src, srcDef.offsets[f.name]))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, tgtDef.offsets[f.name], t))
+		} else {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, src, srcDef.offsets[f.name]))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, tgtDef.offsets[f.name], t))
+		}
+	}
+	return h, "", true
+}
+
 // saBinaryOpKind 空安全取二元操作符（parser 常保非空，防御备用）。
 func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 	if be == nil || be.OperatorToken == nil {
@@ -980,6 +1055,13 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 		if strings.HasPrefix(retKind, "inst:") {
 			if k, ok := scope.types[e.Text()]; ok && k == retKind {
 				return e.Text(), ""
+			}
+			// 宽化返回：基布局值进域超集宽布局（交集合并布局同形；
+			// 非宽化情形沿旧门拒，宽化域错配大声拒，禁静默截断）。
+			if k, ok := scope.types[e.Text()]; ok {
+				if h, msg, widened := saWidenInstValue(w, e.Text(), k, retKind, scope, nextTemp); widened {
+					return h, msg
+				}
 			}
 			return "", "struct return needs matching struct value"
 		}
@@ -7513,6 +7595,29 @@ func saLowerInFold(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *sa
 	if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[be.Right.Text()]; ok && (k == "arr" || k == "arrStr") {
 			return saLowerArrIn(w, be, be.Right.Text(), scope, pos, refusals, nextTemp)
+		}
+	}
+	// Map presence（`"k" in m`）：经 stdlib btree_map 原语实查
+	// （JEV map_contains_call 0.98）。现存键即使存值 0/false 亦算存在，
+	// get-比-0 无法区分存 0 与缺键，故不用哨兵法；字面量键限定，
+	// 与已知布局分支同口径；Map.has 同形（键槽、contains 调用、释槽、归属）。
+	if be.Left != nil && be.Left.Kind == ast.KindStringLiteral {
+		if be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+			rn := be.Right.Text()
+			_, isView := scope.recordView[rn]
+			if k, ok := scope.types[rn]; (ok && k == "map") || isView {
+				scope.addImport("sa_std/btree_map.sa")
+				ks, kcell, msg := saMapKeySlice(w, be.Left, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @sa_btree_map_contains_key(&%s, &%s)\n", t, rn, ks))
+				saReleaseKeySlice(w, ks, kcell)
+				saOwnTemp(scope, t)
+				return t, ""
+			}
 		}
 	}
 	// 私有品牌检查（`#x in o` 按属主静态折叠；封存 lowerExpr 私有 `in` 相）。
