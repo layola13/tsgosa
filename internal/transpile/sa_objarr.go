@@ -1,12 +1,22 @@
 package transpile
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/microsoft/typescript-go/internal/ast"
 )
 
 // saTopObjElemParse parses one object literal element of a top-level const
-// object array: exactly one RegExp field and any number of string-literal
-// fields, no other property kinds, no spread, no methods, no shorthand.
+// object array. Two shapes are accepted, never mixed in one element:
+//   - regex shape: exactly one RegExp field and any number of string-literal
+//     fields (snapshot-only, lowered at regex-test .find use sites);
+//   - numeric shape (JEV synth_inst_array 0.95): at least one string-literal
+//     field plus any number of numeric-literal fields (a leading sign folds
+//     into the text). No other property kinds, no spread, no methods, no
+//     shorthand. Numeric-shape elements are materialized as instances of a
+//     synthesized layout, so fractional values keep f64 slots instead of
+//     being truncated into i32 slots.
 func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
 	if el == nil || el.Kind != ast.KindObjectLiteralExpression {
 		return saTopObjElem{}, false
@@ -15,7 +25,7 @@ func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
 	if ol == nil || ol.Properties == nil {
 		return saTopObjElem{}, false
 	}
-	out := saTopObjElem{strFields: map[string]string{}}
+	out := saTopObjElem{strFields: map[string]string{}, numFields: map[string]string{}}
 	for _, pr := range ol.Properties.Nodes {
 		if pr == nil || pr.Kind != ast.KindPropertyAssignment {
 			return saTopObjElem{}, false
@@ -45,9 +55,37 @@ func saTopObjElemParse(el *ast.Node) (saTopObjElem, bool) {
 			out.strFields[fname] = init.Text()
 			continue
 		}
+		if init.Kind == ast.KindNumericLiteral {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			out.numFields[fname] = init.Text()
+			continue
+		}
+		if init.Kind == ast.KindPrefixUnaryExpression {
+			if un := init.AsPrefixUnaryExpression(); un != nil &&
+				(un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) &&
+				un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral {
+				if out.regexField != "" {
+					return saTopObjElem{}, false
+				}
+				sign := "+"
+				if un.Operator == ast.KindMinusToken {
+					sign = "-"
+				}
+				out.numFields[fname] = sign + un.Operand.Text()
+				continue
+			}
+		}
 		return saTopObjElem{}, false
 	}
-	if out.regexField == "" || len(out.strFields) == 0 {
+	if out.regexField != "" {
+		if len(out.strFields) == 0 || len(out.numFields) != 0 {
+			return saTopObjElem{}, false
+		}
+		return out, true
+	}
+	if len(out.strFields) == 0 {
 		return saTopObjElem{}, false
 	}
 	return out, true
@@ -158,4 +196,54 @@ func saTopObjArrFind(pa *ast.PropertyAccessExpression, scope *saScope) (saTopArr
 		return saTopArr{}, "", nil, false
 	}
 	return arr, field, arg, true
+}
+
+// saSynthTopObjLayout builds (or reuses) a synthesized instance layout for a
+// numeric-shape top-level object array. Fields arrive in sorted order for a
+// deterministic layout name; kinds are str for string fields, f64 for numeric
+// fields with any fractional value, i32 otherwise; fields missing from any
+// element are optional and zero-filled at materialization. A same-named
+// layout with different fields, kinds, or optional flags gets a numeric
+// suffix, mirroring the anonymous-layout discipline.
+func saSynthTopObjLayout(fields []string, kinds map[string]string, fopt map[string]bool, classes map[string]*saClassDef) string {
+	base := "TopObj_" + saMonoName(strings.Join(fields, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if len(def.fields) != len(fields) {
+				continue
+			}
+			match := true
+			for i, fname := range fields {
+				if def.fields[i].name != fname || def.fkinds[fname] != kinds[fname] || def.fopt[fname] != fopt[fname] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return def.name
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}}
+		off := 0
+		for _, fname := range fields {
+			fkind := kinds[fname]
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			if fopt[fname] {
+				def.fopt[fname] = true
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def.name
+	}
 }

@@ -1360,6 +1360,14 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		if init.Kind == ast.KindPropertyAccessExpression {
+			if fop, fmsg := saEvalF64Strict(w, init, scope, pos, refusals, nextTemp); fmsg == "" {
+				w.Write(fmt.Sprintf("  %s = %s\n", name, fop))
+				scope.types[name] = "f64"
+				saDeclarePlain(scope, name)
+				return true
+			}
+		}
 		// 无注解浮字面量推断 f64（上游初值种绑定同形；用点经既有 f64 机；
 		// 符号位经 `fneg`，与上游实发同形；顶层 const 另步）。
 		if fl, ok := saFloatLitOperand(init); ok {

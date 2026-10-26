@@ -1378,6 +1378,14 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 			}
 		}
 		// struct 数组取元基（`b.items[i]` 经布局字段；`?.` 沿读位旧门）。
+		// Top object array element base: TOP[i] resolves fields through the
+		// synthesized layout recorded on the snapshot.
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if arr, ok := saTopArrLookup(scope, ea.Expression); ok && arr.layout != "" {
+				return true
+			}
+		}
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
 			if _, ok := saStructArrElemLayout(ea.Expression, scope); ok {
 				return true

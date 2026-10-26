@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -808,6 +809,10 @@ type saTopArr struct {
 	str    bool
 	nested []saTopArr
 	objs   []saTopObjElem
+	// layout is the synthesized instance layout for numeric-shape object
+	// elements (saSynthTopObjLayout); empty for the regex snapshot shape,
+	// which is never materialized.
+	layout string
 }
 
 // saTopObjElem is one object literal in a top-level const object array:
@@ -818,6 +823,9 @@ type saTopObjElem struct {
 	regexPat   string
 	regexFlags string
 	strFields  map[string]string
+	// numFields holds numeric-literal texts for numeric-shape elements
+	// (sign folded in for unary minus/plus); empty for the regex shape.
+	numFields map[string]string
 }
 
 // saTopArrDepth 快照深度（平/i32 空为 1；嵌套为子树深 + 1，同构故取 max 即确值）。
@@ -1027,23 +1035,84 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			if len(objs) > 0 {
 				first := objs[0]
-				for _, o := range objs[1:] {
-					if o.regexField != first.regexField || len(o.strFields) != len(first.strFields) {
-						eleOk = false
-						break
-					}
-					for k := range first.strFields {
-						if _, ok := o.strFields[k]; !ok {
+				if first.regexField != "" {
+					for _, o := range objs[1:] {
+						if o.regexField != first.regexField || len(o.strFields) != len(first.strFields) || len(o.numFields) != 0 {
 							eleOk = false
 							break
 						}
+						for k := range first.strFields {
+							if _, ok := o.strFields[k]; !ok {
+								eleOk = false
+								break
+							}
+						}
 					}
+					if !eleOk {
+						okAll = false
+						break
+					}
+					arr = saTopArr{objs: objs}
+				} else {
+					// Numeric shape: union field set across elements; a field
+					// missing from any element is optional (fopt discipline).
+					// A field must keep one kind across elements, and numeric
+					// fields take f64 slots when any value is fractional.
+					kindOf := map[string]string{}
+					present := map[string]int{}
+					for _, o := range objs {
+						if o.regexField != "" {
+							eleOk = false
+							break
+						}
+						for k := range o.strFields {
+							if prev, dup := kindOf[k]; dup && prev != "str" {
+								eleOk = false
+								break
+							}
+							kindOf[k] = "str"
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
+						for k, v := range o.numFields {
+							if prev, dup := kindOf[k]; dup && prev != "i32" && prev != "f64" {
+								eleOk = false
+								break
+							}
+							want := "i32"
+							if saIsFloatLit(v) {
+								want = "f64"
+							}
+							if kindOf[k] == "f64" || want == "f64" {
+								kindOf[k] = "f64"
+							} else {
+								kindOf[k] = "i32"
+							}
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
+					}
+					if !eleOk {
+						okAll = false
+						break
+					}
+					var fields []string
+					for k := range kindOf {
+						fields = append(fields, k)
+					}
+					sort.Strings(fields)
+					fopt := map[string]bool{}
+					for _, f := range fields {
+						if present[f] != len(objs) {
+							fopt[f] = true
+						}
+					}
+					arr = saTopArr{objs: objs, layout: saSynthTopObjLayout(fields, kindOf, fopt, classes)}
 				}
-				if !eleOk {
-					okAll = false
-					break
-				}
-				arr = saTopArr{objs: objs}
 			}
 			pends = append(pends, pend{name: name, arr: arr})
 		}
@@ -1064,6 +1133,46 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 // 内层逐个具化 + 外层 4 字节槽存内层柄 + arrNest 标记；新柄归属登记，调用方读后
 // 即释；698/758/798）。
 func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope, nextTemp *int) string {
+	if arr.objs != nil && arr.layout != "" {
+		def, ok := scope.classes[arr.layout]
+		if !ok || def == nil {
+			return saAssembleHandles(w, nil, scope, nextTemp)
+		}
+		var hs []string
+		for _, o := range arr.objs {
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if def.size == 0 {
+				w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+			} else {
+				w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+			}
+			saOwnTemp(scope, h)
+			for _, f := range def.fields {
+				if v, ok := o.strFields[f.name]; ok {
+					sh := saLowerStringLiteral(w, v, scope, nextTemp)
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], sh))
+					saReleaseOwnedTemp(w, scope, sh)
+					continue
+				}
+				if v, ok := o.numFields[f.name]; ok {
+					if def.fkinds[f.name] == "f64" {
+						w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[f.name], v))
+					} else {
+						w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v))
+					}
+					continue
+				}
+				if def.fkinds[f.name] == "str" || def.fkinds[f.name] == "f64" {
+					w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
+				} else {
+					w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
+				}
+			}
+			hs = append(hs, h)
+		}
+		return saAssembleHandles(w, hs, scope, nextTemp)
+	}
 	if arr.str {
 		var hs []string
 		for _, t := range arr.elems {
@@ -1088,7 +1197,6 @@ func saMaterializeTopArr(w printer.EmitTextWriter, arr saTopArr, scope *saScope,
 	return saBuildI32Array(w, arr.elems, scope, nextTemp)
 }
 
-// saBuildNestArray 递归具化嵌套子树（叶走平数组，枝组装内层柄 + arrNest 标记；808）。
 func saBuildNestArray(w printer.EmitTextWriter, sub saTopArr, scope *saScope, nextTemp *int) string {
 	if sub.nested == nil {
 		return saBuildI32Array(w, sub.elems, scope, nextTemp)
@@ -1953,6 +2061,28 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	// 嵌套走双下标臂，此处 i32 位大声拒；局部/mod 槽遮蔽优先；写位/方法位/别名位
 	// 无臂沿旧门大声拒；698/758/798）。
 	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+		if arr, ok := saTopArrLookup(scope, ea.Expression); ok && arr.objs != nil && arr.layout != "" {
+			base := saMaterializeTopArr(w, arr, scope, nextTemp)
+			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			if msg := saCheckIntIndex(scope, idx); msg != "" {
+				return "", msg
+			}
+			var out string
+			if isOpt {
+				out = saLowerOptionalIndex(w, base, idx, scope.nextLabel, nextTemp)
+			} else {
+				out = saLowerCheckedIndex(w, base, idx, scope.nextLabel, nextTemp)
+			}
+			saReleaseOwnedTemp(w, scope, base)
+			// Element handle kind drives downstream field loads: the
+			// instance branch of the str/i32/f64 evaluators resolves the
+			// layout from this recorded kind (saInstBaseElem).
+			scope.types[out] = "inst:" + arr.layout
+			return out, ""
+		}
 		if arr, ok := saTopArrLookup(scope, ea.Expression); ok && !arr.str && arr.nested == nil {
 			base := saMaterializeTopArr(w, arr, scope, nextTemp)
 			idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)

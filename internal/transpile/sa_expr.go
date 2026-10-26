@@ -6295,7 +6295,11 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 		}
 		// 实例 f64 字段读（`f.rate` 经布局 load 记 f64 种；与 i32 读位同形）。
 		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
-			if h, def, msg := saInstBase(pa.Expression, scope); msg == "" && def != nil {
+			h, def, msg := saInstBase(pa.Expression, scope)
+			if msg == "" && def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression) {
+				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+			}
+			if msg == "" && def != nil {
 				fname := pa.Name().Text()
 				if strings.HasPrefix(fname, "#") {
 					if key, pmsg := saPrivResolve(def, fname, scope.thisClass); pmsg == "" {
