@@ -1390,6 +1390,23 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = "f64"
 		saDeclarePlain(scope, name)
+	} else if k, ok := scope.types[op]; ok && k == "map" {
+		// 调用返回的 map 绑定：返回句柄已转移给调用方，按 arr/str/inst
+		// 调用结果同律记 owned，返前/域出即释（与直接 Record 视图的
+		// 借用 plain 纪律不同：视图借用同域 origin，返回句柄已转移）。
+		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
+		scope.types[name] = "map"
+		if mv, ok := scope.mapVals[op]; ok {
+			saSetMapVal(scope, name, mv)
+		}
+		saConsumeOwn(scope, op)
+		if scope.inlineRet != nil {
+			// Inline callback: early-return edges do not release owned
+			// locals, so owned here gives PhiStateConflict; plain passed.
+			saDeclarePlain(scope, name)
+		} else {
+			saDeclareOwned(scope, name)
+		}
 	} else if k, ok := scope.types[op]; ok && (k == "arr" || k == "str" || (len(k) > 5 && k[:5] == "inst:")) {
 		// 具名柄直传即别名（赋值位 H13 同门；初值位既往放行致 UseAfterMove 实证；513）。
 		if _, named := scope.types[op]; named && !saIsTempOp(op) {
@@ -2285,7 +2302,13 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 			}
 		}
 	}
-	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest}
+	retMapVal := ""
+	if retKind == "map" {
+		if v, ok := saReturnMapVal(rtype, classes); ok {
+			retMapVal = v
+		}
+	}
+	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest, retMapVal: retMapVal}
 	return true
 }
 

@@ -302,6 +302,50 @@ func saLowerRecordView(w printer.EmitTextWriter, name, origin, vkind string, sco
 	saDeclarePlain(scope, name)
 }
 
+// saReturnMapVal derives a map return's value kind: direct Record, or a
+// union whose only non-null member is a Record (null absorbed as 0).
+func saReturnMapVal(t *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	if v, ok := saRecordValueKind(t, classes); ok {
+		return v, true
+	}
+	if t.Kind == ast.KindUnionType {
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false
+		}
+		found := ""
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false
+			}
+			if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if m.Kind == ast.KindLiteralType {
+				if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+					continue
+				}
+			}
+			v, ok := saRecordValueKind(m, classes)
+			if !ok {
+				return "", false
+			}
+			if found == "" {
+				found = v
+			} else if found != v {
+				return "", false
+			}
+		}
+		if found != "" {
+			return found, true
+		}
+	}
+	return "", false
+}
+
 // saSetMapVal records a map handle value kind (lazy table; nil-safe reads).
 func saSetMapVal(scope *saScope, name, vkind string) {
 	if scope.mapVals == nil {

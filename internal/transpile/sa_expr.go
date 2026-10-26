@@ -741,7 +741,15 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 				saReleaseOwnedTemp(w, scope, ln0)
 				return t, ""
 			}
-			if k == "map" || k == "set" {
+			if k == "map" {
+				// Map handle truthiness: null is the 0 handle, any live
+				// map (including an empty map, truthy in JS) is non-zero.
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, nm))
+				return t, ""
+			}
+			if k == "set" {
 				return "", k + " " + nm + " in condition"
 			}
 			// date millis 条件直通（i64 寄存器非零即真；上游实发 `br t` 同形；召用位 3747 收窄口径同源）。
@@ -3565,6 +3573,106 @@ func saEnvProbeArm(ce *ast.ConditionalExpression, tcx *saTypeCtx) (*ast.Node, bo
 	return ce.WhenFalse, true
 }
 
+// saTernaryMapArm classifies a ternary arm for the map join: Record cast
+// from a jsval identifier, a map handle identifier, null/undefined, or
+// an empty object literal. Returns (value kind, isMapSource, ok).
+func saTernaryMapArm(e *ast.Node, scope *saScope) (string, bool, bool) {
+	if e == nil {
+		return "", false, false
+	}
+	e = saPeelParens(e)
+	if e == nil {
+		return "", false, false
+	}
+	switch e.Kind {
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return "", false, true
+	case ast.KindIdentifier:
+		if e.Text() == "undefined" {
+			return "", false, true
+		}
+		if k, ok := scope.types[e.Text()]; ok && k == "map" {
+			return scope.mapVals[e.Text()], true, true
+		}
+		return "", false, false
+	case ast.KindAsExpression:
+		ae := e.AsAsExpression()
+		if ae == nil {
+			return "", false, false
+		}
+		vkind, ok := saRecordCastKind(ae.Type)
+		if !ok {
+			return "", false, false
+		}
+		inner := ae.Expression
+		for inner != nil && inner.Kind == ast.KindParenthesizedExpression {
+			inner = inner.AsParenthesizedExpression().Expression
+		}
+		if inner != nil && inner.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[inner.Text()]; ok && k == "jsval" {
+				return vkind, true, true
+			}
+		}
+		return "", false, false
+	case ast.KindObjectLiteralExpression:
+		ol := e.AsObjectLiteralExpression()
+		if ol != nil && (ol.Properties == nil || len(ol.Properties.Nodes) == 0) {
+			return "", false, true
+		}
+		return "", false, false
+	}
+	return "", false, false
+}
+
+// saLowerTernaryMapArmHandle lowers one map ternary arm to a map handle:
+// cast -> borrowed sidecar view, null/undefined -> 0, {} -> fresh map,
+// map identifier -> itself.
+func saLowerTernaryMapArmHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, nextTemp *int) (string, string) {
+	e = saPeelParens(e)
+	if e == nil {
+		return "", "not a map ternary arm"
+	}
+	switch e.Kind {
+	case ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return "0", ""
+	case ast.KindIdentifier:
+		if e.Text() == "undefined" {
+			return "0", ""
+		}
+		if k, ok := scope.types[e.Text()]; ok && k == "map" {
+			return e.Text(), ""
+		}
+		return "", "not a map ternary arm"
+	case ast.KindAsExpression:
+		ae := e.AsAsExpression()
+		if ae == nil {
+			return "", "not a map ternary arm"
+		}
+		vkind, ok := saRecordCastKind(ae.Type)
+		if !ok {
+			return "", "not a map ternary arm"
+		}
+		inner := ae.Expression
+		for inner != nil && inner.Kind == ast.KindParenthesizedExpression {
+			inner = inner.AsParenthesizedExpression().Expression
+		}
+		if inner == nil || inner.Kind != ast.KindIdentifier {
+			return "", "Record cast in ternary needs a jsval identifier source"
+		}
+		view := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		saLowerRecordView(w, view, inner.Text(), vkind, scope, nextTemp)
+		return view, ""
+	case ast.KindObjectLiteralExpression:
+		scope.addImport("sa_std/btree_map.sa")
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_btree_map_new()\n", h))
+		return h, ""
+	}
+	return "", "not a map ternary arm"
+}
+
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
 	// env-probe 折叠：未声明名 `typeof` 三元取臂直值（i32 经求值核，串经串核；
 	// 异形臂下探既有 lowering，原拒因不变）。
@@ -3855,6 +3963,52 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 			scope.arrStr[res] = true
 		}
 		return res, false, ""
+	}
+	// Map ternary join (JEV ternary_map_join 0.90): Record cast / map
+	// handle on one side, null/undefined / {} / map handle on the other.
+	// Arms join through a ptr slot like the array ternary; the result
+	// is typed map with the cast arm's value kind.
+	if tvk, tsrc, tok := saTernaryMapArm(ce.WhenTrue, scope); tok {
+		if fvk, fsrc, fok := saTernaryMapArm(ce.WhenFalse, scope); fok && (tsrc || fsrc) {
+			vkind := tvk
+			if vkind == "" {
+				vkind = fvk
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+			*nextLabel++
+			fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+			*nextLabel++
+			endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+			w.Write(fmt.Sprintf("%s:\n", tL))
+			th, msgA := saLowerTernaryMapArmHandle(w, ce.WhenTrue, scope, nextTemp)
+			if msgA != "" {
+				return "", false, msgA
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, th))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			fh, msgB := saLowerTernaryMapArmHandle(w, ce.WhenFalse, scope, nextTemp)
+			if msgB != "" {
+				return "", false, msgB
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fh))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			scope.types[res] = "map"
+			if vkind != "" {
+				saSetMapVal(scope, res, vkind)
+			}
+			return res, false, ""
+		}
 	}
 	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).
 	if ak, at, aok := saTernaryF64Arm(ce.WhenTrue, scope); aok {
@@ -5330,6 +5484,12 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 			}
 		}
 		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
+			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
+			// (e.g. a Record<string, unknown> field read) passes through
+			// unchanged; boxing it as a number would corrupt the handle.
+			if k, ok := scope.types[op]; ok && k == "jsval" {
+				return op, ""
+			}
 			if msg2 := saCheckI32Value(scope, op); msg2 == "" {
 				h := saBoxJsVal(w, 2, "", op, false, nextTemp)
 				saOwnTemp(scope, h)
@@ -5536,6 +5696,12 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 	if strings.HasPrefix(sig.retKind, "inst:") {
 		if _, ok := scope.classes[sig.retKind[5:]]; ok {
 			scope.types[t] = sig.retKind
+		}
+	}
+	if sig.retKind == "map" {
+		scope.types[t] = "map"
+		if sig.retMapVal != "" {
+			saSetMapVal(scope, t, sig.retMapVal)
 		}
 	}
 	return t, false, ""

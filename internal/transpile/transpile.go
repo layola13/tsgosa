@@ -3465,6 +3465,7 @@ type saFuncSig struct {
 	arrowThis    bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
 	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
 	retFn        string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
+	retMapVal    string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
