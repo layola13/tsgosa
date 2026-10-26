@@ -187,6 +187,71 @@ func saMarkArrStr(scope *saScope, name string) {
 	scope.arrStr[name] = true
 }
 
+// saMarkArrJsVal records a jsval-element array handle (mirror of saMarkArrStr).
+func saMarkArrJsVal(scope *saScope, name string) {
+	if name == "" {
+		return
+	}
+	if scope.arrJsVal == nil {
+		scope.arrJsVal = map[string]bool{}
+	}
+	scope.arrJsVal[name] = true
+}
+
+// saPropArrJsVal propagates jsval-element marking across handle bindings.
+func saPropArrJsVal(scope *saScope, from, to string) {
+	if scope.arrJsVal == nil || to == "" || from == to {
+		return
+	}
+	if scope.arrJsVal[from] {
+		scope.arrJsVal[to] = true
+	}
+}
+
+// saSeedParamArrJsVal seeds jsval-element marking for unknown[]/any[] params.
+func saSeedParamArrJsVal(paramNodes []*ast.Node, kinds map[string]string, scope *saScope) {
+	for _, pn := range paramNodes {
+		if pn == nil {
+			continue
+		}
+		pd := pn.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || kinds[nm.Text()] != "arr" {
+			continue
+		}
+		if pd.Type == nil {
+			continue
+		}
+		if saIsJsValArrayAnnot(pd.Type) {
+			saMarkArrJsVal(scope, nm.Text())
+		}
+	}
+}
+
+// saIsJsValArrayAnnot reports unknown[]/any[]/Array<unknown>/Array<any> annotations.
+func saIsJsValArrayAnnot(tn *ast.TypeNode) bool {
+	if tn == nil {
+		return false
+	}
+	if tn.Kind == ast.KindArrayType {
+		el := tn.AsArrayTypeNode().ElementType
+		return el != nil && (el.Kind == ast.KindUnknownKeyword || el.Kind == ast.KindAnyKeyword)
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+			(ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "ReadonlyArray") &&
+			ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+			el := ref.TypeArguments.Nodes[0]
+			return el.Kind == ast.KindUnknownKeyword || el.Kind == ast.KindAnyKeyword
+		}
+	}
+	return false
+}
+
 // saIsStringArrayAnnot reports `string[]` / `readonly string[]` /
 // `Array<string>` annotations (element-kind source for the arrStr mark;
 // mirrors upstream saNameOfType string->ptr element mapping at
@@ -5486,6 +5551,13 @@ func saNestedElemKinds(scope *saScope, recv string, idx, n int) []string {
 		}
 		return kinds
 	}
+	if scope.arrJsVal != nil && scope.arrJsVal[recv] {
+		kinds := make([]string, n)
+		if idx >= 0 && idx < n {
+			kinds[idx] = "jsval"
+		}
+		return kinds
+	}
 	return nil
 }
 
@@ -5677,6 +5749,21 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			saDeclarePlain(scope, name)
 			continue
 		}
+		// jsval 形参借用绑定（元素句柄仍归数组所有，回调体不释；直写即
+		// temp move，具名源用 add 0 拷贝；与 inst 借用同律，唯种为 jsval）。
+		// Explicit number annotation overrides jsval element binding (prior
+		// g1 test: number callback on a jsval receiver lowers as i32; an
+		// unknown/no annotation stays jsval).
+		if i < len(kinds) && kinds[i] == "jsval" && !(pd.Type != nil && (pd.Type.Kind == ast.KindNumberKeyword || (pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Text() == "i32"))) {
+			if saIsTempOp(argVals[i]) {
+				w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
+			} else {
+				w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
+			}
+			bind(name, "jsval")
+			saDeclarePlain(scope, name)
+			continue
+		}
 		// f64 形参快照绑定（`fadd x, 0.0` 拷贝，无 add 截断；直 `=` 即别名，
 		// 具名实参随后释放即 UseAfterMove；与 i32 `add` 快照同形）。
 		if i < len(kinds) && kinds[i] == "f64" {
@@ -5719,7 +5806,8 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			v = op
 		} else if wantKind == "arr" {
 			// flatMap 回调位：数组字面量直构 / 数组返回调用 / 数组绑定直传；
-			// 嵌套与串元结果大声拒（外层 esz 恒 4 i32 槽）。
+			// 嵌套结果大声拒；串元结果放行（数组皆 4 字节词数组，append_slice
+			// 按词拷贝与串元同形；结果 arrStr 由 flatMap 循环向 h 传播）。
 			// 形状证据：字面量走 saLowerArrayLiteral（嵌套标记同 186-226），
 			// 调用种走 saArrCallRet（与 1476-1478 同门），具名走 types 表。
 			var av string
@@ -5730,7 +5818,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 					done()
 					return "", msg
 				}
-				if scope.arrNest[h] || scope.arrStr[h] {
+				if scope.arrNest[h] {
 					done()
 					return "", "flatMap callback must return a flat number array"
 				}
@@ -5750,7 +5838,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 					done()
 					return "", "void callback value"
 				}
-				if scope.arrNest[aop] || scope.arrStr[aop] {
+				if scope.arrNest[aop] {
 					done()
 					return "", "flatMap callback must return a flat number array"
 				}
@@ -5760,7 +5848,7 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 					done()
 					return "", "flatMap callback must return an array"
 				}
-				if scope.arrNest[body.Text()] || scope.arrStr[body.Text()] {
+				if scope.arrNest[body.Text()] {
 					done()
 					return "", "flatMap callback must return a flat number array"
 				}
@@ -5877,6 +5965,9 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
 		saReleaseOwnedTemp(w, scope, slot)
 		saOwnTemp(scope, out)
+		if scope.arrStr != nil && scope.arrStr[slot] {
+			saMarkArrStr(scope, out)
+		}
 		return out, ""
 	}
 	if kind == "f64" {
@@ -5901,10 +5992,15 @@ func saLowerInlineArrReturn(w printer.EmitTextWriter, expr *ast.Node, scope *saS
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 		return false, true
 	}
-	if scope.arrNest[hop] || scope.arrStr[hop] {
+	if scope.arrNest[hop] {
 		ln, col := pos(stmtPos)
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "block-body array return must be a flat number array"})
 		return false, true
+	}
+	// 串元返回向汇合槽传播 arrStr（单调：任一返回臂为串元即记串元，
+	// 空数组臂不清除；调用方再由槽向 out 传播，flatMap 再向 h 传播）。
+	if scope.arrStr != nil && scope.arrStr[hop] {
+		saMarkArrStr(scope, scope.inlineRet.slot)
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", scope.inlineRet.slot, hop))
 	saReleaseDeeperThan(w, scope, scope.inlineRet.scopeBase)
@@ -6000,6 +6096,9 @@ func saHigherOrderFlatMap(w printer.EmitTextWriter, recv string, cb *ast.Node, s
 	v, msg := saCallbackValue(w, cb, []string{el, i}, true, "arr", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 	if msg != "" {
 		return "", msg
+	}
+	if scope.arrStr != nil && scope.arrStr[v] {
+		saMarkArrStr(scope, h)
 	}
 	saAppendSlice(w, h, v, scope, nextTemp)
 	saReleaseOwnedTemp(w, scope, v)
@@ -6448,6 +6547,9 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		// 此处与既有未检 cast 同律，不另做 kind 校验）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval" {
 			recv = saUnboxJsValPtr(w, pa.Expression.Text(), nextTemp)
+			// 拆箱后数组元即 jsval 句柄（convert_at_box 保证；此标记使
+			// 回调参绑 jsval、元加载走 ptr，与 unknown[] 形参同律）。
+			saMarkArrJsVal(scope, recv)
 			msg = ""
 		} else if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
 			recv = h
@@ -7140,6 +7242,7 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			saPropArrNest(scope, recv, out)
 			saPropArrStr(scope, recv, out)
 			saPropArrInnerStr(scope, recv, out)
+			saPropArrJsVal(scope, recv, out)
 		}
 		return out, kind, ""
 	case "reduce", "reduceRight":

@@ -3518,6 +3518,7 @@ type saScope struct {
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr         map[string]bool
+	arrJsVal       map[string]bool   // array handle whose elements are jsval handles (unknown[] / jsval receiver)
 	matchArr       map[string]bool   // variables bound to String.match results (null on miss is empty array struct, head 0)
 	matchIndex     map[string]string // match variable name -> i32 temp holding group-0 start (byte offset; ASCII == char index)
 	matchIndexTemp map[string]string // match array temp handle -> i32 temp holding group-0 start
@@ -3825,6 +3826,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if fn.Parameters != nil {
 		saSeedParamMapVals(fn.Parameters.Nodes, paramKinds, classes, scope)
 		saSeedParamArrStr(fn.Parameters.Nodes, paramKinds, scope)
+		saSeedParamArrJsVal(fn.Parameters.Nodes, paramKinds, scope)
 		saSeedParamArrNest(fn.Parameters.Nodes, paramKinds, scope)
 	}
 	// 模式形参体顶展开（封存 drainDestructuredParams:5376-5410；声明解构同形同拒；

@@ -4763,6 +4763,66 @@ func saLowerBreakContinue(w printer.EmitTextWriter, s *ast.Node, scope *saScope,
 
 // saLowerIf 处理 if/else（void 与 i32 值两形，支持嵌套；嵌套走同一函数递归）。
 // 条件：绑定标识符直接用（形状锁），其余 i32 操作数先求值到临时量。
+// saIfNarrowed records one jsval identifier narrowed for an if then-branch.
+type saIfNarrowed struct {
+	name     string
+	origKind string
+	slot     string
+}
+
+// saNarrowIfThen unboxes jsval identifiers guarded by typeof in the if
+// condition, for the then branch only (mirror of && narrowing in
+// saLowerLogicValue; string/number/boolean only, object skipped).
+func saNarrowIfThen(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, nextTemp *int) []saIfNarrowed {
+	guards := saCollectTypeofGuards(cond, scope)
+	var out []saIfNarrowed
+	for nm, lit := range guards {
+		origKind, ok := scope.types[nm]
+		if !ok || origKind != "jsval" {
+			continue
+		}
+		var unboxed, newKind string
+		switch lit {
+		case "string":
+			unboxed = saUnboxJsValPtr(w, nm, nextTemp)
+			newKind = "str"
+		case "number":
+			unboxed = saUnboxJsValI32(w, nm, nextTemp)
+			newKind = "i32"
+		case "boolean":
+			unboxed = saUnboxJsValI32(w, nm, nextTemp)
+			newKind = "bool"
+		default:
+			continue
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, nm))
+		w.Write(fmt.Sprintf("  !%s\n", nm))
+		w.Write(fmt.Sprintf("  %s = %s\n", nm, unboxed))
+		scope.types[nm] = newKind
+		out = append(out, saIfNarrowed{name: nm, origKind: origKind, slot: slot})
+	}
+	return out
+}
+
+// saRestoreIfThen restores narrowed identifiers after a non-terminating
+// then branch, before the join jump. Terminating branches (return) skip
+// restore: control never reaches the join, and the next loop iteration
+// rebinds the identifier (same as existing callback params).
+func saRestoreIfThen(w printer.EmitTextWriter, narrowed []saIfNarrowed, scope *saScope, nextTemp *int) {
+	for _, n := range narrowed {
+		w.Write(fmt.Sprintf("  !%s\n", n.name))
+		back := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", back, n.slot))
+		w.Write(fmt.Sprintf("  %s = %s\n", n.name, back))
+		w.Write(fmt.Sprintf("  !%s\n", n.slot))
+		scope.types[n.name] = n.origKind
+	}
+}
+
 func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
 	iv := s.AsIfStatement()
 	// false 恒假消死臂。
@@ -4809,12 +4869,16 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 		*nextLabel++
 		w.Write(fmt.Sprintf("  EXPAND IF_ELSE %s, %s, %s\n", condOp, thenLabel, elseLabel))
 		w.Write(thenLabel + ":\n")
+		narrowed := saNarrowIfThen(w, iv.Expression, scope, nextTemp)
 		savedArmRelease := scope.armRelease
 		scope.armRelease = true
 		thenOK := saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		scope.armRelease = savedArmRelease
 		if !thenOK {
 			return false
+		}
+		if !saArmTerminates(thenStmts) {
+			saRestoreIfThen(w, narrowed, scope, nextTemp)
 		}
 		// then 臂落空直入 else 即错臂执行（fizzbuzz 5,3,1 实证）；非终结臂须跳 end（上游同形）。
 		// 无跳则不落标：双终结臂后裸 endif 标号触 FallthroughForbidden。
@@ -4845,12 +4909,16 @@ func saLowerIf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScop
 	*nextLabel++
 	w.Write(fmt.Sprintf("  EXPAND IF_TRUE %s, %s, %s\n", condOp, thenLabel, endifLabel))
 	w.Write(thenLabel + ":\n")
+	narrowed := saNarrowIfThen(w, iv.Expression, scope, nextTemp)
 	savedArmRelease := scope.armRelease
 	scope.armRelease = true
 	thenOK := saLowerArm(w, thenStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.armRelease = savedArmRelease
 	if !thenOK {
 		return false
+	}
+	if !saArmTerminates(thenStmts) {
+		saRestoreIfThen(w, narrowed, scope, nextTemp)
 	}
 	// 臂终结（return/jmp 收尾）则免 join 跳转——落在终结符后即不可达陷阱，
 	// 真机 `FallthroughForbidden`；封存上游同位：终结臂无 `jmp L_endif`。
