@@ -431,36 +431,38 @@ func saPos(offs []int, p int) (int, int) {
 // lowering, all behavior unchanged). Shape evidence: upstream LowerProgram
 // prefixOf + links[p].resolved + seeded funcSigs + PerFile harvest.
 type saFileLink struct {
-	defPrefix     string                            // definition prefix ("" entry; "util__" libs)
-	isEntry       bool                              // entry synthesizes @main; libs refuse top-level execution
-	self          string                            // this file key (for own re-export edges)
-	specOf        map[string]string                 // this file: import spec -> target file
-	prefixOf      map[string]string                 // all files: target -> prefix
-	harvests      map[string]map[string]saProgFunc  // all files: target -> name -> harvested (driver fills)
-	reexps        map[string]map[string]string      // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
-	stars         map[string][]string               // all files: target -> star-from targets in order (upstream starFrom 同形）
-	resolve       map[string]string                 // out/in: imported local name -> qualified callee
-	seed          map[string]saFuncSig              // out/in: qualified callee -> defining file signature
-	harvest       map[string]saProgFunc             // out: own top-level functions for dependents
-	classHarvest  map[string]saProgClass            // out: own top-level classes for dependents
-	classHarvests map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
-	classSeed     map[string]*saClassDef            // out/in: imported local class name -> defining layout
-	enumHarvest   map[string]saProgEnum             // out: own top-level enums for dependents
-	enumHarvests  map[string]map[string]saProgEnum  // all files: target -> name -> harvested enum (driver fills)
-	enumSeed      map[string]saProgEnum             // out/in: imported local enum name -> member maps
-	aliasHarvest  map[string]saProgAlias            // out: own top-level type aliases for dependents
-	aliasHarvests map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
-	aliasSeed     map[string]saProgAlias            // out/in: imported local alias name -> aliased node
-	ambHarvest    map[string]bool                   // out: own exported ambient names for dependents
-	ambHarvests   map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
-	constHarvest  map[string]saProgConst            // out: own folded consts for dependents
-	constHarvests map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
-	constSeed     map[string]saProgConst            // out/in: imported local const name -> folded value
-	slotHarvest   map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
-	slotHarvests  map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
-	slotSeed      map[string]*saModState            // out/in: imported local slot name -> defining slot
-	declSigs      map[string]saFuncSig              // in: .d.ts 声明签名（JS 运行时借种；声明契约即类型来源）
-	declHarvest   map[string]saFuncSig              // out: own 无体声明签名（仅类型单元产出；不入 harvest——无实现不可链）
+	defPrefix        string                            // definition prefix ("" entry; "util__" libs)
+	isEntry          bool                              // entry synthesizes @main; libs refuse top-level execution
+	self             string                            // this file key (for own re-export edges)
+	specOf           map[string]string                 // this file: import spec -> target file
+	prefixOf         map[string]string                 // all files: target -> prefix
+	harvests         map[string]map[string]saProgFunc  // all files: target -> name -> harvested (driver fills)
+	reexps           map[string]map[string]string      // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
+	stars            map[string][]string               // all files: target -> star-from targets in order (upstream starFrom 同形）
+	resolve          map[string]string                 // out/in: imported local name -> qualified callee
+	seed             map[string]saFuncSig              // out/in: qualified callee -> defining file signature
+	harvest          map[string]saProgFunc             // out: own top-level functions for dependents
+	classHarvest     map[string]saProgClass            // out: own top-level classes for dependents
+	classHarvests    map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
+	classSeed        map[string]*saClassDef            // out/in: imported local class name -> defining layout
+	enumHarvest      map[string]saProgEnum             // out: own top-level enums for dependents
+	enumHarvests     map[string]map[string]saProgEnum  // all files: target -> name -> harvested enum (driver fills)
+	enumSeed         map[string]saProgEnum             // out/in: imported local enum name -> member maps
+	aliasHarvest     map[string]saProgAlias            // out: own top-level type aliases for dependents
+	aliasHarvests    map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
+	aliasSeed        map[string]saProgAlias            // out/in: imported local alias name -> aliased node
+	ambHarvest       map[string]bool                   // out: own exported ambient names for dependents
+	ambHarvests      map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
+	constHarvest     map[string]saProgConst            // out: own folded consts for dependents
+	constHarvests    map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
+	topConstHarvest  map[string]bool                   // out: own exported top const array/object/regex names claimed by this file's lowering (re-export claim use)
+	topConstHarvests map[string]map[string]bool        // all files: target -> name -> harvested top const (driver fills)
+	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
+	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
+	slotHarvests     map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
+	slotSeed         map[string]*saModState            // out/in: imported local slot name -> defining slot
+	declSigs         map[string]saFuncSig              // in: .d.ts 声明签名（JS 运行时借种；声明契约即类型来源）
+	declHarvest      map[string]saFuncSig              // out: own 无体声明签名（仅类型单元产出；不入 harvest——无实现不可链）
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -761,6 +763,56 @@ func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (st
 		}
 	}
 	return "", saFuncSig{}, false
+}
+
+// saProgConstChase reports whether a re-exported const value resolves to a
+// defining file that lowers it: folded scalar consts live in constHarvests,
+// top const array/object/regex snapshots live in topConstHarvests (both
+// export-filtered at harvest time). Chains follow reexps cycle-guarded and
+// star targets first-match, mirroring saProgChase. Const use-sites through a
+// re-export chain are NOT resolved here (later stage, refuses loudly at the
+// use site), so this only claims the re-export statement itself.
+func saProgConstChase(link *saFileLink, tgt, remote string, seen map[string]bool) bool {
+	if link == nil {
+		return false
+	}
+	key := tgt + "\x00" + remote
+	if seen[key] {
+		return false
+	}
+	seen[key] = true
+	if _, ok := link.constHarvests[tgt][remote]; ok {
+		return true
+	}
+	if link.topConstHarvests[tgt][remote] {
+		return true
+	}
+	if edge, ok := link.reexps[tgt][remote]; ok {
+		parts := strings.SplitN(edge, "\x00", 2)
+		if len(parts) == 2 {
+			return saProgConstChase(link, parts[0], parts[1], seen)
+		}
+	}
+	for _, st := range link.stars[tgt] {
+		if saProgConstChase(link, st, remote, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// saProgOwnConst reports whether an exported top const of THIS file (folded
+// scalar in constHarvest, or claimed array/object/regex snapshot in
+// topConstHarvest) bears the name; used by the local-list claim only, where
+// driver-filled all-file maps for this file do not exist yet.
+func saProgOwnConst(link *saFileLink, name string) bool {
+	if link == nil {
+		return false
+	}
+	if _, ok := link.constHarvest[name]; ok {
+		return true
+	}
+	return link.topConstHarvest[name]
 }
 
 // saProgReexpEdges parses `export {a [, b as c]} from "spec"` into the
@@ -2065,6 +2117,43 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				link.constHarvest[nm.Text()] = saProgConst{text: text, isStr: topStr[nm.Text()]}
 			}
 		}
+		// Program hook A-topconst: harvest exported top const array/object/
+		// regex snapshot names claimed by this file's lowering (re-export
+		// claim use; export-filtered and statement-claimed only, so a typo'd
+		// or unlowerable const never lands here).
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindVariableStatement {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			if !topArrStmts[st] && !topObjStmts[st] && !topRegexStmts[st] {
+				continue
+			}
+			vs := st.AsVariableStatement()
+			if vs == nil || vs.DeclarationList == nil {
+				continue
+			}
+			dl := vs.DeclarationList.AsVariableDeclarationList()
+			if dl == nil {
+				continue
+			}
+			for _, d := range dl.Declarations.Nodes {
+				vd := d.AsVariableDeclaration()
+				if vd == nil {
+					continue
+				}
+				nm := vd.Name()
+				if nm == nil || nm.Kind != ast.KindIdentifier {
+					continue
+				}
+				if link.topConstHarvest == nil {
+					link.topConstHarvest = map[string]bool{}
+				}
+				link.topConstHarvest[nm.Text()] = true
+			}
+		}
 		// Program hook A-slot: harvest ns slot descriptors (pointer shared
 		// read-only; reads/wires reuse defining layout; top-level dotted keys
 		// only — plain names are file-local slots).
@@ -2196,7 +2285,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
 							// 类型物化边认领（本件收割域命中即无码）。
-							if !saProgTypeForwarded(link, exported) {
+							if !saProgTypeForwarded(link, exported) && !saProgConstChase(link, link.self, exported, map[string]bool{}) {
 								okAll = false
 								break
 							}
@@ -2219,7 +2308,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					for exported := range edges {
 						if _, _, ok := saProgChase(link, link.self, exported, map[string]bool{}); !ok {
 							if hv, ok := link.harvest[exported]; !ok || !hv.exported {
-								if !saProgTypeForwarded(link, exported) {
+								if !saProgTypeForwarded(link, exported) && !saProgOwnConst(link, exported) {
 									okAll = false
 									break
 								}
@@ -5405,38 +5494,41 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	ambHarvests := map[string]map[string]bool{}
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
+	topConstHarvests := map[string]map[string]bool{}
 	declHarvests := map[string]map[string]saFuncSig{}
 	for _, p := range reachable {
 		lk := &saFileLink{
-			defPrefix:     prefixOf[p],
-			isEntry:       p == entry,
-			self:          p,
-			specOf:        specOf[p],
-			harvests:      harvests,
-			prefixOf:      prefixOf,
-			reexps:        reexpOf,
-			stars:         starOf,
-			resolve:       map[string]string{},
-			seed:          map[string]saFuncSig{},
-			harvest:       map[string]saProgFunc{},
-			classHarvest:  map[string]saProgClass{},
-			classHarvests: classHarvests,
-			classSeed:     map[string]*saClassDef{},
-			enumHarvest:   map[string]saProgEnum{},
-			enumHarvests:  enumHarvests,
-			enumSeed:      map[string]saProgEnum{},
-			aliasHarvest:  map[string]saProgAlias{},
-			ambHarvest:    map[string]bool{},
-			ambHarvests:   ambHarvests,
-			aliasHarvests: aliasHarvests,
-			aliasSeed:     map[string]saProgAlias{},
-			constHarvest:  map[string]saProgConst{},
-			constHarvests: constHarvests,
-			constSeed:     map[string]saProgConst{},
-			slotHarvest:   map[string]*saModState{},
-			slotHarvests:  slotHarvests,
-			slotSeed:      map[string]*saModState{},
-			declSigs:      declHarvests[typesOf[p]],
+			defPrefix:        prefixOf[p],
+			isEntry:          p == entry,
+			self:             p,
+			specOf:           specOf[p],
+			harvests:         harvests,
+			prefixOf:         prefixOf,
+			reexps:           reexpOf,
+			stars:            starOf,
+			resolve:          map[string]string{},
+			seed:             map[string]saFuncSig{},
+			harvest:          map[string]saProgFunc{},
+			classHarvest:     map[string]saProgClass{},
+			classHarvests:    classHarvests,
+			classSeed:        map[string]*saClassDef{},
+			enumHarvest:      map[string]saProgEnum{},
+			enumHarvests:     enumHarvests,
+			enumSeed:         map[string]saProgEnum{},
+			aliasHarvest:     map[string]saProgAlias{},
+			ambHarvest:       map[string]bool{},
+			ambHarvests:      ambHarvests,
+			aliasHarvests:    aliasHarvests,
+			aliasSeed:        map[string]saProgAlias{},
+			constHarvest:     map[string]saProgConst{},
+			constHarvests:    constHarvests,
+			topConstHarvest:  map[string]bool{},
+			topConstHarvests: topConstHarvests,
+			constSeed:        map[string]saProgConst{},
+			slotHarvest:      map[string]*saModState{},
+			slotHarvests:     slotHarvests,
+			slotSeed:         map[string]*saModState{},
+			declSigs:         declHarvests[typesOf[p]],
 		}
 		out := transpileSAInner(context.Background(), files[p], Options{FileName: p}, lk)
 		harvests[p] = lk.harvest
@@ -5446,6 +5538,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		ambHarvests[p] = lk.ambHarvest
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
+		topConstHarvests[p] = lk.topConstHarvest
 		declHarvests[p] = lk.declHarvest
 		for _, r := range out.Refusals {
 			res.diags = append(res.diags, fmt.Sprintf("%s:%d:%d: %s", p, r.Line, r.Col, r.Msg))
