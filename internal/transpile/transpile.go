@@ -4151,6 +4151,14 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 	}
 	saved := saScopeEnter(scope)
 	defer saScopeExit(scope, saved)
+	// Snapshot of pre-arm ownership flags, for terminating callback
+	// branches only (see restore below).
+	ownSnap := map[string]saOwn{}
+	for nm, b := range scope.ownState {
+		if b != nil {
+			ownSnap[nm] = *b
+		}
+	}
 	// 臂尾收敛释放（H-multiarm）：置位且臂未终结时，在截断前释本臂新生归属，
 	// 使合并点各入边状态一致；defer 逆序保证先于 saScopeExit 执行。
 	armDepth := len(scope.ownOrder)
@@ -4166,6 +4174,16 @@ func saLowerArm(w printer.EmitTextWriter, stmts []*ast.Node, isVoid bool, scope 
 		if !terminated {
 			saReleaseDeeperThan(w, scope, armDepth)
 			saUnpinArmScalars(w, scope, saved)
+		} else if scope.inlineRet != nil {
+			// Terminating callback branch: its return released outer
+			// locals on this edge only. Restore pre-arm flags for
+			// pre-existing names so the fallthrough edge releases the
+			// same locals and all callback-join edges agree.
+			for nm, snap := range ownSnap {
+				if b := scope.ownState[nm]; b != nil {
+					*b = snap
+				}
+			}
 		}
 	}()
 	for _, s := range stmts {

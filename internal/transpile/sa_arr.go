@@ -407,6 +407,36 @@ func saArrayLiteralElem(w printer.EmitTextWriter, el *ast.Node, scope *saScope, 
 			return el.Text(), ""
 		}
 	}
+	if el.Kind == ast.KindSatisfiesExpression || el.Kind == ast.KindAsExpression {
+		var inner *ast.Node
+		var tnode *ast.TypeNode
+		if el.Kind == ast.KindSatisfiesExpression {
+			se := el.AsSatisfiesExpression()
+			inner, tnode = se.Expression, se.Type
+		} else {
+			ae := el.AsAsExpression()
+			inner, tnode = ae.Expression, ae.Type
+		}
+		if inner != nil {
+			inner = saPeelParens(inner)
+		}
+		if inner != nil && inner.Kind == ast.KindObjectLiteralExpression {
+			want := ""
+			if tnode != nil && tnode.Kind == ast.KindTypeReference {
+				if ref := tnode.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+					if def, ok := scope.classes[ref.TypeName.Text()]; ok && def.isIface {
+						want = ref.TypeName.Text()
+					}
+				}
+			}
+			h, lname, msg := saLowerObjectLiteral(w, inner, want, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			scope.types[h] = "inst:" + lname
+			return h, ""
+		}
+	}
 	v, msg := saEvalI32(w, el, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
