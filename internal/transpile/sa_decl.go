@@ -1050,6 +1050,22 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saDeclarePlain(scope, name)
 		return true
 	}
+	// JSX element binding (sa_jsx.go): a JSX initializer is a jsval
+	// descriptor, regardless of whether the declaration carries an
+	// unknown annotation. The descriptor handle is owned by the binding.
+	if init.Kind == ast.KindJsxElement || init.Kind == ast.KindJsxSelfClosingElement || init.Kind == ast.KindJsxFragment {
+		h, msg := saLowerJsxElement(w, init, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(vd.Initializer.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "jsval"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		return true
+	}
 	if init.Kind == ast.KindArrayLiteralExpression {
 		return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 	}

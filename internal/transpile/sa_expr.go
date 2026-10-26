@@ -6082,6 +6082,13 @@ func saArgIsInstField(a *ast.Node, scope *saScope) bool {
 
 func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "jsval" {
+		// JSX elements are jsval values only (sa_jsx.go): intrinsic /
+		// component tags as name strings, props as a jsval-valued map,
+		// children as a jsval array, via @ts_jsx_element. Other
+		// positions refuse JSX through their existing gates.
+		if a != nil && (a.Kind == ast.KindJsxElement || a.Kind == ast.KindJsxSelfClosingElement || a.Kind == ast.KindJsxFragment) {
+			return saLowerJsxElement(w, a, scope, pos, refusals, nextTemp)
+		}
 		if a != nil && a.Kind == ast.KindIdentifier {
 			if origin, ok := scope.recordView[a.Text()]; ok {
 				return origin, ""
