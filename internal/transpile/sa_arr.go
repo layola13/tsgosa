@@ -367,6 +367,9 @@ func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
 	if cb == nil {
 		return "", "", false, nil, false
 	}
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return "", "", false, nil, false
+	}
 	params := cb.Parameters()
 	if len(params) < 1 {
 		return "", "", false, nil, false
@@ -388,6 +391,9 @@ func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
 	if body.Kind == ast.KindBlock {
 		bd := body.AsBlock()
 		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", "", false, nil, false
+		}
+		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
 			return "", "", false, nil, false
 		}
 		rs := bd.Statements.Nodes[0].AsReturnStatement()
@@ -547,6 +553,9 @@ func saFindOrGuard(cb *ast.Node) (string, []saOrDisjunct, bool) {
 	if cb == nil {
 		return "", nil, false
 	}
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return "", nil, false
+	}
 	params := cb.Parameters()
 	if len(params) < 1 {
 		return "", nil, false
@@ -568,6 +577,9 @@ func saFindOrGuard(cb *ast.Node) (string, []saOrDisjunct, bool) {
 	if body.Kind == ast.KindBlock {
 		bd := body.AsBlock()
 		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", nil, false
+		}
+		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
 			return "", nil, false
 		}
 		rs := bd.Statements.Nodes[0].AsReturnStatement()
@@ -1164,6 +1176,9 @@ func saFilterBoolGuard(cb *ast.Node) (string, *ast.Node, bool) {
 	if cb == nil {
 		return "", nil, false
 	}
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return "", nil, false
+	}
 	params := cb.Parameters()
 	if len(params) < 1 {
 		return "", nil, false
@@ -1185,6 +1200,9 @@ func saFilterBoolGuard(cb *ast.Node) (string, *ast.Node, bool) {
 	if body.Kind == ast.KindBlock {
 		bd := body.AsBlock()
 		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", nil, false
+		}
+		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
 			return "", nil, false
 		}
 		rs := bd.Statements.Nodes[0].AsReturnStatement()
@@ -7821,6 +7839,9 @@ func saFindTypeofGuard(cb *ast.Node) (string, string, bool, bool) {
 	if cb == nil {
 		return "", "", false, false
 	}
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return "", "", false, false
+	}
 	params := cb.Parameters()
 	if len(params) < 1 {
 		return "", "", false, false
@@ -7842,6 +7863,9 @@ func saFindTypeofGuard(cb *ast.Node) (string, string, bool, bool) {
 	if body.Kind == ast.KindBlock {
 		bd := body.AsBlock()
 		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", "", false, false
+		}
+		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
 			return "", "", false, false
 		}
 		rs := bd.Statements.Nodes[0].AsReturnStatement()

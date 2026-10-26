@@ -2136,7 +2136,7 @@ func saTopRegexPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]
 					break
 				}
 				ref := tn.AsTypeReferenceNode()
-				if ref == nil || ref.TypeName == nil || ref.TypeName.Text() != "RegExp" {
+				if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "RegExp" {
 					okAll = false
 					break
 				}
