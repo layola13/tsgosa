@@ -3578,7 +3578,73 @@ type saTopObj struct {
 	arrLayouts map[string]string
 }
 
-// saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：
+// saTopObjLitLayout 为不可解析注解的顶层对象字面量合成布局（JEV
+// topobj_partial_synth 的第二半）：注解为无类型实参的命名引用
+// （文件内未记录的接口名，或 React.CSSProperties 式限定名），初值
+// 为全 i32/串字面量域的对象字面量时，复用既有 saSynthTopObjLayout
+// 按域排序合成布局（isSynth，不参与键集匹配）；泛型注解
+// （Record<...> 等）、非字面量域、重名域、空字面量一律不收，
+// 沿旧 kind-244 门。合成布局写入 prescan 共用的 classes 表，
+// 用点字段读与 saLowerObjectLiteral 同形；合成布局无 fopt，
+// 故字面量域须齐全。
+func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef) (string, bool) {
+	if vd == nil || vd.Type == nil || vd.Initializer == nil {
+		return "", false
+	}
+	if vd.Type.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := vd.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil {
+		return "", false
+	}
+	if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+		return "", false
+	}
+	if ref.TypeName.Kind != ast.KindIdentifier && ref.TypeName.Kind != ast.KindQualifiedName {
+		return "", false
+	}
+	if ref.TypeName.Kind == ast.KindIdentifier {
+		if _, ok := classes[ref.TypeName.Text()]; ok {
+			return "", false
+		}
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+		return "", false
+	}
+	ol := init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 {
+		return "", false
+	}
+	var fields []string
+	fkinds := map[string]string{}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil || p.Kind != ast.KindPropertyAssignment {
+			return "", false
+		}
+		fname, ok := saObjPropName(p)
+		if !ok || fname == "" {
+			return "", false
+		}
+		if _, dup := fkinds[fname]; dup {
+			return "", false
+		}
+		finit := p.AsPropertyAssignment().Initializer
+		if _, iok := saTopArrElemText(finit); iok {
+			fkinds[fname] = "i32"
+		} else if _, sok := saTopArrStrText(finit); sok {
+			fkinds[fname] = "str"
+		} else {
+			return "", false
+		}
+		fields = append(fields, fname)
+	}
+	sort.Strings(fields)
+	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, map[string]string{}, classes), true
+}
+
+// saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：// saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：
 // 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
 // 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
 // 方法余形整句不收，沿旧 kind244 门；788）。
@@ -3649,6 +3715,11 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					pends = append(pends, pend{name: name, obj: to2})
 					continue
 				}
+				if lay, ok3 := saTopObjLitLayout(vd, classes); ok3 {
+					init3 := saUnwrapTransparent(vd.Initializer)
+					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: init3}})
+					continue
+				}
 				okAll = false
 				break
 			}
@@ -3700,7 +3771,13 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				}
 				seen[fname] = true
 			}
-			if !propOk || len(seen) != len(def.offsets) {
+			var wantKeys []string
+			for k := range seen {
+				wantKeys = append(wantKeys, k)
+			}
+			// 缺省域与 saWantKeyMatch 同口径：必备域缺省沿旧门，
+			// 可选域缺省由物化零填（JEV topobj_partial_synth）。
+			if !propOk || !saWantKeyMatch(def, wantKeys) {
 				okAll = false
 				break
 			}
