@@ -1668,7 +1668,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			// 对象字面量别名入布局表（`type X = {...}`；余形擦除无码；
 			// 嵌套引用未齐先挂队，表齐后补记，声明序无关）。
 			if saAliasReady(st, classes) {
-				saRecordTypeAlias(st, classes, pos, &refusals)
+				saRecordTypeAlias(st, classes, aliasOf, pos, &refusals)
 			} else {
 				pendingAlias = append(pendingAlias, st)
 			}
@@ -1707,7 +1707,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		var rest []*ast.Node
 		for _, st := range pendingAlias {
 			if saAliasReady(st, classes) {
-				saRecordTypeAlias(st, classes, pos, &refusals)
+				saRecordTypeAlias(st, classes, aliasOf, pos, &refusals)
 				progressed = true
 			} else {
 				rest = append(rest, st)
@@ -1715,7 +1715,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		if !progressed {
 			for _, st := range rest {
-				saRecordTypeAlias(st, classes, pos, &refusals)
+				saRecordTypeAlias(st, classes, aliasOf, pos, &refusals)
 			}
 			break
 		}

@@ -1968,7 +1968,7 @@ func saRestLayout(src *saClassDef, excluded map[string]bool, classes map[string]
 // 方法签名不占槽，与接口同形；嵌套具名域经已记录表解子布局（声明序依赖，
 // 未记录落 arr 句柄，与接口未知引用同例）。形状证据：封存 recordTypeAlias
 // 全形 + planck TransformValue/RotValue/Vec2Value 形。
-func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
+func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	ta := st.AsTypeAliasDeclaration()
 	nm := st.Name()
 	if ta == nil || ta.Type == nil || nm == nil || nm.Kind != ast.KindIdentifier {
@@ -2010,6 +2010,20 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(in
 				} else if k == "arr" {
 					fkind = "arr"
 				} else if k == "f64" {
+					fkind = "f64"
+				}
+			} else if ak, ok := saResolveAliasKind(pd.Type, aliasOf); ok && (ak == "i32" || ak == "bool" || ak == "str" || ak == "arr" || ak == "f64") {
+				// Type-alias field (e.g. verbosity?: ModelVerbosity where
+				// ModelVerbosity = "low" | "medium" | "high"): without this,
+				// the unknown TypeReference fell through to "arr", so a
+				// string field was later evaluated as i32/arr and refused.
+				// saResolveAliasKind follows alias chains and folds literal
+				// unions via saUnionScalarKind (str for string literals).
+				if ak == "str" {
+					fkind = "str"
+				} else if ak == "arr" {
+					fkind = "arr"
+				} else if ak == "f64" {
 					fkind = "f64"
 				}
 			} else if pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Kind == ast.KindIdentifier {
