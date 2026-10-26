@@ -2286,6 +2286,344 @@ func saSynthMergedLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, clas
 	}
 }
 
+// saUnionVariantField is one field of one union variant for merged-layout
+// synthesis. kind is the recorded kind for interface members and "" for
+// literal members (kind computed from fdef during unification); sub is the
+// recorded nested layout for interface inst fields.
+type saUnionVariantField struct {
+	name   string
+	fdef   *ast.TypeNode
+	opt    bool
+	kind   string
+	sub    string
+	hasSub bool
+}
+
+type saUnionVariant struct {
+	fields []saUnionVariantField
+}
+
+// saResolveUnionNode follows aliases (cycle-guarded) and parens to the
+// underlying union node, or nil when the type is not a union.
+func saResolveUnionNode(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) *ast.UnionTypeNode {
+	seen := map[string]bool{}
+	cur := t
+	for cur != nil {
+		switch cur.Kind {
+		case ast.KindUnionType:
+			return cur.AsUnionTypeNode()
+		case ast.KindParenthesizedType:
+			pt := cur.AsParenthesizedTypeNode()
+			if pt == nil {
+				return nil
+			}
+			cur = pt.Type
+		case ast.KindTypeReference:
+			ref := cur.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+				return nil
+			}
+			nm := ref.TypeName.Text()
+			if seen[nm] {
+				return nil
+			}
+			seen[nm] = true
+			nxt, ok := aliasOf[nm]
+			if !ok || nxt == nil {
+				return nil
+			}
+			cur = nxt
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// saIsUnionNullMember reports null/undefined union members (absorbed, like
+// saUnionEraseKind/saUnionInstKind).
+func saIsUnionNullMember(m *ast.TypeNode) bool {
+	if m == nil {
+		return true
+	}
+	if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+		return true
+	}
+	if m.Kind == ast.KindLiteralType {
+		if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+			return true
+		}
+	}
+	return false
+}
+
+// saCollectUnionVariant appends one object-shaped variant's fields to out.
+// Nested unions are flattened one level per recursion (cycle-guarded via
+// seen on alias names). Scalar members fail loudly: a mixed scalar/object
+// union is not a merged layout (that shape belongs to jsval).
+func saCollectUnionVariant(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef, seen map[string]bool, out *[]saUnionVariant) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return false
+		}
+		return saCollectUnionVariant(pt.Type, aliasOf, classes, seen, out)
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return false
+		}
+		for _, m := range ut.Types.Nodes {
+			if saIsUnionNullMember(m) {
+				continue
+			}
+			if !saCollectUnionVariant(m, aliasOf, classes, seen, out) {
+				return false
+			}
+		}
+		return true
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return false
+		}
+		v := saUnionVariant{}
+		for _, m := range lit.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				continue
+			}
+			f := saUnionVariantField{name: fn.Text(), fdef: pd.Type}
+			if m.QuestionToken() != nil {
+				f.opt = true
+			}
+			v.fields = append(v.fields, f)
+		}
+		*out = append(*out, v)
+		return true
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return false
+		}
+		nm := ref.TypeName.Text()
+		if def, ok := classes[nm]; ok && def != nil && def.isIface {
+			v := saUnionVariant{}
+			for _, fld := range def.fields {
+				f := saUnionVariantField{name: fld.name, opt: def.fopt[fld.name], kind: def.fkinds[fld.name]}
+				if def.fdefs != nil {
+					f.fdef = def.fdefs[fld.name]
+				}
+				if sub, ok := def.fsub[fld.name]; ok {
+					f.sub = sub
+					f.hasSub = true
+				}
+				v.fields = append(v.fields, f)
+			}
+			*out = append(*out, v)
+			return true
+		}
+		if seen[nm] {
+			return false
+		}
+		seen[nm] = true
+		nxt, ok := aliasOf[nm]
+		if !ok || nxt == nil {
+			return false
+		}
+		return saCollectUnionVariant(nxt, aliasOf, classes, seen, out)
+	default:
+		return false
+	}
+}
+
+// saUnionLayoutEqual reports whether an existing synth layout matches the
+// computed union fields (order, kinds, optionality, nested layouts all
+// equal); mismatches get a suffixed layout instead of silent reuse.
+func saUnionLayoutEqual(def *saClassDef, fields []string, fkinds map[string]string, fopt map[string]bool, fsub map[string]string) bool {
+	if def == nil || !def.isSynth || len(def.fields) != len(fields) {
+		return false
+	}
+	for i, fname := range fields {
+		if i >= len(def.fields) || def.fields[i].name != fname {
+			return false
+		}
+		if def.fkinds[fname] != fkinds[fname] {
+			return false
+		}
+		if def.fopt[fname] != fopt[fname] {
+			return false
+		}
+		sub, ok := fsub[fname]
+		dsub, dok := def.fsub[fname]
+		if ok != dok || (ok && sub != dsub) {
+			return false
+		}
+	}
+	return true
+}
+
+// saSynthUnionLayout synthesizes a merged inst layout for a union of object
+// literals (JEV merged_layout 0.98): fields unioned in first-seen order,
+// variant-specific fields optional and zero-filled on match, kinds unified
+// across variants. Returns the layout name (caller prefixes "inst:").
+func saSynthUnionLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	ut := saResolveUnionNode(t, aliasOf)
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	var variants []saUnionVariant
+	for _, m := range ut.Types.Nodes {
+		if saIsUnionNullMember(m) {
+			continue
+		}
+		if !saCollectUnionVariant(m, aliasOf, classes, map[string]bool{}, &variants) {
+			return "", false
+		}
+	}
+	if len(variants) == 0 {
+		return "", false
+	}
+	var fields []string
+	fdefs := map[string]*ast.TypeNode{}
+	fopt := map[string]bool{}
+	fkinds := map[string]string{}
+	fsub := map[string]string{}
+	seenField := map[string]bool{}
+	for _, v := range variants {
+		for _, f := range v.fields {
+			if !seenField[f.name] {
+				seenField[f.name] = true
+				fields = append(fields, f.name)
+				fdefs[f.name] = f.fdef
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return "", false
+	}
+	for _, fname := range fields {
+		presentInAll := true
+		anyOpt := false
+		var kind string
+		var sub string
+		var hasSub bool
+		for _, v := range variants {
+			var vf *saUnionVariantField
+			for i := range v.fields {
+				if v.fields[i].name == fname {
+					vf = &v.fields[i]
+					break
+				}
+			}
+			if vf == nil {
+				presentInAll = false
+				continue
+			}
+			if vf.opt {
+				anyOpt = true
+			}
+			var k string
+			var ksub string
+			var khasSub bool
+			if vf.kind != "" {
+				k = vf.kind
+				ksub = vf.sub
+				khasSub = vf.hasSub
+			} else if vf.fdef != nil && vf.fdef.Kind == ast.KindLiteralType {
+				lit := vf.fdef.AsLiteralTypeNode().Literal
+				if lit == nil {
+					return "", false
+				}
+				switch lit.Kind {
+				case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+					k = "str"
+				case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+					k = "i32"
+				default:
+					return "", false
+				}
+			} else if vf.fdef != nil {
+				probe := &saClassDef{fsub: map[string]string{}}
+				k = saAnonFieldKindAlias(vf.fdef, fname, probe, classes, aliasOf)
+				if s, ok := probe.fsub[fname]; ok {
+					ksub = s
+					khasSub = true
+				}
+			} else {
+				return "", false
+			}
+			if kind == "" {
+				kind = k
+				sub = ksub
+				hasSub = khasSub
+			} else if kind != k {
+				return "", false
+			} else if khasSub && hasSub && sub != ksub {
+				return "", false
+			} else if khasSub && !hasSub {
+				sub = ksub
+				hasSub = true
+			}
+		}
+		if kind == "" {
+			return "", false
+		}
+		fkinds[fname] = kind
+		if hasSub {
+			fsub[fname] = sub
+		}
+		if !presentInAll || anyOpt {
+			fopt[fname] = true
+		}
+	}
+	base := "Union_" + saMonoName(strings.Join(fields, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if saUnionLayoutEqual(def, fields, fkinds, fopt, fsub) {
+				return def.name, true
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}, fsub: map[string]string{}}
+		off := 0
+		for _, fname := range fields {
+			fkind := fkinds[fname]
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			def.fdefs[fname] = fdefs[fname]
+			if fopt[fname] {
+				def.fopt[fname] = true
+			}
+			if sub, ok := fsub[fname]; ok {
+				def.fsub[fname] = sub
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def.name, true
+	}
+}
+
 // saRestLayoutEqual 判定既有剩余布局与给定源域集同形（域序/种全等；
 // 子布局名随种走，不等即不复用，后缀另建，与匿名合成同律）。
 func saRestLayoutEqual(def, src *saClassDef, fields []string) bool {

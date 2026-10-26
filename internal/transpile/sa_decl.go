@@ -1876,6 +1876,9 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		if kind, ok := saUnionEraseKind(t.AsUnionTypeNode(), classes, aliasOf); ok {
 			return kind, true
 		}
+		if lname, ok := saSynthUnionLayout(t, aliasOf, classes); ok {
+			return "inst:" + lname, true
+		}
 		return "", false
 	}
 	if saIsFunctionAnnotation(t, aliasOf) {
@@ -1932,6 +1935,9 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 	// 别名交集/字面量返回记合并实例布局（`Norm = Breakdown & {...}`；
 	// 标量别名已在 saResolveAliasKind 上方处理，至此方为对象形）。
 	if lname, ok := saSynthMergedLayout(t, aliasOf, classes); ok {
+		return "inst:" + lname, true
+	}
+	if lname, ok := saSynthUnionLayout(t, aliasOf, classes); ok {
 		return "inst:" + lname, true
 	}
 	return "", false
