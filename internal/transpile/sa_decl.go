@@ -1904,6 +1904,35 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		if lname, ok := saSynthMergedLayout(t, aliasOf, classes); ok {
 			return "inst:" + lname, true
 		}
+		// Gated intersection -> jsval: if a member is jsval-opaque (e.g.
+		// `Error & {...}` where Error has no recorded layout) and every
+		// member resolves, the whole intersection boxes into jsval. Two
+		// known layouts that merely fail to merge keep refusing (no
+		// jsval member), as before.
+		if it := t.AsIntersectionTypeNode(); it != nil && it.Types != nil {
+			sawJsval := false
+			allOk := true
+			for _, m := range it.Types.Nodes {
+				if m == nil {
+					allOk = false
+					break
+				}
+				if m.Kind == ast.KindTypeLiteral {
+					continue
+				}
+				k, ok := saReturnKindRef(m, classes, aliasOf)
+				if !ok {
+					allOk = false
+					break
+				}
+				if k == "jsval" {
+					sawJsval = true
+				}
+			}
+			if allOk && sawJsval {
+				return "jsval", true
+			}
+		}
 		return "", false
 	}
 	if t.Kind == ast.KindUnionType {
@@ -1934,6 +1963,17 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 					allOk = false
 					break
 				}
+				for m != nil && m.Kind == ast.KindParenthesizedType {
+					if pt := m.AsParenthesizedTypeNode(); pt != nil {
+						m = pt.Type
+					} else {
+						break
+					}
+				}
+				if m == nil {
+					allOk = false
+					break
+				}
 				if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
 					continue
 				}
@@ -1941,6 +1981,18 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 					if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
 						continue
 					}
+					// Scalar literal members resolve to their scalar kind
+					// (they box into jsval fine); they are not themselves the
+					// jsval member the gate requires, so the gate still needs
+					// another member that is jsval-opaque.
+					if lit := m.AsLiteralTypeNode().Literal; lit != nil {
+						switch lit.Kind {
+						case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+							continue
+						}
+					}
+					allOk = false
+					break
 				}
 				k, ok := saReturnKindRef(m, classes, aliasOf)
 				if !ok {
