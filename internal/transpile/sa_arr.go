@@ -359,20 +359,30 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	}
 	if hasSpread {
 		h := saNewEmptyArray(w, nextTemp)
+		isStr := false
 		for _, el := range al.Elements.Nodes {
 			if el.Kind == ast.KindSpreadElement {
 				sv, msg := saArrValueOf(w, el.AsSpreadElement().Expression.AsNode(), scope, pos, refusals, nextTemp)
 				if msg != "" {
-					// 顶层 const 数组展开（i32 快照物化后整片合并；串元展开本地
-					// 同形破碎，沿旧门；728/758）。
+					// 顶层 const 数组展开：i32 与串元快照均可物化后整片合并
+					// （串元物化已在 saMaterializeTopArr 中记 arrStr；结果数组
+					// 须在末尾记 arrStr，否则后续读元按 i32 走）。
 					arr, ok := saTopArrLookup(scope, el.AsSpreadElement().Expression.AsNode())
-					if !ok || arr.str {
+					if !ok {
 						return "", msg
 					}
+					if arr.str {
+						isStr = true
+					}
 					sv = saMaterializeTopArr(w, arr, scope, nextTemp)
+				} else if scope.arrStr != nil && scope.arrStr[sv] {
+					isStr = true
 				}
 				saAppendSlice(w, h, sv, scope, nextTemp)
 				continue
+			}
+			if saIsStrExpr(el, scope) {
+				isStr = true
 			}
 			v, msg := saArrayLiteralElem(w, el, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -381,6 +391,9 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 			saLowerArrayPush(w, h, v, scope, nextTemp)
 		}
 		saOwnTemp(scope, h)
+		if isStr {
+			saMarkArrStr(scope, h)
+		}
 		return h, ""
 	}
 	var elems []string
@@ -581,6 +594,17 @@ type saTopArr struct {
 	elems  []string
 	str    bool
 	nested []saTopArr
+	objs   []saTopObjElem
+}
+
+// saTopObjElem is one object literal in a top-level const object array:
+// one RegExp field (pattern) plus string-literal fields (e.g. verbosity).
+// It is a transpiler-time snapshot only, never a runtime SA array of objects.
+type saTopObjElem struct {
+	regexField string
+	regexPat   string
+	regexFlags string
+	strFields  map[string]string
 }
 
 // saTopArrDepth 快照深度（平/i32 空为 1；嵌套为子树深 + 1，同构故取 max 即确值）。
@@ -722,6 +746,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			var i32s, strs []string
 			var subs []saTopArr
+			var objs []saTopObjElem
 			eleOk := true
 			if al.Elements != nil {
 				for _, el := range al.Elements.Nodes {
@@ -734,6 +759,11 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 						continue
 					}
 					// 嵌套子树（i32 同构；串内层/异构/深浅不一整句不收；808）。
+					// Object element (regex field + string-literal fields; same field set; .find inline at use site, not materialised as a runtime object array).
+					if obj, objok := saTopObjElemParse(el); objok {
+						objs = append(objs, obj)
+						continue
+					}
 					if sub, subok := saTopNestKid(el); subok && !sub.str {
 						subs = append(subs, sub)
 						continue
@@ -750,6 +780,9 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				nKinds++
 			}
 			if len(subs) > 0 {
+				nKinds++
+			}
+			if len(objs) > 0 {
 				nKinds++
 			}
 			if !eleOk || nKinds > 1 {
@@ -773,11 +806,31 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				}
 			}
 			arr := saTopArr{elems: i32s}
-			if len(strs) > 0 || (len(i32s) == 0 && len(subs) == 0 && strAnnot) {
+			if len(strs) > 0 || (len(i32s) == 0 && len(subs) == 0 && len(objs) == 0 && strAnnot) {
 				arr = saTopArr{elems: strs, str: true}
 			}
 			if len(subs) > 0 {
 				arr = saTopArr{nested: subs}
+			}
+			if len(objs) > 0 {
+				first := objs[0]
+				for _, o := range objs[1:] {
+					if o.regexField != first.regexField || len(o.strFields) != len(first.strFields) {
+						eleOk = false
+						break
+					}
+					for k := range first.strFields {
+						if _, ok := o.strFields[k]; !ok {
+							eleOk = false
+							break
+						}
+					}
+				}
+				if !eleOk {
+					okAll = false
+					break
+				}
+				arr = saTopArr{objs: objs}
 			}
 			pends = append(pends, pend{name: name, arr: arr})
 		}
@@ -2133,6 +2186,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 				return ln, ""
 			}
 		}
+		// 链式基 `o.f?.length`（inst 字段 arr/str 柄；空柄读 0，否则头 +8；
+		// 与 plain .length 链式基 saArrValueOf 同形，只是取长换空守卫 join）。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+			if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				return saLowerOptionalLength(w, h, scope, nextTemp), ""
+			}
+			if sh, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+				return saLowerOptionalLength(w, sh, scope, nextTemp), ""
+			}
+		}
 		// 调用结果 `?.length`（新鲜非空柄，空臂不可达，等价直读；plain 调用基 868 同形；586）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression {
 			if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
@@ -2208,6 +2271,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			}
 			scope.types[t] = vkind
 			return t, ""
+		}
+	}
+	// `match.index` for a variable bound to String.match: the array struct has
+	// no index field, so the match lowering carries group-0 start in a side
+	// channel (scope.matchIndex). Miss value is -1; guarded code (if (!match))
+	// never reads it. Byte offset == JS char index for ASCII inputs only.
+	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == "index" &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		if idx, ok := scope.matchIndex[pa.Expression.Text()]; ok {
+			return idx, ""
 		}
 	}
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
@@ -3308,6 +3381,22 @@ func saLowerArrDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDecla
 		saPropArrNest(scope, src, name)
 		saPropArrStr(scope, src, name)
 		saPropArrInnerStr(scope, src, name)
+		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+			if ce := vd.Initializer.AsCallExpression(); ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+				if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && pa.Name().Text() == "match" {
+					if scope.matchArr == nil {
+						scope.matchArr = map[string]bool{}
+					}
+					scope.matchArr[name] = true
+					if idx, ok := scope.matchIndexTemp[src]; ok {
+						if scope.matchIndex == nil {
+							scope.matchIndex = map[string]string{}
+						}
+						scope.matchIndex[name] = idx
+					}
+				}
+			}
+		}
 		// 函数串数组返回绑定记串元（`const sv = get()`；调用柄新鲜无标记，
 		// 签名种为准，与右值下标分支同源）。
 		if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
@@ -4438,15 +4527,15 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		if tce == nil {
 			return "", "not an array expression"
 		}
-		// 臂种门：串元/未知臂大声拒（h4/h5 指针当整数，上游同错；
-		// 调用等未验证形沿旧门，日后再展）。
+		// 臂种门：未知臂大声拒；串元臂可降当双臂同串（句柄皆 ptr，槽选柄
+		// 与 i32 元同形，结果记 arrStr；混串/非串臂仍大声拒，元种歧义）。
 		tstr, tok := saTernaryArrArm(tce.WhenTrue, scope)
 		fstr, fok := saTernaryArrArm(tce.WhenFalse, scope)
 		if !tok || !fok {
 			return "", "array ternary arm shape is not lowerable"
 		}
-		if tstr || fstr {
-			return "", "string-element array ternary arms are not lowerable"
+		if tstr != fstr {
+			return "", "string-element array ternary arms must agree"
 		}
 		condOp, msg := saCondOperandMat(w, tce.Condition, scope, pos, refusals, nextTemp)
 		if msg != "" {
@@ -4481,6 +4570,10 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
 		w.Write(fmt.Sprintf("  !%s\n", slot))
+		scope.types[res] = "arr"
+		if tstr {
+			saMarkArrStr(scope, res)
+		}
 		return res, ""
 	case ast.KindNewExpression:
 		// 新鲜数组构造具化（链式接收者/下标基；归属登记、消费位即释，与字面量同律；1288）。

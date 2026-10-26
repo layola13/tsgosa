@@ -358,6 +358,16 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 				w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 				scope.types[name] = "arr"
+				if vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+					if ce := vd.Initializer.AsCallExpression(); ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+						if pa := ce.Expression.AsPropertyAccessExpression(); pa != nil && pa.Name() != nil && pa.Name().Text() == "match" {
+							if scope.matchArr == nil {
+								scope.matchArr = map[string]bool{}
+							}
+							scope.matchArr[name] = true
+						}
+					}
+				}
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)
 				continue
@@ -1179,8 +1189,8 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// 无注解三元推断（i32/串臂与 return 位同核；分歧沿核拒）。
 		ce := init.AsConditionalExpression()
 		// 数组三元推断（双臂数组位即 arr 句柄；经句柄总线三元臂；
-		// 记种/归属与字面量声明同形；串元臂显式拒（h4/h5 指针当整数，
-		// 上游同错）；未知臂沿旧路大声拒；上游 i32 形实证）。
+		// 记种/归属与字面量声明同形；串元臂经 ptr 槽三元核（saLowerTernaryValue
+		// arr 臂）可降，混串/非串臂仍大声拒；未知臂沿旧路大声拒）。
 		// 签名已知调用亦数组位（`cond ? getArr() : [1]`；种由谓词再判）。
 		arrPos := func(e *ast.Node) bool {
 			if saIsArrValue(e, scope) {
@@ -1196,9 +1206,15 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if arrPos(ce.WhenTrue) && arrPos(ce.WhenFalse) {
 			tstr, tok := saTernaryArrArm(ce.WhenTrue, scope)
 			fstr, fok := saTernaryArrArm(ce.WhenFalse, scope)
-			if (tok && tstr) || (fok && fstr) {
+			// String-element array ternary arms are lowerable now: saLowerTernaryValue
+			// joins arr arms through a ptr slot (not an i32 slot), and marks the
+			// result arrStr when either arm is arrStr. The old refusal predates
+			// that ptr-slot join (when string handles were misread as i32 words).
+			// Mixed str/non-str arms are still refused: the element kind would
+			// be ambiguous for later element reads.
+			if tok && fok && tstr != fstr {
 				ln, col := pos(init.Pos())
-				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: string-element array ternary arms are not lowerable"})
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: string-element array ternary arms must agree"})
 				return false
 			}
 			if tok && fok {
@@ -1619,6 +1635,44 @@ func saIsFunctionAnnotation(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) b
 	return false
 }
 
+// saUnionEraseKind implements the JEV erase_to_base verdict for return
+// annotations: a union whose non-null members all erase to the same SA
+// kind erases to that kind, with null and undefined absorbed as a zero,
+// empty or null handle. Mixed kinds, for example number | string | null,
+// still refuse, as do unions with no non-null member.
+func saUnionEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	found := ""
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+		}
+		k, ok := saReturnKindRef(m, classes, aliasOf)
+		if !ok {
+			return "", false
+		}
+		if found == "" {
+			found = k
+		} else if found != k {
+			return "", false
+		}
+	}
+	if found == "" {
+		return "", false
+	}
+	return found, true
+}
+
 // saReturnKindRef 消解返回注解（saReturnKind 标量集之外）：单标识符别名经
 // 别名表映回 number/boolean/string（`type Count = i32`；arr 别名在返回位仍拒，
 // 无用例）；具名接口/类经 classes 表记 `inst:Name`（`-> ptr`，封存上游实发
@@ -1668,6 +1722,9 @@ func saReturnKindRef(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf ma
 		// 与形参 1979-1989 同形；封存 union 首个已知布局；其余联合沿旧门）。
 		if inst, ok := saUnionInstKind(t.AsUnionTypeNode(), classes); ok {
 			return inst, true
+		}
+		if kind, ok := saUnionEraseKind(t.AsUnionTypeNode(), classes, aliasOf); ok {
+			return kind, true
 		}
 		return "", false
 	}
@@ -1851,6 +1908,114 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 		return "", nil, false
 	}
 	return nm.Text(), init, true
+}
+
+// saTopRegexPrescan 收顶层 const 正则快照（名→原始模式/旗标；整句全为
+// 正则字面量 / new RegExp 串字面量 / 已注册顶层正则别名时才认领，
+// 否则整句不收，沿旧拒；被赋值名永不收；注解缺省或 RegExp 才收）。
+func saTopRegexPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]saTopRegex, map[*ast.Node]bool) {
+	out := map[string]saTopRegex{}
+	claimed := map[*ast.Node]bool{}
+	for _, st := range stmts {
+		if st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		dl := vs.DeclarationList.AsVariableDeclarationList()
+		if dl == nil || len(dl.Declarations.Nodes) == 0 {
+			continue
+		}
+		tmp := map[string]saTopRegex{}
+		okAll := true
+		for _, d := range dl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier || assigned[nm.Text()] {
+				okAll = false
+				break
+			}
+			if vd.Type != nil {
+				tn := vd.Type
+				if tn.Kind != ast.KindTypeReference {
+					okAll = false
+					break
+				}
+				ref := tn.AsTypeReferenceNode()
+				if ref == nil || ref.TypeName == nil || ref.TypeName.Text() != "RegExp" {
+					okAll = false
+					break
+				}
+			}
+			init := vd.Initializer
+			if init == nil {
+				okAll = false
+				break
+			}
+			if init.Kind == ast.KindRegularExpressionLiteral {
+				pat, flags, ok := saRegexSplitLiteral(init.Text())
+				if !ok {
+					okAll = false
+					break
+				}
+				tmp[nm.Text()] = saTopRegex{Pattern: pat, Flags: flags}
+				continue
+			}
+			if init.Kind == ast.KindIdentifier {
+				if tr, ok := out[init.Text()]; ok {
+					tmp[nm.Text()] = tr
+					continue
+				}
+				if tr, ok := tmp[init.Text()]; ok {
+					tmp[nm.Text()] = tr
+					continue
+				}
+				okAll = false
+				break
+			}
+			if init.Kind == ast.KindNewExpression {
+				ne := init.AsNewExpression()
+				if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier || ne.Expression.Text() != "RegExp" {
+					okAll = false
+					break
+				}
+				var args []*ast.Node
+				if ne.Arguments != nil {
+					args = ne.Arguments.Nodes
+				}
+				if len(args) < 1 || len(args) > 2 || args[0] == nil || args[0].Kind != ast.KindStringLiteral {
+					okAll = false
+					break
+				}
+				flags := ""
+				if len(args) == 2 {
+					if args[1] == nil || args[1].Kind != ast.KindStringLiteral {
+						okAll = false
+						break
+					}
+					flags = args[1].Text()
+				}
+				tmp[nm.Text()] = saTopRegex{Pattern: args[0].Text(), Flags: flags}
+				continue
+			}
+			okAll = false
+			break
+		}
+		if !okAll {
+			continue
+		}
+		for k, v := range tmp {
+			out[k] = v
+		}
+		claimed[st] = true
+	}
+	return out, claimed
 }
 
 // saFoldTopLevelConst 折叠顶层纯量声明（`var K = 42` 内联文本、
@@ -2500,7 +2665,7 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -2564,7 +2729,13 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	linkPrefix, linkResolve := saLinkDefPrefix(link), saLinkResolveMap(link)
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
+	if scope.regexPat == nil {
+		scope.regexPat = map[string]string{}
+	}
+	for k, v := range topRegex {
+		scope.regexPat[k] = v.Pattern
+	}
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = saLinkHarvestsMap(link)
@@ -2949,7 +3120,7 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 	buf.Write(":\n")
 	inner := &saScope{types: map[string]string{}, funcs: scope.funcs, enums: scope.enums,
 		enumNonInt: scope.enumNonInt, classes: scope.classes, topConsts: scope.topConsts,
-		topStr: scope.topStr, topArrs: scope.topArrs, topObjs: scope.topObjs, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
+		topStr: scope.topStr, topArrs: scope.topArrs, topObjs: scope.topObjs, topRegex: scope.topRegex, modVars: scope.modVars, mainRenamed: scope.mainRenamed,
 		nextLabel: scope.nextLabel, retKind: retKind, strPool: scope.strPool, src: scope.src,
 		addImport: needImport, tcx: scope.tcx, pendingFns: scope.pendingFns, arrowSeq: scope.arrowSeq, aliasOf: scope.aliasOf, imports: scope.imports, importRemote: scope.importRemote}
 	saScopeLinkCopy(inner, scope)
@@ -3082,7 +3253,7 @@ func saLowerFnReturn(w printer.EmitTextWriter, s *ast.Node, expr *ast.Node, scop
 // saSigRetSuffix 返回签名后缀（string/inst/arr（含串元 arrStr）句柄即 ptr，
 // 其余 i32；封存上游实发 `-> ptr`（串）与 `@make(…) -> ptr:`（实例））。
 func saSigRetSuffix(retKind string) string {
-	if retKind == "string" || retKind == "map" || retKind == "arr" || retKind == "arrStr" || strings.HasPrefix(retKind, "inst:") {
+	if retKind == "jsval" || retKind == "string" || retKind == "map" || retKind == "arr" || retKind == "arrStr" || strings.HasPrefix(retKind, "inst:") {
 		return " -> ptr"
 	}
 	// f64 直通（上游实发 `-> f64`；形参 `saSigParamType` 同形在先）。

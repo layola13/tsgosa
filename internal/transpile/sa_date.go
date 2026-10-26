@@ -419,6 +419,13 @@ func saRegexSplitLiteral(text string) (string, string, bool) {
 	return pat, text[sep+1:], true
 }
 
+// saTopRegex 是顶层 const 正则快照（名→原始模式/旗标；用点编译，见
+// saTopRegexPrescan；编译时经 saRegexPosixRewrite 改写为 POSIX-ERE）。
+type saTopRegex struct {
+	Pattern string
+	Flags   string
+}
+
 // saRegexCflags 映 JS flags 为 sal cflags 字面量（EXTENDED=1/ICASE=2/NEWLINE=4；
 // `g` 无底座状态位（全局性由调用方循环实现），编译期忽略，调用方按语义分流）。
 func saRegexCflags(flags string) (string, string) {
@@ -437,24 +444,173 @@ func saRegexCflags(flags string) (string, string) {
 	return fmt.Sprintf("%d", c), ""
 }
 
-// saRegexGatePattern 查 JS 特有写法（超 POSIX-ERE 即拒因；"" 为过）。
-func saRegexGatePattern(pat string) string {
-	if strings.Contains(pat, "(?") {
-		return "RegExp (? groups need POSIX ERE (no lookahead/named/capture-less groups)"
+// saRegexPosixRewrite 把 JS 非捕获组 (?: ) 改写为 POSIX ( )。只用于
+// .test / 整体匹配：匹配与否不变，组编号只在 .exec 组回填时才有意义，
+// 而 .exec 有真捕获组本来就大声拒（saRegexHasCaptureGroup 按原始模式判，
+// (?: 不计为真捕获组），故改写不会静默改变 .exec 输出。
+// saJsGroupMapping parses a JS regex pattern and returns, for each JS capture
+// group in order, its POSIX group number after (?: -> ( rewriting.
+// POSIX group numbers are counted for every '(' including converted non-captures.
+// Returns nil if the pattern uses unsupported constructs (lookahead, named groups).
+func saJsGroupMapping(pat string) []int {
+	var mapping []int
+	posix := 0
+	for i := 0; i < len(pat); i++ {
+		c := pat[i]
+		if c == '\\' {
+			i++
+			continue
+		}
+		if c == '[' {
+			i++
+			if i < len(pat) && pat[i] == '^' {
+				i++
+			}
+			if i < len(pat) && pat[i] == ']' {
+				i++
+			}
+			for i < len(pat) && pat[i] != ']' {
+				if pat[i] == '\\' {
+					i++
+				}
+				i++
+			}
+			continue
+		}
+		if c != '(' {
+			continue
+		}
+		posix++
+		if i+1 < len(pat) && pat[i+1] == '?' {
+			if i+2 < len(pat) && pat[i+2] == ':' {
+				// Non-capture, POSIX group exists but no JS group.
+				continue
+			}
+			// Lookahead (?= (?! , named (?<, etc. are unsupported for mapping.
+			return nil
+		}
+		mapping = append(mapping, posix)
 	}
+	return mapping
+}
+func saPatternTextForMatch(e *ast.Node, scope *saScope) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	if e.Kind == ast.KindRegularExpressionLiteral {
+		pat, _, ok := saRegexSplitLiteral(e.Text())
+		return pat, ok
+	}
+	if e.Kind == ast.KindIdentifier {
+		if pat, ok := scope.regexPat[e.Text()]; ok {
+			return pat, true
+		}
+	}
+	return "", false
+}
+
+// saRegexPosixRewrite projects JS regex to POSIX ERE, ASCII only (JEV project_ascii_only):
+// (?: -> ( outside classes, \d/\s/\w to POSIX character classes outside
+// classes ([[:digit:]] / [[:space:]] / [[:alnum:]_] and negations), and to
+// class expressions inside classes ([:digit:] / [:space:] / [:alnum:]_).
+// Negated escapes inside a class have no simple projection and are refused
+// by saRegexGatePattern before this runs, so they cannot occur here.
+// Other escapes (\., \[, \\, etc.) pass through unchanged.
+func saRegexPosixRewrite(pat string) string {
+	var b strings.Builder
+	inClass := false
+	for i := 0; i < len(pat); i++ {
+		c := pat[i]
+		if c == '\\' && i+1 < len(pat) {
+			n := pat[i+1]
+			if inClass {
+				switch n {
+				case 'd':
+					b.WriteString("[:digit:]")
+				case 's':
+					b.WriteString("[:space:]")
+				case 'w':
+					b.WriteString("[:alnum:]_")
+				default:
+					b.WriteByte(c)
+					b.WriteByte(n)
+				}
+			} else {
+				switch n {
+				case 'd':
+					b.WriteString("[[:digit:]]")
+				case 'D':
+					b.WriteString("[^[:digit:]]")
+				case 's':
+					b.WriteString("[[:space:]]")
+				case 'S':
+					b.WriteString("[^[:space:]]")
+				case 'w':
+					b.WriteString("[[:alnum:]_]")
+				case 'W':
+					b.WriteString("[^[:alnum:]_]")
+				default:
+					b.WriteByte(c)
+					b.WriteByte(n)
+				}
+			}
+			i++
+			continue
+		}
+		if c == '[' && !inClass {
+			inClass = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ']' && inClass {
+			inClass = false
+			b.WriteByte(c)
+			continue
+		}
+		if c == '(' && !inClass && i+2 < len(pat) && pat[i+1] == '?' && pat[i+2] == ':' {
+			b.WriteByte('(')
+			i += 2
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// saRegexGatePattern 查 JS 特有写法（超 POSIX-ERE 即拒因；"" 为过）。
+// (?: 允许（见 saRegexPosixRewrite）；(?= (? ! (?< (?P< 等前瞻/命名组仍拒。
+func saRegexGatePattern(pat string) string {
+	inClass := false
 	for i := 0; i < len(pat); i++ {
 		if pat[i] == 0 {
 			return "RegExp NUL byte has no sa_std/text/regex projection"
 		}
-		if pat[i] != '\\' || i+1 >= len(pat) {
+		if pat[i] == '\\' && i+1 < len(pat) {
+			n := pat[i+1]
+			if inClass && (n == 'D' || n == 'S' || n == 'W') {
+				return "RegExp \\" + string([]byte{n}) + " inside a character class has no POSIX projection"
+			}
+			switch n {
+			case 'b', 'B', 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				return string("RegExp \\") + string([]byte{n}) + " needs POSIX ERE (no JS escape classes/backrefs)"
+			}
+			i++
 			continue
 		}
-		n := pat[i+1]
-		switch n {
-		case 'd', 'D', 's', 'S', 'w', 'W', 'b', 'B', 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-			return string("RegExp \\") + string([]byte{n}) + " needs POSIX ERE (no JS escape classes/backrefs)"
+		if pat[i] == '[' && !inClass {
+			inClass = true
+			continue
 		}
-		i++
+		if pat[i] == ']' && inClass {
+			inClass = false
+			continue
+		}
+		if pat[i] == '(' && !inClass && i+1 < len(pat) && pat[i+1] == '?' {
+			if i+2 < len(pat) && pat[i+2] == ':' {
+				continue
+			}
+			return "RegExp (? groups need POSIX ERE (no lookahead/named groups; (?: is rewritten to ()"
+		}
 	}
 	return ""
 }
@@ -469,10 +625,11 @@ func saLowerRegexCompile(w printer.EmitTextWriter, pat, flags string, scope *saS
 		return "", msg
 	}
 	scope.addImport("sa_std/text/regex.sa")
-	cname := saStrIntern(scope.strPool, pat)
+	posix := saRegexPosixRewrite(pat)
+	cname := saStrIntern(scope.strPool, posix)
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_regex_compile(&%s, %d, %s)\n", t, cname, len(pat), cf))
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_compile(&%s, %d, %s)\n", t, cname, len(posix), cf))
 	saOwnTemp(scope, t)
 	return t, ""
 }
@@ -513,6 +670,9 @@ func saRegexBaseKind(e *ast.Node, scope *saScope) bool {
 	}
 	if e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "regex" {
+			return true
+		}
+		if _, ok := scope.topRegex[e.Text()]; ok {
 			return true
 		}
 	}
@@ -664,7 +824,7 @@ func saLowerRegexMatchGlobal(w printer.EmitTextWriter, rh, tp, tl string, scope 
 // saLowerRegexMatchArray match 整体单元素串数组（miss 即 null 0 柄；
 // `String.match` 无 g 与 `RegExp.exec` 共享；整体经 group0 ptr/len 具化新头
 // push 入新串元数组；`saMarkArrStr` 记串元；分支内 alloc 分支内释放）。
-func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *saScope, nextTemp *int) string {
+func saLowerRegexMatchArrayGroups(w printer.EmitTextWriter, rh, tp, tl string, groups []int, scope *saScope, nextTemp *int) string {
 	scope.addImport("sa_std/text/regex.sa")
 	m := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -681,61 +841,79 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	slot := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = alloc 16\n", slot))
+	idxSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", idxSlot))
+	saOwnTemp(scope, idxSlot)
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, missL))
 	w.Write(fmt.Sprintf("%s:\n", missL))
 	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
 	w.Write(fmt.Sprintf("  store %s + 8, 0 as u64\n", slot))
+	w.Write(fmt.Sprintf("  store %s + 0, -1 as i32\n", idxSlot))
+	w.Write(fmt.Sprintf("  store %s + 4, -1 as i32\n", idxSlot))
 	mfr := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", mfr, m))
 	w.Write(fmt.Sprintf("  !%s\n", mfr))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", hitL))
-	gp := fmt.Sprintf("t_%d", *nextTemp)
+	// Extract and copy every requested group before match_free (group_ptr points into match text).
+	type grpCopy struct{ cptr, clen, cb string }
+	var copies []grpCopy
+	for _, gidx := range groups {
+		gp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_ptr(%s, %d)\n", gp, m, gidx))
+		gl := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, %d)\n", gl, m, gidx))
+		scope.addImport("sa_std/string.sai")
+		scope.addImport("sa_std/fmt.sai")
+		eb := saLowerStringLiteral(w, "", scope, nextTemp)
+		ebp, ebl := saExpandStr(w, eb, nextTemp)
+		cb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", cb, gp, gl, ebp, ebl))
+		saReleaseOwnedTemp(w, scope, eb)
+		cptr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", cptr, cb))
+		clen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", clen, cb))
+		saOwnTemp(scope, cptr)
+		saOwnTemp(scope, clen)
+		saOwnTemp(scope, cb)
+		copies = append(copies, grpCopy{cptr: cptr, clen: clen, cb: cb})
+		w.Write(fmt.Sprintf("  !%s\n", gp))
+		w.Write(fmt.Sprintf("  !%s\n", gl))
+	}
+	// Group-0 start (byte offset; ASCII inputs: == JS char index) before match_free.
+	g0 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_ptr(%s, 0)\n", gp, m))
-	gl := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, 0)\n", gl, m))
-	// 组数据先拷出（group_ptr 指向 match 内部文本，match_free 后悬垂；
-	// 经 concat 空串拷入自有缓冲，`+` 路 saConcatSlices 同形）。
-	scope.addImport("sa_std/string.sai")
-	scope.addImport("sa_std/fmt.sai")
-	eb := saLowerStringLiteral(w, "", scope, nextTemp)
-	ebp, ebl := saExpandStr(w, eb, nextTemp)
-	cb := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", cb, gp, gl, ebp, ebl))
-	saReleaseOwnedTemp(w, scope, eb)
-	cptr := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", cptr, cb))
-	clen := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", clen, cb))
-	saOwnTemp(scope, cptr)
-	saOwnTemp(scope, clen)
-	saOwnTemp(scope, cb)
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_group_start(%s, 0)\n", g0, m))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as u64\n", idxSlot, g0))
+	w.Write(fmt.Sprintf("  !%s\n", g0))
 	fr := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, m))
 	w.Write(fmt.Sprintf("  !%s\n", fr))
-	gh := fmt.Sprintf("t_%d", *nextTemp)
-	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, cptr))
-	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, clen))
-	saReleaseOwnedTemp(w, scope, cptr)
-	saReleaseOwnedTemp(w, scope, clen)
-	saReleaseOwnedTemp(w, scope, cb)
-	saOwnTemp(scope, gh)
 	h := saNewEmptyArray(w, nextTemp)
 	saOwnTemp(scope, h)
-	saLowerArrayPush(w, h, gh, scope, nextTemp)
-	// gh 移交数组持有（分支内 alloc 在 join 后不可见，`!gh` 即释放数组
-	// 仍引用的结构体、读出堆垃圾；记 consumed 跳过释放，16 字节随数组
-	// 存活，drain 跳过已消费，match 同例实锤）。
-	saConsumeOwn(scope, gh)
+	for _, cp := range copies {
+		gh := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, cp.cptr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, cp.clen))
+		saReleaseOwnedTemp(w, scope, cp.cptr)
+		saReleaseOwnedTemp(w, scope, cp.clen)
+		saReleaseOwnedTemp(w, scope, cp.cb)
+		saOwnTemp(scope, gh)
+		saLowerArrayPush(w, h, gh, scope, nextTemp)
+		saConsumeOwn(scope, gh)
+	}
+	// 每个 gh 已在循环内移交数组持有并记 consumed，同原单组例。
 	hp := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, h))
@@ -743,8 +921,6 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", hl, h))
 	saReleaseOwnedTemp(w, scope, h)
-	w.Write(fmt.Sprintf("  !%s\n", gp))
-	w.Write(fmt.Sprintf("  !%s\n", gl))
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, hp))
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", slot, hl))
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
@@ -763,7 +939,72 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", out, ol))
 	saOwnTemp(scope, out)
 	saMarkArrStr(scope, out)
+	idxTemp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", idxTemp, idxSlot))
+	saReleaseOwnedTemp(w, scope, idxSlot)
+	if scope.matchIndexTemp == nil {
+		scope.matchIndexTemp = map[string]string{}
+	}
+	scope.matchIndexTemp[out] = idxTemp
 	return out
+}
+
+func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *saScope, nextTemp *int) string {
+	return saLowerRegexMatchArrayGroups(w, rh, tp, tl, []int{0}, scope, nextTemp)
+}
+
+// saLowerTopObjArrFindStr lowers `TOP.find(entry => entry.<regex>.test(arg))?.field`
+// by iterating the top-level snapshot in the transpiler: compile each entry's
+// regex, test it against arg, return the entry's string field on first hit,
+// else return 0 (undefined). No runtime array of objects is created.
+// All patterns are gate-checked before any SA is emitted, so a failure
+// cannot leave a truncated function body.
+func saLowerTopObjArrFindStr(w printer.EmitTextWriter, arr saTopArr, field string, arg *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	for _, o := range arr.objs {
+		if msg := saRegexGatePattern(o.regexPat); msg != "" {
+			return "", msg
+		}
+		if _, msg := saRegexCflags(o.regexFlags); msg != "" {
+			return "", msg
+		}
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	saOwnTemp(scope, slot)
+	endL := fmt.Sprintf("L_objfind_end_%d", *nextTemp)
+	*nextTemp++
+	for _, o := range arr.objs {
+		rh, msg := saLowerRegexCompile(w, o.regexPat, o.regexFlags, scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		hit, msg := saLowerRegexTest(w, rh, arg, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		saReleaseOwnedTemp(w, scope, rh)
+		hitL := fmt.Sprintf("L_objfind_hit_%d", *nextTemp)
+		*nextTemp++
+		nextL := fmt.Sprintf("L_objfind_next_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", hit, hitL, nextL))
+		w.Write(fmt.Sprintf("%s:\n", hitL))
+		lit := saLowerStringLiteral(w, o.strFields[field], scope, nextTemp)
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, lit))
+		saReleaseOwnedTemp(w, scope, lit)
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", nextL))
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+	saReleaseOwnedTemp(w, scope, slot)
+	return res, ""
 }
 
 // saLowerRegexCall 正则调用总线（`.test`→i32；`.exec`→整体单元素串数组
@@ -783,7 +1024,19 @@ func saLowerRegexCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *s
 	}
 	recv := ""
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
-		recv = pa.Expression.Text()
+		if tr, ok := scope.topRegex[pa.Expression.Text()]; ok {
+			if k, ok2 := scope.types[pa.Expression.Text()]; !ok2 || k != "regex" {
+				var msg string
+				recv, msg = saLowerRegexCompile(w, tr.Pattern, tr.Flags, scope, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+			} else {
+				recv = pa.Expression.Text()
+			}
+		} else {
+			recv = pa.Expression.Text()
+		}
 	} else {
 		var msg string
 		recv, msg = saLowerRegexInlineBase(w, pa.Expression, scope, pos, refusals, nextTemp)
@@ -815,6 +1068,9 @@ func saLowerRegexInlineBase(w printer.EmitTextWriter, e *ast.Node, scope *saScop
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "regex" {
 			return e.Text(), ""
+		}
+		if tr, ok := scope.topRegex[e.Text()]; ok {
+			return saLowerRegexCompile(w, tr.Pattern, tr.Flags, scope, nextTemp)
 		}
 		return "", "not a regex call"
 	}

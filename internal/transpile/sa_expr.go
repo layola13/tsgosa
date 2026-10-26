@@ -639,6 +639,15 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 		nm := cond.Text()
 		if k, ok := scope.types[nm]; ok {
 			if k == "arr" {
+				if scope.matchArr != nil && scope.matchArr[nm] {
+					hp := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, nm))
+					res := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
+					return res, ""
+				}
 				return "", "array " + nm + " in condition"
 			}
 			if k == "str" {
@@ -661,6 +670,9 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			// lowerIf 通用 lowerExpr+br 同形；封存 materializeCond 非立即量直通）。
 			if strings.HasPrefix(k, "inst:") {
 				return nm, ""
+			}
+			if k == "jsval" {
+				return saJsValTruthy(w, nm, nextTemp), ""
 			}
 			if k != "i32" && k != "bool" {
 				return "", k + " " + nm + " in condition"
@@ -980,6 +992,9 @@ func saEvalBool(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(
 		nm := e.Text()
 		if k, ok := scope.types[nm]; ok && k == "bool" {
 			return nm, ""
+		}
+		if k, ok := scope.types[nm]; ok && k == "jsval" {
+			return saJsValTruthy(w, nm, nextTemp), ""
 		}
 	}
 	return saEvalI32(w, e, scope, pos, refusals, nextTemp)
@@ -2626,6 +2641,15 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 					return "0", false, ""
 				}
 				if arg != nil && arg.Kind == ast.KindIdentifier {
+					if k, ok := scope.types[arg.Text()]; ok && k == "jsval" {
+						tag := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, arg.Text()))
+						res := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 5\n", res, tag))
+						return res, false, ""
+					}
 					if k, ok := scope.types[arg.Text()]; ok && (k == "i32" || k == "bool") {
 						// checker 真 any/unknown 或未消解裸形参禁折叠（`unknown`/裸 `T`
 						// 形参可持数组柄，折 0 即静默错码；与 saTypeofKind 同口径；
@@ -3241,9 +3265,78 @@ func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", rL))
 	base := len(scope.ownOrder)
+	// && narrowing: guards from left (typeof v === "kind") narrow v for right evaluation, save/restore via slots.
+	guards := map[string]string{}
+	savedKinds := map[string]string{}
+	savedSlots := map[string]string{}
+	if isAnd {
+		guards = saCollectTypeofGuards(be.Left, scope)
+		for nm, lit := range guards {
+			origKind, ok := scope.types[nm]
+			if !ok {
+				continue
+			}
+			if saRightNeedsJsVal(be.Right, nm) {
+				continue
+			}
+			// If right is itself a typeof guard for nm, its evaluation needs the original tag, not the narrowed payload.
+			if be.Right != nil && be.Right.Kind == ast.KindBinaryExpression {
+				// handled by saCollectTypeofGuards recursion for nested &&, but a direct typeof right should not be narrowed here.
+				if g2 := saCollectTypeofGuards(be.Right, scope); len(g2) > 0 {
+					if _, ok2 := g2[nm]; ok2 {
+						continue
+					}
+				}
+			}
+			savedKinds[nm] = origKind
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, nm))
+			savedSlots[nm] = slot
+			var unboxed string
+			var newKind string
+			switch lit {
+			case "string":
+				unboxed = saUnboxJsValPtr(w, nm, nextTemp)
+				newKind = "str"
+			case "number":
+				unboxed = saUnboxJsValI32(w, nm, nextTemp)
+				newKind = "i32"
+			case "boolean":
+				unboxed = saUnboxJsValI32(w, nm, nextTemp)
+				newKind = "bool"
+			case "object":
+				unboxed = saUnboxJsValPtr(w, nm, nextTemp)
+				newKind = "inst:object"
+			}
+			if unboxed != "" {
+				w.Write(fmt.Sprintf("  !%s\n", nm))
+				w.Write(fmt.Sprintf("  %s = %s\n", nm, unboxed))
+				scope.types[nm] = newKind
+			}
+		}
+	}
 	r, msg := saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		for nm, origKind := range savedKinds {
+			scope.types[nm] = origKind
+		}
 		return "", msg
+	}
+	// Restore narrowed identifiers before jmp end, so later code sees original jsval.
+	for nm, origKind := range savedKinds {
+		slot, ok := savedSlots[nm]
+		if !ok {
+			continue
+		}
+		w.Write(fmt.Sprintf("  !%s\n", nm))
+		back := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", back, slot))
+		w.Write(fmt.Sprintf("  %s = %s\n", nm, back))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		scope.types[nm] = origKind
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, r))
 	// 右值入槽即消费，右臂新建临时量就地释放（三元惰性形同律）。
@@ -3395,6 +3488,169 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		}
 	}
 	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
+	if msg == "" {
+		// jsval typeof-narrowed str ternary: typeof v === "string" ? v.method() : ""
+		// True arm is evaluated with v narrowed to str (unboxed payload, save/restore).
+		if ce.Condition != nil && ce.Condition.Kind == ast.KindBinaryExpression {
+			be := ce.Condition.AsBinaryExpression()
+			if be != nil {
+				var typeOp, litNode *ast.Node
+				for _, side := range []*ast.Node{be.Left, be.Right} {
+					if side != nil && side.Kind == ast.KindTypeOfExpression {
+						typeOp = side
+					}
+					if side != nil && side.Kind == ast.KindStringLiteral {
+						litNode = side
+					}
+				}
+				if typeOp != nil && litNode != nil && litNode.Text() == "string" {
+					inner := typeOp.AsTypeOfExpression().Expression
+					if inner != nil && inner.Kind == ast.KindIdentifier {
+						nm := inner.Text()
+						if origKind, ok := scope.types[nm]; ok && origKind == "jsval" {
+							// Check arms are str when narrowed.
+							scope.types[nm] = "str"
+							isStrArms := saIsStrValue(ce.WhenTrue, scope) && saIsStrValue(ce.WhenFalse, scope)
+							scope.types[nm] = origKind
+							if isStrArms {
+								slot := fmt.Sprintf("t_%d", *nextTemp)
+								*nextTemp++
+								w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+								tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+								*nextLabel++
+								fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+								*nextLabel++
+								endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+								*nextLabel++
+								w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+								w.Write(fmt.Sprintf("%s:\n", tL))
+								origSlot := fmt.Sprintf("t_%d", *nextTemp)
+								*nextTemp++
+								w.Write(fmt.Sprintf("  %s = alloc 8\n", origSlot))
+								w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", origSlot, nm))
+								unboxed := saUnboxJsValPtr(w, nm, nextTemp)
+								w.Write(fmt.Sprintf("  !%s\n", nm))
+								w.Write(fmt.Sprintf("  %s = %s\n", nm, unboxed))
+								scope.types[nm] = "str"
+								base := len(scope.ownOrder)
+								tv, msgA := saEvalStr(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+								if msgA != "" {
+									scope.types[nm] = origKind
+									return "", false, msgA
+								}
+								w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, tv))
+								saReleaseArmTemps(w, scope, base)
+								w.Write(fmt.Sprintf("  !%s\n", nm))
+								origBack := fmt.Sprintf("t_%d", *nextTemp)
+								*nextTemp++
+								w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", origBack, origSlot))
+								w.Write(fmt.Sprintf("  %s = %s\n", nm, origBack))
+								w.Write(fmt.Sprintf("  !%s\n", origSlot))
+								scope.types[nm] = origKind
+								w.Write(fmt.Sprintf("  jmp %s\n", endL))
+								w.Write(fmt.Sprintf("%s:\n", fL))
+								base = len(scope.ownOrder)
+								fv, msgB := saEvalStr(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+								if msgB != "" {
+									return "", false, msgB
+								}
+								w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, fv))
+								saReleaseArmTemps(w, scope, base)
+								w.Write(fmt.Sprintf("  jmp %s\n", endL))
+								w.Write(fmt.Sprintf("%s:\n", endL))
+								res := fmt.Sprintf("t_%d", *nextTemp)
+								*nextTemp++
+								w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+								w.Write(fmt.Sprintf("  !%s\n", slot))
+								return res, true, ""
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// && typeof-narrowed i32 ternary: typeof v === "number" && ... ? Math.round(v) : undefined
+	if guards := saCollectTypeofGuards(ce.Condition, scope); len(guards) > 0 {
+		for nm, lit := range guards {
+			if lit != "number" {
+				continue
+			}
+			origKind, ok := scope.types[nm]
+			if !ok || origKind != "jsval" {
+				continue
+			}
+			if !saNodeContainsIdent(ce.WhenTrue, nm) {
+				continue
+			}
+			// False arm must be undefined/null or i32, true arm must contain nm (predicate, no emission).
+			isUndefArm := func(e *ast.Node) bool {
+				if e == nil {
+					return false
+				}
+				if e.Kind == ast.KindUndefinedKeyword || e.Kind == ast.KindNullKeyword {
+					return true
+				}
+				return e.Kind == ast.KindIdentifier && e.Text() == "undefined"
+			}
+			if !isUndefArm(ce.WhenFalse) && ce.WhenFalse.Kind != ast.KindNumericLiteral && ce.WhenFalse.Kind != ast.KindIdentifier {
+				// Allow other i32 false arms only if they do not use nm; if they use nm, they also need narrowing, which this block does not handle for false arm.
+				if saNodeContainsIdent(ce.WhenFalse, nm) {
+					continue
+				}
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 4\n", slot))
+			tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+			*nextLabel++
+			fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+			*nextLabel++
+			endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+			w.Write(fmt.Sprintf("%s:\n", tL))
+			origSlot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", origSlot))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", origSlot, nm))
+			unboxed := saUnboxJsValI32(w, nm, nextTemp)
+			w.Write(fmt.Sprintf("  !%s\n", nm))
+			w.Write(fmt.Sprintf("  %s = %s\n", nm, unboxed))
+			scope.types[nm] = "i32"
+			base := len(scope.ownOrder)
+			tv, msgA := saEvalI32(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+			if msgA != "" {
+				scope.types[nm] = origKind
+				return "", false, msgA
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, tv))
+			saReleaseArmTemps(w, scope, base)
+			w.Write(fmt.Sprintf("  !%s\n", nm))
+			back := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", back, origSlot))
+			w.Write(fmt.Sprintf("  %s = %s\n", nm, back))
+			w.Write(fmt.Sprintf("  !%s\n", origSlot))
+			scope.types[nm] = origKind
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", fL))
+			base = len(scope.ownOrder)
+			fv, msgB := saEvalI32(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+			if msgB != "" {
+				return "", false, msgB
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, fv))
+			saReleaseArmTemps(w, scope, base)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			return res, false, ""
+		}
+	}
 	if msg != "" {
 		// H1b 首批（return 同例）：条件位而非语句位。
 		cpos := where.Pos()
@@ -3406,7 +3662,16 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		return "", false, "unsupported ternary condition: " + msg
 	}
 	if saIsStrValue(ce.WhenTrue, scope) || saIsStrValue(ce.WhenFalse, scope) {
-		if !saIsStrValue(ce.WhenTrue, scope) || !saIsStrValue(ce.WhenFalse, scope) {
+		isUndef := func(e *ast.Node) bool {
+			if e == nil {
+				return false
+			}
+			if e.Kind == ast.KindUndefinedKeyword || e.Kind == ast.KindNullKeyword {
+				return true
+			}
+			return e.Kind == ast.KindIdentifier && e.Text() == "undefined"
+		}
+		if (!saIsStrValue(ce.WhenTrue, scope) && !isUndef(ce.WhenTrue)) || (!saIsStrValue(ce.WhenFalse, scope) && !isUndef(ce.WhenFalse)) {
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms disagree (string vs non-string)"})
 			return "", false, "ternary arms disagree (string vs non-string)"
@@ -3454,6 +3719,53 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		// 走此核故潜伏，1328 实证补齐）。
 		w.Write(fmt.Sprintf("  !%s\n", slot))
 		return res, true, ""
+	}
+	// arr arms join through a ptr slot (lazy branches, like str ternary;
+	// arm result is consumed before saReleaseArmTemps so a newly built
+	// array is not freed in its own branch; borrowed field arrays are
+	// not heap temps, so the consume is a no-op for them).
+	if saIsArrValue(ce.WhenTrue, scope) && saIsArrValue(ce.WhenFalse, scope) {
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		tL := fmt.Sprintf("L_tern_t_%d", *nextLabel)
+		*nextLabel++
+		fL := fmt.Sprintf("L_tern_f_%d", *nextLabel)
+		*nextLabel++
+		endL := fmt.Sprintf("L_tern_end_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
+		w.Write(fmt.Sprintf("%s:\n", tL))
+		base := len(scope.ownOrder)
+		av, msgA := saArrValueOf(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+		if msgA != "" {
+			return "", false, msgA
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, av))
+		saReleaseArmTemps(w, scope, base)
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", fL))
+		base = len(scope.ownOrder)
+		bv, msgB := saArrValueOf(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+		if msgB != "" {
+			return "", false, msgB
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, bv))
+		saReleaseArmTemps(w, scope, base)
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		res := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		scope.types[res] = "arr"
+		if scope.arrStr != nil && (scope.arrStr[av] || scope.arrStr[bv]) {
+			if scope.arrStr == nil {
+				scope.arrStr = map[string]bool{}
+			}
+			scope.arrStr[res] = true
+		}
+		return res, false, ""
 	}
 	// f64 arms join through an f64 slot (float literals, sitofp ints, f64 bindings).
 	if ak, at, aok := saTernaryF64Arm(ce.WhenTrue, scope); aok {
@@ -4880,6 +5192,61 @@ func saLinkCallee(scope *saScope, name string) (string, bool) {
 // 零语义变，供标签模板脱糖复用：str 形参走串求值，arr 形参走句柄值，
 // 实例须同类相授，余下走 bool 兼容求值）。
 func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if len(sig.paramKinds) == total && sig.paramKinds[i] == "jsval" {
+		if a != nil && a.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[a.Text()]; ok && k == "jsval" {
+				return a.Text(), ""
+			}
+			if k, ok := scope.types[a.Text()]; ok && k == "str" {
+				h := saBoxJsVal(w, 1, a.Text(), "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+			if k, ok := scope.types[a.Text()]; ok && k == "arr" {
+				h := saBoxJsVal(w, 5, a.Text(), "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+			if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				h := saBoxJsVal(w, 4, a.Text(), "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+		}
+		if saIsNullLit(a, scope) {
+			if a != nil && a.Kind == ast.KindNullKeyword {
+				h := saBoxJsVal(w, 6, "", "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+			h := saBoxJsVal(w, 0, "", "", false, nextTemp)
+			saOwnTemp(scope, h)
+			return h, ""
+		}
+		if saIsStrValue(a, scope) {
+			if sv, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp); msg == "" {
+				h := saBoxJsVal(w, 1, sv, "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+		}
+		if saIsArrValue(a, scope) {
+			if av, msg := saArrValueOf(w, a, scope, pos, refusals, nextTemp); msg == "" {
+				h := saBoxJsVal(w, 5, av, "", false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+		}
+		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
+			if msg2 := saCheckI32Value(scope, op); msg2 == "" {
+				h := saBoxJsVal(w, 2, "", op, false, nextTemp)
+				saOwnTemp(scope, h)
+				return h, ""
+			}
+		}
+		return "", "jsval argument needs a lowerable value"
+	}
+
 	// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
 	// arr 形参走句柄值；实例须同类相授；arr/str 句柄标识符直传；
 	// 其余走 bool 兼容求值。
@@ -7114,6 +7481,220 @@ func saLowerNullishInstNull(w printer.EmitTextWriter, be *ast.BinaryExpression, 
 	return out, ""
 }
 
+// saJsValKind codes: 0 undefined, 1 string, 2 number, 3 boolean, 4 object, 5 array, 6 null, 7 function.
+// Layout: alloc 24, +0 kind i32, +8 payload ptr, +16 payload i32/f64.
+func saJsValKindCode(typeofName string) (int, bool) {
+	switch typeofName {
+	case "undefined":
+		return 0, true
+	case "string":
+		return 1, true
+	case "number":
+		return 2, true
+	case "boolean":
+		return 3, true
+	case "object":
+		return 4, true
+	case "function":
+		return 7, true
+	}
+	return 0, false
+}
+func saBoxJsVal(w printer.EmitTextWriter, kind int, payloadPtr string, payloadVal string, payloadIsF64 bool, nextTemp *int) string {
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 24\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, %d as i32\n", h, kind))
+	if payloadPtr == "" {
+		payloadPtr = "0"
+	}
+	w.Write(fmt.Sprintf("  store %s + 8, %s as ptr\n", h, payloadPtr))
+	if payloadVal == "" {
+		payloadVal = "0"
+	}
+	if payloadIsF64 {
+		w.Write(fmt.Sprintf("  store %s + 16, %s as f64\n", h, payloadVal))
+	} else {
+		w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", h, payloadVal))
+	}
+	return h
+}
+func saUnboxJsValPtr(w printer.EmitTextWriter, handle string, nextTemp *int) string {
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", t, handle))
+	return t
+}
+func saUnboxJsValI32(w printer.EmitTextWriter, handle string, nextTemp *int) string {
+	t := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", t, handle))
+	return t
+}
+
+func saJsValTruthy(w printer.EmitTextWriter, handle string, nextTemp *int) string {
+	tag := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, handle))
+	payI32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", payI32, handle))
+	payPtr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", payPtr, handle))
+	notUndef := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", notUndef, tag))
+	notNull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 6\n", notNull, tag))
+	base := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", base, notUndef, notNull))
+	notBool := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 3\n", notBool, tag))
+	boolOk := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", boolOk, payI32))
+	boolPass := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = or %s, %s\n", boolPass, notBool, boolOk))
+	notNum := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 2\n", notNum, tag))
+	numOk := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", numOk, payI32))
+	numPass := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = or %s, %s\n", numPass, notNum, numOk))
+	notStr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 1\n", notStr, tag))
+	strOk := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", strOk, payPtr))
+	strPass := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = or %s, %s\n", strPass, notStr, strOk))
+	r1 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", r1, base, boolPass))
+	r2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", r2, r1, numPass))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", res, r2, strPass))
+	return res
+}
+
+func saRightNeedsJsVal(n *ast.Node, nm string) bool {
+	if n == nil {
+		return false
+	}
+	// Peel ! / parens: !Array.isArray(v) needs the original jsval tag, not a narrowed payload.
+	if n.Kind == ast.KindPrefixUnaryExpression {
+		un := n.AsPrefixUnaryExpression()
+		if un != nil && un.Operand != nil {
+			return saRightNeedsJsVal(un.Operand, nm)
+		}
+		return false
+	}
+	if n.Kind == ast.KindParenthesizedExpression {
+		pe := n.AsParenthesizedExpression()
+		if pe != nil && pe.Expression != nil {
+			return saRightNeedsJsVal(pe.Expression, nm)
+		}
+		return false
+	}
+	if n.Kind == ast.KindTypeOfExpression {
+		inner := n.AsTypeOfExpression().Expression
+		return inner != nil && inner.Kind == ast.KindIdentifier && inner.Text() == nm
+	}
+	// Array.isArray(nm) is a call with property access Array.isArray
+	if n.Kind == ast.KindCallExpression {
+		ce := n.AsCallExpression()
+		if ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.Name() != nil && pa.Name().Text() == "isArray" && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Array" {
+				if ce.Arguments != nil {
+					for _, a := range ce.Arguments.Nodes {
+						if a != nil && a.Kind == ast.KindIdentifier && a.Text() == nm {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	// Recurse via binary/unary/call/parenthesized children is complex; approximate by checking if right is a simple typeof/isArray, otherwise fall back to narrowing.
+	return false
+}
+
+func saNodeContainsIdent(n *ast.Node, nm string) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == ast.KindIdentifier && n.Text() == nm {
+		return true
+	}
+	found := false
+	n.ForEachChild(func(c *ast.Node) bool {
+		if saNodeContainsIdent(c, nm) {
+			found = true
+			return true
+		}
+		return false
+	})
+	return found
+}
+func saCollectTypeofGuards(e *ast.Node, scope *saScope) map[string]string {
+	out := map[string]string{}
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind == ast.KindBinaryExpression {
+			be := n.AsBinaryExpression()
+			if be != nil && saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken {
+				walk(be.Left)
+				walk(be.Right)
+				return
+			}
+			if be != nil {
+				var typeOp, litNode *ast.Node
+				var neg bool
+				for _, side := range []*ast.Node{be.Left, be.Right} {
+					if side != nil && side.Kind == ast.KindTypeOfExpression {
+						typeOp = side
+					}
+					if side != nil && side.Kind == ast.KindStringLiteral {
+						litNode = side
+					}
+				}
+				if typeOp != nil && litNode != nil {
+					if be.OperatorToken != nil && (be.OperatorToken.Kind == ast.KindExclamationEqualsToken || be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+						neg = true
+					}
+					if !neg {
+						inner := typeOp.AsTypeOfExpression().Expression
+						if inner != nil && inner.Kind == ast.KindIdentifier {
+							if k, ok := scope.types[inner.Text()]; ok && k == "jsval" {
+								out[inner.Text()] = litNode.Text()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	walk(e)
+	return out
+}
+
 // saTypeofKind 静态 typeof 串：字面按语法表；标识符按作用域种
 // （math 别名/同文件函数为 function）；未知大声拒（无 checker，
 // env-probe 不做——无 binder 权威，折叠即发明事实）。
@@ -7130,6 +7711,9 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 	if op.Kind == ast.KindIdentifier {
 		name := op.Text()
 		if k, ok := scope.types[name]; ok {
+			if k == "jsval" {
+				return "", "jsval typeof needs runtime"
+			}
 			// checker 权威：`any`/`unknown`/未消解裸形参擦除为 i32 后 typeof 不可折叠
 			//（封存 typeofKind:58-59；上游同位拒收；无 tcx 回退既有种逻辑）。
 			if saIsAnyOrUnknown(scope.tcx, op) || saIsUnresolvedTypeParam(scope.tcx, op) {
@@ -7258,6 +7842,48 @@ func saLowerTypeofCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", t, nm))
 		}
 		return t, ""
+	}
+	if inner != nil && inner.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[inner.Text()]; ok && k == "jsval" {
+			tag := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, inner.Text()))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if lit == "object" {
+				// object matches object, array, and null kinds.
+				isObj := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 4\n", isObj, tag))
+				isArr := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 5\n", isArr, tag))
+				isNull := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 6\n", isNull, tag))
+				or1 := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = or %s, %s\n", or1, isObj, isArr))
+				or2 := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = or %s, %s\n", or2, or1, isNull))
+				if neg {
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", res, or2))
+				} else {
+					w.Write(fmt.Sprintf("  %s = eq %s, 1\n", res, or2))
+				}
+				return res, ""
+			}
+			if code, ok := saJsValKindCode(lit); ok {
+				if neg {
+					w.Write(fmt.Sprintf("  %s = ne %s, %d\n", res, tag, code))
+				} else {
+					w.Write(fmt.Sprintf("  %s = eq %s, %d\n", res, tag, code))
+				}
+				return res, ""
+			}
+			return "", "jsval typeof against unknown kind " + lit
+		}
 	}
 	kind, msg := saTypeofKind(typeOp, scope)
 	if msg != "" {

@@ -443,7 +443,8 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "not a string expression"
 		}
 		if nm == "undefined" {
-			return "", "not a string expression"
+			// Identifier undefined is the same null handle as UndefinedKeyword (0), for str return/ternary contexts.
+			return "0", ""
 		}
 		// 顶层数组快照非串值（逐元直读；758/768）。
 		if _, ok := scope.topArrs[nm]; ok {
@@ -617,9 +618,17 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindTypeAssertionExpression:
 		return saEvalStr(w, e.AsTypeAssertion().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindPropertyAccessExpression:
+		// Top-level object-array .find field (use-site inline, JEV use_site_find_inline).
+		pa := e.AsPropertyAccessExpression()
+		if arr, field, arg, ok := saTopObjArrFind(pa, scope); ok {
+			h, msg := saLowerTopObjArrFindStr(w, arr, field, arg, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return h, ""
+		}
 		// 类静态串字面量折叠（`C.TYPE` 具化；非串静态沿标识符口径拒；
 		// 封存 lowerExpr:8013-8041）。
-		pa := e.AsPropertyAccessExpression()
 		if pa.Name() != nil {
 			// 私有静态串折叠（`C.#S`；非串沿标识符口径拒）。
 			if def, key, msg, ok := saPrivStaticKey(pa.Expression, pa.Name().Text(), scope); msg != "" {
@@ -1513,7 +1522,63 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			return "", false, "unsupported String method " + pa.Name().Text()
 		}
 		if pa.QuestionDotToken != nil {
-			return "", false, "optional member call not lowerable"
+			// Optional string method call `s?.method(...)` where s is str-valued
+			// (identifier, element access on arrStr/matchArr, etc.): branch on the
+			// receiver handle being 0 (undefined/null) and return 0, else call the
+			// method with the already-evaluated handle. Only str-returning methods
+			// are covered here; i32/bool-returning optional methods keep refusing
+			// loudly (their undefined arm is not a string handle). Method must be
+			// in the known str-returning set, otherwise refuse before emitting
+			// any SA (method lowering itself would fail after partial emission).
+			if pa.Name() == nil {
+				return "", false, "optional member call not lowerable"
+			}
+			mname := pa.Name().Text()
+			switch mname {
+			case "toLowerCase", "toUpperCase", "trim", "trimStart", "trimEnd",
+				"slice", "substring", "repeat", "padStart", "padEnd",
+				"replace", "replaceAll", "concat", "charAt", "at":
+			default:
+				return "", false, "optional member call not lowerable"
+			}
+			if !saIsStrExpr(pa.Expression, scope) {
+				return "", false, "optional member call not lowerable"
+			}
+			recv, msg := saEvalStr(w, pa.Expression, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			saOwnTemp(scope, slot)
+			isnull := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, recv))
+			nullL := fmt.Sprintf("L_optstr_null_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			okL := fmt.Sprintf("L_optstr_ok_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_optstr_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+			w.Write(fmt.Sprintf("%s:\n", nullL))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", okL))
+			mres, _, mmsg := saLowerStrMethod(w, recv, mname, ce, scope, pos, refusals, nextTemp)
+			if mmsg != "" {
+				return "", false, mmsg
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, mres))
+			saReleaseOwnedTemp(w, scope, mres)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+			res := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+			saReleaseOwnedTemp(w, scope, slot)
+			return res, false, ""
 		}
 		// i32 `toString()`（`String(x)` interp 同形；bool 拼写 `true/false`
 		// 与数值 `0/1` 殊形，只收可证 i32 形，余下沿旧门）。
@@ -2528,9 +2593,20 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			}
 			return saLowerRegexMatchGlobal(w, rh, bp, bl, scope, nextTemp), false, ""
 		}
-		// 非 g 字面量捕获组大声拒（结果含组，单元素设计装不下：1168 f2 实证
-		// length 1 vs 3；绑定/new 经 regexPat 表消解同拒；/g 全局只收整体不受影响；
-		// replaceAll 同门）。
+		// 捕获组：按 JS 组顺序取 POSIX 组（(?: 转 ( 后组号会移位，映射表校正；
+		// 未匹配组近似为空串，shared 模式在整匹配时组恒匹配）。
+		if pat, ok := saPatternTextForMatch(args[0], scope); ok {
+			if mapping := saJsGroupMapping(pat); mapping != nil {
+				groups := []int{0}
+				groups = append(groups, mapping...)
+				rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return saLowerRegexMatchArrayGroups(w, rh, bp, bl, groups, scope, nextTemp), false, ""
+			}
+			return "", false, "String.match with lookahead/named groups is not lowerable yet"
+		}
 		if saRegexHasCaptureGroup(args[0], scope) {
 			return "", false, "String.match with capture groups is not lowerable yet"
 		}

@@ -1961,6 +1961,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
 	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
 	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
+	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
@@ -1978,6 +1979,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		// 顶层 const 对象快照声明无码（用点物化；788）。
 		if topObjStmts[st] {
+			handledTop[st] = true
+			continue
+		}
+		// 顶层 const 正则快照声明无码（用点编译；顶层柄注册）。
+		if topRegexStmts[st] {
 			handledTop[st] = true
 			continue
 		}
@@ -2322,7 +2328,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
 					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
-					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 					restore()
 				}
 				continue
@@ -2387,7 +2393,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -2414,13 +2420,19 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 		saScopeLinkFill(escope, link)
+		if escope.regexPat == nil {
+			escope.regexPat = map[string]string{}
+		}
+		for k, v := range topRegex {
+			escope.regexPat[k] = v.Pattern
+		}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		// 测试缓冲委托（顶层 afterAll/.only 直接子命中才走缓冲核，否则沿旧路）。
@@ -2618,8 +2630,9 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 				continue
 			}
 			if pd.Type.Kind == ast.KindAnyKeyword || pd.Type.Kind == ast.KindUnknownKeyword {
-				// `any` params default to i32 (cf tUnknown signature default).
-				kinds[name] = "i32"
+				// `any`/`unknown` params are tagged jsval handles (ptr), not i32.
+				// JEV tagged_js_value, 2026-10-26, confidence 0.85.
+				kinds[name] = "jsval"
 				continue
 			}
 			// 内联对象类型注解（`{a: number}`）：按类型字面量合成布局（复用
@@ -2854,7 +2867,7 @@ func saParamKinds(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, a
 		return nil, false
 	}
 	for _, v := range kinds {
-		if v != "i32" && v != "bool" && v != "arr" && v != "str" && v != "f64" && v != "map" && !(len(v) > 5 && v[:5] == "inst:") {
+		if v != "i32" && v != "bool" && v != "arr" && v != "str" && v != "f64" && v != "jsval" && v != "map" && !(len(v) > 5 && v[:5] == "inst:") {
 			return nil, false
 		}
 	}
@@ -3261,7 +3274,8 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 				return saAnnotKind(ref.TypeArguments.Nodes[0])
 			}
 			// `Array<T>` 即 `T[]`（元种擦除恒句柄数组；裸 `Array` 无参沿旧门）。
-			if ref.TypeName.Text() == "Array" && ref.TypeArguments != nil &&
+			// `ReadonlyArray<T>` 运行时同数组（只读是类型约束，无运行时区别）。
+			if (ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "ReadonlyArray") && ref.TypeArguments != nil &&
 				len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
 				return "arr", true
 			}
@@ -3373,8 +3387,8 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		// 模板字面量返回即串（上游实发 `-> ptr` 同形）。
 		return "string", true
 	case ast.KindAnyKeyword, ast.KindUnknownKeyword:
-		// `any` renders as number (cf tUnknown signature default).
-		return "number", true
+		// `any`/`unknown` returns are tagged jsval handles (ptr).
+		return "jsval", true
 	case ast.KindTypeReference:
 		if k, ok := saAnnotKind(t); ok && k == "i32" {
 			return "number", true
@@ -3480,8 +3494,9 @@ type saScope struct {
 	classes     map[string]*saClassDef
 	topConsts   map[string]string
 	topStr      map[string]bool
-	topArrs     map[string]saTopArr // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
-	topObjs     map[string]saTopObj // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
+	topArrs     map[string]saTopArr   // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
+	topObjs     map[string]saTopObj   // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
+	topRegex    map[string]saTopRegex // 顶层 const 正则快照（名→原始模式/旗标；用点编译）
 	modVars     map[string]*saModState
 	thisSelf    string
 	thisClass   string
@@ -3502,7 +3517,10 @@ type saScope struct {
 	arrNest     map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
-	arrStr map[string]bool
+	arrStr         map[string]bool
+	matchArr       map[string]bool   // variables bound to String.match results (null on miss is empty array struct, head 0)
+	matchIndex     map[string]string // match variable name -> i32 temp holding group-0 start (byte offset; ASCII == char index)
+	matchIndexTemp map[string]string // match array temp handle -> i32 temp holding group-0 start
 	// arrPair marks Object.entries result arrays (their elements are pair
 	// arrays: slot 0 = the string key handle address, slot 1 = the i32 value).
 	arrPair map[string]bool
@@ -3699,7 +3717,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -3786,12 +3804,18 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = linkHarvests
 	saSeedTopMaths(scope, topMaths)
+	if scope.regexPat == nil {
+		scope.regexPat = map[string]string{}
+	}
+	for k, v := range topRegex {
+		scope.regexPat[k] = v.Pattern
+	}
 	for _, p := range params {
 		scope.types[p] = paramKinds[p]
 		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
@@ -4079,6 +4103,8 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		ce := rs.Expression.AsConditionalExpression()
 		t, _, msg := saLowerTernaryValue(w, ce, s, scope, pos, refusals, needImport, nextLabel, nextTemp)
 		if msg != "" {
+			ln, col := pos(s.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 			return false, true
 		}
 		saReleaseExceptOp(w, scope, t)

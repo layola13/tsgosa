@@ -1802,6 +1802,7 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 	}
 	var fields []string
 	fdefs := map[string]*ast.TypeNode{}
+	fopt := map[string]bool{}
 	for _, m := range lit.Members.Nodes {
 		if m == nil || m.Kind != ast.KindPropertySignature {
 			continue
@@ -1819,6 +1820,9 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 		}
 		fields = append(fields, fn.Text())
 		fdefs[fn.Text()] = pd.Type
+		if m.QuestionToken() != nil {
+			fopt[fn.Text()] = true
+		}
 	}
 	if len(fields) == 0 {
 		return "", false
@@ -1835,7 +1839,7 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 			}
 			continue
 		}
-		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}}
 		off := 0
 		for _, fname := range fields {
 			fkind := saIfaceFieldKind(fdefs[fname], fname, def, classes)
@@ -1844,6 +1848,9 @@ func saSynthAnonLayout(ftn *ast.TypeNode, classes map[string]*saClassDef) (strin
 			def.offsets[fname] = off
 			def.fkinds[fname] = fkind
 			def.fdefs[fname] = fdefs[fname]
+			if fopt[fname] {
+				def.fopt[fname] = true
+			}
 			sz, _ := saFieldWidth(fkind)
 			off += sz
 		}
@@ -2026,6 +2033,12 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, pos func(in
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		if m.QuestionToken() != nil {
+			if def.fopt == nil {
+				def.fopt = map[string]bool{}
+			}
+			def.fopt[fn.Text()] = true
+		}
 		sz, _ := saFieldWidth(fkind)
 		off += sz
 	}
@@ -2741,6 +2754,11 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 	if pa == nil || pa.Name() == nil {
 		return false
 	}
+	// Top-level object-array .find field: `TOP.find(... )?.field` is a string
+	// value (miss is undefined, handled as 0 in lowering).
+	if _, _, _, ok := saTopObjArrFind(pa, scope); ok {
+		return true
+	}
 	field := pa.Name().Text()
 	if strings.HasPrefix(field, "#") {
 		return false
@@ -2807,6 +2825,28 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 	if base != nil && base.Kind == ast.KindPropertyAccessExpression {
 		if sub, ok := saChainSubDef(base.AsPropertyAccessExpression(), scope); ok {
 			return atClass(sub)
+		}
+	}
+	// 调用结果基（`strip(model).baseModel`：被调函数返回实例布局时，字段种
+	// 按该布局查表；求值侧 saInstBaseElem 已支持调用基，此处只补判定门，
+	// 否则串方法链（.trim()/.replace() 等）在 saEvalCall 分发时因接收者
+	// 不是串表达式而落“only direct function calls lowerable”）。
+	if base != nil && base.Kind == ast.KindCallExpression {
+		ce := base.AsCallExpression()
+		if ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindIdentifier {
+			callee := ce.Expression.Text()
+			if sig, ok := scope.funcs[callee]; ok && !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:" {
+				if d, ok := scope.classes[sig.retKind[5:]]; ok {
+					return atClass(d)
+				}
+			}
+			if q, linked := saLinkCallee(scope, callee); linked {
+				if sig, ok := scope.funcs[q]; ok && !sig.isVoid && len(sig.retKind) > 5 && sig.retKind[:5] == "inst:" {
+					if d, ok := scope.classes[sig.retKind[5:]]; ok {
+						return atClass(d)
+					}
+				}
+			}
 		}
 	}
 	return false
@@ -3117,6 +3157,245 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 	}
 }
 
+// saCondObjArmFields collects field names/kinds for a conditional-spread arm:
+// an object literal (PropertyAssignment + Shorthand) or a nested conditional
+// (recursively unioned). Kinds are static: numeric/bool -> i32, str expr -> str,
+// arr value -> arr, inst value -> inst, identifier by its recorded kind.
+func saCondObjArmFields(arm *ast.Node, scope *saScope) ([]string, map[string]string, string) {
+	if arm == nil {
+		return nil, nil, "conditional spread arm is missing"
+	}
+	if arm.Kind == ast.KindConditionalExpression {
+		ce := arm.AsConditionalExpression()
+		if ce == nil || ce.WhenTrue == nil || ce.WhenFalse == nil {
+			return nil, nil, "conditional spread needs both arms"
+		}
+		tNames, tKinds, tMsg := saCondObjArmFields(ce.WhenTrue, scope)
+		if tMsg != "" {
+			return nil, nil, tMsg
+		}
+		fNames, fKinds, fMsg := saCondObjArmFields(ce.WhenFalse, scope)
+		if fMsg != "" {
+			return nil, nil, fMsg
+		}
+		var names []string
+		kinds := map[string]string{}
+		for _, fn := range tNames {
+			names = append(names, fn)
+			kinds[fn] = tKinds[fn]
+		}
+		for _, fn := range fNames {
+			if prev, ok := kinds[fn]; ok {
+				if prev != fKinds[fn] {
+					return nil, nil, "conditional spread field " + fn + " has conflicting kinds across arms"
+				}
+				continue
+			}
+			names = append(names, fn)
+			kinds[fn] = fKinds[fn]
+		}
+		return names, kinds, ""
+	}
+	if arm.Kind != ast.KindObjectLiteralExpression {
+		return nil, nil, "conditional spread arms must be object literals"
+	}
+	ol := arm.AsObjectLiteralExpression()
+	var names []string
+	kinds := map[string]string{}
+	for _, pr := range ol.Properties.Nodes {
+		var fname string
+		var init *ast.Node
+		var ok bool
+		switch pr.Kind {
+		case ast.KindPropertyAssignment:
+			fname, ok = saObjPropName(pr)
+			if !ok {
+				return nil, nil, "conditional spread arm property name must be a literal"
+			}
+			init = pr.AsPropertyAssignment().Initializer
+		case ast.KindShorthandPropertyAssignment:
+			fname, ok = saObjPropName(pr)
+			if !ok {
+				return nil, nil, "conditional spread arm property name must be a literal"
+			}
+			init = pr.Name()
+		default:
+			return nil, nil, "conditional spread arm must contain only property assignments"
+		}
+		k := saLitFieldKind(init, scope)
+		if k == "" {
+			if saIsArrValue(init, scope) {
+				k = "arr"
+			} else if saCouldBeInst(init, scope) {
+				k = "inst"
+			} else if init != nil && init.Kind == ast.KindIdentifier {
+				if kk, ok := scope.types[init.Text()]; ok {
+					if kk == "str" {
+						k = "str"
+					} else if kk == "arr" {
+						k = "arr"
+					} else if len(kk) > 5 && kk[:5] == "inst:" {
+						k = "inst"
+					}
+				}
+			}
+		}
+		if k == "" {
+			return nil, nil, "conditional spread arm field " + fname + " has an unknown kind"
+		}
+		if prev, ok := kinds[fname]; ok && prev != k {
+			return nil, nil, "conditional spread arm field " + fname + " has conflicting kinds"
+		}
+		if _, ok := kinds[fname]; !ok {
+			names = append(names, fname)
+		}
+		kinds[fname] = k
+	}
+	return names, kinds, ""
+}
+
+// saLowerCondObj evaluates `cond ? {...} : {...}` (nested ternaries allowed)
+// into a zero-filled temp object with the union layout, branching on the
+// condition and copying only the taken arm's fields. Absent fields stay zero
+// (undefined for optional fields), matching JS spread semantics.
+func saLowerCondObj(w printer.EmitTextWriter, ce *ast.ConditionalExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, *saClassDef, string) {
+	tNames, tKinds, tMsg := saCondObjArmFields(ce.WhenTrue, scope)
+	if tMsg != "" {
+		return "", nil, tMsg
+	}
+	fNames, fKinds, fMsg := saCondObjArmFields(ce.WhenFalse, scope)
+	if fMsg != "" {
+		return "", nil, fMsg
+	}
+	var uniNames []string
+	uniKinds := map[string]string{}
+	for _, fn := range tNames {
+		uniNames = append(uniNames, fn)
+		uniKinds[fn] = tKinds[fn]
+	}
+	for _, fn := range fNames {
+		if prev, ok := uniKinds[fn]; ok {
+			if prev != fKinds[fn] {
+				return "", nil, "conditional spread field " + fn + " has conflicting kinds across arms"
+			}
+			continue
+		}
+		uniNames = append(uniNames, fn)
+		uniKinds[fn] = fKinds[fn]
+	}
+	uniDef := &saClassDef{name: "LitCondSpread", offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fsub: map[string]string{}}
+	off := 0
+	for _, fn := range uniNames {
+		fk := uniKinds[fn]
+		off = saAlignOff(off, fk)
+		uniDef.fields = append(uniDef.fields, saClassField{name: fn, offset: off})
+		uniDef.offsets[fn] = off
+		uniDef.fkinds[fn] = fk
+		sz, _ := saFieldWidth(fk)
+		off += sz
+	}
+	uniDef.size = off
+	cond, cmsg := saCondOperand(w, ce.Condition, scope, pos, refusals, nextTemp)
+	if cmsg != "" {
+		return "", nil, cmsg
+	}
+	tmp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if uniDef.size == 0 {
+		w.Write(fmt.Sprintf("  %s = alloc 4\n", tmp))
+	} else {
+		w.Write(fmt.Sprintf("  %s = alloc %d\n", tmp, uniDef.size))
+	}
+	saOwnTemp(scope, tmp)
+	for _, fn := range uniNames {
+		fk := uniKinds[fn]
+		if fk == "str" || fk == "arr" || fk == "inst" || fk == "f64" {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", tmp, uniDef.offsets[fn]))
+		} else {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", tmp, uniDef.offsets[fn]))
+		}
+	}
+	trueL := fmt.Sprintf("L_cspread_true_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	falseL := fmt.Sprintf("L_cspread_false_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_cspread_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cond, trueL, falseL))
+	copyFrom := func(h string, def *saClassDef) {
+		for _, f := range def.fields {
+			sk := def.fkinds[f.name]
+			if sk == "" {
+				sk = "i32"
+			}
+			tt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if sk == "str" || sk == "arr" || sk == "inst" {
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", tt, h, def.offsets[f.name]))
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", tmp, uniDef.offsets[f.name], tt))
+			} else if sk == "f64" {
+				w.Write(fmt.Sprintf("  %s = load %s + %d as f64\n", tt, h, def.offsets[f.name]))
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", tmp, uniDef.offsets[f.name], tt))
+			} else {
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", tt, h, def.offsets[f.name]))
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", tmp, uniDef.offsets[f.name], tt))
+			}
+		}
+	}
+	copyArm := func(arm *ast.Node) string {
+		if arm == nil {
+			return "conditional spread arm is missing"
+		}
+		if arm.Kind == ast.KindConditionalExpression {
+			nce := arm.AsConditionalExpression()
+			if nce == nil {
+				return "conditional spread arm is missing"
+			}
+			h, def, msg := saLowerCondObj(w, nce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			copyFrom(h, def)
+			// Nested temp is branch-local: release it here, not at return drain,
+			// where the verifier reports UnknownRegister for branch-allocated temps.
+			saReleaseOwnedTemp(w, scope, h)
+			return ""
+		}
+		if arm.Kind != ast.KindObjectLiteralExpression {
+			return "conditional spread arms must be object literals"
+		}
+		ol := arm.AsObjectLiteralExpression()
+		if len(ol.Properties.Nodes) == 0 {
+			return ""
+		}
+		h, lname, msg := saLowerObjectLiteral(w, arm, "", scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		adef, ok := scope.classes[lname]
+		if !ok {
+			return "conditional spread arm layout not recorded"
+		}
+		copyFrom(h, adef)
+		// Arm handle is branch-local: release it here, not at return drain,
+		// where the verifier reports UnknownRegister for branch-allocated temps.
+		saReleaseOwnedTemp(w, scope, h)
+		return ""
+	}
+	w.Write(fmt.Sprintf("%s:\n", trueL))
+	if msg := copyArm(ce.WhenTrue); msg != "" {
+		return "", nil, msg
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", falseL))
+	if msg := copyArm(ce.WhenFalse); msg != "" {
+		return "", nil, msg
+	}
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	return tmp, uniDef, ""
+}
+
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
 	type spreadSrc struct {
@@ -3135,6 +3414,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	for _, p := range ol.Properties.Nodes {
 		if p.Kind == ast.KindSpreadAssignment {
 			se := p.AsSpreadAssignment().Expression.AsNode()
+			se = saUnwrapTransparent(se)
 			var sh string
 			var sdef *saClassDef
 			switch {
@@ -3168,6 +3448,21 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
 				}
 				sh, sdef = h, d
+			case se.Kind == ast.KindConditionalExpression:
+				ce := se.AsConditionalExpression()
+				if ce == nil {
+					return "", "", "conditional spread needs a conditional expression"
+				}
+				h, sdef, msg := saLowerCondObj(w, ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				spreads = append(spreads, spreadSrc{h: h, def: sdef})
+				ops = append(ops, op{spread: len(spreads) - 1})
+				for _, f := range sdef.fields {
+					keys = append(keys, f.name)
+				}
+				continue
 			case se.Kind == ast.KindCallExpression:
 				// 工厂调用展开（`{...mk()}` 经签名返回种得布局；封存
 				// checker_layout s1 + layoutOfNode 调用位同形；非 inst
@@ -3412,8 +3707,9 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		}
 		w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[o.fname], v))
 	}
-	// 缺省可选域零填（i32 域填 0；串/句柄缺省沿旧门大声拒，禁空柄静默错码；
-	// 匹配门已保缺键全可选，此处只分流零填种）。
+	// 缺省可选域零填（i32/bool 域填 0 as i32；串/数组/实例/f64 域为 8 字节
+	// 指针/双精度，填 0 as ptr 即全零（f64 零位即 0.0，缺省即 undefined 的
+	// 空柄表示；匹配门已保缺键全可选）。
 	filled := map[string]bool{}
 	for _, o := range ops {
 		if o.spread >= 0 {
@@ -3428,11 +3724,11 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		if filled[f.name] {
 			continue
 		}
-		if fk := def.fkinds[f.name]; fk == "i32" || fk == "" {
+		if fk := def.fkinds[f.name]; fk == "i32" || fk == "" || fk == "bool" {
 			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
 			continue
 		}
-		return "", "", "optional field " + f.name + " needs a value (only i32 optional fields default to zero)"
+		w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
 	}
 	return h, def.name, ""
 }
