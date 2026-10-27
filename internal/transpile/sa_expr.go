@@ -1214,7 +1214,12 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			if k, ok := scope.types[e.Text()]; ok && k == "arr" {
 				return e.Text(), ""
 			}
-			return "", "array return needs matching array value"
+			// JEV fallback_chain 0.98: non-arr identifiers fall through
+			// to the same saArrValueOf -> str -> i32 chain below that
+			// non-identifiers already use (bound-then-returned array
+			// locals from unknown-base .filter/.map chains carry a
+			// non-arr recorded kind but an array handle value); refuse
+			// only if every leg fails.
 		}
 		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
 			return h, ""
