@@ -454,6 +454,7 @@ type saFileLink struct {
 	aliasHarvest     map[string]saProgAlias            // out: own top-level type aliases for dependents
 	aliasHarvests    map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
 	aliasSeed        map[string]saProgAlias            // out/in: imported local alias name -> aliased node
+	aliasClosureSeed map[string]saProgAlias            // out/in: transitive alias-chain names from defining files (merged at hook C after explicit seeds)
 	ambHarvest       map[string]bool                   // out: own exported ambient names for dependents
 	ambHarvests      map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
 	constHarvest     map[string]saProgConst            // out: own folded consts for dependents
@@ -2102,6 +2103,112 @@ func saBareImportLoop(link *saFileLink, imp *ast.ImportDeclaration, spec string,
 	}
 }
 
+// saCollectAliasRefs records every single-identifier type reference name
+// occurring in a type node (union/intersection members, parenthesized
+// wrappers, literal member types, reference type arguments). Only shapes
+// the alias resolvers follow are walked; every As* call is Kind-guarded
+// (AsObjectLiteralExpression-style hard casts are never called blind).
+func saCollectAliasRefs(n *ast.Node, out map[string]bool) {
+	if n == nil || out == nil {
+		return
+	}
+	switch n.Kind {
+	case ast.KindTypeReference:
+		ref := n.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return
+		}
+		out[ref.TypeName.Text()] = true
+		if ref.TypeArguments != nil {
+			for _, a := range ref.TypeArguments.Nodes {
+				saCollectAliasRefs(a, out)
+			}
+		}
+	case ast.KindUnionType:
+		if ut := n.AsUnionTypeNode(); ut != nil && ut.Types != nil {
+			for _, m := range ut.Types.Nodes {
+				saCollectAliasRefs(m, out)
+			}
+		}
+	case ast.KindIntersectionType:
+		if it := n.AsIntersectionTypeNode(); it != nil && it.Types != nil {
+			for _, m := range it.Types.Nodes {
+				saCollectAliasRefs(m, out)
+			}
+		}
+	case ast.KindParenthesizedType:
+		if pt := n.AsParenthesizedTypeNode(); pt != nil && pt.Type != nil {
+			saCollectAliasRefs(pt.Type.AsNode(), out)
+		}
+	case ast.KindTypeLiteral:
+		if tl := n.AsTypeLiteralNode(); tl != nil && tl.Members != nil {
+			for _, m := range tl.Members.Nodes {
+				if m == nil || m.Kind != ast.KindPropertySignature {
+					continue
+				}
+				if pd := m.AsPropertySignatureDeclaration(); pd != nil && pd.Type != nil {
+					saCollectAliasRefs(pd.Type.AsNode(), out)
+				}
+			}
+		}
+	}
+}
+
+// saSeedAliasClosure seeds the transitive alias closure of one imported
+// alias (4_site_gaps, JEV closure_seed 1.0): every alias name referenced
+// by node, or by a transitively seeded alias, that the SAME defining
+// file's alias harvest provides is recorded in link.aliasClosureSeed.
+// Names already explicitly seeded are skipped entirely (their own
+// closure pass runs when their import is bound, whatever the source
+// order), and closure members need not be exported: the defining file's
+// own private aliases are part of the imported alias's meaning.
+// Cycle-safe via the visited set; hook C applies local-wins last.
+func saSeedAliasClosure(link *saFileLink, tgt string, node *ast.TypeNode) {
+	if link == nil || node == nil {
+		return
+	}
+	harvest := link.aliasHarvests[tgt]
+	if len(harvest) == 0 {
+		return
+	}
+	refs := map[string]bool{}
+	saCollectAliasRefs(node.AsNode(), refs)
+	queue := make([]string, 0, len(refs))
+	for r := range refs {
+		queue = append(queue, r)
+	}
+	visited := map[string]bool{}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if visited[name] {
+			continue
+		}
+		visited[name] = true
+		if _, dup := link.aliasSeed[name]; dup {
+			continue
+		}
+		ah, ok := harvest[name]
+		if !ok || ah.node == nil {
+			continue
+		}
+		if link.aliasClosureSeed == nil {
+			link.aliasClosureSeed = map[string]saProgAlias{}
+		}
+		if _, dup := link.aliasClosureSeed[name]; dup {
+			continue
+		}
+		link.aliasClosureSeed[name] = ah
+		next := map[string]bool{}
+		saCollectAliasRefs(ah.node.AsNode(), next)
+		for r := range next {
+			if !visited[r] {
+				queue = append(queue, r)
+			}
+		}
+	}
+}
+
 // saBindBareHarvest seeds harvested layouts into bind link seeds
 // (hook C merges them with local-wins into the file tables).
 func saBindBareHarvest(link *saFileLink, imp *ast.ImportDeclaration, spec string) {
@@ -2148,6 +2255,45 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 		// seed (preseed_plus_bind): bare specs directly, relative specs
 		// through the target's bare re-export edges.
 		saBindBareHarvest(link, imp, spec)
+		// 4_site_gaps patch1b (local): type-only imports seed direct
+		// aliases via saBindBareHarvest but never their transitive closure,
+		// so chains like ThemeMode -> ThemeId -> BuiltinThemeId stay
+		// unresolvable in the importer. Mirror the value-branch closure
+		// seeding for the same clause (same JEV closure_seed basis).
+		if tgt, ok := link.specOf[spec]; ok && tgt != "" {
+			if clause := imp.ImportClause.AsImportClause(); clause != nil {
+				if nb := clause.NamedBindings; nb != nil && nb.Kind == ast.KindNamedImports {
+					if ni := nb.AsNamedImports(); ni != nil && ni.Elements != nil {
+						for _, n := range ni.Elements.Nodes {
+							if n == nil || n.Kind != ast.KindImportSpecifier {
+								continue
+							}
+							sp := n.AsImportSpecifier()
+							nm := n.Name()
+							if nm == nil || nm.Kind != ast.KindIdentifier {
+								continue
+							}
+							remote := nm.Text()
+							if sp.PropertyName != nil {
+								remote = sp.PropertyName.Text()
+							}
+							atgt := tgt
+							if _, ok := link.aliasHarvests[atgt][remote]; !ok {
+								if st, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+									a, ok := link.aliasHarvests[t][r]
+									return ok && a.exported && a.node != nil
+								}); ok {
+									atgt = st
+								}
+							}
+							if ah, ok := link.aliasHarvests[atgt][remote]; ok && ah.exported && ah.node != nil {
+								saSeedAliasClosure(link, atgt, ah.node)
+							}
+						}
+					}
+				}
+			}
+		}
 		return false
 	}
 	if len(spec) > 0 && spec[0] != '.' {
@@ -2407,6 +2553,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					link.aliasSeed = map[string]saProgAlias{}
 				}
 				link.aliasSeed[local] = ah
+				// 4_site_gaps (JEV closure_seed 1.0): seed the transitive
+				// alias closure from the same defining file, so chains
+				// like ThemeMode -> ThemeId -> BuiltinThemeId resolve in
+				// the importer (explicit seeds above always win over
+				// closure names; hook C local-wins is the final guard).
+				saSeedAliasClosure(link, atgt, ah.node)
 				continue
 			}
 			// 纯量直链：具名导入常量命中定义文件收割即播种折叠值（后续 hook C-const 植入本地折叠表；未导出沿未导出门）。
@@ -3743,6 +3895,18 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		// Program hook C-alias: seed imported type alias nodes (local
 		// definitions win; nodes shared read-only).
 		for local, ah := range link.aliasSeed {
+			if ah.node == nil {
+				continue
+			}
+			if _, dup := aliasOf[local]; !dup {
+				aliasOf[local] = ah.node
+			}
+		}
+		// Program hook C-alias-closure: seed transitive alias-chain
+		// names (4_site_gaps). Explicit seeds above already occupy
+		// aliasOf, so closure names never override an explicit
+		// import; local definitions win via the same dup check.
+		for local, ah := range link.aliasClosureSeed {
 			if ah.node == nil {
 				continue
 			}
