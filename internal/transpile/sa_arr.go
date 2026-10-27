@@ -471,6 +471,112 @@ func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, *ast.Node, bo
 	return paramName, fieldName, neg, other, fallback, true
 }
 
+// saSomeIncludesGuard detects a .some/.every callback whose body is a single
+// literal string-array .includes(arg) call (JEV prog38 scan_in_loop 0.99).
+// Returns the callback parameter name, the literal receiver node, and the
+// argument node. The argument must be rooted at the parameter (JEV arg scope
+// all_three 0.56): a plain field read, a ?? fallback over a rooted form, or
+// an optional-chain method call on a field read (optionally under ??).
+func saSomeIncludesGuard(cb *ast.Node, scope *saScope) (string, *ast.Node, *ast.Node, bool) {
+	if cb == nil || (cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression) {
+		return "", nil, nil, false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return "", nil, nil, false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", nil, nil, false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, nil, false
+	}
+	paramName := nm.Text()
+	body := cb.Body()
+	if body == nil {
+		return "", nil, nil, false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
+			return "", nil, nil, false
+		}
+		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
+			return "", nil, nil, false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return "", nil, nil, false
+		}
+		expr = rs.Expression
+	}
+	expr = saUnwrapTransparent(expr)
+	if expr == nil || expr.Kind != ast.KindCallExpression {
+		return "", nil, nil, false
+	}
+	ce := expr.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", nil, nil, false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Text() != "includes" {
+		return "", nil, nil, false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindArrayLiteralExpression {
+		return "", nil, nil, false
+	}
+	if !saLiteralIsStrArray(pa.Expression, scope) {
+		return "", nil, nil, false
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return "", nil, nil, false
+	}
+	arg := ce.Arguments.Nodes[0]
+	if !saSomeIncludesArgRooted(arg, paramName) {
+		return "", nil, nil, false
+	}
+	return paramName, pa.Expression, arg, true
+}
+
+// saSomeIncludesArgRooted reports whether arg is rooted at the callback
+// parameter: a plain field read, a ?? fallback over a rooted form, or an
+// optional-chain method call on a field read (optionally under ??).
+func saSomeIncludesArgRooted(arg *ast.Node, paramName string) bool {
+	if arg == nil {
+		return false
+	}
+	arg = saUnwrapTransparent(arg)
+	if arg == nil {
+		return false
+	}
+	switch arg.Kind {
+	case ast.KindPropertyAccessExpression:
+		pa := arg.AsPropertyAccessExpression()
+		return pa != nil && pa.QuestionDotToken == nil && pa.Expression != nil &&
+			pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == paramName
+	case ast.KindBinaryExpression:
+		be := arg.AsBinaryExpression()
+		if be == nil || be.OperatorToken == nil || be.OperatorToken.Kind != ast.KindQuestionQuestionToken {
+			return false
+		}
+		return saSomeIncludesArgRooted(be.Left, paramName)
+	case ast.KindCallExpression:
+		ce := arg.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return false
+		}
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa == nil || (pa.QuestionDotToken == nil && ce.QuestionDotToken == nil) {
+			return false
+		}
+		return saSomeIncludesArgRooted(pa.Expression, paramName)
+	}
+	return false
+}
+
 // saOrDisjunct is one arm of a .find OR predicate (JEV inline_loop_or
 // 0.98): either a field equality (isIncludes false) or an optional-chain
 // string-array includes check (isIncludes true). other is the equality
@@ -9229,6 +9335,112 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			saReleaseOwnedTemp(w, scope, sslot)
 			saReleaseOwnedTemp(w, scope, recv)
 			return sout, "i32", ""
+		}
+		if incParam, incLit, incArg, incOk := saSomeIncludesGuard(cb, scope); incOk {
+			// Literal-includes some/every (JEV prog38 scan_in_loop 0.99): the
+			// generic callback path binds the parameter as i32, so string
+			// field reads refuse there; this branch binds inst:<elemLayout>
+			// per element instead and reuses the literal scan helper.
+			if elemLayout == "" {
+				return "", "", "some/every includes needs a known instance element layout"
+			}
+			if _, ok := scope.classes[elemLayout]; !ok {
+				return "", "", "some/every includes element layout not recorded"
+			}
+			litRecv, msg := saArrValueOf(w, incLit, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			if oo, ook := scope.ownState[incParam]; ook && oo != nil && oo.heap && !oo.consumed && !oo.released {
+				return "", "", "callback parameter " + incParam + " shadows a live binding (rename it)"
+			}
+			oldKind, hadOld := scope.types[incParam]
+			oldAlias, hadAlias := scope.mathAlias[incParam]
+			islot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", islot))
+			saOwnTemp(scope, islot)
+			init, stop := "0", "1"
+			if method == "every" {
+				init, stop = "1", "0"
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", islot, init))
+			ii := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", ii))
+			itopL := fmt.Sprintf("L_si_top_%d", *nextLabel)
+			*nextLabel++
+			ibodyL := fmt.Sprintf("L_si_body_%d", *nextLabel)
+			*nextLabel++
+			iendL := fmt.Sprintf("L_si_end_%d", *nextLabel)
+			*nextLabel++
+			ihitL := fmt.Sprintf("L_si_hit_%d", *nextLabel)
+			*nextLabel++
+			inextL := fmt.Sprintf("L_si_next_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", itopL))
+			ic := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", ic, ii, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ic, ibodyL, iendL))
+			w.Write(fmt.Sprintf("%s:\n", ibodyL))
+			iel := emitElem(ii)
+			w.Write(fmt.Sprintf("  %s = %s\n", incParam, iel))
+			scope.types[incParam] = "inst:" + elemLayout
+			found, _, msg := saLowerArrayScanStr(w, litRecv, "includes", []*ast.Node{incArg}, scope, pos, refusals, nextLabel, nextTemp)
+			if hadOld {
+				scope.types[incParam] = oldKind
+			} else {
+				delete(scope.types, incParam)
+			}
+			if hadAlias {
+				scope.mathAlias[incParam] = oldAlias
+			} else {
+				delete(scope.mathAlias, incParam)
+			}
+			if msg != "" {
+				return "", "", msg
+			}
+			foundOwned := false
+			if b := saOwnOf(scope, found); b != nil && b.heap && !b.consumed && !b.released {
+				foundOwned = true
+			}
+			cmp := found
+			if method == "every" {
+				nv := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", nv, found))
+				cmp = nv
+			}
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", cmp, ihitL, inextL))
+			w.Write(fmt.Sprintf("%s:\n", ihitL))
+			if foundOwned {
+				w.Write(fmt.Sprintf("  !%s\n", found))
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", islot, stop))
+			w.Write(fmt.Sprintf("  jmp %s\n", iendL))
+			w.Write(fmt.Sprintf("%s:\n", inextL))
+			if foundOwned {
+				w.Write(fmt.Sprintf("  !%s\n", found))
+			}
+			inext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, ii))
+			w.Write(fmt.Sprintf("  %s = %s\n", ii, inext))
+			w.Write(fmt.Sprintf("  jmp %s\n", itopL))
+			w.Write(fmt.Sprintf("%s:\n", iendL))
+			if foundOwned {
+				if b := saOwnOf(scope, found); b != nil {
+					b.released = true
+				}
+			}
+			iout := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", iout, islot))
+			saReleaseOwnedTemp(w, scope, islot)
+			saReleaseOwnedTemp(w, scope, recv)
+			saReleaseOwnedTemp(w, scope, litRecv)
+			return iout, "i32", ""
 		}
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
