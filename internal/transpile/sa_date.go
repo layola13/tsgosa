@@ -218,7 +218,7 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		ms = saLowerDateNew(w, scope, nextTemp)
 	} else if saIsDateNewArgShape(pa.Expression) {
 		var msg string
-		ms, msg = saLowerDateNewArg(pa.Expression.AsNewExpression(), scope, pos, refusals, nextTemp)
+		ms, msg = saLowerDateNewArg(w, pa.Expression.AsNewExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", "", msg
 		}
