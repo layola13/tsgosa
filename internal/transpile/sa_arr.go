@@ -2504,6 +2504,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					arrSeen := map[string]bool{}
 					objArrSeen := map[string]bool{}
 					objArrElems := map[string][]saTopObjElem{}
+					instCarriers := map[string][]saTopObjElem{}
 					for _, o := range objs {
 						if o.regexField != "" {
 							eleOk = false
@@ -2596,16 +2597,14 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 								eleOk = false
 								break
 							}
-							lname, lok := saTopObjLayoutOfElem(*sub, classes)
-							if !lok {
-								eleOk = false
-								break
-							}
-							if prev, dup := instSub[k]; dup && prev != lname {
-								eleOk = false
-								break
-							}
-							instSub[k] = lname
+							// 2b_theme (JEV union_inst_layout 0.94, top_only
+							// 0.95): nested objects no longer need one identical
+							// layout per element; carriers are unioned after the
+							// element loop via saTopObjArrLayout (union field
+							// set, i32->f64 promotion, fopt for missing fields).
+							// Deeper inst variance still refuses there (its inst
+							// arm keeps per-carrier layout equality).
+							instCarriers[k] = append(instCarriers[k], *sub)
 							kindOf[k] = "inst"
 							present[k]++
 						}
@@ -2622,6 +2621,14 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 						if lname != "" {
 							instSub[k] = lname
 						}
+					}
+					for k, carriers := range instCarriers {
+						lname, lok := saTopObjArrLayout(carriers, classes)
+						if !lok || lname == "" {
+							eleOk = false
+							break
+						}
+						instSub[k] = lname
 					}
 					if !eleOk {
 						okAll = false
