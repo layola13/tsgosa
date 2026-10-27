@@ -2360,7 +2360,10 @@ func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExp
 	}
 	// 直接断言 panic 改 kind 门（`new Set(a)` 绑定数组实参旧路崩溃；0 崩溃铁律；768）。
 	if ce.Arguments.Nodes[0].Kind != ast.KindArrayLiteralExpression {
-		return "Map/Set constructor takes an array literal"
+		// Computed-array seeds (JEV loop_seed 1.0): a single array-valued
+		// argument seeds by runtime index loop; anything unanalysable
+		// keeps the old message byte-identical via that helper.
+		return saLowerMapNewComputedSeeds(w, t, name, ce, scope, pos, refusals, nextTemp)
 	}
 	al := ce.Arguments.Nodes[0].AsArrayLiteralExpression()
 	if al == nil || al.Elements == nil {
@@ -2408,6 +2411,570 @@ func saLowerMapNewSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExp
 		}
 	}
 	return ""
+}
+
+// saSeedKeySliceFromOperand builds a btree key slice from a loaded operand
+// (mirror of saMapKeySlice's arms, which take AST nodes): str keys pass the
+// handle through, i32 keys go through a fresh cell + 16-byte slice.
+func saSeedKeySliceFromOperand(w printer.EmitTextWriter, op, kind string, nextTemp *int) (string, string) {
+	if kind == "str" {
+		return op, ""
+	}
+	cell := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", cell))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", cell, op))
+	slice := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", slice))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slice, cell))
+	w.Write(fmt.Sprintf("  store %s + 8, 4 as u64\n", slice))
+	return slice, cell
+}
+
+// saEmitSeedLoop emits the runtime index loop over array handle h
+// (skeleton mirror of saHigherOrderMap: len load, slt/br, body,
+// inext = add i, 1; i = inext; jmp top) and calls body per element word.
+func saEmitSeedLoop(w printer.EmitTextWriter, h string, scope *saScope, nextTemp *int, body func(elem string)) {
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, h))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, h))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_seed_top_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_seed_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_seed_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	elem := saArrElemAt(w, data, i, nextTemp)
+	body(elem)
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+}
+
+// saLowerMapNewComputedSeeds seeds a new Map/Set from a computed array
+// argument. Any failure returns the old literal message unchanged, so
+// existing diags for unhandled shapes are byte-identical.
+func saLowerMapNewComputedSeeds(w printer.EmitTextWriter, t, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	const litMsg = "Map/Set constructor takes an array literal"
+	arg := saUnwrapTransparent(ce.Arguments.Nodes[0])
+	if name == "Set" {
+		// .map/.filter calls need precise pre-analysis (a marks fallback
+		// would misread inst-element results as i32); other shapes fall
+		// back to the result handle's arrStr mark, the same default
+		// discipline as bound arrays elsewhere.
+		preKind, preOK, hardFail := saSetSeedPreKind(arg, scope)
+		if hardFail {
+			return litMsg
+		}
+		h, msg := saArrValueOf(w, arg, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return litMsg
+		}
+		ekind := preKind
+		if !preOK {
+			if scope.arrStr != nil && scope.arrStr[h] {
+				ekind = "str"
+			} else {
+				ekind = "i32"
+			}
+		}
+		if ekind != "str" && ekind != "i32" {
+			return litMsg
+		}
+		saEmitSeedLoop(w, h, scope, nextTemp, func(elem string) {
+			ks, cell := saSeedKeySliceFromOperand(w, elem, ekind, nextTemp)
+			w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", t, ks))
+			saReleaseKeySlice(w, ks, cell)
+		})
+		saSeedSetVal(scope, t, ekind)
+		return ""
+	}
+	keyKind, valKind, ok := saMapSeedPairKinds(arg, scope)
+	if !ok || (keyKind != "str" && keyKind != "i32") {
+		return litMsg
+	}
+	if valKind != "str" && valKind != "i32" && valKind != "arr" && valKind != "arrStr" && !strings.HasPrefix(valKind, "inst:") {
+		return litMsg
+	}
+	h, msg := saArrValueOf(w, arg, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return litMsg
+	}
+	saEmitSeedLoop(w, h, scope, nextTemp, func(elem string) {
+		pairData := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", pairData, elem))
+		key := saArrElemAt(w, pairData, "0", nextTemp)
+		val := saArrElemAt(w, pairData, "1", nextTemp)
+		ks, cell := saSeedKeySliceFromOperand(w, key, keyKind, nextTemp)
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", t, ks, val))
+		saReleaseKeySlice(w, ks, cell)
+	})
+	if valKind != "i32" {
+		saSetMapVal(scope, t, valKind)
+	}
+	return ""
+}
+
+// saReceiverElemKind reports the element kind of an array-valued receiver:
+// identifier receivers from arrElemLayout/arrStr/arrNest marks (unmarked
+// bound arrays default i32, as elsewhere), property receivers from the
+// layout's array-field element type. Anything else fails.
+func saReceiverElemKind(recv *ast.Node, scope *saScope) (string, bool) {
+	recv = saUnwrapTransparent(recv)
+	if recv == nil {
+		return "", false
+	}
+	switch recv.Kind {
+	case ast.KindIdentifier:
+		nm := recv.Text()
+		if l, ok := scope.arrElemLayout[nm]; ok {
+			return "inst:" + l, true
+		}
+		if scope.arrStr != nil && scope.arrStr[nm] {
+			return "str", true
+		}
+		if scope.arrNest != nil && scope.arrNest[nm] {
+			return "arr", true
+		}
+		if _, ok := scope.types[nm]; ok {
+			return "i32", true
+		}
+		return "", false
+	case ast.KindPropertyAccessExpression:
+		pa := recv.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.QuestionDotToken != nil {
+			return "", false
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && strings.HasPrefix(k, "inst:") {
+				if def, ok := scope.classes[k[5:]]; ok && def != nil {
+					return saArrFieldElemKind(def, pa.Name().Text(), scope)
+				}
+			}
+		}
+		if to, field, layout, ok := saTopObjArrField(scope, recv); ok {
+			_ = to
+			_ = field
+			if layout != "" {
+				return "inst:" + layout, true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// saArrFieldElemKind reports the element kind of an array field of a layout.
+func saArrFieldElemKind(def *saClassDef, fname string, scope *saScope) (string, bool) {
+	if def == nil || def.fkinds[fname] != "arr" {
+		return "", false
+	}
+	tn, ok := def.fdefs[fname]
+	if !ok || tn == nil || tn.Kind != ast.KindArrayType {
+		return "", false
+	}
+	el := tn.AsArrayTypeNode().ElementType
+	if el == nil {
+		return "", false
+	}
+	switch el.Kind {
+	case ast.KindStringKeyword, ast.KindTemplateLiteralType:
+		return "str", true
+	case ast.KindNumberKeyword, ast.KindBooleanKeyword, ast.KindBigIntKeyword:
+		return "i32", true
+	case ast.KindTypeReference:
+		ref := el.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		if ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "ReadonlyArray" {
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+				if ref.TypeArguments.Nodes[0].Kind == ast.KindStringKeyword {
+					return "arrStr", true
+				}
+			}
+			return "arr", true
+		}
+		if _, ok := scope.classes[ref.TypeName.Text()]; ok {
+			return "inst:" + ref.TypeName.Text(), true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// saFieldValueKind reports the value kind of a field of an inst layout:
+// str/i32/bool-as-i32, inst via fsub, or arr/arrStr for array fields.
+func saFieldValueKind(layout, fname string, scope *saScope) (string, bool) {
+	def, ok := scope.classes[layout]
+	if !ok || def == nil {
+		return "", false
+	}
+	fk, ok := def.fkinds[fname]
+	if !ok {
+		return "", false
+	}
+	switch fk {
+	case "str":
+		return "str", true
+	case "i32", "bool":
+		return "i32", true
+	case "inst":
+		sub, ok := def.fsub[fname]
+		if !ok {
+			return "", false
+		}
+		return "inst:" + sub, true
+	case "arr":
+		ek, ok := saArrFieldElemKind(def, fname, scope)
+		if !ok {
+			return "arr", true
+		}
+		if ek == "str" {
+			return "arrStr", true
+		}
+		return "arr", true
+	}
+	return "", false
+}
+
+// saCallbackReturnExpr unwraps a callback body to its single return
+// expression (concise body as-is; block bodies only with exactly one
+// return, mirroring saHigherOrderMap's str-test unwrap).
+func saCallbackReturnExpr(cb *ast.Node) *ast.Node {
+	body := cb.Body()
+	if body == nil {
+		return nil
+	}
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil {
+			return nil
+		}
+		var retExpr *ast.Node
+		retCount := 0
+		for _, st := range bd.Statements.Nodes {
+			if st == nil || st.Kind != ast.KindReturnStatement {
+				continue
+			}
+			if rs := st.AsReturnStatement(); rs != nil {
+				retCount++
+				retExpr = rs.Expression
+			}
+		}
+		if retCount != 1 || retExpr == nil {
+			return nil
+		}
+		return retExpr
+	}
+	return body
+}
+
+// saSeedElemKind determines the value kind of a seed-expression node in a
+// callback context where paramName binds paramKind (the receiver element
+// kind). Bool folds to i32 (word values); f64/jsval/fn values fail.
+func saSeedElemKind(n *ast.Node, paramName, paramKind string, scope *saScope) (string, bool) {
+	n = saUnwrapTransparent(n)
+	if n == nil {
+		return "", false
+	}
+	// String expressions decide first (literals, .trim() results, String()
+	// calls, str-field reads on bound names); the param itself is not in
+	// scope.types during analysis, so param shapes fall through below.
+	if saIsStrExpr(n, scope) {
+		return "str", true
+	}
+	switch n.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return "str", true
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(n.Text()) {
+			return "", false
+		}
+		return "i32", true
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "i32", true
+	case ast.KindIdentifier:
+		if n.Text() == paramName {
+			return paramKind, true
+		}
+		if k, ok := scope.types[n.Text()]; ok {
+			switch {
+			case k == "str":
+				return "str", true
+			case k == "i32" || k == "bool":
+				return "i32", true
+			case k == "arr":
+				if scope.arrStr != nil && scope.arrStr[n.Text()] {
+					return "arrStr", true
+				}
+				return "arr", true
+			case strings.HasPrefix(k, "inst:"):
+				return k, true
+			}
+		}
+		return "", false
+	case ast.KindPropertyAccessExpression:
+		pa := n.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.QuestionDotToken != nil {
+			return "", false
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if pa.Expression.Text() == paramName && strings.HasPrefix(paramKind, "inst:") {
+				return saFieldValueKind(paramKind[5:], pa.Name().Text(), scope)
+			}
+			if k, ok := scope.types[pa.Expression.Text()]; ok && strings.HasPrefix(k, "inst:") {
+				return saFieldValueKind(k[5:], pa.Name().Text(), scope)
+			}
+		}
+		return "", false
+	case ast.KindElementAccessExpression:
+		ea := n.AsElementAccessExpression()
+		if ea == nil || ea.QuestionDotToken != nil {
+			return "", false
+		}
+		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			base := ea.Expression.Text()
+			if base == paramName {
+				if paramKind == "arrStr" {
+					return "str", true
+				}
+				if paramKind == "arr" {
+					return "i32", true
+				}
+				return "", false
+			}
+			if scope.arrStr != nil && scope.arrStr[base] {
+				return "str", true
+			}
+			if l, ok := scope.arrElemLayout[base]; ok {
+				return "inst:" + l, true
+			}
+			if _, ok := scope.types[base]; ok {
+				return "i32", true
+			}
+		}
+		return "", false
+	case ast.KindPrefixUnaryExpression:
+		// JEV arith_i32: prefix -/+ on an i32 operand is i32.
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || (un.Operator != ast.KindMinusToken && un.Operator != ast.KindPlusToken) {
+			return "", false
+		}
+		if k, ok := saSeedElemKind(un.Operand, paramName, paramKind, scope); ok && k == "i32" {
+			return "i32", true
+		}
+		return "", false
+	case ast.KindBinaryExpression:
+		be := n.AsBinaryExpression()
+		if be == nil || be.OperatorToken == nil {
+			return "", false
+		}
+		// JEV arith_i32: arithmetic/shift/bitwise/comparison over i32
+		// operands analyses to i32 (comparisons fold bool to i32, as
+		// elsewhere in this helper). Str concat cannot reach here:
+		// saIsStrExpr runs first at the top of this function.
+		switch be.OperatorToken.Kind {
+		case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindSlashToken, ast.KindPercentToken, ast.KindAsteriskAsteriskToken, ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken, ast.KindGreaterThanGreaterThanGreaterThanToken, ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken, ast.KindLessThanToken, ast.KindLessThanEqualsToken, ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken, ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken, ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+			lk, ok := saSeedElemKind(be.Left, paramName, paramKind, scope)
+			if !ok || lk != "i32" {
+				return "", false
+			}
+			rk, ok := saSeedElemKind(be.Right, paramName, paramKind, scope)
+			if !ok || rk != "i32" {
+				return "", false
+			}
+			return "i32", true
+		}
+		if be.OperatorToken.Kind != ast.KindQuestionQuestionToken && be.OperatorToken.Kind != ast.KindBarBarToken {
+			return "", false
+		}
+		lk, ok := saSeedElemKind(be.Left, paramName, paramKind, scope)
+		if !ok {
+			return "", false
+		}
+		if be.Right != nil && (be.Right.Kind == ast.KindNullKeyword || be.Right.Kind == ast.KindUndefinedKeyword) {
+			return lk, true
+		}
+		rk, ok := saSeedElemKind(be.Right, paramName, paramKind, scope)
+		if !ok || rk != lk {
+			return "", false
+		}
+		return lk, true
+	case ast.KindArrayLiteralExpression:
+		al := n.AsArrayLiteralExpression()
+		if al == nil || al.Elements == nil {
+			return "", false
+		}
+		allStr := true
+		for _, el := range al.Elements.Nodes {
+			if el == nil {
+				return "", false
+			}
+			ek, ok := saSeedElemKind(el, paramName, paramKind, scope)
+			if !ok {
+				return "", false
+			}
+			if ek != "str" {
+				allStr = false
+			}
+		}
+		if allStr {
+			return "arrStr", true
+		}
+		return "arr", true
+	}
+	return "", false
+}
+
+// saMapSeedPairKinds analyses a .map call argument into (keyKind, valKind)
+// for loop seeding: the callback must return a 2-element array literal.
+func saMapSeedPairKinds(arg *ast.Node, scope *saScope) (string, string, bool) {
+	if arg == nil || arg.Kind != ast.KindCallExpression {
+		return "", "", false
+	}
+	ce := arg.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "map" || pa.QuestionDotToken != nil {
+		return "", "", false
+	}
+	var args []*ast.Node
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) != 1 || args[0] == nil {
+		return "", "", false
+	}
+	cb := args[0]
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return "", "", false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 || params[0] == nil {
+		return "", "", false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil {
+		return "", "", false
+	}
+	nm := pd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", "", false
+	}
+	elemKind, ok := saReceiverElemKind(pa.Expression, scope)
+	if !ok {
+		return "", "", false
+	}
+	ret := saCallbackReturnExpr(cb)
+	if ret == nil || ret.Kind != ast.KindArrayLiteralExpression {
+		return "", "", false
+	}
+	al := ret.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) != 2 {
+		return "", "", false
+	}
+	keyKind, ok1 := saSeedElemKind(al.Elements.Nodes[0], nm.Text(), elemKind, scope)
+	valKind, ok2 := saSeedElemKind(al.Elements.Nodes[1], nm.Text(), elemKind, scope)
+	if !ok1 || !ok2 {
+		return "", "", false
+	}
+	return keyKind, valKind, true
+}
+
+// saSetSeedPreKind analyses a Set seed argument before evaluation.
+// Returns (kind, ok, hardFail): hardFail means the shape was recognised
+// (.map/.filter) but its element kind is not a seedable str/i32, so no
+// marks fallback may run. ok=false without hardFail means "use the
+// post-evaluation marks".
+func saSetSeedPreKind(arg *ast.Node, scope *saScope) (string, bool, bool) {
+	if arg != nil && arg.Kind == ast.KindCallExpression {
+		ce := arg.AsCallExpression()
+		if ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.Name() != nil && pa.QuestionDotToken == nil {
+				switch pa.Name().Text() {
+				case "map":
+					var args []*ast.Node
+					if ce.Arguments != nil {
+						args = ce.Arguments.Nodes
+					}
+					if len(args) != 1 || args[0] == nil {
+						return "", false, true
+					}
+					cb := args[0]
+					if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+						return "", false, true
+					}
+					params := cb.Parameters()
+					if len(params) < 1 || params[0] == nil {
+						return "", false, true
+					}
+					pd := params[0].AsParameterDeclaration()
+					if pd == nil {
+						return "", false, true
+					}
+					nm := pd.Name()
+					if nm == nil || nm.Kind != ast.KindIdentifier {
+						return "", false, true
+					}
+					elemKind, ok := saReceiverElemKind(pa.Expression, scope)
+					if !ok {
+						return "", false, true
+					}
+					ret := saCallbackReturnExpr(cb)
+					if ret == nil {
+						return "", false, true
+					}
+					ek, ok := saSeedElemKind(ret, nm.Text(), elemKind, scope)
+					if !ok || (ek != "str" && ek != "i32") {
+						return "", false, true
+					}
+					return ek, true, false
+				case "filter":
+					elemKind, ok := saReceiverElemKind(pa.Expression, scope)
+					if !ok || (elemKind != "str" && elemKind != "i32") {
+						return "", false, true
+					}
+					return elemKind, true, false
+				}
+			}
+		}
+	}
+	if arg != nil && arg.Kind == ast.KindIdentifier {
+		if scope.arrStr != nil && scope.arrStr[arg.Text()] {
+			return "str", true, false
+		}
+		return "i32", true, false
+	}
+	if arg != nil && arg.Kind == ast.KindElementAccessExpression {
+		ea := arg.AsElementAccessExpression()
+		if ea != nil && ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if scope.arrInnerStr != nil && scope.arrInnerStr[ea.Expression.Text()] {
+				return "str", true, false
+			}
+		}
+	}
+	return "", false, false
 }
 
 // saLowerMapCall Map/Set 调用总线（返回 operand/种/errMsg；Map 值种按建表记
