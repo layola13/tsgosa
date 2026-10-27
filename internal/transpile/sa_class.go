@@ -76,6 +76,7 @@ type saClassDef struct {
 	isAbstract    bool
 	isMono        bool
 	isSynth       bool
+	isStdBase     bool
 }
 
 // saIsBareTypeParamField 报告字段声明类型是否为裸类型参引用（未决泛型擦除
@@ -149,6 +150,53 @@ func saTopLevelClassExpr(st *ast.Node) (string, *ast.Node, bool) {
 		return "", nil, false
 	}
 	return nm.Text(), init, true
+}
+
+// saStdBaseDef synthesizes a web std base class layout (JEV par_std
+// seed_synth_bases): Error carries message:str + name:str, DOMException
+// carries name:str + message:str, EventTarget carries no fields. The def
+// has no ctor AST, so super(...) in a subclass hits the existing nil-ctor
+// arm (args evaluated in order, then discarded); subclass-owned fields and
+// methods lower exactly like any other inheritance. A user-declared class
+// of the same name recorded BEFORE the subclass wins (lookup hits first);
+// a later user declaration still hits the existing duplicate-class refusal.
+func saStdBaseDef(name string) *saClassDef {
+	mk := func(fields []saClassField, fkinds map[string]string, size int) *saClassDef {
+		offsets := map[string]int{}
+		for _, f := range fields {
+			offsets[f.name] = f.offset
+		}
+		return &saClassDef{name: name, fields: fields, offsets: offsets, fkinds: fkinds,
+			methods: map[string]*ast.Node{}, staticMethods: map[string]*ast.Node{},
+			getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{},
+			staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{},
+			statics: map[string]saStaticVal{}, fopt: map[string]bool{},
+			fdefs: map[string]*ast.TypeNode{}, size: size, isStdBase: true}
+	}
+	switch name {
+	case "Error":
+		return mk([]saClassField{{name: "message", offset: 0}, {name: "name", offset: 8}},
+			map[string]string{"message": "str", "name": "str"}, 16)
+	case "DOMException":
+		return mk([]saClassField{{name: "name", offset: 0}, {name: "message", offset: 8}},
+			map[string]string{"name": "str", "message": "str"}, 16)
+	case "EventTarget":
+		return mk(nil, map[string]string{}, 0)
+	}
+	return nil
+}
+
+// saSeedStdBase records the synthetic std base in classes if absent.
+func saSeedStdBase(classes map[string]*saClassDef, base string) bool {
+	if _, ok := classes[base]; ok {
+		return false
+	}
+	def := saStdBaseDef(base)
+	if def == nil {
+		return false
+	}
+	classes[base] = def
+	return true
 }
 
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
@@ -317,6 +365,13 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				return false
 			}
 			bdef, ok := classes[base]
+			if !ok {
+				// Synthetic std base (Error/EventTarget/DOMException): seed on
+				// first extends use; user declarations recorded earlier win.
+				if saSeedStdBase(classes, base) {
+					bdef, ok = classes[base]
+				}
+			}
 			qbase := base
 			if (!ok || bdef.isIface) && nsScope != "" {
 				if qb, ok2 := classes[nsScope+"_"+base]; ok2 && !qb.isIface {
@@ -6122,7 +6177,7 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if pd == nil {
 			return "", "destructured constructor parameters are not lowerable"
 		}
-		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return "", "constructor parameter shape is not lowerable"
 		}
 		nm := pd.Name()
@@ -7548,7 +7603,7 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructured constructor parameters are not lowerable"})
 			return false
 		}
-		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter shape is not lowerable"})
 			return false
