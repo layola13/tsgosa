@@ -6541,6 +6541,23 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 			saOwnTemp(scope, bh)
 			return bh, ""
 		}
+		// Opaque std ctor as jsval argument (patch 6b): `take(new Headers())`
+		// lowers the ctor to its jsval box and passes it through (no re-box;
+		// saEvalI32 refuses all value-position new-exprs, so the fallback
+		// below never reaches the opaque arm).
+		if na := saUnwrapTransparent(a); na != nil && na.Kind == ast.KindNewExpression {
+			if ne := na.AsNewExpression(); ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+				if cname := ne.Expression.Text(); saIsStdOpaqueClass(cname) {
+					if _, ok := scope.classes[cname]; !ok {
+						h, msg := saLowerStdOpaqueNew(w, cname, ne, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return h, ""
+					}
+				}
+			}
+		}
 		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
 			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
 			// (e.g. a Record<string, unknown> field read) passes through

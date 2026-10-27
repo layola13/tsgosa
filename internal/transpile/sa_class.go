@@ -990,7 +990,7 @@ func saLowerJsonNode(w printer.EmitTextWriter, jsonCall *ast.CallExpression, sco
 	w.Write(fmt.Sprintf("  %s = zext %s as u64\n", bl, bl32))
 	node := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @sa_json_parse(%s, %s)\n", node, bp, bl))
+	w.Write(fmt.Sprintf("  %s = call @sa_json_parse(&%s, %s)\n", node, bp, bl))
 	return node
 }
 
