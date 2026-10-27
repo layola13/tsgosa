@@ -5773,6 +5773,14 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				// 嵌套数组标识符巡回：元为内层句柄，行绑 arr（字面量直巡同形；
 				// 形状证据：封存 for-of 体 `row = t_19` 后 `load row + 8`）。
 				bindKind = "arr"
+			} else if rbase, ok := saArrBase(scope, fo.Expression); ok && scope.arrElemLayout != nil {
+				if layout, ok2 := scope.arrElemLayout[rbase]; ok2 && layout != "" {
+					// 参数/本地注解数组巡回：元为注解元素布局实例柄，行绑 inst
+					// （下标读同形：saLowerIndexLoadExpr 尾臂亦以 arrElemLayout
+					// 绑 inst:<layout>；同布局同 4 字节元读；JEV
+					// forof_inst_bind 1.0，scope arrElemLayout_bases 0.98）。
+					bindKind = "inst:" + layout
+				}
 			} else if arr, ok := saTopArrLookup(scope, fo.Expression); ok && arr.str {
 				// 顶层串元数组巡回：元为串柄，行绑 str（本地串数组同形；758）。
 				bindKind = "str"
@@ -9362,6 +9370,47 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 					return "", "", msg
 				}
 				continue
+			}
+			// 实例元数组压栈（JEV push_inst_elemlayout 0.98）：接收者具
+			// arrElemLayout 且实参可证实例时，句柄直存（与下标读同 4 字
+			// 节槽；字段皆 8 字节，UnionRet 与别布局同偏移）；无布局数组
+			// 收实例仍沿旧门大声拒，串元入实例数组仍由后卫拒。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && saCouldBeInst(an, scope) {
+				if _, ok := scope.arrElemLayout[pa.Expression.Text()]; ok {
+					u := saUnwrapTransparent(an)
+					var v string
+					var handled bool
+					switch {
+					case u != nil && u.Kind == ast.KindIdentifier:
+						v, handled = u.Text(), true
+					case u != nil && u.Kind == ast.KindCallExpression:
+						if ce := u.AsCallExpression(); ce != nil {
+							op, voidCall, cmsg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+							if cmsg != "" {
+								return "", "", cmsg
+							}
+							if voidCall {
+								return "", "", "void call result cannot be pushed"
+							}
+							v, handled = op, true
+							if saIsTempOp(v) {
+								saOwnTemp(scope, v)
+							}
+						}
+					case u != nil && u.Kind == ast.KindElementAccessExpression:
+						if ea := u.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+							h, emsg := saLowerIndexLoadExpr(w, ea, scope, pos, refusals, nextTemp)
+							if emsg != "" {
+								return "", "", emsg
+							}
+							v, handled = h, true
+						}
+					}
+					if handled {
+						last = saLowerArrayPush(w, recv, v, scope, nextTemp)
+						continue
+					}
+				}
 			}
 			v, msg := saArrayLiteralElem(w, an, scope, pos, refusals, nextTemp)
 			if msg != "" {

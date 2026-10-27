@@ -761,6 +761,14 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			if saIsNestedStrArrayAnnot(vd.Type) {
 				saMarkArrInnerStr(scope, name)
 			}
+			// 本地注解数组元素布局（参数播种同形；c325 压栈/巡回/下标读三
+			// 径皆以 arrElemLayout 为凭；解析失败则无条目，沿旧门拒）。
+			if layout, ok := saArrElemLayoutOfType(vd.Type, scope.classes, scope.aliasOf); ok {
+				if scope.arrElemLayout == nil {
+					scope.arrElemLayout = map[string]string{}
+				}
+				scope.arrElemLayout[name] = layout
+			}
 			continue
 		}
 		if vkind == "str" {
