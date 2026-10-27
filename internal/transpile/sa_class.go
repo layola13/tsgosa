@@ -9641,12 +9641,17 @@ func saInlineStaticSetter(w printer.EmitTextWriter, className string, def *saCla
 	return msg
 }
 
-// saLowerObjectAssign `Object.assign(target, source)` 已知布局逐域拷贝（源域序；
-// 同种域；标量域 i32/f64（句柄域拷贝即共享归属，双释风险，大声拒）；未知布局/
-// 异布局沿旧门；返回值即目标，JS 同义）。形状证据：封存 lowerObjectSpread
-// 源序重放同形（step46 对象展开复用同一逐域拷贝纪律）。
-func saLowerObjectAssign(w printer.EmitTextWriter, tnode, snode *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	if tnode == nil || tnode.Kind != ast.KindIdentifier || snode == nil || snode.Kind != ast.KindIdentifier {
+// saLowerObjectAssign `Object.assign(target, ...sources)` 已知布局逐域拷贝（源序；
+// 后源覆盖前源，同 JS 左到右覆盖语义；源为绑定标识符或对象字面量；
+// 标量域 i32/f64 直拷；str/arr/inst 句柄域按对象展开同形 load as ptr +
+// store as ptr 共享句柄（JEV 2b_assign assign_handle allow 0.74，置信 0.48，
+// 与展开纪律一致）；jsval 域沿旧门大声拒（jsval 域赋值本身未 lowerable）；
+// 未知布局/异布局/未知字面量键沿旧门；返回值即目标，JS 同义。形状证据：
+// JEV extend_narg 1.0 / materialize_literal 0.90；字面量子集匹配
+// saWantKeySubset + 缺省零填见 saLowerObjectLiteral；展开句柄拷贝同形见
+// saLowerObjectLiteral spread 臂。
+func saLowerObjectAssign(w printer.EmitTextWriter, tnode *ast.Node, sources []*ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if tnode == nil || tnode.Kind != ast.KindIdentifier {
 		return "", "Object.assign needs bound objects"
 	}
 	tk, ok := scope.types[tnode.Text()]
@@ -9657,32 +9662,121 @@ func saLowerObjectAssign(w printer.EmitTextWriter, tnode, snode *ast.Node, scope
 	if !ok || tdef == nil {
 		return "", "Object.assign needs a known-layout target"
 	}
-	sk, ok := scope.types[snode.Text()]
-	if !ok || len(sk) <= 5 || sk[:5] != "inst:" {
-		return "", "Object.assign needs a known-layout source"
-	}
-	sdef, ok := scope.classes[sk[5:]]
-	if !ok || sdef == nil {
-		return "", "Object.assign needs a known-layout source"
-	}
-	for _, f := range sdef.fields {
-		if _, ok := tdef.offsets[f.name]; !ok || tdef.fkinds[f.name] != sdef.fkinds[f.name] {
-			return "", "Object.assign needs matching field layouts"
+	for _, snode := range sources {
+		if snode == nil {
+			return "", "Object.assign needs bound objects"
 		}
-		kind := sdef.fkinds[f.name]
-		if kind != "i32" && kind != "f64" {
-			// 句柄域（str/arr/inst）拷贝即共享归属：两端各释一次即双释。
-			return "", "Object.assign cannot copy handle fields (shared ownership)"
+		if snode.Kind == ast.KindObjectLiteralExpression {
+			if msg := saLowerObjectAssignLiteral(w, tnode.Text(), tdef, snode, scope, pos, refusals, nextTemp); msg != "" {
+				return "", msg
+			}
+			continue
 		}
-		v, msg := saLowerClassFieldLoad(w, snode.Text(), sdef, f.name, scope, nextTemp)
-		if msg != "" {
-			return "", msg
+		if snode.Kind != ast.KindIdentifier {
+			return "", "Object.assign needs bound objects or object literals"
 		}
-		if msg := saLowerClassFieldStore(w, tnode.Text(), tdef, f.name, v); msg != "" {
+		sk, ok := scope.types[snode.Text()]
+		if !ok || len(sk) <= 5 || sk[:5] != "inst:" {
+			return "", "Object.assign needs a known-layout source"
+		}
+		sdef, ok := scope.classes[sk[5:]]
+		if !ok || sdef == nil {
+			return "", "Object.assign needs a known-layout source"
+		}
+		if msg := saCopyInstFields(w, tnode.Text(), tdef, snode.Text(), sdef, nil, scope, nextTemp); msg != "" {
 			return "", msg
 		}
 	}
 	return tnode.Text(), ""
+}
+
+// saCopyInstFields 逐域拷贝（源域序；后写覆盖前写由调用方源序保证）。
+// keyFilter 非空时仅拷贝所列键（字面量源：仅字面量自有键，零填缺省域不碰
+// 目标）。i32/f64 经 load/store 助手；str/arr/inst 句柄按展开同形直拷 ptr；
+// jsval 与其他种大声拒。
+func saCopyInstFields(w printer.EmitTextWriter, tname string, tdef *saClassDef, sname string, sdef *saClassDef, keyFilter []string, scope *saScope, nextTemp *int) string {
+	fields := sdef.fields
+	if keyFilter != nil {
+		fields = nil
+		for _, k := range keyFilter {
+			found := false
+			for _, f := range sdef.fields {
+				if f.name == k {
+					fields = append(fields, f)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "Object.assign literal field " + k + " has no target field"
+			}
+		}
+	}
+	for _, f := range fields {
+		sk := sdef.fkinds[f.name]
+		if sk == "" {
+			sk = "i32"
+		}
+		dk := tdef.fkinds[f.name]
+		if dk == "" {
+			dk = "i32"
+		}
+		if _, ok := tdef.offsets[f.name]; !ok || dk != sk {
+			return "Object.assign needs matching field layouts"
+		}
+		kind := sk
+		if kind == "jsval" {
+			return "Object.assign cannot copy jsval fields (jsval field assignment is not lowerable yet)"
+		}
+		if kind != "i32" && kind != "f64" && kind != "str" && kind != "arr" && kind != "inst" {
+			return "Object.assign cannot copy " + kind + " fields"
+		}
+		v, msg := saLowerClassFieldLoad(w, sname, sdef, f.name, scope, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		if kind == "str" || kind == "arr" || kind == "inst" {
+			// 展开同形：句柄直拷（saLowerClassFieldStore 对 inst 会落 i32，
+			// 故此处直接按 ptr 存，与字面量展开臂一致）。
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", tname, tdef.offsets[f.name], v))
+			continue
+		}
+		if msg := saLowerClassFieldStore(w, tname, tdef, f.name, v); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+// saLowerObjectAssignLiteral 字面量源：先经 saLowerObjectLiteral 按目标布局
+// 具化临时实例（want=目标布局；子集键已由 saWantKeySubset 接受，缺省可选域
+// 零填），再仅按字面量自有键序拷入目标——零填域不得覆盖目标既有值。
+// 字面量内含展开时拒（展开键无法从自有键集区分零填域）。
+func saLowerObjectAssignLiteral(w printer.EmitTextWriter, tname string, tdef *saClassDef, lit *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	ol := lit.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil {
+		return "Object.assign literal source is not lowerable"
+	}
+	var keys []string
+	for _, p := range ol.Properties.Nodes {
+		if p.Kind == ast.KindSpreadAssignment {
+			return "Object.assign literal source with spread is not lowerable"
+		}
+		fname, ok := saObjPropName(p)
+		if !ok {
+			return "computed property names must be literals (dynamic keys have no static layout)"
+		}
+		keys = append(keys, fname)
+	}
+	h, lname, msg := saLowerObjectLiteral(w, lit, tdef.name, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return msg
+	}
+	ldef, ok := scope.classes[lname]
+	if !ok || ldef == nil {
+		return "Object.assign literal source has no recorded interface layout"
+	}
+	return saCopyInstFields(w, tname, tdef, h, ldef, keys, scope, nextTemp)
 }
 
 func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, scope *saScope, nextTemp *int) (string, string) {

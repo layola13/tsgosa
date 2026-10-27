@@ -3552,10 +3552,10 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				if ce.Arguments != nil {
 					argNodes = ce.Arguments.Nodes
 				}
-				if len(argNodes) != 2 {
-					return "", false, "Object.assign takes two arguments"
+				if len(argNodes) < 2 {
+					return "", false, "Object.assign takes at least two arguments"
 				}
-				h, msg := saLowerObjectAssign(w, argNodes[0], argNodes[1], scope, pos, refusals, nextTemp)
+				h, msg := saLowerObjectAssign(w, argNodes[0], argNodes[1:], scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", false, msg
 				}
