@@ -9235,6 +9235,46 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+			// jsval-vs-jsval strict equality (JEV jsval_jsval_eq build_helper
+			// 1.0, scope field_and_named 0.30 LOW — near-tie with
+			// all_jsval_exprs 0.47, conservative gate below): without this
+			// arm both sides fall to the generic tail, which evaluates them
+			// to jsval box handles and emits pointer `eq` — a silent
+			// miscompile, since boxes are fresh `alloc 32` per boxing (no
+			// interning): equal primitives in distinct boxes, and the same
+			// object stored in two fields (boxed twice), compare unequal
+			// under pointer eq but equal under JS ===. The helper compares
+			// tag+payload (string payloads by content, object/array/function
+			// by payload identity). Strict ===/!== only; loose ==/!= still
+			// falls to the generic tail (pointer eq — known remain, needs
+			// its own JEV: refuse vs coerce-helper). LANDING: this arm must
+			// land together with or after @ts_jsval_equals in sa_std
+			// (coordinator's serialized sci flow); landing it alone breaks
+			// `sa check` on every jsval-===-jsval program.
+			if be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken {
+				if saIsJsValEqOperand(be.Left, scope) && saIsJsValEqOperand(be.Right, scope) {
+					lh, msgL := saEvalJsValHandle(w, be.Left, scope, pos, refusals, nextTemp)
+					if msgL != "" {
+						return "", msgL
+					}
+					rh, msgR := saEvalJsValHandle(w, be.Right, scope, pos, refusals, nextTemp)
+					if msgR != "" {
+						return "", msgR
+					}
+					scope.addImport("sa_std/ts_jsval.sa")
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @ts_jsval_equals(%s, %s)\n", t, lh, rh))
+					if be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken {
+						nt := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 0\n", nt, t))
+						return nt, ""
+					}
+					return t, ""
+				}
+			}
 			// handle equality compares directly (arr bindings from enum instantiations
 			// against i32 values; address semantics; inst identifier pairs compare
 			// handles directly (JEV handle_eq 1.0); string sides keep old gates).
