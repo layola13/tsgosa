@@ -5498,6 +5498,11 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 			} else if arr, ok := saTopArrLookup(scope, fo.Expression); ok && arr.nested != nil {
 				// 顶层嵌套数组巡回：元为内层柄，行绑 arr（本地嵌套同形；798）。
 				bindKind = "arr"
+			} else if arr, ok := saTopArrLookup(scope, fo.Expression); ok && arr.objs != nil && arr.layout != "" {
+				// 顶层对象数组巡回：元为合成布局实例柄，行绑 inst（下标读
+				// 同形：顶层对象数组下标读亦绑 inst:<layout>；JEV
+				// inst_layout_bind 1.0）。正则形（layout 为空）沿旧 i32 门。
+				bindKind = "inst:" + arr.layout
 			}
 		}
 		scope.types[binding] = bindKind
