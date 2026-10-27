@@ -5619,9 +5619,24 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 			v, msg := saArrValueOf(w, o.init, scope, pos, refusals, nextTemp)
 			if msg != "" {
-				v, msg = saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
+				// jsval ternary fallback (JEV arr_fallback 1.0): JsonValue
+				// fields are recorded as arr, so their ternary inits never
+				// reach the jsval ladder; a literal arm would die in the
+				// i32 fallback below. The pure pre-check gates the divert,
+				// so currently-passing shapes (e.g. undefined-arm ternaries
+				// via SELECT) keep the existing fallback byte-identical.
+				if o.init != nil && o.init.Kind == ast.KindConditionalExpression {
+					if ce := o.init.AsConditionalExpression(); ce != nil && saJsValTernaryShapeOk(o.init, scope, 0) && saJsValTernaryHasLiteral(o.init, scope, 0) {
+						if hv, msg2 := saLowerTernaryJsVal(w, ce, o.init, scope, pos, refusals, scope.nextLabel, nextTemp); msg2 == "" {
+							v, msg = hv, ""
+						}
+					}
+				}
 				if msg != "" {
-					return "", "", msg
+					v, msg = saEvalI32(w, o.init, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
 				}
 			}
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
