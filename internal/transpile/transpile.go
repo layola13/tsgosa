@@ -2670,7 +2670,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		isVoid := false
 		retKind := ""
 		if saArrowReturnNode(arrow) == nil {
-			if ab := arrow.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
+			if ab := arrow.Body(); ab != nil && ab.Kind == ast.KindBlock && saJsValReturnScan(arrow) {
+				// Unannotated block-body arrow returning only JSX / object
+				// literals: jsval, matching emit's saPrescanRet (the i32
+				// shortcut below would mismatch the definition).
+				retKind, isVoid = "jsval", false
+			} else if ab := arrow.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
 				// 无注解值函数 i32（表达式体或有形参；与发射位同规则；
 				// 封存 lowerArrowBinding value_fn:1099-1117；仅无参块体
 				// 走 checker（async 恒 void 缺省）。
