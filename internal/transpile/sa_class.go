@@ -9498,6 +9498,23 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			argVals = append(argVals, v)
 			continue
 		}
+		// jsval 形参实参走自由函数同款 jsval 梯（JEV 2b_jsvalargs
+		// reuse_freefn_paramkind 0.74, scope iface_method_only 0.96：
+		// 方法签名种表已按 jvunion 规则把 Record<string, JSON-union>
+		// 形参记为 jsval，但本循环此前无 jsval 臂，字面量实参落
+		// saEvalI32 拒“object literal needs a declaration binding”，
+		// 标识符实参拒“jsval params in i32 expression”；与自由函数
+		// 调用核同律改走 saEvalCallArg 的 jsval 臂。非 jsval 种不受
+		// 影响；无体接口方法此前已在 saInlineMethod 拒，沿旧门。）
+		if i < len(kinds) && kinds[i] == "jsval" {
+			sig := saFuncSig{params: len(kinds), paramKinds: kinds}
+			v, msg := saEvalCallArg(w, sig, i, a, len(kinds), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			argVals = append(argVals, v)
+			continue
+		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
