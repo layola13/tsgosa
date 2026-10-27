@@ -2770,7 +2770,9 @@ func saBoolCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	if ce.Expression.Kind == ast.KindIdentifier {
-		if k, ok := saCallRetKind(ce, scope); ok && (k == "bool" || k == "i32") {
+		// Function-signature vocabulary spells it "boolean"
+		// (saEvalReturnOperand's retKind arm); fkinds spell it "bool".
+		if k, ok := saCallRetKind(ce, scope); ok && (k == "bool" || k == "boolean" || k == "i32") {
 			return k, true
 		}
 		return "", false
@@ -2949,6 +2951,10 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, po
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
 		saOwnTemp(scope, slot)
+		// Arm-entry ownOrder depth (mirror of saLowerArm): the slot
+		// itself predates this mark, so it survives for the join load;
+		// temps the right side materializes inside the arm do not.
+		armBase := len(scope.ownOrder)
 		trueL, falseL := armL, decideL
 		decideVal := "0"
 		if isOr {
@@ -2965,6 +2971,13 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, po
 			return "", false, rmsg
 		}
 		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, r))
+		// Arm-exit release: right-side materializations inside this
+		// arm (e.g. a .some loop's snapshot elements) must be released
+		// here, while still in scope; the function epilogue cannot
+		// release them after the join (UnknownRegister on the path
+		// that skipped the arm). Already-released temps are skipped
+		// by the ownership flags.
+		saReleaseDeeperThan(w, scope, armBase)
 		w.Write(fmt.Sprintf("  jmp %s\n", endL))
 		w.Write(fmt.Sprintf("%s:\n", endL))
 		out := fmt.Sprintf("t_%d", *nextTemp)
