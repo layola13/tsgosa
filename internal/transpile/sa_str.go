@@ -2097,8 +2097,20 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 // limit 按 lib.es5.d.ts `split(separator, limit?)` 截断（0 即空；负数经 ToUint32 视为不限，
 // 以 i32 上确界归一；封存上游忽略 limit 系静默错码，本仓正确优先，step109 同例有意分歧）。
 // saRegexHasGlobalFlag 报告正则静态带 /g（字面量/new 字面量 flags 含 g；
-// 绑定名未知保守 false；`replaceAll` 无 g 即 TypeError，JS 同义）。
-func saRegexHasGlobalFlag(e *ast.Node) bool {
+// 绑定名查 regexFlags 表（无表即未知保守 false），再查 scope.topRegex；
+// `replaceAll` 无 g 即 TypeError，JS 同义）。
+func saRegexHasGlobalFlag(e *ast.Node, scope *saScope) bool {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if scope != nil {
+			if f, ok := scope.regexFlags[e.Text()]; ok {
+				return strings.Contains(f, "g")
+			}
+			if tr, ok := scope.topRegex[e.Text()]; ok {
+				return strings.Contains(tr.Flags, "g")
+			}
+		}
+		return false
+	}
 	if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
 		_, flags, ok := saRegexSplitLiteral(e.Text())
 		if !ok {
@@ -2124,10 +2136,20 @@ func saRegexHasGlobalFlag(e *ast.Node) bool {
 }
 
 // saRegexPatternHasNoGroup 报告正则模式静态无捕获组（字面量/new 字面量
-// 扫描未转义 `(`；绑定名组未知保守 false）。
-func saRegexPatternHasNoGroup(e *ast.Node) bool {
+// 扫描未转义 `(`；绑定名经 regexPat 消解（无表即未知保守 false），
+// 与字面量门同形——`(?:` 亦保守拒）。
+func saRegexPatternHasNoGroup(e *ast.Node, scope *saScope) bool {
 	pat := ""
-	if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if scope == nil {
+			return false
+		}
+		var ok bool
+		pat, ok = scope.regexPat[e.Text()]
+		if !ok {
+			return false
+		}
+	} else if e != nil && e.Kind == ast.KindRegularExpressionLiteral {
 		var flags string
 		var ok bool
 		pat, flags, ok = saRegexSplitLiteral(e.Text())
@@ -2171,6 +2193,40 @@ func saRegexPatternHasNoGroup(e *ast.Node) bool {
 
 // saRegexNewPatText 取 `new RegExp("pat")` 串字面量源（非字面量即 ""；
 // 含引号无妨，组扫描只认未转义 `(`）。
+
+// saRegexNewFlagsText 取 `new RegExp("pat", "flags")` 串字面量 flags
+// （非字面量/缺参即 ""；与 saRegexNewPatText 同门）。
+func saRegexNewFlagsText(ne *ast.NewExpression) string {
+	if ne == nil || ne.Arguments == nil || len(ne.Arguments.Nodes) < 2 {
+		return ""
+	}
+	f := ne.Arguments.Nodes[1]
+	if f == nil || f.Kind != ast.KindStringLiteral {
+		return ""
+	}
+	return f.Text()
+}
+
+// saRegexArgMsg 把正则内部 "not a regex call" 换成方法级准确拒因
+// （fix_leak：首参既非串表达式亦非正则基时，内部门面不得外泄）。
+func saRegexArgMsg(msg, method string) string {
+	if msg == "not a regex call" {
+		return method + " takes a string or RegExp argument"
+	}
+	return msg
+}
+
+// saMatchArgMsg：match 专用——串参即串转正则（运行时模式同门未建，
+// 大声拒）；非串非正则即方法级拒因。
+func saMatchArgMsg(msg string, arg *ast.Node, scope *saScope) string {
+	if msg != "not a regex call" {
+		return msg
+	}
+	if saIsStrExpr(arg, scope) {
+		return "String.match with a string argument is not lowerable yet"
+	}
+	return "String.match takes a string or RegExp argument"
+}
 func saRegexNewPatText(ne *ast.NewExpression) string {
 	if ne == nil || ne.Arguments == nil || len(ne.Arguments.Nodes) < 1 {
 		return ""
@@ -2257,6 +2313,11 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 		return [2]string{"", ""}
 	}
 	rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+	if msg == "not a regex call" {
+		// 非正则基（串分隔形同款空回退）：调用方走原路，报自身拒因，
+		// 不泄正则内部门面（fix_leak；`sep` 分隔形实证）。
+		return [2]string{"", ""}
+	}
 	if msg != "" {
 		return [2]string{"", msg}
 	}
@@ -2264,7 +2325,7 @@ func saRegexSplitMsg(w printer.EmitTextWriter, ce *ast.CallExpression, recv stri
 	// 绑定名组未知保守拒）。
 	var rph string
 	if isRA {
-		if !saRegexPatternHasNoGroup(args[0]) {
+		if !saRegexPatternHasNoGroup(args[0], scope) {
 			return [2]string{"", "String.replaceAll with capture groups is not lowerable yet"}
 		}
 		var msg string
@@ -2825,7 +2886,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 					return "", false, "String.replaceAll with a RegExp takes 2 arguments"
 				}
 				// 无 g 即 TypeError（JS 同义；绑定名未知保守拒）。
-				if !saRegexHasGlobalFlag(args[0]) {
+				if !saRegexHasGlobalFlag(args[0], scope) {
 					return "", false, "String.replaceAll with a RegExp needs /g flag"
 				}
 				if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
@@ -2842,7 +2903,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			}
 			// `/g` 全换自动改调 replaceAll 核（与 replaceAll 同形同门同 `$` 拒因；
 			// JS 双边等价，旧拒收无指纹依赖；P-A1）。
-			if saRegexHasGlobalFlag(args[0]) {
+			if saRegexHasGlobalFlag(args[0], scope) {
 				if args[1] != nil && args[1].Kind == ast.KindStringLiteral && strings.Contains(args[1].Text(), "$") {
 					return "", false, "String.replace $-patterns are not lowerable yet"
 				}
@@ -2857,7 +2918,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			}
 			rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
-				return "", false, msg
+				return "", false, saRegexArgMsg(msg, "String.replace")
 			}
 			// 替换柄 hit 路内求值（自求自释；miss 路无记录，两路汇合态一致）。
 			scope.addImport("sa_std/text/regex.sa")
@@ -2997,7 +3058,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
-			return "", false, msg
+			return "", false, saRegexArgMsg(msg, "String.search")
 		}
 		rp, rl := saExpandStr(w, recv, nextTemp)
 		scope.addImport("sa_std/text/regex.sa")
@@ -3048,10 +3109,10 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		if len(args) != 1 {
 			return "", false, "match takes 1 argument"
 		}
-		if saRegexHasGlobalFlag(args[0]) {
+		if saRegexHasGlobalFlag(args[0], scope) {
 			rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 			if msg != "" {
-				return "", false, msg
+				return "", false, saMatchArgMsg(msg, args[0], scope)
 			}
 			return saLowerRegexMatchGlobal(w, rh, bp, bl, scope, nextTemp), false, ""
 		}
@@ -3066,7 +3127,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 				groups = append(groups, mapping...)
 				rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 				if msg != "" {
-					return "", false, msg
+					return "", false, saMatchArgMsg(msg, args[0], scope)
 				}
 				return saLowerRegexMatchArrayGroups(w, rh, bp, bl, groups, scope, nextTemp), false, ""
 			}
@@ -3077,7 +3138,7 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		}
 		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
 		if msg != "" {
-			return "", false, msg
+			return "", false, saMatchArgMsg(msg, args[0], scope)
 		}
 		return saLowerRegexMatchArray(w, rh, bp, bl, scope, nextTemp), false, ""
 	case "charAt", "at":
