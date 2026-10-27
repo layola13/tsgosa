@@ -982,6 +982,14 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			saDeclarePlain(scope, name)
 			continue
 		}
+		if cbArrow := saUseCallbackArrow(litInit, scope); cbArrow != nil {
+			// 4_link_mask: useCallback identity -- bind the wrapped arrow as a
+			// plain local arrow; deps are ignored (see saUseCallbackArrow).
+			if !saLowerLocalArrow(w, name, cbArrow, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp) {
+				return false
+			}
+			continue
+		}
 		if vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression {
 			// 局部箭头落 out-of-line 被调 + 调用别名（封存 lowerArrowBinding
 			// 局部分支 :1058-1254）。
@@ -1113,6 +1121,10 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	}
 	// transparent wrappers peel before kind dispatch (type-level only).
 	init := saUnwrapTransparent(vd.Initializer)
+	if cbArrow := saUseCallbackArrow(init, scope); cbArrow != nil {
+		// 4_link_mask: useCallback identity -- see saUseCallbackArrow.
+		return saLowerLocalArrow(w, name, cbArrow, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+	}
 	if init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression {
 		// 局部箭头落 out-of-line 被调 + 调用别名（封存 lowerArrowBinding
 		// 局部分支 :1058-1254）。
@@ -2862,6 +2874,83 @@ func saTopFnAlias(st *ast.Node, funcs map[string]saFuncSig, assigned map[string]
 		return "", "", false
 	}
 	return alias, target, true
+}
+
+// saUseCallbackArrow reports the wrapped arrow for a local
+// `const f = useCallback(arrow, deps)` initializer, or nil.
+// 4_link_mask (JEV usecallback_identity 0.57, confidence 0.35 modest --
+// verified by minimals below, not by confidence alone): SA models no React
+// memoization, so the wrapper is transparent and the arrow lowers exactly
+// like a direct local arrow (saLowerLocalArrow); deps are ignored. Every
+// gate below fails closed to the old unknown-function refusal.
+func saUseCallbackArrow(init *ast.Node, scope *saScope) *ast.Node {
+	if init == nil {
+		return nil
+	}
+	for init.Kind == ast.KindParenthesizedExpression || init.Kind == ast.KindNonNullExpression {
+		if init.Kind == ast.KindParenthesizedExpression {
+			pe := init.AsParenthesizedExpression()
+			if pe == nil {
+				return nil
+			}
+			init = pe.Expression
+		} else {
+			ne := init.AsNonNullExpression()
+			if ne == nil {
+				return nil
+			}
+			init = ne.Expression
+		}
+		if init == nil {
+			return nil
+		}
+	}
+	if init.Kind != ast.KindCallExpression {
+		return nil
+	}
+	ce := init.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier || ce.Expression.Text() != "useCallback" {
+		return nil
+	}
+	if scope != nil {
+		if _, ok := scope.funcs["useCallback"]; ok {
+			return nil
+		}
+		if _, ok := scope.linkResolve["useCallback"]; ok {
+			return nil
+		}
+		if _, ok := scope.types["useCallback"]; ok {
+			return nil
+		}
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 2 {
+		return nil
+	}
+	fn := ce.Arguments.Nodes[0]
+	if fn == nil || (fn.Kind != ast.KindArrowFunction && fn.Kind != ast.KindFunctionExpression) {
+		return nil
+	}
+	deps := ce.Arguments.Nodes[1]
+	if deps == nil || deps.Kind != ast.KindArrayLiteralExpression {
+		return nil
+	}
+	al := deps.AsArrayLiteralExpression()
+	if al == nil {
+		return nil
+	}
+	if al.Elements != nil {
+		for _, e := range al.Elements.Nodes {
+			if e == nil {
+				return nil
+			}
+			switch e.Kind {
+			case ast.KindNumericLiteral, ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword, ast.KindUndefinedKeyword, ast.KindIdentifier:
+			default:
+				return nil
+			}
+		}
+	}
+	return fn
 }
 
 // saIsMemoConst 识别顶层 `const M = memo(fn)` / `memo(Impl)` / forwardRef 同形
