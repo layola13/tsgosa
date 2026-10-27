@@ -2905,10 +2905,18 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 预扫二b：顶层箭头/函数表达式 `const f = (...)=>...` 记调用签名
 	// （与函数声明同表；形状证据：封存 tryTopLevelArrow:1015-1032 +
 	// lowerArrowBinding:1058-1098）。重名（函数/先行箭头）同门大声拒。
+	// memoUnwrapped records the exact statements two-b registered via its
+	// memo unwrap, so prescan-two-c can skip re-registering them (repair,
+	// JEV provenance_skip): a per-statement provenance check, NOT a blind
+	// dup skip — genuine cross-statement duplicates still refuse below.
+	memoUnwrapped := map[*ast.Node]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		name, arrow, ok := saIsTopLevelArrowConst(st)
 		if !ok {
 			continue
+		}
+		if saTopLevelArrowInitIsMemoCall(st) {
+			memoUnwrapped[st] = true
 		}
 		if _, dup := funcs[name]; dup {
 			ln, col := pos(st.Pos())
@@ -2959,6 +2967,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		name, inner, ok := saIsMemoConst(st)
 		if !ok {
+			continue
+		}
+		if memoUnwrapped[st] {
 			continue
 		}
 		if _, dup := funcs[name]; dup {

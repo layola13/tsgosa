@@ -2731,6 +2731,37 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 	return nm.Text(), init, true
 }
 
+// saTopLevelArrowInitIsMemoCall reports whether st's initializer is exactly
+// a call to the plain `memo` identifier. Given saIsTopLevelArrowConst matched
+// st, this is equivalent to "the match came via its memo-unwrap branch":
+// that function never transparently unwraps the outer initializer, and its
+// only CallExpression match is a `memo` call (plain arrow/function-expression
+// initializers are not calls; bare forwardRef callees never match). Used as
+// two-b/two-c provenance: two-b already registered such statements, so
+// two-c must not register them again.
+func saTopLevelArrowInitIsMemoCall(st *ast.Node) bool {
+	if st.Kind != ast.KindVariableStatement {
+		return false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) != 1 {
+		return false
+	}
+	vd := dl.Declarations.Nodes[0].AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return false
+	}
+	ce := vd.Initializer.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	return ce.Expression.Text() == "memo"
+}
+
 // saTopFnAlias reports whether st is a top-level function alias: a
 // single-declarator var statement whose initializer (transparently
 // unwrapped) is an Identifier naming a funcs entry, or a memo(...) call

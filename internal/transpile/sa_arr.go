@@ -4567,7 +4567,16 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 				if d, ok := scope.classes[to.layout]; ok && d != nil && to.init != nil {
 					if leaf := inner.Name().Text(); d.fkinds[leaf] == "arr" {
 						if off, ok := d.offsets[leaf]; ok {
-							h, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+							// (repair, JEV claim_materialize) Materialize via
+							// the claim, not a direct literal call: only the
+							// claim path sets scope.topObjClaim, which the
+							// arr arm needs for idfield snapshot fields
+							// (arrStrFields/objFieldClaims); a direct call
+							// falls through to variable lookup and refuses
+							// with 'unknown variable base' (importer) or
+							// 'top-level const array is not an i32 value'
+							// (same file).
+							h, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
 							if msg != "" {
 								return "", msg
 							}
