@@ -300,9 +300,9 @@ func saBareReexpStarDefs(dirAbs string, parsed map[string]*ast.SourceFile, parse
 		return nil
 	}
 	type work struct {
-		key string
-		abs string
-		sf  *ast.SourceFile
+		key   string
+		abs   string
+		sf    *ast.SourceFile
 		depth int
 	}
 	queue := []work{{curKey, curAbs, sf, 0}}
