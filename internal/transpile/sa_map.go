@@ -1446,8 +1446,30 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 			}
 			vk, ok := saTopMapValueKindA(ref.TypeArguments.Nodes[1], aliases)
 			if !ok {
-				okAll = false
-				break
+				// Empty-literal arm (JEV empty_unparsed_value 1.0,
+				// scope empty_literal_only 0.96): an empty {} claims
+				// with vkind "empty" even when the value type does
+				// not parse, but only for a DIRECT Record/Map
+				// annotation (no Readonly/Partial wrapper) -- the
+				// literal holds no values, so no value is ever
+				// materialized from it, and value reads keep refusing
+				// loudly via the existing vkind-"empty" arms.
+				// Parseable value kinds keep their old vkind (a
+				// claimed empty str/i32 map keeps its read behavior);
+				// non-empty literals keep refusing.
+				if unwrapType != vd.Type {
+					okAll = false
+					break
+				}
+				if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+					okAll = false
+					break
+				}
+				if ol := init.AsObjectLiteralExpression(); ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) != 0 {
+					okAll = false
+					break
+				}
+				vk = "empty"
 			}
 			view := map[string]saTopMap{}
 			for k, v := range out {

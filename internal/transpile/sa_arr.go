@@ -7340,6 +7340,25 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 	if base, ok := saArrBase(scope, e); ok {
 		return base, ""
 	}
+	// Whole-value claimed topMap identifier (JEV topmap_ident_arr
+	// 0.93, scope arr_value_everywhere 0.76): a topMap name is not
+	// a scope.types arr binding, so the arr path fell through to
+	// saEvalI32 and refused 'unknown variable' even for
+	// long-claimed maps. Materialize via the existing
+	// saLowerTopMap arm (fresh map per use; mutated topMaps are
+	// never claimed). saTopMapLookup itself enforces the
+	// identifier + unshadowed gates, so shadowed locals keep
+	// their own path. Index/dot/get reads keep their dedicated
+	// arms; whole-map returns are untouched.
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if tm, ok := saTopMapLookup(scope, e); ok {
+			slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return slot, ""
+		}
+	}
 	switch e.Kind {
 	case ast.KindArrayLiteralExpression:
 		return saLowerArrayLiteral(w, e, scope, pos, refusals, nextTemp)
