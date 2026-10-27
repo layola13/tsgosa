@@ -458,6 +458,18 @@ type saFileLink struct {
 	constHarvests    map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
 	topConstHarvest  map[string]bool                   // out: own top const array/object/regex names claimed by this file's lowering, value = export modifier (re-export claim use)
 	topConstHarvests map[string]map[string]bool        // all files: target -> name -> harvested top const (driver fills)
+	topArrHarvest    map[string]saTopArr               // out: own exported top array claims for dependents (snapshot seeding)
+	topArrHarvests   map[string]map[string]saTopArr    // all files: target -> name -> harvested top array (driver fills)
+	topObjHarvest    map[string]saTopObj               // out: own exported top object claims for dependents
+	topObjHarvests   map[string]map[string]saTopObj    // all files: target -> name -> harvested top object (driver fills)
+	topRegexHarvest  map[string]saTopRegex             // out: own exported top regex claims for dependents
+	topRegexHarvests map[string]map[string]saTopRegex  // all files: target -> name -> harvested top regex (driver fills)
+	topMapHarvest    map[string]saTopMap               // out: own exported top Record claims for dependents
+	topMapHarvests   map[string]map[string]saTopMap    // all files: target -> name -> harvested top Record (driver fills)
+	topArrSeed       map[string]saTopArr               // out/in: imported local name -> defining array claim
+	topObjSeed       map[string]saTopObj               // out/in: imported local name -> defining object claim
+	topRegexSeed     map[string]saTopRegex             // out/in: imported local name -> defining regex claim
+	topMapSeed       map[string]saTopMap               // out/in: imported local name -> defining Record claim
 	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
 	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
 	slotHarvests     map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
@@ -729,6 +741,48 @@ func saProgTypeForwarded(link *saFileLink, exported string) bool {
 // saProgChase resolves (tgt, remote) to a qualified callee through re-export
 // edges (upstream resolveReExports:1317 同形；cycle 经 seen 守卫，未导出/
 // 箭头/断链一律 !ok 由调用方按形拒因）。remote=="default" 用 defLocal 后缀。
+// saSeedTopLayouts seeds the layout closure for a cross-file top-const
+// claim into link.classSeed, so hook C-class merges it into the
+// importer's classes table. Two phases: collect first, commit only if
+// every layout resolves. A partial seed is worse than a loud refusal:
+// materialization silently yields empty handle arrays / zero ptrs when a
+// layout is absent (saMaterializeTopArr / saMaterializeTopObjElem), so a
+// missing layout refuses the whole import. Roots are layout names; the
+// walk follows def.fsub (nested inst + obj-array option layouts),
+// cycle-guarded. A layout seeds only if it is exported or synthesized;
+// a non-exported named class never leaks through a const import.
+func saSeedTopLayouts(link *saFileLink, tgt string, roots ...string) bool {
+	seen := map[string]bool{}
+	found := map[string]*saClassDef{}
+	queue := append([]string{}, roots...)
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, dup := link.classSeed[name]; dup {
+			continue
+		}
+		ch, ok := link.classHarvests[tgt][name]
+		if !ok || ch.def == nil || (!ch.exported && !ch.def.isSynth) {
+			return false
+		}
+		found[name] = ch.def
+		for _, sub := range ch.def.fsub {
+			queue = append(queue, sub)
+		}
+	}
+	if link.classSeed == nil {
+		link.classSeed = map[string]*saClassDef{}
+	}
+	for name, def := range found {
+		link.classSeed[name] = def
+	}
+	return true
+}
+
 func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (string, saFuncSig, bool) {
 	key := tgt + "\x00" + remote
 	if seen[key] {
@@ -1633,6 +1687,54 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			if link.ambHarvests[tgt][remote] {
 				continue
 			}
+			// Cross-file top-const snapshots (JEV cross_file_snapshot 0.61,
+			// scope all_topconst 0.59, both low-confidence): an exported top
+			// array/object/regex/Record claim in the defining file seeds the
+			// importer's scope, so the importer materializes its own per-use
+			// snapshot through the existing materialization paths. Snapshot
+			// semantics, not shared reference: an importer that mutates a
+			// materialized copy is invisible to the defining file, exactly as
+			// same-file per-use materialization already behaves; the defining
+			// file's own mutation guard still applies at prescan. Exported
+			// sets are NOT seeded: saTopSetPrescan claims non-exported sets
+			// only. Exported JSON-cast consts are NOT seeded: the schemcast
+			// slice refuses them by design.
+			if claim, ok := link.topArrHarvests[tgt][remote]; ok {
+				if saSeedTopLayouts(link, tgt, claim.layout) {
+					if link.topArrSeed == nil {
+						link.topArrSeed = map[string]saTopArr{}
+					}
+					link.topArrSeed[local] = claim
+					continue
+				}
+			}
+			if claim, ok := link.topObjHarvests[tgt][remote]; ok {
+				roots := []string{claim.layout}
+				for _, l := range claim.arrLayouts {
+					roots = append(roots, l)
+				}
+				if saSeedTopLayouts(link, tgt, roots...) {
+					if link.topObjSeed == nil {
+						link.topObjSeed = map[string]saTopObj{}
+					}
+					link.topObjSeed[local] = claim
+					continue
+				}
+			}
+			if claim, ok := link.topRegexHarvests[tgt][remote]; ok {
+				if link.topRegexSeed == nil {
+					link.topRegexSeed = map[string]saTopRegex{}
+				}
+				link.topRegexSeed[local] = claim
+				continue
+			}
+			if claim, ok := link.topMapHarvests[tgt][remote]; ok {
+				if link.topMapSeed == nil {
+					link.topMapSeed = map[string]saTopMap{}
+				}
+				link.topMapSeed[local] = claim
+				continue
+			}
 			ln, col := pos(n.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 			continue
@@ -2293,6 +2395,62 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				link.topConstHarvest[nm.Text()] = ast.HasModifier(st, ast.ModifierFlagsExport)
 			}
 		}
+		// Program hook A-topconst-snapshot: harvest exported top const
+		// claims (payload, not just names) for cross-file snapshot seeding.
+		// Export-modifier only: export-list consts stay on the re-export
+		// chase path. Own prescan maps only, never merged seeds, so an
+		// importer never re-harvests a claim it merely imported.
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindVariableStatement {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			vs := st.AsVariableStatement()
+			if vs == nil || vs.DeclarationList == nil {
+				continue
+			}
+			dl := vs.DeclarationList.AsVariableDeclarationList()
+			if dl == nil {
+				continue
+			}
+			for _, d := range dl.Declarations.Nodes {
+				vd := d.AsVariableDeclaration()
+				if vd == nil {
+					continue
+				}
+				nm := vd.Name()
+				if nm == nil || nm.Kind != ast.KindIdentifier {
+					continue
+				}
+				if c, ok := topArrs[nm.Text()]; ok {
+					if link.topArrHarvest == nil {
+						link.topArrHarvest = map[string]saTopArr{}
+					}
+					link.topArrHarvest[nm.Text()] = c
+				}
+				if c, ok := topObjs[nm.Text()]; ok {
+					if link.topObjHarvest == nil {
+						link.topObjHarvest = map[string]saTopObj{}
+					}
+					link.topObjHarvest[nm.Text()] = c
+				}
+				if c, ok := topRegex[nm.Text()]; ok {
+					if link.topRegexHarvest == nil {
+						link.topRegexHarvest = map[string]saTopRegex{}
+					}
+					link.topRegexHarvest[nm.Text()] = c
+				}
+				if c, ok := topMaps[nm.Text()]; ok {
+					if link.topMapHarvest == nil {
+						link.topMapHarvest = map[string]saTopMap{}
+					}
+					link.topMapHarvest[nm.Text()] = c
+				}
+			}
+		}
+
 		// Program hook A-slot: harvest ns slot descriptors (pointer shared
 		// read-only; reads/wires reuse defining layout; top-level dotted keys
 		// only — plain names are file-local slots).
@@ -2390,6 +2548,41 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			modVars[local] = ms
 		}
 		// 类型转发物化前置（后续 claim 同名判定；o1/o3/o4/o6/o7 实证）。
+		// Program hook C-topconst: seed imported top-const snapshots
+		// (local claims win; defining-file claims shared read-only).
+		for local, c := range link.topArrSeed {
+			if topArrs == nil {
+				topArrs = map[string]saTopArr{}
+			}
+			if _, dup := topArrs[local]; !dup {
+				topArrs[local] = c
+			}
+		}
+		for local, c := range link.topObjSeed {
+			if topObjs == nil {
+				topObjs = map[string]saTopObj{}
+			}
+			if _, dup := topObjs[local]; !dup {
+				topObjs[local] = c
+			}
+		}
+		for local, c := range link.topRegexSeed {
+			if topRegex == nil {
+				topRegex = map[string]saTopRegex{}
+			}
+			if _, dup := topRegex[local]; !dup {
+				topRegex[local] = c
+			}
+		}
+		for local, c := range link.topMapSeed {
+			if topMaps == nil {
+				topMaps = map[string]saTopMap{}
+			}
+			if _, dup := topMaps[local]; !dup {
+				topMaps[local] = c
+			}
+		}
+
 		saMaterializeTypeForwards(sf, link, classes, aliasOf, enums, enumNonInt)
 		// Program hook C2: value export lists stay unlinked in S1
 		// (named functions link via export modifier; star/default/lists
@@ -6275,6 +6468,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	slotHarvests := map[string]map[string]*saModState{}
 	constHarvests := map[string]map[string]saProgConst{}
 	topConstHarvests := map[string]map[string]bool{}
+	topArrHarvests := map[string]map[string]saTopArr{}
+	topObjHarvests := map[string]map[string]saTopObj{}
+	topRegexHarvests := map[string]map[string]saTopRegex{}
+	topMapHarvests := map[string]map[string]saTopMap{}
 	declHarvests := map[string]map[string]saFuncSig{}
 	// lowerOne lowers one file with the currently accumulated harvests
 	// and records its harvests for dependents. It is called once per file
@@ -6311,6 +6508,18 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			constHarvests:    constHarvests,
 			topConstHarvest:  map[string]bool{},
 			topConstHarvests: topConstHarvests,
+			topArrHarvest:    map[string]saTopArr{},
+			topArrHarvests:   topArrHarvests,
+			topObjHarvest:    map[string]saTopObj{},
+			topObjHarvests:   topObjHarvests,
+			topRegexHarvest:  map[string]saTopRegex{},
+			topRegexHarvests: topRegexHarvests,
+			topMapHarvest:    map[string]saTopMap{},
+			topMapHarvests:   topMapHarvests,
+			topArrSeed:       map[string]saTopArr{},
+			topObjSeed:       map[string]saTopObj{},
+			topRegexSeed:     map[string]saTopRegex{},
+			topMapSeed:       map[string]saTopMap{},
 			constSeed:        map[string]saProgConst{},
 			slotHarvest:      map[string]*saModState{},
 			slotHarvests:     slotHarvests,
@@ -6326,6 +6535,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		slotHarvests[p] = lk.slotHarvest
 		constHarvests[p] = lk.constHarvest
 		topConstHarvests[p] = lk.topConstHarvest
+		topArrHarvests[p] = lk.topArrHarvest
+		topObjHarvests[p] = lk.topObjHarvest
+		topRegexHarvests[p] = lk.topRegexHarvest
+		topMapHarvests[p] = lk.topMapHarvest
 		declHarvests[p] = lk.declHarvest
 		return out
 	}
