@@ -2721,6 +2721,50 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 		return "1", true, ""
 	case ast.KindVoidExpression:
 		return "0", true, ""
+	case ast.KindPropertyAccessExpression:
+		// JEV prog38 bool (same_as_bound 0.99, field_only 0.84): Boolean() of a
+		// direct inst field read lowers with bound-value truthiness. Plain `.`
+		// only; `?.`, non-inst bases, and unknown fields keep refusing loudly.
+		pa := a.AsPropertyAccessExpression()
+		if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil {
+			return "", false, ""
+		}
+		h, def, msg := saInstBase(pa.Expression, scope)
+		if msg != "" || def == nil {
+			return "", false, ""
+		}
+		fk, ok := def.fkinds[pa.Name().Text()]
+		if !ok {
+			return "", false, ""
+		}
+		switch fk {
+		case "str":
+			t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+			if msg != "" {
+				return "", false, ""
+			}
+			_, l := saExpandStr(w, t, nextTemp)
+			nz := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, t))
+			nl := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nl, l))
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = and %s, %s\n", out, nz, nl))
+			return out, true, ""
+		case "i32", "bool":
+			t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+			if msg != "" {
+				return "", false, ""
+			}
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, t))
+			return out, true, ""
+		}
+		return "", false, ""
 	case ast.KindIdentifier:
 		if a.Text() == "undefined" {
 			if _, ok := scope.types["undefined"]; !ok {
