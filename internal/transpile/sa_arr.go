@@ -6819,7 +6819,14 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 	armOK := saLowerArm(w, bodyStmts, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp)
 	scope.armReleaseTemps = savedArmTemps
 	// 行绑定每轮尾释放(堆存活才落字;break/continue 经深释放,返前经释放全部).
-	if b := saOwnOf(scope, binding); b != nil && b.heap && !b.consumed && !b.released {
+	// Per-iteration binding release belongs to the loop-back edge only
+	// (JEV ft both_shapes): on a terminating body (unconditional return)
+	// it would land after ret/jmp as dead code and fail sa check with
+	// FallthroughForbidden. Terminating edges already handle ownership
+	// (return releases all owned except the returned value; break /
+	// continue deep-release), so skipping it changes no live release.
+	// This gate mirrors the loop-back jmp gate just below.
+	if b := saOwnOf(scope, binding); b != nil && b.heap && !b.consumed && !b.released && !saArmTerminates(bodyStmts) {
 		w.Write(fmt.Sprintf("  !%s\n", binding))
 		b.released = true
 	}
