@@ -5930,30 +5930,33 @@ type saScope struct {
 	// (par_notexp, JEV idfield_snapshot): saLowerObjectLiteral consults
 	// it for identifier fields resolved at prescan time; nil outside a
 	// claim lowering, save/restored around every claim recursion.
-	topObjClaim *saTopObj
-	topRegex    map[string]saTopRegex // 顶层 const 正则快照（名→原始模式/旗标；用点编译）
-	topSets     map[string]saTopSet   // 顶层 const Set 快照（名→ new 表达式；.has 用点物化；变异/导出形不收）
-	topMaps     map[string]saTopMap   // 顶层 const Record 快照（名→字面量 + 值种；下标用点物化）
-	topJSONs    map[string]saTopJSON  // 顶层 cast-JSON-import 快照（名→ JSON 对象树；点读用点物化）
-	modVars     map[string]*saModState
-	thisSelf    string
-	thisClass   string
-	mainRenamed bool
-	nextLabel   *int
-	retKind     string
-	strPool     *saStrPool
-	src         string
-	addImport   func(string)
-	inlineRet   *saInlineRet
-	tcx         *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
-	keyElems    map[string]saKeyElem            // for-of element annotations per binding (keyof-domain source; scope save/restored)
-	aliasOf     map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
-	ownOrder    []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
-	ownState    map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
-	pendingFns  *[]string                       // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
-	arrowSeq    *int                            // 文件级局部箭头序号（封存 e.arrowSeq）
-	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
-	arrNest     map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
+	topObjClaim    *saTopObj
+	topRegex       map[string]saTopRegex // 顶层 const 正则快照（名→原始模式/旗标；用点编译）
+	topSets        map[string]saTopSet   // 顶层 const Set 快照（名→ new 表达式；.has 用点物化；变异/导出形不收）
+	topMaps        map[string]saTopMap   // 顶层 const Record 快照（名→字面量 + 值种；下标用点物化）
+	topJSONs       map[string]saTopJSON  // 顶层 cast-JSON-import 快照（名→ JSON 对象树；点读用点物化）
+	modVars        map[string]*saModState
+	thisSelf       string
+	thisClass      string
+	mainRenamed    bool
+	nextLabel      *int
+	retKind        string
+	strPool        *saStrPool
+	src            string
+	addImport      func(string)
+	inlineRet      *saInlineRet
+	tcx            *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
+	keyElems       map[string]saKeyElem            // for-of element annotations per binding (keyof-domain source; scope save/restored)
+	aliasOf        map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
+	ownOrder       []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
+	ownState       map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
+	pendingFns     *[]string                       // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
+	arrowSeq       *int                            // 文件级局部箭头序号（封存 e.arrowSeq）
+	instFn         map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
+	ifaceProv      map[string]string               // 4_ifc_lower: interface-typed const binding -> concrete class name (method dispatch only)
+	ifaceLitFn     map[string]map[string]*ast.Node // 4_ifc_lower: interface-typed const binding -> method name -> literal arrow/method node
+	ifaceLitTarget string                          // 4_ifc_lower: binding name for the literal currently lowering; consumed at saLowerObjectLiteral entry
+	arrNest        map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr         map[string]bool

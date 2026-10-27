@@ -6981,15 +6981,22 @@ func saLowerTopObjClaim(w printer.EmitTextWriter, to saTopObj, scope *saScope, p
 
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
+	target := scope.ifaceLitTarget // 4_ifc_lower: consumed here so nested literals see "" and keep refusing method props
+	scope.ifaceLitTarget = ""
+	var wantDef *saClassDef
+	if want != "" {
+		wantDef, _ = scope.classes[want]
+	}
 	type spreadSrc struct {
 		h   string
 		def *saClassDef
 	}
 	type op struct {
-		spread int // spreads 下标，-1 为普通 store
-		fname  string
-		init   *ast.Node
-		fe     *saFESpread // non-nil for a fromEntries spread
+		spread   int // spreads 下标，-1 为普通 store
+		fname    string
+		init     *ast.Node
+		fe       *saFESpread // non-nil for a fromEntries spread
+		isMethod bool        // 4_ifc_lower: method field of an interface literal (no struct slot; recorded, not stored)
 	}
 	var spreads []spreadSrc
 	var ops []op
@@ -7100,6 +7107,14 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			if !ok {
 				return "", "", "computed property names must be literals (dynamic keys have no static layout)"
 			}
+			if wantDef != nil && wantDef.isIface && target != "" {
+				if _, isMeth := wantDef.methods[fname]; isMeth {
+					if init := p.AsPropertyAssignment().Initializer; init != nil && (init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression) {
+						ops = append(ops, op{spread: -1, fname: fname, init: init, isMethod: true})
+						continue
+					}
+				}
+			}
 			ops = append(ops, op{spread: -1, fname: fname, init: p.AsPropertyAssignment().Initializer})
 			keys = append(keys, fname)
 			fieldVals[fname] = saLitFieldKind(p.AsPropertyAssignment().Initializer, scope)
@@ -7111,6 +7126,18 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			ops = append(ops, op{spread: -1, fname: fname, init: p.Name()})
 			keys = append(keys, fname)
 			fieldVals[fname] = saLitFieldKind(p.Name(), scope)
+		case ast.KindMethodDeclaration:
+			fname, ok := saObjPropName(p)
+			if !ok || p.Body() == nil {
+				return "", "", "object literal property is not lowerable (methods refused)"
+			}
+			if wantDef != nil && wantDef.isIface && target != "" {
+				if _, isMeth := wantDef.methods[fname]; isMeth {
+					ops = append(ops, op{spread: -1, fname: fname, init: p, isMethod: true})
+					continue
+				}
+			}
+			return "", "", "object literal property is not lowerable (methods refused)"
 		default:
 			return "", "", "object literal property is not lowerable (methods refused)"
 		}
@@ -7233,6 +7260,16 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			if msg := saEmitFromEntriesSpread(w, h, def, o.fe, scope, pos, refusals, nextTemp); msg != "" {
 				return "", "", msg
 			}
+			continue
+		}
+		if o.isMethod {
+			if scope.ifaceLitFn == nil {
+				scope.ifaceLitFn = map[string]map[string]*ast.Node{}
+			}
+			if scope.ifaceLitFn[target] == nil {
+				scope.ifaceLitFn[target] = map[string]*ast.Node{}
+			}
+			scope.ifaceLitFn[target][o.fname] = o.init
 			continue
 		}
 		if o.spread >= 0 {
@@ -9581,156 +9618,9 @@ func saInlineStaticMethod(w printer.EmitTextWriter, className string, def *saCla
 // thisSelf 别接收者（静态置空），体经值槽汇合；形状证据：封存
 // inlineClassMethod:10188-10280。
 func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
-	params := mn.Parameters()
-	var argNodes []*ast.Node
-	if ce.Arguments != nil {
-		argNodes = ce.Arguments.Nodes
-	}
-	if len(argNodes) != len(params) {
-		return "", "method takes exact arguments"
-	}
-	// 方法形参恒 i32（回调快照绑定只存标量；句柄形参无改写机制，大声拒）。
-	// 实例注解直传绑定（`add(o: C)` 跨实例同属主读；封存方法实例形参位）。
-	kinds := make([]string, len(params))
-	for i, p := range params {
-		pd := p.AsParameterDeclaration()
-		if pd == nil {
-			return "", "method parameter shape is not lowerable"
-		}
-		if pd.Type != nil {
-			if k, ok := saAnnotKind(pd.Type); ok {
-				if k == "f64" {
-					kinds[i] = "f64"
-					continue
-				}
-				// 串形参（调用方串求值，体经串快照绑定；封存 inlineClassMethod
-				// 串别名分支；上游同形）。
-				if k == "str" {
-					kinds[i] = "str"
-					continue
-				}
-				if k != "i32" && k != "bool" {
-					return "", "method parameters must be i32"
-				}
-				continue
-			}
-			if pd.Type.Kind == ast.KindTypeReference {
-				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
-					// `Record<string,T>` 形参记 map 种（值种播种与函数序同形）。
-					if vkind, ok := saRecordValueKind(pd.Type, scope.classes, scope.aliasOf); ok {
-						// JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64:
-						// Record<string, T> where T is a named alias resolving to a JSON
-						// union takes a jsval param, not a map param (same rule as the
-						// free-function param path; Record<string, unknown/any> keeps
-						// map kind per map_with_jsval_values).
-						if vkind == "jsval" && saRecordValueIsJSONUnion(pd.Type, scope.aliasOf) {
-							kinds[i] = "jsval"
-							continue
-						}
-						kinds[i] = "map"
-						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
-							saSetMapVal(scope, nm.Text(), vkind)
-						}
-						continue
-					}
-					if _, ok := scope.classes[ref.TypeName.Text()]; ok {
-						kinds[i] = "inst:" + ref.TypeName.Text()
-						continue
-					}
-				}
-			}
-			// 可擦除注解按实参形绑定（泛型 `T`、any、联合等无布局名：实例实参继承布局，
-			// 标量走快照；arr/str 句柄实参无布局绑定，沿旧门；封存 inlineClassMethod 按实参布局别名）。
-			if pd.Type != nil && pd.Type.Kind == ast.KindUnionType {
-				// 可空实例联合形参（`next: Node|null` 即 Node 布局，空吸收为 0
-				// 句柄；与函数形参位 transpile.go:2647 同源；其余联合沿旧门）。
-				if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), scope.classes); ok {
-					kinds[i] = inst
-					continue
-				}
-			}
-			if i < len(argNodes) && argNodes[i] != nil {
-				if argNodes[i].Kind == ast.KindIdentifier {
-					if k, ok := scope.types[argNodes[i].Text()]; ok {
-						if len(k) > 5 && k[:5] == "inst:" {
-							kinds[i] = k
-							continue
-						}
-						if k == "arr" || k == "str" {
-							return "", "method parameters must be i32"
-						}
-					}
-				}
-				kinds[i] = ""
-				continue
-			}
-			return "", "method parameters must be i32"
-		}
-	}
-	var argVals []string
-	for i, a := range argNodes {
-		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
-			return "", "method arguments must be values"
-		}
-		// 实例形参实参直传句柄（子类实例可传基形参，展平前缀一致）。
-		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
-			h, msg := saInstArg(w, a, kinds[i][5:], scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", msg
-			}
-			argVals = append(argVals, h)
-			continue
-		}
-		// f64 params evaluate as floats (snapshot copies float bits like scalars).
-		if i < len(kinds) && kinds[i] == "f64" {
-			v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", msg
-			}
-			argVals = append(argVals, v)
-			continue
-		}
-		// map 形参实参直传句柄（`m` 须为已绑 map；与实例直传同形）。
-		if i < len(kinds) && kinds[i] == "map" {
-			if a != nil && a.Kind == ast.KindIdentifier {
-				if k, ok := scope.types[a.Text()]; ok && k == "map" {
-					argVals = append(argVals, a.Text())
-					continue
-				}
-			}
-			return "", "method map argument must be a bound map"
-		}
-		// 串形参实参串求值（`text: string`；绑定核快照串句柄；上游串别名同形）。
-		if i < len(kinds) && kinds[i] == "str" {
-			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", msg
-			}
-			argVals = append(argVals, v)
-			continue
-		}
-		// jsval 形参实参走自由函数同款 jsval 梯（JEV 2b_jsvalargs
-		// reuse_freefn_paramkind 0.74, scope iface_method_only 0.96：
-		// 方法签名种表已按 jvunion 规则把 Record<string, JSON-union>
-		// 形参记为 jsval，但本循环此前无 jsval 臂，字面量实参落
-		// saEvalI32 拒“object literal needs a declaration binding”，
-		// 标识符实参拒“jsval params in i32 expression”；与自由函数
-		// 调用核同律改走 saEvalCallArg 的 jsval 臂。非 jsval 种不受
-		// 影响；无体接口方法此前已在 saInlineMethod 拒，沿旧门。）
-		if i < len(kinds) && kinds[i] == "jsval" {
-			sig := saFuncSig{params: len(kinds), paramKinds: kinds}
-			v, msg := saEvalCallArg(w, sig, i, a, len(kinds), scope, pos, refusals, nextTemp)
-			if msg != "" {
-				return "", msg
-			}
-			argVals = append(argVals, v)
-			continue
-		}
-		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return "", msg
-		}
-		argVals = append(argVals, v)
+	argVals, kinds, msg := saMethodCallArgVals(w, mn, ce, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = thisSelf, className
@@ -10445,4 +10335,252 @@ func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef,
 	}
 	w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	return ""
+}
+
+// saMethodCallArgVals is saInlineMethodCore's parameter-kind + argument-
+// evaluation loop, extracted verbatim for reuse by literal-method dispatch
+// (4_ifc_lower). Core semantics are unchanged: same code, same order.
+func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) ([]string, []string, string) {
+	params := mn.Parameters()
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != len(params) {
+		return nil, nil, "method takes exact arguments"
+	}
+	// 方法形参恒 i32（回调快照绑定只存标量；句柄形参无改写机制，大声拒）。
+	// 实例注解直传绑定（`add(o: C)` 跨实例同属主读；封存方法实例形参位）。
+	kinds := make([]string, len(params))
+	for i, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			return nil, nil, "method parameter shape is not lowerable"
+		}
+		if pd.Type != nil {
+			if k, ok := saAnnotKind(pd.Type); ok {
+				if k == "f64" {
+					kinds[i] = "f64"
+					continue
+				}
+				// 串形参（调用方串求值，体经串快照绑定；封存 inlineClassMethod
+				// 串别名分支；上游同形）。
+				if k == "str" {
+					kinds[i] = "str"
+					continue
+				}
+				if k != "i32" && k != "bool" {
+					return nil, nil, "method parameters must be i32"
+				}
+				continue
+			}
+			if pd.Type.Kind == ast.KindTypeReference {
+				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+					// `Record<string,T>` 形参记 map 种（值种播种与函数序同形）。
+					if vkind, ok := saRecordValueKind(pd.Type, scope.classes, scope.aliasOf); ok {
+						// JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64:
+						// Record<string, T> where T is a named alias resolving to a JSON
+						// union takes a jsval param, not a map param (same rule as the
+						// free-function param path; Record<string, unknown/any> keeps
+						// map kind per map_with_jsval_values).
+						if vkind == "jsval" && saRecordValueIsJSONUnion(pd.Type, scope.aliasOf) {
+							kinds[i] = "jsval"
+							continue
+						}
+						kinds[i] = "map"
+						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+							saSetMapVal(scope, nm.Text(), vkind)
+						}
+						continue
+					}
+					if _, ok := scope.classes[ref.TypeName.Text()]; ok {
+						kinds[i] = "inst:" + ref.TypeName.Text()
+						continue
+					}
+				}
+			}
+			// 可擦除注解按实参形绑定（泛型 `T`、any、联合等无布局名：实例实参继承布局，
+			// 标量走快照；arr/str 句柄实参无布局绑定，沿旧门；封存 inlineClassMethod 按实参布局别名）。
+			if pd.Type != nil && pd.Type.Kind == ast.KindUnionType {
+				// 可空实例联合形参（`next: Node|null` 即 Node 布局，空吸收为 0
+				// 句柄；与函数形参位 transpile.go:2647 同源；其余联合沿旧门）。
+				if inst, ok := saUnionInstKind(pd.Type.AsUnionTypeNode(), scope.classes); ok {
+					kinds[i] = inst
+					continue
+				}
+			}
+			if i < len(argNodes) && argNodes[i] != nil {
+				if argNodes[i].Kind == ast.KindIdentifier {
+					if k, ok := scope.types[argNodes[i].Text()]; ok {
+						if len(k) > 5 && k[:5] == "inst:" {
+							kinds[i] = k
+							continue
+						}
+						if k == "arr" || k == "str" {
+							return nil, nil, "method parameters must be i32"
+						}
+					}
+				}
+				kinds[i] = ""
+				continue
+			}
+			return nil, nil, "method parameters must be i32"
+		}
+	}
+	var argVals []string
+	for i, a := range argNodes {
+		if a != nil && (a.Kind == ast.KindArrowFunction || a.Kind == ast.KindFunctionExpression) {
+			return nil, nil, "method arguments must be values"
+		}
+		// 实例形参实参直传句柄（子类实例可传基形参，展平前缀一致）。
+		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
+			h, msg := saInstArg(w, a, kinds[i][5:], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return nil, nil, msg
+			}
+			argVals = append(argVals, h)
+			continue
+		}
+		// f64 params evaluate as floats (snapshot copies float bits like scalars).
+		if i < len(kinds) && kinds[i] == "f64" {
+			v, msg := saEvalF64(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return nil, nil, msg
+			}
+			argVals = append(argVals, v)
+			continue
+		}
+		// map 形参实参直传句柄（`m` 须为已绑 map；与实例直传同形）。
+		if i < len(kinds) && kinds[i] == "map" {
+			if a != nil && a.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[a.Text()]; ok && k == "map" {
+					argVals = append(argVals, a.Text())
+					continue
+				}
+			}
+			return nil, nil, "method map argument must be a bound map"
+		}
+		// 串形参实参串求值（`text: string`；绑定核快照串句柄；上游串别名同形）。
+		if i < len(kinds) && kinds[i] == "str" {
+			v, msg := saEvalStr(w, a, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return nil, nil, msg
+			}
+			argVals = append(argVals, v)
+			continue
+		}
+		// jsval 形参实参走自由函数同款 jsval 梯（JEV 2b_jsvalargs
+		// reuse_freefn_paramkind 0.74, scope iface_method_only 0.96：
+		// 方法签名种表已按 jvunion 规则把 Record<string, JSON-union>
+		// 形参记为 jsval，但本循环此前无 jsval 臂，字面量实参落
+		// saEvalI32 拒“object literal needs a declaration binding”，
+		// 标识符实参拒“jsval params in i32 expression”；与自由函数
+		// 调用核同律改走 saEvalCallArg 的 jsval 臂。非 jsval 种不受
+		// 影响；无体接口方法此前已在 saInlineMethod 拒，沿旧门。）
+		if i < len(kinds) && kinds[i] == "jsval" {
+			sig := saFuncSig{params: len(kinds), paramKinds: kinds}
+			v, msg := saEvalCallArg(w, sig, i, a, len(kinds), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return nil, nil, msg
+			}
+			argVals = append(argVals, v)
+			continue
+		}
+		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return nil, nil, msg
+		}
+		argVals = append(argVals, v)
+	}
+	return argVals, kinds, ""
+}
+
+// saInlineLiteralArrow inlines a literal arrow/function method body at an
+// interface call site (4_ifc_lower). Unlike saInlineMethodCore it does NOT
+// touch scope.thisSelf/thisClass: a literal arrow's `this` is lexical, so the
+// enclosing scope's this binding is exactly right. Return kind comes from the
+// arrow's explicit return annotation; unannotated and Promise/jsval returns
+// refuse loudly (async method lowering is a separate gap: p_prom_plain).
+func saInlineLiteralArrow(w printer.EmitTextWriter, anode *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	argVals, kinds, msg := saMethodCallArgVals(w, anode, ce, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	wantKind, msg := saLiteralArrowReturnKind(anode, scope)
+	if msg != "" {
+		return "", msg
+	}
+	v, msg := saCallbackValue(w, anode, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
+	if msg != "" {
+		return "", msg
+	}
+	return v, ""
+}
+
+// saLiteralArrowReturnKind derives the saCallbackValue wantKind for a literal
+// arrow method from its explicit return annotation (4_ifc_lower).
+func saLiteralArrowReturnKind(anode *ast.Node, scope *saScope) (string, string) {
+	fl := anode.FunctionLikeData()
+	if fl == nil || fl.Type == nil {
+		return "", "interface literal arrow method needs an explicit return annotation"
+	}
+	if unwrapped := saUnwrapPromise(fl.Type); unwrapped != fl.Type {
+		return "", "interface literal arrow method with a Promise return is not lowerable"
+	}
+	if k, ok := saAnnotKind(fl.Type); ok {
+		if k == "jsval" {
+			return "", "interface literal arrow method with a jsval return is not lowerable"
+		}
+		return k, ""
+	}
+	if fl.Type.Kind == ast.KindTypeReference {
+		if ref := fl.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+			if d, ok := scope.classes[ref.TypeName.Text()]; ok {
+				return "inst:" + d.name, ""
+			}
+		}
+	}
+	return "", "interface literal arrow method return kind is not lowerable"
+}
+
+// saSetIfaceProv records concrete-class provenance for a binding (4_ifc_lower).
+// Provenance and literal-method tables are mutually exclusive per binding.
+func saSetIfaceProv(scope *saScope, name, prov string) {
+	if scope.ifaceProv == nil {
+		scope.ifaceProv = map[string]string{}
+	}
+	scope.ifaceProv[name] = prov
+	delete(scope.ifaceLitFn, name)
+}
+
+// saSetIfaceLitFn records one literal method for a binding (4_ifc_lower).
+func saSetIfaceLitFn(scope *saScope, name, method string, anode *ast.Node) {
+	if scope.ifaceLitFn == nil {
+		scope.ifaceLitFn = map[string]map[string]*ast.Node{}
+	}
+	if scope.ifaceLitFn[name] == nil {
+		scope.ifaceLitFn[name] = map[string]*ast.Node{}
+	}
+	scope.ifaceLitFn[name][method] = anode
+	delete(scope.ifaceProv, name)
+}
+
+// saCopyIfaceProv transfers provenance across a same-kind copy binding
+// (4_ifc_lower). Literal methods transfer only when the target interface
+// declares them; concrete provenance transfers as-is (the call site still
+// gates on the target interface's signature plus a real method body).
+func saCopyIfaceProv(scope *saScope, from, to, targetKind string) {
+	if prov, ok := scope.ifaceProv[from]; ok {
+		saSetIfaceProv(scope, to, prov)
+		return
+	}
+	if lit, ok := scope.ifaceLitFn[from]; ok && len(lit) > 0 && len(targetKind) > 5 && targetKind[:5] == "inst:" {
+		if idef, ok := scope.classes[targetKind[5:]]; ok && idef.isIface {
+			for m, anode := range lit {
+				if _, isMeth := idef.methods[m]; isMeth {
+					saSetIfaceLitFn(scope, to, m, anode)
+				}
+			}
+		}
+	}
 }
