@@ -1904,6 +1904,12 @@ type saTopObjElem struct {
 	// object literals (JEV synth_inst_nested); each gets its own synthesized
 	// layout behind a ptr slot.
 	instFields map[string]*saTopObjElem
+	// objArrFields holds arrays of object literals (JEV META slice:
+	// options arrays); the field itself is an assembled-handle array
+	// behind a ptr slot, like arrFields but with instance elements of
+	// one synthesized option layout (recorded in fsub) instead of
+	// string literals.
+	objArrFields map[string][]saTopObjElem
 }
 
 // saTopArrDepth 快照深度（平/i32 空为 1；嵌套为子树深 + 1，同构故取 max 即确值）。
@@ -2175,6 +2181,13 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					kindOf := map[string]string{}
 					present := map[string]int{}
 					instSub := map[string]string{}
+					// arrSeen/objArrSeen keep string-array and
+					// object-array shapes apart: both synthesize to
+					// kind "arr", so kindOf alone cannot tell a field
+					// that mixes them across elements (loud refuse).
+					arrSeen := map[string]bool{}
+					objArrSeen := map[string]bool{}
+					objArrElems := map[string][]saTopObjElem{}
 					for _, o := range objs {
 						if o.regexField != "" {
 							eleOk = false
@@ -2226,11 +2239,33 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 							break
 						}
 						for k := range o.arrFields {
+							if objArrSeen[k] {
+								eleOk = false
+								break
+							}
 							if prev, dup := kindOf[k]; dup && prev != "arr" {
 								eleOk = false
 								break
 							}
 							kindOf[k] = "arr"
+							arrSeen[k] = true
+							present[k]++
+						}
+						if !eleOk {
+							break
+						}
+						for k, subElems := range o.objArrFields {
+							if arrSeen[k] {
+								eleOk = false
+								break
+							}
+							if prev, dup := kindOf[k]; dup && prev != "arr" {
+								eleOk = false
+								break
+							}
+							kindOf[k] = "arr"
+							objArrSeen[k] = true
+							objArrElems[k] = append(objArrElems[k], subElems...)
 							present[k]++
 						}
 						if !eleOk {
@@ -2260,6 +2295,16 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 						}
 						if !eleOk {
 							break
+						}
+					}
+					for k, subElems := range objArrElems {
+						lname, lok := saTopObjArrLayout(subElems, classes)
+						if !lok {
+							eleOk = false
+							break
+						}
+						if lname != "" {
+							instSub[k] = lname
 						}
 					}
 					if !eleOk {
@@ -2343,6 +2388,26 @@ func saMaterializeTopObjElem(w printer.EmitTextWriter, o saTopObjElem, def *saCl
 				hs = append(hs, saLowerStringLiteral(w, sv, scope, nextTemp))
 			}
 			ah := saAssembleHandles(w, hs, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ah))
+			saReleaseOwnedTemp(w, scope, ah)
+			continue
+		}
+		if elems, ok := o.objArrFields[f.name]; ok {
+			if subName, ok2 := def.fsub[f.name]; ok2 {
+				if subDef, ok3 := scope.classes[subName]; ok3 && subDef != nil {
+					var hs []string
+					for _, eo := range elems {
+						hs = append(hs, saMaterializeTopObjElem(w, eo, subDef, scope, nextTemp))
+					}
+					ah := saAssembleHandles(w, hs, scope, nextTemp)
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ah))
+					saReleaseOwnedTemp(w, scope, ah)
+					continue
+				}
+			}
+			// No option layout (every element's array was empty):
+			// materialize an empty handle array.
+			ah := saAssembleHandles(w, nil, scope, nextTemp)
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], ah))
 			saReleaseOwnedTemp(w, scope, ah)
 			continue

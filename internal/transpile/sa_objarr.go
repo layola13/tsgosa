@@ -41,7 +41,7 @@ func saTopObjElemParse(el *ast.Node, objConsts map[string]saTopObjElem) (saTopOb
 	if ol == nil || ol.Properties == nil {
 		return saTopObjElem{}, false
 	}
-	out := saTopObjElem{strFields: map[string]string{}, numFields: map[string]string{}, boolFields: map[string]bool{}, arrFields: map[string][]string{}, instFields: map[string]*saTopObjElem{}}
+	out := saTopObjElem{strFields: map[string]string{}, numFields: map[string]string{}, boolFields: map[string]bool{}, arrFields: map[string][]string{}, instFields: map[string]*saTopObjElem{}, objArrFields: map[string][]saTopObjElem{}}
 	for _, pr := range ol.Properties.Nodes {
 		if pr == nil || pr.Kind != ast.KindPropertyAssignment {
 			return saTopObjElem{}, false
@@ -105,10 +105,38 @@ func saTopObjElemParse(el *ast.Node, objConsts map[string]saTopObjElem) (saTopOb
 				return saTopObjElem{}, false
 			}
 			vals, ok := saTopStrArrTexts(init)
-			if !ok {
+			if ok {
+				out.arrFields[fname] = vals
+				continue
+			}
+			// Array of object literals (META options): every element
+			// must parse as a materialized-shape element. An empty
+			// array is recorded with an empty slice; its option
+			// layout, if any, comes from non-empty siblings at the
+			// array level, not from here.
+			al := init.AsArrayLiteralExpression()
+			if al == nil {
 				return saTopObjElem{}, false
 			}
-			out.arrFields[fname] = vals
+			var elems []saTopObjElem
+			objOk := true
+			if al.Elements != nil {
+				for _, eo := range al.Elements.Nodes {
+					sub, ok := saTopObjElemParse(eo, objConsts)
+					if !ok || sub.regexField != "" {
+						objOk = false
+						break
+					}
+					elems = append(elems, sub)
+				}
+			}
+			if !objOk {
+				return saTopObjElem{}, false
+			}
+			if elems == nil {
+				elems = []saTopObjElem{}
+			}
+			out.objArrFields[fname] = elems
 			continue
 		}
 		if init.Kind == ast.KindObjectLiteralExpression {
@@ -135,15 +163,47 @@ func saTopObjElemParse(el *ast.Node, objConsts map[string]saTopObjElem) (saTopOb
 			out.instFields[fname] = &cp
 			continue
 		}
+		// PropertyAccess into a same-file top-level object literal
+		// (META keyPath: CODEX_CONFIG_KEY_PATHS.model folds to its
+		// string literal; JEV fold_from_literal_map). Only a
+		// one-level access into an objConsts entry, and only its
+		// str/num/bool fields; anything else refuses loudly.
+		if init.Kind == ast.KindPropertyAccessExpression {
+			if out.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			pa := init.AsPropertyAccessExpression()
+			if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+				return saTopObjElem{}, false
+			}
+			base, ok := objConsts[pa.Expression.Text()]
+			if !ok || base.regexField != "" {
+				return saTopObjElem{}, false
+			}
+			bf := pa.Name().Text()
+			if v, ok := base.strFields[bf]; ok {
+				out.strFields[fname] = v
+				continue
+			}
+			if v, ok := base.numFields[bf]; ok {
+				out.numFields[fname] = v
+				continue
+			}
+			if v, ok := base.boolFields[bf]; ok {
+				out.boolFields[fname] = v
+				continue
+			}
+			return saTopObjElem{}, false
+		}
 		return saTopObjElem{}, false
 	}
 	if out.regexField != "" {
-		if len(out.strFields) == 0 || len(out.numFields) != 0 || len(out.boolFields) != 0 || len(out.arrFields) != 0 || len(out.instFields) != 0 {
+		if len(out.strFields) == 0 || len(out.numFields) != 0 || len(out.boolFields) != 0 || len(out.arrFields) != 0 || len(out.instFields) != 0 || len(out.objArrFields) != 0 {
 			return saTopObjElem{}, false
 		}
 		return out, true
 	}
-	if len(out.strFields) == 0 && len(out.numFields) == 0 && len(out.boolFields) == 0 && len(out.arrFields) == 0 && len(out.instFields) == 0 {
+	if len(out.strFields) == 0 && len(out.numFields) == 0 && len(out.boolFields) == 0 && len(out.arrFields) == 0 && len(out.instFields) == 0 && len(out.objArrFields) == 0 {
 		return saTopObjElem{}, false
 	}
 	return out, true
@@ -205,6 +265,16 @@ func saTopObjElemKinds(o saTopObjElem, classes map[string]*saClassDef) ([]string
 		kinds[k] = "inst"
 		subs[k] = lname
 	}
+	for k, elems := range o.objArrFields {
+		lname, ok := saTopObjArrLayout(elems, classes)
+		if !ok {
+			return nil, nil, nil, false
+		}
+		kinds[k] = "arr"
+		if lname != "" {
+			subs[k] = lname
+		}
+	}
 	var fields []string
 	for k := range kinds {
 		fields = append(fields, k)
@@ -222,6 +292,117 @@ func saTopObjLayoutOfElem(o saTopObjElem, classes map[string]*saClassDef) (strin
 		return "", false
 	}
 	return saSynthTopObjLayout(fields, kinds, map[string]bool{}, subs, classes), true
+}
+
+// saTopObjArrLayout synthesizes (or reuses) the instance layout for the
+// elements of one object-array field (META options): the union field set
+// across all elements, with a field missing from any element optional
+// (fopt, zero-filled at materialization), one kind per field, and a
+// string-array field never mixed with an object-array field of the same
+// name. An empty element list has no fields and yields ("", true): the
+// field stays a plain ptr slot and materializes as an empty handle
+// array. Recursive through nested object-array fields.
+func saTopObjArrLayout(elems []saTopObjElem, classes map[string]*saClassDef) (string, bool) {
+	kindOf := map[string]string{}
+	present := map[string]int{}
+	subs := map[string]string{}
+	arrSeen := map[string]bool{}
+	objArrSeen := map[string]bool{}
+	for _, o := range elems {
+		if o.regexField != "" {
+			return "", false
+		}
+		for k := range o.strFields {
+			if prev, dup := kindOf[k]; dup && prev != "str" {
+				return "", false
+			}
+			kindOf[k] = "str"
+			present[k]++
+		}
+		for k, v := range o.numFields {
+			if prev, dup := kindOf[k]; dup && prev != "i32" && prev != "f64" {
+				return "", false
+			}
+			if kindOf[k] == "f64" || saIsFloatLit(v) {
+				kindOf[k] = "f64"
+			} else {
+				kindOf[k] = "i32"
+			}
+			present[k]++
+		}
+		for k := range o.boolFields {
+			if prev, dup := kindOf[k]; dup && prev != "i32" {
+				return "", false
+			}
+			kindOf[k] = "i32"
+			present[k]++
+		}
+		for k := range o.arrFields {
+			if objArrSeen[k] {
+				return "", false
+			}
+			if prev, dup := kindOf[k]; dup && prev != "arr" {
+				return "", false
+			}
+			kindOf[k] = "arr"
+			arrSeen[k] = true
+			present[k]++
+		}
+		for k, sub := range o.instFields {
+			if sub == nil {
+				return "", false
+			}
+			if prev, dup := kindOf[k]; dup && prev != "inst" {
+				return "", false
+			}
+			lname, ok := saTopObjLayoutOfElem(*sub, classes)
+			if !ok {
+				return "", false
+			}
+			if prev, dup := subs[k]; dup && prev != lname {
+				return "", false
+			}
+			subs[k] = lname
+			kindOf[k] = "inst"
+			present[k]++
+		}
+		for k, subElems := range o.objArrFields {
+			if arrSeen[k] {
+				return "", false
+			}
+			if prev, dup := kindOf[k]; dup && prev != "arr" {
+				return "", false
+			}
+			lname, ok := saTopObjArrLayout(subElems, classes)
+			if !ok {
+				return "", false
+			}
+			if prev, dup := subs[k]; dup && prev != lname && lname != "" {
+				return "", false
+			}
+			if lname != "" {
+				subs[k] = lname
+			}
+			kindOf[k] = "arr"
+			objArrSeen[k] = true
+			present[k]++
+		}
+	}
+	var fields []string
+	for k := range kindOf {
+		fields = append(fields, k)
+	}
+	sort.Strings(fields)
+	if len(fields) == 0 {
+		return "", true
+	}
+	fopt := map[string]bool{}
+	for _, f := range fields {
+		if present[f] != len(elems) {
+			fopt[f] = true
+		}
+	}
+	return saSynthTopObjLayout(fields, kindOf, fopt, subs, classes), true
 }
 
 // saTopObjArrFind parses `TOP.find(cb)?.field` where TOP is a top-level const
@@ -479,7 +660,7 @@ func saTopObjArrFieldsParse(vd *ast.VariableDeclaration, classes map[string]*saC
 		if al.Elements != nil {
 			for _, el := range al.Elements.Nodes {
 				o, ok := saTopObjElemParse(el, map[string]saTopObjElem{})
-				if !ok || o.regexField != "" || len(o.numFields) != 0 || len(o.boolFields) != 0 || len(o.arrFields) != 0 || len(o.instFields) != 0 {
+				if !ok || o.regexField != "" || len(o.numFields) != 0 || len(o.boolFields) != 0 || len(o.arrFields) != 0 || len(o.instFields) != 0 || len(o.objArrFields) != 0 {
 					return saTopObj{}, false
 				}
 				var got []string
