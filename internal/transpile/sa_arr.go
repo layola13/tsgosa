@@ -4769,6 +4769,19 @@ func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Var
 		if !saIsHoleArrayCtor(srcInit) {
 			litLen = saCtorElemCount(srcInit)
 		}
+	} else if h, msg := saArrValueOf(w, srcInit, scope, pos, refusals, nextTemp); msg == "" {
+		// Computed array source (JEV route_via_arrvalue 1.0, known_kinds_only):
+		// call-return-arr results, array-method results, arr-field reads,
+		// element reads, and ternaries lower through the existing helper,
+		// then the existing element-wise lowering below applies unchanged.
+		// Unknown calls (e.g. useState) have no kind in saArrValueOf and
+		// fall through to the refusal arm. The temp handle keeps whatever
+		// ownership its own lowering established (cf the literal arm, which
+		// likewise registers nothing here); pattern elements are value
+		// copies into the pattern locals. This arm is last, so a failed
+		// evaluation refuses immediately and leaks no handle into a
+		// fall-through success.
+		arr = h
 	} else {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructuring source must be bound array"})
@@ -5752,8 +5765,9 @@ func saForArrHandle(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	if h, ok := saTopArrSnapshot(w, e, scope, nextTemp); ok {
 		return h, true
 	}
-	// 链基（`pairs[0]`/`q.r.a` 经句柄总线；失败静默下探旧门）。
-	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression || e.Kind == ast.KindCallExpression) {
+	// 链基（`pairs[0]`/`q.r.a` 经句柄总线；失败静默下探旧门；三元基同形，
+	// 其臂门见 saArrValueOf 三元臂（含方法臂事后标记）。
+	if e != nil && (e.Kind == ast.KindElementAccessExpression || e.Kind == ast.KindPropertyAccessExpression || e.Kind == ast.KindCallExpression || e.Kind == ast.KindConditionalExpression) {
 		if h, msg := saArrValueOf(w, e, scope, pos, refusals, nextTemp); msg == "" {
 			return h, true
 		}
@@ -6818,10 +6832,13 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		// 与 i32 元同形，结果记 arrStr；混串/非串臂仍大声拒，元种歧义）。
 		tstr, tok := saTernaryArrArm(tce.WhenTrue, scope)
 		fstr, fok := saTernaryArrArm(tce.WhenFalse, scope)
-		if !tok || !fok {
-			return "", "array ternary arm shape is not lowerable"
-		}
-		if tstr != fstr && !saIsEmptyArrayLiteral(tce.WhenTrue) && !saIsEmptyArrayLiteral(tce.WhenFalse) {
+		// JEV post_eval_marks 1.0: arms the static gate cannot classify
+		// (method-call results, field reads) defer their str-ness to the
+		// post-evaluation marks below. Arms that fail evaluation still
+		// refuse there; the static agreement check applies only when
+		// both arms classified statically.
+		deferred := !tok || !fok
+		if !deferred && tstr != fstr && !saIsEmptyArrayLiteral(tce.WhenTrue) && !saIsEmptyArrayLiteral(tce.WhenFalse) {
 			return "", "string-element array ternary arms must agree"
 		}
 		condOp, msg := saCondOperandMat(w, tce.Condition, scope, pos, refusals, nextTemp)
@@ -6835,6 +6852,15 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 		fv, msg := saArrValueOf(w, tce.WhenFalse, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
+		}
+		if deferred {
+			// Post-evaluation marks, under the same default discipline as
+			// bound arrays elsewhere: an unmarked handle reads i32.
+			tstr = scope.arrStr != nil && scope.arrStr[tv]
+			fstr = scope.arrStr != nil && scope.arrStr[fv]
+			if tstr != fstr && !saIsEmptyArrayLiteral(tce.WhenTrue) && !saIsEmptyArrayLiteral(tce.WhenFalse) {
+				return "", "string-element array ternary arms must agree"
+			}
 		}
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
