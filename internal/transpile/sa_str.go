@@ -96,8 +96,26 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 		// 串 Map 下标读即串值（值种按建表记；`?.` 沿旧门）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.Expression != nil &&
 			ea.Expression.Kind == ast.KindIdentifier && ea.QuestionDotToken == nil {
+			if tm, ok := saTopMapLookup(scope, ea.Expression); ok && tm.vkind == "str" {
+				return true
+			}
 			if k, ok := scope.types[ea.Expression.Text()]; ok && k == "map" {
 				return scope.mapVals[ea.Expression.Text()] == "str"
+			}
+		}
+		// 点读串 Map 再下标即串值（T.k[i]：顶层 Record 嵌套点读，
+		// 或具名 map 点读值种 map:str；点读柄种由求值侧点读臂同律记）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindPropertyAccessExpression {
+			if pa := ea.Expression.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil &&
+				pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				if tm, ok := saTopMapLookup(scope, pa.Expression); ok && tm.vkind == "map:str" {
+					return true
+				}
+				if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" &&
+					scope.mapVals[pa.Expression.Text()] == "map:str" {
+					return true
+				}
 			}
 		}
 		// 串下标读即串值（`s[i]` 与 charAt 同串位；`?.` 沿旧门）。
@@ -491,6 +509,19 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// 串 Map 下标读（值种按建表记，非串值沿串门拒；`?.` 沿旧门；与 i32 位读同形）。
 		ea := e.AsElementAccessExpression()
 		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if tm, ok := saTopMapLookup(scope, ea.Expression); ok {
+				if ea.QuestionDotToken != nil {
+					return "", "optional map index reads are not lowerable"
+				}
+				if tm.vkind != "str" {
+					return "", "map value is not a string"
+				}
+				slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return saLowerMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+			}
 			if k, ok := scope.types[ea.Expression.Text()]; ok && k == "map" {
 				if ea.QuestionDotToken != nil {
 					return "", "optional map index reads are not lowerable"
@@ -503,6 +534,64 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					return t, ""
 				}
 				return "", "map value is not a string"
+			}
+		}
+		// 串值 map 链式下标读 `M[l][k]`：内层须静态可知为 map 链（顶层
+		// Record 快照或具名 map），内层经下标读位得 map 柄后入槽再索引
+		// （map-get 需槽址，临时量不可取址）；其余形沿旧门。
+		if ea.QuestionDotToken == nil && ea.Expression != nil && ea.Expression.Kind == ast.KindElementAccessExpression {
+			inner := ea.Expression.AsElementAccessExpression()
+			if inner != nil && inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier && inner.QuestionDotToken == nil {
+				innerVK := ""
+				if tm, ok := saTopMapLookup(scope, inner.Expression); ok && strings.HasPrefix(tm.vkind, "map:") {
+					innerVK = tm.vkind[4:]
+				} else if k, ok := scope.types[inner.Expression.Text()]; ok && k == "map" {
+					if mv, ok := scope.mapVals[inner.Expression.Text()]; ok && strings.HasPrefix(mv, "map:") {
+						innerVK = mv[4:]
+					}
+				}
+				if innerVK == "str" {
+					t, msg := saLowerIndexLoadExpr(w, inner, scope, pos, refusals, nextTemp)
+					if msg == "" {
+						slot := fmt.Sprintf("__topmap%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s\n", slot, t))
+						saConsumeOwn(scope, t)
+						saDeclareOwned(scope, slot)
+						scope.types[slot] = "map"
+						saSetMapVal(scope, slot, "str")
+						return saLowerMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+					}
+				}
+			}
+		}
+		// 点读串 Map 再下标 `T.k[i]`：点读经点读臂得 map 柄后入槽再索引
+		// （map-get 需槽址，临时量不可取址；链式臂同律）。
+		if ea.QuestionDotToken == nil && ea.Expression != nil &&
+			ea.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ea.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Name() != nil {
+				isStrMap := false
+				if tm, ok := saTopMapLookup(scope, pa.Expression); ok && tm.vkind == "map:str" {
+					isStrMap = true
+				}
+				if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" &&
+					scope.mapVals[pa.Expression.Text()] == "map:str" {
+					isStrMap = true
+				}
+				if isStrMap {
+					t, msg := saLowerLengthExpr(w, pa, scope, pos, refusals, nextTemp)
+					if msg == "" {
+						slot := fmt.Sprintf("__topmap%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = %s\n", slot, t))
+						saConsumeOwn(scope, t)
+						saDeclareOwned(scope, slot)
+						scope.types[slot] = "map"
+						saSetMapVal(scope, slot, "str")
+						return saLowerMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+					}
+				}
 			}
 		}
 		// 串元数组元素读（arrStr 标记；槽值即串柄直传，OOB 归零柄；
@@ -1416,7 +1505,9 @@ func saLowerNullishStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
 	for _, nm := range scope.ownOrder[mark:] {
-		if saIsTempOp(nm) {
+		// 分支内物化的顶层快照槽亦为臂内死中间量（物化后必经 get，槽
+		// 本身永非臂结果；随快照消费，否则返前释放引用块外未声明槽）。
+		if saIsTempOp(nm) || strings.HasPrefix(nm, "__topmap") {
 			saConsumeOwn(scope, nm)
 		}
 	}
@@ -1476,7 +1567,9 @@ func saLowerOrStr(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saS
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
 	for _, nm := range scope.ownOrder[mark:] {
-		if saIsTempOp(nm) {
+		// 分支内物化的顶层快照槽亦为臂内死中间量（物化后必经 get，槽
+		// 本身永非臂结果；随快照消费，否则返前释放引用块外未声明槽）。
+		if saIsTempOp(nm) || strings.HasPrefix(nm, "__topmap") {
 			saConsumeOwn(scope, nm)
 		}
 	}

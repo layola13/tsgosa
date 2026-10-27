@@ -3233,6 +3233,16 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	isOpt := ea.QuestionDotToken != nil
 	// Map 种基走 get 脱糖（`m[k]` ≡ `m.get(k)`；Set 无键值，大声拒）。
 	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+		if tm, ok := saTopMapLookup(scope, ea.Expression); ok {
+			if isOpt {
+				return "", "optional map index reads are not lowerable"
+			}
+			slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return saLowerMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		}
 		if k, ok := scope.types[ea.Expression.Text()]; ok && (k == "map" || k == "set") {
 			if k == "set" {
 				return "", "Set index reads need .has (no keyed values)"
@@ -3838,9 +3848,32 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			return t, ""
 		}
 	}
-	// Record/map 点读 `r.k` 按 `.get("k")` 同义（键编译期常量；缺键 btree 回 0；方法名沿旧门（无函数值）；读回种按 get 门 mapVals 表；561）。
+	// 顶层 Record 快照点读 `T.k`：用点物化后按 get 同义（链式值种透传）。
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() != "length" &&
 		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && !saIsMapMethod(nm.Text()) {
+		if tm, ok := saTopMapLookup(scope, pa.Expression); ok {
+			if pa.QuestionDotToken != nil {
+				return "", "optional map index reads are not lowerable"
+			}
+			slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			scope.addImport("sa_std/btree_map.sa")
+			kh := saLowerStringLiteral(w, nm.Text(), scope, nextTemp)
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_btree_map_get(&%s, &%s)\n", t, slot, kh))
+			saReleaseOwnedTemp(w, scope, kh)
+			saOwnTemp(scope, t)
+			if strings.HasPrefix(tm.vkind, "map:") {
+				scope.types[t] = "map"
+				saSetMapVal(scope, t, tm.vkind[4:])
+			} else {
+				scope.types[t] = tm.vkind
+			}
+			return t, ""
+		}
 		if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" {
 			recv := pa.Expression.Text()
 			scope.addImport("sa_std/btree_map.sa")

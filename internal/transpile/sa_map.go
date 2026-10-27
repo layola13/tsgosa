@@ -3,6 +3,7 @@ package transpile
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
@@ -142,6 +143,12 @@ func saLowerMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, s
 	vkind := scope.mapVals[recv]
 	if vkind == "" {
 		vkind = "i32"
+	}
+	if strings.HasPrefix(vkind, "map:") {
+		// 嵌套 map 值：读回为 map 柄，内值种透传，下标链可继续索引。
+		scope.types[t] = "map"
+		saSetMapVal(scope, t, vkind[4:])
+		return t, ""
 	}
 	if vkind == "arrStr" {
 		// 串元数组值读回 arr 柄并透传串元标记（下游 `..[i]` 凭标记走串位）。
@@ -751,6 +758,406 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", name, kh, v))
 	}
 	return true
+}
+
+// saTopMap 顶层 const Record 快照（名→字面量 + 值种；用点物化；JEV
+// topmap_materialize 1.0, chain_maps 0.92）：值种编码 str/i32，或
+// map:<内值种>（嵌套 Record 递归）。仅同文件已认领快照可作嵌套值；
+// 导出形、变异形（.set/.delete/.clear 或下标写）一律不收；JSON 导入值
+// 不收（JSON 导入是后续独立子片，见 jev_kind244_record_request.json
+// 的弱票 read_json_maps 0.33）。
+type saTopMap struct {
+	init  *ast.Node
+	vkind string
+}
+
+// saTopMapValueKind 解析 Record/Map 注解的值种：串/数/布尔直值，或
+// 嵌套 Record/Map 的 map:<内值种>；其余（接口值、jsval 值等）不收。
+func saTopMapValueKind(t *ast.TypeNode) (string, bool) {
+	if t == nil {
+		return "", false
+	}
+	switch t.Kind {
+	case ast.KindStringKeyword:
+		return "str", true
+	case ast.KindNumberKeyword:
+		return "i32", true
+	case ast.KindBooleanKeyword:
+		return "i32", true
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		if ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map" {
+			return "", false
+		}
+		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
+			return "", false
+		}
+		if !saTopMapKeyOK(ref.TypeArguments.Nodes[0]) {
+			return "", false
+		}
+		inner, ok := saTopMapValueKind(ref.TypeArguments.Nodes[1])
+		if !ok {
+			return "", false
+		}
+		return "map:" + inner, true
+	default:
+		return "", false
+	}
+}
+
+// saTopMapKeyOK：map 键恒为串。StringKeyword 直认；串字面量并集直认；
+// 索引访问（Locale 形 (typeof X)[...]["value"]）认——其运行时值恒为
+// 串字面量并集；数字属性名由字面量校验另行拒（见 saTopMapLitOK）。
+func saTopMapKeyOK(t *ast.TypeNode) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindStringKeyword:
+		return true
+	case ast.KindIndexedAccessType:
+		return true
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return false
+		}
+		for _, m := range ut.Types.Nodes {
+			if m == nil || m.Kind != ast.KindLiteralType {
+				return false
+			}
+			lit := m.AsLiteralTypeNode()
+			if lit == nil || lit.Literal == nil || lit.Literal.Kind != ast.KindStringLiteral {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// saTopMapLitOK 校验字面量与值种一致：str 须串字面量，i32 须整/布尔
+// 直接量，map 须内嵌字面量（递归）或已认领同值种快照标识符；简写
+// 仅 map 值可用（即 {enPack} 形）；方法/spread/计算键一律不收。
+func saTopMapLitOK(init *ast.Node, vkind string, out map[string]saTopMap) bool {
+	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+		return false
+	}
+	ol := init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil {
+		return false
+	}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil {
+			return false
+		}
+		var fname string
+		var val *ast.Node
+		switch p.Kind {
+		case ast.KindPropertyAssignment:
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return false
+			}
+			fname = fn
+			val = p.AsPropertyAssignment().Initializer
+		case ast.KindShorthandPropertyAssignment:
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return false
+			}
+			fname = fn
+			val = p.Name()
+		default:
+			return false
+		}
+		if fname == "" || val == nil {
+			return false
+		}
+		switch {
+		case vkind == "str":
+			if _, ok := saTopArrStrText(val); !ok {
+				return false
+			}
+		case vkind == "i32":
+			if _, ok := saTopArrElemText(val); !ok {
+				return false
+			}
+		case strings.HasPrefix(vkind, "map:"):
+			inner := vkind[4:]
+			if val.Kind == ast.KindObjectLiteralExpression {
+				if !saTopMapLitOK(val, inner, out) {
+					return false
+				}
+			} else if val.Kind == ast.KindIdentifier {
+				ref, ok := out[val.Text()]
+				if !ok || ref.vkind != inner {
+					return false
+				}
+			} else {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// saTopMapMutated：文件内出现 name.set/delete/clear 方法调用，或对
+// name[k] 的赋值写，即视为变异，快照不收（saTopSetMutated 同形）。
+func saTopMapMutated(stmts []*ast.Node, name string) bool {
+	mutated := false
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || mutated {
+			return
+		}
+		if n.Kind == ast.KindPropertyAccessExpression {
+			pa := n.AsPropertyAccessExpression()
+			if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == name && pa.Name() != nil {
+				switch pa.Name().Text() {
+				case "add", "delete", "clear", "set":
+					mutated = true
+					return
+				}
+			}
+		}
+		if n.Kind == ast.KindBinaryExpression {
+			be := n.AsBinaryExpression()
+			if be != nil && be.Left != nil && be.Left.Kind == ast.KindElementAccessExpression {
+				ea := be.Left.AsElementAccessExpression()
+				if ea != nil && ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier && ea.Expression.Text() == name {
+					switch saBinaryOpKind(be) {
+					case ast.KindEqualsToken, ast.KindPlusEqualsToken, ast.KindMinusEqualsToken, ast.KindAsteriskEqualsToken, ast.KindSlashEqualsToken, ast.KindPercentEqualsToken, ast.KindAmpersandEqualsToken, ast.KindBarEqualsToken, ast.KindCaretEqualsToken, ast.KindLessThanLessThanEqualsToken, ast.KindGreaterThanGreaterThanEqualsToken, ast.KindGreaterThanGreaterThanGreaterThanEqualsToken, ast.KindAsteriskAsteriskEqualsToken, ast.KindAmpersandAmpersandEqualsToken, ast.KindBarBarEqualsToken, ast.KindQuestionQuestionEqualsToken:
+						mutated = true
+						return
+					}
+				}
+			}
+		}
+		n.ForEachChild(func(child *ast.Node) bool {
+			if child != nil {
+				walk(child)
+			}
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+		if mutated {
+			return true
+		}
+	}
+	return false
+}
+
+// saTopMapPrescan 收顶层 const Record/Map 字面量快照（名→快照；
+// 导出形不收；同语句内先声明者可作后声明者的嵌套值）。
+func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]saTopMap, map[*ast.Node]bool) {
+	out := map[string]saTopMap{}
+	claimed := map[*ast.Node]bool{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		if ast.HasModifier(st, ast.ModifierFlagsExport) {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+			continue
+		}
+		isConst := vdl.AsNode().Flags&ast.NodeFlagsConst != 0
+		type pend struct {
+			name string
+			tm   saTopMap
+		}
+		var pends []pend
+		okAll := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil || vd.Type == nil {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			name := nm.Text()
+			if _, dup := out[name]; dup {
+				okAll = false
+				break
+			}
+			if !isConst && assigned[name] {
+				okAll = false
+				break
+			}
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+				okAll = false
+				break
+			}
+			// 外层须为 Record/Map<键, 值> 本身（值种取自第二类型实参；
+			// saTopMapValueKind 才是值种解析器，整注解传入会误作嵌套）。
+			ref := vd.Type.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || (ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map") {
+				okAll = false
+				break
+			}
+			if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
+				okAll = false
+				break
+			}
+			if !saTopMapKeyOK(ref.TypeArguments.Nodes[0]) {
+				okAll = false
+				break
+			}
+			vk, ok := saTopMapValueKind(ref.TypeArguments.Nodes[1])
+			if !ok {
+				okAll = false
+				break
+			}
+			view := map[string]saTopMap{}
+			for k, v := range out {
+				view[k] = v
+			}
+			for _, p := range pends {
+				view[p.name] = p.tm
+			}
+			if !saTopMapLitOK(init, vk, view) {
+				okAll = false
+				break
+			}
+			if saTopMapMutated(stmts, name) {
+				okAll = false
+				break
+			}
+			pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk}})
+		}
+		if !okAll {
+			continue
+		}
+		for _, p := range pends {
+			out[p.name] = p.tm
+		}
+		claimed[st] = true
+	}
+	return out, claimed
+}
+
+// saTopMapLookup 查顶层 Record 快照（标识符直指、无局部遮蔽；不落字）。
+func saTopMapLookup(scope *saScope, e *ast.Node) (saTopMap, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return saTopMap{}, false
+	}
+	name := e.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return saTopMap{}, false
+	}
+	to, ok := scope.topMaps[name]
+	if !ok {
+		return saTopMap{}, false
+	}
+	return to, true
+}
+
+// saLowerTopMap 用点物化顶层 Record 快照：新建 btree_map，逐键 insert，
+// 返回具名 __topmap 槽（map-get 需槽址，临时量不可取址；归属登记同
+// saLowerRecordLiteral 的具名绑定）。嵌套值递归物化。
+func saLowerTopMap(w printer.EmitTextWriter, tm saTopMap, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	h, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("__topmap%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", slot, h))
+	saConsumeOwn(scope, h)
+	saDeclareOwned(scope, slot)
+	scope.types[slot] = "map"
+	saSetMapVal(scope, slot, tm.vkind)
+	if msg := saTopMapInsertAll(w, slot, tm, scope, pos, refusals, nextTemp); msg != "" {
+		return "", msg
+	}
+	return slot, ""
+}
+
+func saTopMapInsertAll(w printer.EmitTextWriter, slot string, tm saTopMap, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	ol := tm.init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil {
+		return ""
+	}
+	for _, p := range ol.Properties.Nodes {
+		var fname string
+		var val *ast.Node
+		if p.Kind == ast.KindPropertyAssignment {
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return "top map property name is not a literal"
+			}
+			fname = fn
+			val = p.AsPropertyAssignment().Initializer
+		} else {
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return "top map property name is not a literal"
+			}
+			fname = fn
+			val = p.Name()
+		}
+		kh := saLowerStringLiteral(w, fname, scope, nextTemp)
+		var v string
+		switch {
+		case tm.vkind == "str":
+			var msg string
+			v, msg = saEvalStr(w, val, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+		case tm.vkind == "i32":
+			var msg string
+			v, msg = saEvalI32(w, val, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+		case strings.HasPrefix(tm.vkind, "map:"):
+			inner := tm.vkind[4:]
+			if val.Kind == ast.KindObjectLiteralExpression {
+				sub, msg := saLowerTopMap(w, saTopMap{init: val, vkind: inner}, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				v = sub
+			} else if val.Kind == ast.KindIdentifier {
+				ref, ok := scope.topMaps[val.Text()]
+				if !ok {
+					return "top map value is not a claimed top map"
+				}
+				sub, msg := saLowerTopMap(w, ref, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				v = sub
+			} else {
+				return "top map value is not lowerable"
+			}
+		default:
+			return "top map value kind is not lowerable"
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", slot, kh, v))
+	}
+	return ""
 }
 
 // saTopSet 顶层 const Set 快照（名→ new 表达式；用点经 btree_set 物化；

@@ -8529,7 +8529,9 @@ func saLowerNullishJsVal(w printer.EmitTextWriter, be *ast.BinaryExpression, sco
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
 	for _, nm := range scope.ownOrder[mark:] {
-		if saIsTempOp(nm) {
+		// 分支内物化的顶层快照槽亦为臂内死中间量（物化后必经 get，槽
+		// 本身永非臂结果；随快照消费，否则返前释放引用块外未声明槽）。
+		if saIsTempOp(nm) || strings.HasPrefix(nm, "__topmap") {
 			saConsumeOwn(scope, nm)
 		}
 	}
@@ -8576,7 +8578,9 @@ func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *s
 	}
 	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, r))
 	for _, nm := range scope.ownOrder[mark:] {
-		if saIsTempOp(nm) {
+		// 分支内物化的顶层快照槽亦为臂内死中间量（物化后必经 get，槽
+		// 本身永非臂结果；随快照消费，否则返前释放引用块外未声明槽）。
+		if saIsTempOp(nm) || strings.HasPrefix(nm, "__topmap") {
 			saConsumeOwn(scope, nm)
 		}
 	}
@@ -8586,6 +8590,17 @@ func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *s
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
+	// 空合 map 种透传：双臂同种 map 即同种 map（pack = M[l] ?? M.en
+	// 的 pack 须记 map/str，否则后读 pack[k] 在串门失认；异种/非 map
+	// 沿旧门不记种。形与串空合槽同律，归属由声明尾接管。）
+	if lk, ok := scope.types[l]; ok && lk == "map" {
+		if rk, ok := scope.types[r]; ok && rk == "map" {
+			if mv, ok := scope.mapVals[l]; ok && mv != "" && scope.mapVals[r] == mv {
+				scope.types[out] = "map"
+				saSetMapVal(scope, out, mv)
+			}
+		}
+	}
 	return out, ""
 }
 
