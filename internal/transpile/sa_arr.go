@@ -9842,6 +9842,15 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			// 地址直比永禁；includes 返 1/0，index 系返位/-1）。
 			return saLowerArrayScanStr(w, recv, method, argNodes, scope, pos, refusals, nextLabel, nextTemp)
 		}
+		// 字面量串元接收器（JEV unmask materialize_mark 0.97）：接收器已由
+		// saArrValueOf 具化为 recv（与具名串元数组同布局，见 u_includes_local
+		// 实证）；将具化柄记为串元数组后走既有扫描径。元素须全为串表达式
+		//（saLiteralIsStrArray），混合/非串字面量落入 i32 径并在种门大声拒。
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindArrayLiteralExpression &&
+			saLiteralIsStrArray(pa.Expression, scope) && saIsStrExpr(argNodes[0], scope) {
+			saMarkArrStr(scope, recv)
+			return saLowerArrayScanStr(w, recv, method, argNodes, scope, pos, refusals, nextLabel, nextTemp)
+		}
 		want, msg := i32arg(0)
 		if msg != "" {
 			return "", "", msg
