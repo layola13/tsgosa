@@ -1205,6 +1205,11 @@ func saTopMapInsertAll(w printer.EmitTextWriter, slot string, tm saTopMap, scope
 type saTopSet struct {
 	init     *ast.Node
 	elemKind string
+	// folded holds prescan-folded element texts for the Set-from-call
+	// arm (new Set(src.map(o => o.field))); nil for the literal arm.
+	// Texts are in elemKind: str content (unquoted, as stored in
+	// saTopObjElem.strFields) or i32 numeric text (numFields).
+	folded []string
 }
 
 // saTopSetLookup 查顶层 Set 快照（标识符直指、无局部遮蔽；不落字）。
@@ -1259,11 +1264,146 @@ func saTopSetMutated(stmts []*ast.Node, name string) bool {
 	return false
 }
 
+// saFoldTopSetMapCall folds `src.map(o => o.field)` over a claimed top
+// object array (JEV fold_map_at_prescan 0.97): the callback must be a
+// single-parameter arrow/function whose body is exactly a field read on
+// that parameter (expression body, or a block with one return of that
+// shape, mirroring saFindEqGuard); every source element must carry the
+// field as a string literal (strFields) or a numeric literal
+// (numFields), all of one kind; bool/array/instance/object-array fields,
+// missing fields, mixed kinds, empty sources, and unclaimed sources all
+// refuse (return false) so the statement keeps refusing kind-244 loudly.
+func saFoldTopSetMapCall(arg *ast.Node, topArrs map[string]saTopArr) ([]string, string, bool) {
+	if arg == nil {
+		return nil, "", false
+	}
+	call := saUnwrapTransparent(arg)
+	if call == nil || call.Kind != ast.KindCallExpression {
+		return nil, "", false
+	}
+	ce := call.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return nil, "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "map" || pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+		return nil, "", false
+	}
+	base := saUnwrapTransparent(pa.Expression)
+	if base == nil || base.Kind != ast.KindIdentifier {
+		return nil, "", false
+	}
+	src, ok := topArrs[base.Text()]
+	if !ok || len(src.objs) == 0 {
+		return nil, "", false
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 || ce.Arguments.Nodes[0] == nil {
+		return nil, "", false
+	}
+	cb := saUnwrapTransparent(ce.Arguments.Nodes[0])
+	if cb == nil || (cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression) {
+		return nil, "", false
+	}
+	params := cb.Parameters()
+	if len(params) < 1 {
+		return nil, "", false
+	}
+	pd := params[0].AsParameterDeclaration()
+	if pd == nil || pd.Name() == nil || pd.Name().Kind != ast.KindIdentifier {
+		return nil, "", false
+	}
+	paramName := pd.Name().Text()
+	body := cb.Body()
+	if body == nil {
+		return nil, "", false
+	}
+	expr := body
+	if body.Kind == ast.KindBlock {
+		bd := body.AsBlock()
+		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 || bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
+			return nil, "", false
+		}
+		rs := bd.Statements.Nodes[0].AsReturnStatement()
+		if rs == nil || rs.Expression == nil {
+			return nil, "", false
+		}
+		expr = rs.Expression
+	}
+	expr = saUnwrapTransparent(expr)
+	if expr == nil || expr.Kind != ast.KindPropertyAccessExpression {
+		return nil, "", false
+	}
+	fpa := expr.AsPropertyAccessExpression()
+	if fpa == nil || fpa.QuestionDotToken != nil || fpa.Name() == nil || fpa.Name().Kind != ast.KindIdentifier || fpa.Expression == nil || fpa.Expression.Kind != ast.KindIdentifier || fpa.Expression.Text() != paramName {
+		return nil, "", false
+	}
+	field := fpa.Name().Text()
+	elemKind := ""
+	var folded []string
+	for _, o := range src.objs {
+		if v, ok := o.strFields[field]; ok {
+			if elemKind == "" {
+				elemKind = "str"
+			} else if elemKind != "str" {
+				return nil, "", false
+			}
+			folded = append(folded, v)
+			continue
+		}
+		if v, ok := o.numFields[field]; ok {
+			if elemKind == "" {
+				elemKind = "i32"
+			} else if elemKind != "i32" {
+				return nil, "", false
+			}
+			folded = append(folded, v)
+			continue
+		}
+		return nil, "", false
+	}
+	if elemKind == "" {
+		return nil, "", false
+	}
+	return folded, elemKind, true
+}
+
+// saLowerTopSetFolded materializes a folded Set-from-call snapshot:
+// fresh btree_set + one insert per folded element, mirroring the
+// literal seed path in saLowerMapNewSeeds (str keys via
+// saLowerStringLiteral, i32 keys via the 8-byte cell + 16-byte slice
+// pair, released after the insert). The caller owns and releases the
+// returned handle exactly like the literal .has path.
+func saLowerTopSetFolded(w printer.EmitTextWriter, ts saTopSet, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/btree_set.sa")
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_btree_set_new()\n", h))
+	for _, text := range ts.folded {
+		if ts.elemKind == "str" {
+			ks := saLowerStringLiteral(w, text, scope, nextTemp)
+			w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", h, ks))
+			continue
+		}
+		cell := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", cell))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", cell, text))
+		slice := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", slice))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slice, cell))
+		w.Write(fmt.Sprintf("  store %s + 8, 4 as u64\n", slice))
+		w.Write(fmt.Sprintf("  call @sa_btree_set_insert(&%s, &%s)\n", h, slice))
+		saReleaseKeySlice(w, slice, cell)
+	}
+	return h, ""
+}
+
 // saTopSetPrescan 收顶层 `const S = new Set([...])` 快照（名→快照；
 // 构造器须为 Set 标识符（类型实参忽略），实参须恰一数组字面量，
 // 元须全串或全 i32 字面量（混元/非字面量整句不收）；const 永收，
 // let/var 须未被赋值；导出形与文件内变异形不收，沿旧 kind-244 门。
-func saTopSetPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, assigned map[string]bool) (map[string]saTopSet, map[*ast.Node]bool) {
+func saTopSetPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, assigned map[string]bool, topArrs map[string]saTopArr) (map[string]saTopSet, map[*ast.Node]bool) {
 	out := map[string]saTopSet{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -1332,16 +1472,30 @@ func saTopSetPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, assigned map
 				break
 			}
 			arg := ce.Arguments.Nodes[0]
+			elemKind := ""
+			var folded []string
 			if arg.Kind != ast.KindArrayLiteralExpression {
-				okAll = false
-				break
+				// Set-from-call arm (JEV fold_map_at_prescan 0.97):
+				// fold src.map(o => o.field) over a claimed top
+				// object array; anything else refuses loudly.
+				f, fk, ok := saFoldTopSetMapCall(arg, topArrs)
+				if !ok {
+					okAll = false
+					break
+				}
+				folded, elemKind = f, fk
+				if saTopSetMutated(stmts, name) {
+					okAll = false
+					break
+				}
+				pends = append(pends, pend{name: name, set: saTopSet{init: init, elemKind: elemKind, folded: folded}})
+				continue
 			}
 			al := arg.AsArrayLiteralExpression()
 			if al == nil || al.Elements == nil {
 				okAll = false
 				break
 			}
-			elemKind := ""
 			elOk := true
 			for _, el := range al.Elements.Nodes {
 				if el == nil {

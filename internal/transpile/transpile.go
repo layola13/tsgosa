@@ -2025,7 +2025,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
 	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
 	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
-	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned)
+	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned, topArrs)
 	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}

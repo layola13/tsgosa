@@ -3196,7 +3196,12 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				// btree_set 物化后 contains，用后即释；非 has 成员沿旧门
 				// 大声拒（saMapBaseKind 不认顶层快照，故此处先行拦截）。
 				if ts, ok := saTopSetLookup(scope, base); ok && pa.Name() != nil && pa.Name().Text() == "has" {
-					h, msg := saLowerMapNew(w, "Set", ts.init.AsNewExpression(), scope, pos, refusals, nextTemp)
+					var h, msg string
+					if ts.folded != nil {
+						h, msg = saLowerTopSetFolded(w, ts, scope, nextTemp)
+					} else {
+						h, msg = saLowerMapNew(w, "Set", ts.init.AsNewExpression(), scope, pos, refusals, nextTemp)
+					}
 					if msg != "" {
 						return "", false, msg
 					}
