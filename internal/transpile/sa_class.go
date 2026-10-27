@@ -9866,11 +9866,17 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	return t, ""
 }
 
-// saLowerGuardedFieldLoad lowering `b?.v`（inst i32 字段空守卫 join；
-// 形状证据：satsgo lowerGuardedProperty:saemit.go + 本仓 saLowerOptionalIndex:sa_arr.go:231。
-// 基经 saInstBase 仅 This/Identifier 即纯基（封存 isPureBase 同形）；非 i32 种沿旧门）。
+// saLowerGuardedFieldLoad lowering `b?.v`（inst 字段空守卫 join；2b_tail：
+// 全字段种（i32/bool/str/arr/inst/jsval/f64），槽按种存取（指针种 as ptr，
+// f64 as f64，i32/bool 沿旧 as ptr 存/as i32 取）；形状证据：satsgo
+// lowerGuardedProperty:saemit.go + 本仓 saLowerOptionalIndex:sa_arr.go:231。
+// 基经 saInstBase 仅 This/Identifier 即纯基（封存 isPureBase 同形）；
+// 未知字段种（map/set/date 等）沿旧门大声拒，禁静默错种。
 func saLowerGuardedFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, field string, scope *saScope, nextTemp *int) (string, string) {
-	if k := def.fkinds[field]; k != "" && k != "i32" {
+	fk := def.fkinds[field]
+	switch fk {
+	case "", "i32", "bool", "str", "arr", "inst", "jsval", "f64":
+	default:
 		return "", "optional field access on non-i32 field is not lowerable"
 	}
 	slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -9894,12 +9900,36 @@ func saLowerGuardedFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef
 	if msg != "" {
 		return "", msg
 	}
-	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	if fk == "f64" {
+		w.Write(fmt.Sprintf("  store %s + 0, %s as f64\n", slot, v))
+	} else {
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	}
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", endL))
 	dest := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	switch fk {
+	case "f64":
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", dest, slot))
+		scope.types[dest] = "f64"
+	case "str":
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dest, slot))
+		scope.types[dest] = "str"
+	case "arr":
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dest, slot))
+		scope.types[dest] = "arr"
+	case "inst":
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dest, slot))
+		if sub, ok := def.fsub[field]; ok {
+			scope.types[dest] = "inst:" + sub
+		}
+	case "jsval":
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", dest, slot))
+		scope.types[dest] = "jsval"
+	default:
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	}
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	return dest, ""
 }

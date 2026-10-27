@@ -730,6 +730,22 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 			return res, msg
 		}
 	}
+	// 2b_tail: jsval-rooted optional chains in conditions (`!body.data?.settings`).
+	// Map-read chain yields a zero handle for absent/null links; truthiness goes
+	// through ts_jsval_truthy exactly like the identifier jsval case below.
+	// `?.length` leaves keep their own machinery (helper returns ok=false).
+	if cond.Kind == ast.KindPropertyAccessExpression && saChainHasOptional(cond) {
+		if h, msg, ok := saLowerOptionalJsValChain(w, cond, scope, pos, refusals, nextTemp); ok {
+			if msg != "" {
+				return "", msg
+			}
+			scope.addImport("sa_std/ts_jsval.sa")
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, h))
+			return out, ""
+		}
+	}
 	// Non-identifier string-expression conditions (trim() calls,
 	// templates, joins; identifier str has its own case below and
 	// PropertyAccess str fields have the case above): evaluate as
@@ -7704,17 +7720,22 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 			}
 		}
 		// 链式实例 f64 字段读（`o.inner.v` 经内层句柄逐级解，与 i32 链读位同形；
-		// 末跳 `?.` 沿旧门大声拒，不静默直读崩）。
+		// 2b_tail：末跳 `?.` 或链内含 `?.` 时走空守卫 join（空基读 0.0），
+		// 否则直读；直读零址仍沿旧门大声拒，不静默崩）。
 		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
-			if pa.QuestionDotToken != nil {
-				return "", "optional field access on non-i32 field is not lowerable"
-			}
 			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
 			if msg == "" {
 				if _, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "f64" {
-					t, lmsg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
-					if lmsg == "" {
-						return t, ""
+					if pa.QuestionDotToken != nil || saChainHasOptional(pa.Expression) {
+						t, lmsg := saLowerGuardedFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+						if lmsg == "" {
+							return t, ""
+						}
+					} else {
+						t, lmsg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+						if lmsg == "" {
+							return t, ""
+						}
 					}
 				}
 			}
@@ -8192,6 +8213,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "3", ""
 			case "E":
 				return "2", ""
+			}
+		}
+		// 2b_tail: jsval-rooted optional chains that no inst arm claimed
+		// (e.g. `body.data?.settings` where body is a JSON/jsval value).
+		if saChainHasOptional(e) {
+			if h, msg, ok := saLowerOptionalJsValChain(w, e, scope, pos, refusals, nextTemp); ok {
+				return h, msg
 			}
 		}
 		return saLowerLengthExpr(w, e.AsPropertyAccessExpression(), scope, pos, refusals, nextTemp)
@@ -9600,6 +9628,63 @@ func saEvalJsValMapRead(w printer.EmitTextWriter, base, field string, scope *saS
 	w.Write(fmt.Sprintf("  !%s\n", slot))
 	scope.types[h] = "jsval"
 	return h, ""
+}
+
+// saLowerOptionalJsValChain lowering jsval-rooted optional member chains
+// (`body.data?.settings`, `(body as Record<string, unknown>)?.messages`).
+// 2b_tail (JEV optacc cond_init / inst_jsval / multi_link): the root must be a
+// jsval-kind identifier (Record params and JSON results lower as jsval); every
+// link lowers as a map read (absent key or zero base yields a zero handle, the
+// same null arm plain jsval reads already use), so plain and `?.` links share
+// one lowering and multi-link chains propagate zero outward. Returns ok=false
+// (emitting nothing) for any non-jsval root, element/call link, or `?.length`
+// leaf, so callers fall through to their existing paths unchanged.
+func saLowerOptionalJsValChain(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, bool) {
+	_ = pos
+	_ = refusals
+	if e == nil || e.Kind != ast.KindPropertyAccessExpression {
+		return "", "", false
+	}
+	var fields []string
+	cur := e
+	for cur != nil && cur.Kind == ast.KindPropertyAccessExpression {
+		pa := cur.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+			return "", "", false
+		}
+		if pa.Name().Text() == "length" {
+			return "", "", false
+		}
+		fields = append(fields, pa.Name().Text())
+		cur = saUnwrapTransparent(pa.Expression)
+	}
+	if cur == nil || cur.Kind != ast.KindIdentifier {
+		return "", "", false
+	}
+	k, ok := scope.types[cur.Text()]
+	if !ok {
+		return "", "", false
+	}
+	// Map roots qualify only when their values are jsval boxes
+	// (Record<string, unknown/any> params seed mapVals "jsval"); str/i32/inst
+	// map values read through the map's own value path, never as jsval,
+	// or truthiness would read a string header as a jsval tag.
+	if k == "map" {
+		if scope.mapVals[cur.Text()] != "jsval" {
+			return "", "", false
+		}
+	} else if k != "jsval" {
+		return "", "", false
+	}
+	base := cur.Text()
+	for i := len(fields) - 1; i >= 0; i-- {
+		h, msg := saEvalJsValMapRead(w, base, fields[i], scope, nextTemp)
+		if msg != "" {
+			return "", msg, true
+		}
+		base = h
+	}
+	return base, "", true
 }
 
 // saLowerJsValStrEq lowering jsval-串相等（JEV tag_and_content_guarded 1.0）：

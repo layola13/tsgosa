@@ -967,13 +967,19 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 			}
 			// 嵌套串链读（`q.p.s` 经内层句柄；叶子须 str，非串沿旧门；
-			// 与 i32 链读同形；形状证据：封存 saChainBase；末跳 `?.` 沿旧门大声拒）。
+			// 与 i32 链读同形；形状证据：封存 saChainBase；2b_tail：末跳 `?.`
+			// 或链内含 `?.` 时走空守卫 join（空基读零串柄，?? 回退同律），
+			// 否则直读；链基具化本身含守卫（oa_multi 同形）。
 			if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
-				if pa.QuestionDotToken != nil {
-					return "", "optional field access on non-i32 field is not lowerable"
-				}
 				if ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
 					if _, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "str" {
+						if pa.QuestionDotToken != nil || saChainHasOptional(pa.Expression) {
+							t, msg := saLowerGuardedFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
+							if msg == "" {
+								return t, ""
+							}
+							return "", msg
+						}
 						t, msg := saLowerClassFieldLoad(w, ch, cdef, pa.Name().Text(), scope, nextTemp)
 						if msg == "" {
 							return t, ""
