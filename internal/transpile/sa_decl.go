@@ -1890,6 +1890,88 @@ func saUnionEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, ali
 // Unresolvable bases (external types like ChannelGroupConfig) are jsval
 // opaque (JEV jsval_opaque); a chained inner inst layout projects its
 // field too (NonNullable<C["image"]>["modelPrices"]).
+// saIndexedFieldInstKind resolves an inst field of a (possibly seeded)
+// interface layout to its instance kind. When the recorded sub-layout is
+// present locally it is used as before; when it is absent (imported/seeded
+// layouts: the defining file's pointer is shared read-only and its nested
+// synth layouts are not seeded), the layout is re-synthesized locally from
+// the field's recorded type node -- a type literal, or a nullable union
+// with exactly one type-literal member (null/undefined arms absorb to the
+// 0 handle, as with other nullable inst returns). The seeded def itself is
+// never mutated; synthesis only registers into the local classes map.
+func saIndexedFieldInstKind(def *saClassDef, field string, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if def == nil {
+		return "", false
+	}
+	if sub, ok := def.fsub[field]; ok {
+		if _, ok2 := classes[sub]; ok2 {
+			return "inst:" + sub, true
+		}
+	}
+	ftn, ok := def.fdefs[field]
+	if !ok || ftn == nil {
+		return "", false
+	}
+	for ftn != nil && ftn.Kind == ast.KindParenthesizedType {
+		pt := ftn.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return "", false
+		}
+		ftn = pt.Type
+	}
+	lit := ftn
+	if lit != nil && lit.Kind == ast.KindUnionType {
+		ut := lit.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false
+		}
+		var found *ast.TypeNode
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false
+			}
+			mm := m
+			for mm != nil && mm.Kind == ast.KindParenthesizedType {
+				pt := mm.AsParenthesizedTypeNode()
+				if pt == nil || pt.Type == nil {
+					return "", false
+				}
+				mm = pt.Type
+			}
+			if mm == nil {
+				return "", false
+			}
+			if mm.Kind == ast.KindNullKeyword || mm.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if mm.Kind == ast.KindLiteralType {
+				if l := mm.AsLiteralTypeNode(); l != nil && l.Literal != nil && l.Literal.Kind == ast.KindNullKeyword {
+					continue
+				}
+				return "", false
+			}
+			if mm.Kind != ast.KindTypeLiteral {
+				return "", false
+			}
+			if found != nil {
+				return "", false
+			}
+			found = mm
+		}
+		if found == nil {
+			return "", false
+		}
+		lit = found
+	}
+	if lit == nil || lit.Kind != ast.KindTypeLiteral {
+		return "", false
+	}
+	if lname, ok := saSynthAnonLayoutAlias(lit, classes, aliasOf); ok {
+		return "inst:" + lname, true
+	}
+	return "", false
+}
+
 func saIndexedAccessRetKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	ia := t.AsIndexedAccessTypeNode()
 	if ia == nil || ia.ObjectType == nil || ia.IndexType == nil {
@@ -1937,12 +2019,7 @@ func saIndexedAccessRetKind(t *ast.TypeNode, classes map[string]*saClassDef, ali
 		case "arr", "f64", "map", "jsval":
 			return fk, true
 		case "inst":
-			if sub, ok := def.fsub[field]; ok {
-				if _, ok2 := classes[sub]; ok2 {
-					return "inst:" + sub, true
-				}
-			}
-			return "", false
+			return saIndexedFieldInstKind(def, field, classes, aliasOf)
 		default:
 			if len(fk) > 5 && fk[:5] == "inst:" {
 				return fk, true

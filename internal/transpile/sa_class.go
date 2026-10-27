@@ -2164,7 +2164,14 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 		if lit == nil || lit.Members == nil {
 			return false
 		}
-		added := false
+		// A literal member merges successfully when at least one member
+		// is well-formed, even if every field duplicates an earlier member
+		// (JEV pick inst_synth: Pick<...> & {permission, ...} where the
+		// literal fields are already in the base must not veto the merge).
+		// A duplicate re-declared without `?` clears the optional flag
+		// (intersection required-wins); the interface/Pick branches skip
+		// duplicates before copying fopt, so this is order-independent.
+		valid := false
 		for _, m := range lit.Members.Nodes {
 			if m == nil || m.Kind != ast.KindPropertySignature {
 				continue
@@ -2177,7 +2184,11 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 			if pd == nil || pd.Type == nil {
 				continue
 			}
+			valid = true
 			if _, dup := fdefs[nm.Text()]; dup {
+				if m.QuestionToken() == nil {
+					delete(fopt, nm.Text())
+				}
 				continue
 			}
 			*fields = append(*fields, nm.Text())
@@ -2185,9 +2196,8 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 			if m.QuestionToken() != nil {
 				fopt[nm.Text()] = true
 			}
-			added = true
 		}
-		return added
+		return valid
 	case ast.KindIntersectionType:
 		it := t.AsIntersectionTypeNode()
 		if it == nil || it.Types == nil {

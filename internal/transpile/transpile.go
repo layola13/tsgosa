@@ -3732,12 +3732,7 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 	case "i32", "bool", "str", "arr", "f64", "map", "jsval":
 		return fk, true
 	case "inst":
-		if sub, ok := def.fsub[field]; ok {
-			if _, ok2 := classes[sub]; ok2 {
-				return "inst:" + sub, true
-			}
-		}
-		return "", false
+		return saIndexedFieldInstKind(def, field, classes, aliasOf)
 	default:
 		if len(fk) > 5 && fk[:5] == "inst:" {
 			return fk, true
