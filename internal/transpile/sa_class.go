@@ -3691,12 +3691,29 @@ func saLitFieldKind(init *ast.Node, scope *saScope) string {
 
 // saMatchWantIface 注解优先直命中（名在表、键集命中（缺键全可选）即用；
 // 其余一律nil 交既有匹配门，拒因文案零变）。
+// saWantKeySubset reports whether every literal key exists in the layout.
+// Unlike saWantKeyMatch it does not require non-optional fields to be
+// present: the materializer zero-fills missing fields, so a partial
+// literal (e.g. engine: { phase: "idle" } with extra Engine fields) still
+// lowers correctly. Extra keys still fail.
+func saWantKeySubset(def *saClassDef, keys []string) bool {
+	if def == nil || !def.isIface {
+		return false
+	}
+	for _, k := range keys {
+		if _, has := def.offsets[k]; !has {
+			return false
+		}
+	}
+	return true
+}
+
 func saMatchWantIface(want string, keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
 	if want == "" {
 		return nil, ""
 	}
 	def, ok := classes[want]
-	if !ok || def == nil || !def.isIface || !saWantKeyMatch(def, keys) {
+	if !ok || def == nil || !def.isIface || !saWantKeySubset(def, keys) {
 		return nil, ""
 	}
 	return def, ""

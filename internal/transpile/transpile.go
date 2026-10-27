@@ -785,6 +785,68 @@ func saSeedTopLayouts(link *saFileLink, tgt string, roots ...string) bool {
 	return true
 }
 
+// saSeedClassClosure transitively seeds nested-interface layouts for
+// imported classes into link.classSeed, so hook C-class merges the full
+// layout closure into the importer's classes table. A named type import
+// seeds only the named class; without its fsub closure, an annotated
+// topObj const in the importer cannot validate or materialize nested
+// fields (real case: imported ClientState with engine/tooling
+// sub-layouts, which the importer never imports by name). Only names
+// absent from classSeed are added (local-wins preserved), and a
+// sub-layout seeds only if exported or synthesized (same gate as
+// saSeedTopLayouts). Sub-layouts resolve across all harvested targets in
+// sorted target order, so the choice is deterministic; the defining file
+// is usually the parent's own file, but the seed carries no target.
+// Cycle-guarded via seen.
+func saSeedClassClosure(link *saFileLink) {
+	if link == nil || len(link.classSeed) == 0 || len(link.classHarvests) == 0 {
+		return
+	}
+	tgts := make([]string, 0, len(link.classHarvests))
+	for t := range link.classHarvests {
+		tgts = append(tgts, t)
+	}
+	sort.Strings(tgts)
+	seen := map[string]bool{}
+	queue := []string{}
+	for name, def := range link.classSeed {
+		seen[name] = true
+		if def != nil {
+			for _, sub := range def.fsub {
+				queue = append(queue, sub)
+			}
+		}
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, dup := link.classSeed[name]; dup {
+			continue
+		}
+		var found *saClassDef
+		for _, t := range tgts {
+			if ch, ok := link.classHarvests[t][name]; ok && ch.def != nil && (ch.exported || ch.def.isSynth) {
+				found = ch.def
+				break
+			}
+		}
+		if found == nil {
+			continue
+		}
+		if link.classSeed == nil {
+			link.classSeed = map[string]*saClassDef{}
+		}
+		link.classSeed[name] = found
+		for _, sub := range found.fsub {
+			queue = append(queue, sub)
+		}
+	}
+}
+
 func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (string, saFuncSig, bool) {
 	key := tgt + "\x00" + remote
 	if seen[key] {
@@ -2807,6 +2869,31 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 		}
 	}
+	// par_k244: early import class seeding for prescans. Prescan-2c runs
+	// before prescan-zero binds imports and hook C-class merges classSeed,
+	// so imported interfaces were absent from classes at prescan time and
+	// the annotated topObj path could never claim them. Bind imports early
+	// (throwaway diagnostics; prescan-zero re-binds with the real slices
+	// and every seed write is dup-guarded), close the layout closure, and
+	// merge classSeed into classes with local-wins. Only class defs are
+	// merged here; value merging still happens at hook C unchanged.
+	if link != nil {
+		var ignR, ignW []SARefusal
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st != nil && st.Kind == ast.KindImportDeclaration {
+				saBindProgImports(st, link, pos, &ignR, &ignW)
+			}
+		}
+		saSeedClassClosure(link)
+		for local, def := range link.classSeed {
+			if def == nil {
+				continue
+			}
+			if _, dup := classes[local]; !dup {
+				classes[local] = def
+			}
+		}
+	}
 	// 预扫二c：顶层可变槽登记（`let x = 1` 被赋值即入槽，声明无码；`const` 永不入槽；
 	// 形状证据：封存 preRegisterModStates:593-616）+ 纯量折叠（未被认领者；被赋值名永不折叠，
 	// 封存 modstate.go:26-28）。
@@ -3058,6 +3145,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			handledTop[st] = true
 		}
 	}
+	// par_k244: seed the transitive nested-layout closure for imported
+	// classes before hook C-class merges classSeed (see saSeedClassClosure).
+	saSeedClassClosure(link)
 	// Program hook C: seed qualified signatures into this file's table.
 	if link != nil {
 		for q, sig := range link.seed {
