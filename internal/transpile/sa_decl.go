@@ -283,9 +283,22 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 						}
 					}
 					if def, ok := scope.classes[want]; !ok || !def.isIface {
-						ln, col := pos(d.Pos())
-						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
-						return false
+						// (par_notexp) 别名字面量注解：注解名是 `type P = {...}`
+						// 别名时，经 aliasOf 解出合成布局（与顶层对象 prescan
+						// 的别名径同形）；解不出或非接口布局时沿旧门大声拒。
+						if lay, ok2 := saAliasLiteralLayout(tn, scope.classes, scope.aliasOf); ok2 {
+							if d2, ok3 := scope.classes[lay]; ok3 && d2 != nil && d2.isIface {
+								want = lay
+							} else {
+								ln, col := pos(d.Pos())
+								*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+								return false
+							}
+						} else {
+							ln, col := pos(d.Pos())
+							*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "object annotation must name an interface"})
+							return false
+						}
 					}
 				}
 			}
@@ -2561,6 +2574,62 @@ func saTopFnAlias(st *ast.Node, funcs map[string]saFuncSig, assigned map[string]
 		return "", "", false
 	}
 	return alias, target, true
+}
+
+// saIsMemoConst 识别顶层 `const M = memo(fn)` / `memo(Impl)` / forwardRef 同形
+// （单声明、标识符名、调用初值、callee 为 memo/forwardRef 标识符、首参为
+// 函数表达式/箭头/标识符；JEV memo_lower 0.89：包装透明化，内层函数体
+// 按 const 名收割与发射；JEV memo_two_arg_ignore 0.98：第二参（比较函数）
+// 恒忽略。余形（零参/三参以上、非函数首参、成员式 callee 如 React.memo、
+// 括号/as 包装初值）不收，沿旧拒；标识符参须为本件函数方认领，调用方另查）。
+func saIsMemoConst(st *ast.Node) (string, *ast.Node, bool) {
+	if st.Kind != ast.KindVariableStatement {
+		return "", nil, false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return "", nil, false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) != 1 {
+		return "", nil, false
+	}
+	d := dl.Declarations.Nodes[0]
+	vd := d.AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return "", nil, false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	init := vd.Initializer
+	if init.Kind != ast.KindCallExpression {
+		return "", nil, false
+	}
+	ce := init.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	callee := ce.Expression.Text()
+	if callee != "memo" && callee != "forwardRef" {
+		return "", nil, false
+	}
+	// (par_notexp, JEV memo_two_arg_ignore 0.98) memo(fn, cmp) 形：第二参
+	// 为重渲染比较函数，SA 发射不建模 memo 化（memo(fn) 本就直发为
+	// 普通函数），故第二参恒忽略、永不发码；首参仍须为函数/标识符。
+	// 零参或三参以上沿旧拒。
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) < 1 || len(ce.Arguments.Nodes) > 2 {
+		return "", nil, false
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg == nil {
+		return "", nil, false
+	}
+	if arg.Kind != ast.KindArrowFunction && arg.Kind != ast.KindFunctionExpression && arg.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	return nm.Text(), arg, true
 }
 
 // saTopRegexPrescan 收顶层 const 正则快照（名→原始模式/旗标；整句全为
