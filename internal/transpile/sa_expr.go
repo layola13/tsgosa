@@ -10126,6 +10126,9 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 			if ms.w == "str" {
 				return "string", ""
 			}
+			if ms.w == "map" || ms.w == "set" {
+				return "object", ""
+			}
 			if ms.w == "handle" {
 				// 句柄槽即对象（null 或接口实例；2b_k244handles patch1）。
 				return "object", ""

@@ -3174,6 +3174,30 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// loop 1 exactly like same-file consts. Hook C-const below keeps
 	// seeding the same values for function-body scopes (local wins).
 	saPreseedImportedConsts(sf, topConsts, topStr, link)
+	// 2b_k244handles patch2: top-level const names in file order (seeds
+	// may reference consts declared after the map; they are folded by the
+	// time functions lower, and un-foldable ones fail loudly at ensure).
+	topConstNames := map[string]bool{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+				continue
+			}
+			topConstNames[vd.Name().Text()] = true
+		}
+	}
 	handledTop := map[*ast.Node]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 槽绑定声明无码（封存 tryModState:618-635；注册期拒因已落袋，此处只消费）。
@@ -3208,6 +3232,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		// 顶层 cast-JSON-import 快照声明无码（点读用点物化）。
 		if topJSONStmts[st] {
+			handledTop[st] = true
+			continue
+		}
+		// 2b_k244handles patch2: shared Map/Set slots (snapshot wins: this
+		// runs after the topSet/topMap checks, so only mutated/seeded
+		// leftovers reach it; unclaimed statements keep kind-244).
+		if saTryCollSlot(st, funcs, classes, modVars, aliasOf, topConstNames) {
 			handledTop[st] = true
 			continue
 		}
@@ -3886,9 +3917,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
 		// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属）。
-		saEmitSlotPrologue(w, saSlotPrologueNames(entryStmts, escope, modVars), escope, modVars, &nextTemp)
+		prologueOK := saEmitSlotPrologue(w, saSlotPrologueNames(entryStmts, escope, modVars), escope, modVars, &nextTemp, pos, &refusals)
 		// 测试缓冲委托（顶层 afterAll/.only 直接子命中才走缓冲核，否则沿旧路）。
-		if saScopeNeedsTestBuffer(entryStmts, escope) {
+		if !prologueOK {
+			// Prologue ensure failed (refusal already appended); skip the body to avoid cascading diags.
+		} else if saScopeNeedsTestBuffer(entryStmts, escope) {
 			_, term := saLowerBufferedScope(w, entryStmts, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp)
 			terminated = term
 		} else {
@@ -6001,7 +6034,9 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	terminated := false
 	// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属；
 	// 排除已绑名（形参/解构）与直接声明；嵌套体另有自己的序幕）。
-	saEmitSlotPrologue(w, saSlotPrologueNames(stmts, scope, scope.modVars), scope, scope.modVars, nextTemp)
+	if !saEmitSlotPrologue(w, saSlotPrologueNames(stmts, scope, scope.modVars), scope, scope.modVars, nextTemp, pos, refusals) {
+		return
+	}
 	for _, s := range stmts {
 		if terminated {
 			// 终结后的后继是死码，静默抑制（形状证据：封存

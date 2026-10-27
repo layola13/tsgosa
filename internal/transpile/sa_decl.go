@@ -3924,7 +3924,9 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	} else {
 		arrowRoots = []*ast.Node{body}
 	}
-	saEmitSlotPrologue(w, saSlotPrologueNames(arrowRoots, scope, scope.modVars), scope, scope.modVars, nextTemp)
+	if !saEmitSlotPrologue(w, saSlotPrologueNames(arrowRoots, scope, scope.modVars), scope, scope.modVars, nextTemp, pos, refusals) {
+		return
+	}
 	if !saLowerArrowBody(w, arrow, body, isVoid, retKind, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 		return
 	}
@@ -4709,13 +4711,17 @@ func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx, clas
 // modWiden:822-882（同宽 trunc 839-851）。
 // 单文件无前缀：键域前缀为空（多文件前缀见 modKeyOf:107-110，单文件投影）。
 type saModState struct {
-	qual  string // 饰名（拒因定位；封存 modState.qual:39-55）
-	w     string // "i32" | "str" | "handle"（i64/u64/f64/obj 后步；封存 modWidthOf:70-82 子集）
-	iface string // handle 槽的接口名（w=="handle" 时有效；2b_k244handles patch1）
-	key   uint64
-	key2  uint64 // len 槽（串独有；封存 modStrKeyOf:112-117）
-	flag  uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341；串恒置位）
-	init  string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0；串恒有初值）
+	qual     string // 饰名（拒因定位；封存 modState.qual:39-55）
+	w        string // "i32" | "str" | "handle" | "map" | "set"（i64/u64/f64/obj 后步；封存 modWidthOf:70-82 子集）
+	iface    string // handle 槽的接口名（w=="handle" 时有效；2b_k244handles patch1）
+	key      uint64
+	key2     uint64    // len 槽（串独有；封存 modStrKeyOf:112-117）
+	flag     uint64    // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341；串恒置位）
+	init     string    // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0；串恒有初值）
+	vkind    string    // map/set slot value/elem kind ("str"|"i32"|"inst:X"; patch2)
+	initNode *ast.Node // map/set slot NewExpression (ensure seeding; patch2)
+	flagKey  uint64    // map/set initialized-flag key (saModKeyOf(name+"\x00collinit") first; patch2)
+
 }
 
 // saModFnv1a64 即 FNV-1a 64（封存 fnv1a64:84-97）。
@@ -5198,7 +5204,7 @@ func saSlotPrologueNames(roots []*ast.Node, scope *saScope, modVars map[string]*
 		}
 		if n.Kind == ast.KindIdentifier {
 			if nm := n.Text(); !excl[nm] && !seen[nm] {
-				if ms, ok := modVars[nm]; ok && ms.w == "handle" {
+				if ms, ok := modVars[nm]; ok && (ms.w == "handle" || ms.w == "map" || ms.w == "set") {
 					seen[nm] = true
 					names = append(names, nm)
 				}
@@ -5218,21 +5224,55 @@ func saSlotPrologueNames(roots []*ast.Node, scope *saScope, modVars map[string]*
 // saEmitSlotPrologue 在函数入口为 names 载入句柄槽（2b_k244handles patch1）：
 // 槽值以 u64 位载入同名 SA 变量并登记 inst: 绑定 + 归属（排空 `!` 对 u64
 // 位安全；绑定恒持位、永不持裸 ^ptr，见 patch1 证明）。读到未写得 0（null）。
-func saEmitSlotPrologue(w printer.EmitTextWriter, names []string, scope *saScope, modVars map[string]*saModState, nextTemp *int) {
+func saEmitSlotPrologue(w printer.EmitTextWriter, names []string, scope *saScope, modVars map[string]*saModState, nextTemp *int, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	for _, nm := range names {
 		ms := modVars[nm]
-		if ms == nil || ms.w != "handle" {
+		if ms == nil {
 			continue
 		}
-		w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
-		scope.types[nm] = "inst:" + ms.iface
-		saDeclareOwned(scope, nm)
-		if scope.slotPrologue == nil {
-			scope.slotPrologue = map[string]bool{}
+		switch ms.w {
+		case "handle":
+			w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
+			scope.types[nm] = "inst:" + ms.iface
+			saDeclareOwned(scope, nm)
+			if scope.slotPrologue == nil {
+				scope.slotPrologue = map[string]bool{}
+			}
+			scope.slotPrologue[nm] = true
+			scope.addImport("sa_std/modstate.sai")
+		case "map", "set":
+			// Shared collection slot: lazy-once ensure (creates + seeds on
+			// first use in this process) then load + bind. Map handles are
+			// stable across mutation, so refresh skips them (it filters
+			// w == "handle"); only the prologue binding is needed.
+			if !saEmitModEnsureMap(w, ms, scope, pos, refusals, nextTemp) {
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
+			scope.types[nm] = ms.w
+			if ms.w == "map" {
+				if scope.mapVals == nil {
+					scope.mapVals = map[string]string{}
+				}
+				scope.mapVals[nm] = ms.vkind
+			} else if ms.vkind == "str" || ms.vkind == "i32" {
+				// setVals only knows str/i32 elems; an inst elem kind is
+				// NOT seeded (add/has fail loudly at the key slice, and
+				// the iteration gate sees an empty table and refuses).
+				if scope.setVals == nil {
+					scope.setVals = map[string]string{}
+				}
+				scope.setVals[nm] = ms.vkind
+			}
+			saDeclareOwned(scope, nm)
+			if scope.slotPrologue == nil {
+				scope.slotPrologue = map[string]bool{}
+			}
+			scope.slotPrologue[nm] = true
+			scope.addImport("sa_std/modstate.sai")
 		}
-		scope.slotPrologue[nm] = true
-		scope.addImport("sa_std/modstate.sai")
 	}
+	return true
 }
 
 // saSlotStoreHandle 句柄槽存（2b_k244handles patch1）：句柄位截断 + 原始
