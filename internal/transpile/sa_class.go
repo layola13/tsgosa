@@ -3292,7 +3292,17 @@ func saAliasUnionScalarKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (
 	for i := 0; i <= len(aliasOf)+2 && cur != nil; i++ {
 		switch cur.Kind {
 		case ast.KindUnionType:
-			return saUnionScalarKind(cur.AsNode())
+			if k, ok := saUnionScalarKind(cur.AsNode()); ok {
+				return k, true
+			}
+			// 3_theme2 (JEV alias_str_union, additive fallback): unions
+			// the raw scalar check rejects only because members go through
+			// aliases or the string&{} idiom still resolve to str here.
+			// Existing successful resolutions never change.
+			if ut := cur.AsNode().AsUnionTypeNode(); ut != nil && saAliasStrUnionKind(ut, aliasOf, map[string]bool{}) {
+				return "str", true
+			}
+			return "", false
 		case ast.KindParenthesizedType:
 			pt := cur.AsParenthesizedTypeNode()
 			if pt == nil || pt.Type == nil {
@@ -3327,6 +3337,126 @@ func saAliasUnionScalarKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (
 		}
 	}
 	return "", false
+}
+
+// saAliasStrMemberKind reports whether a single union member denotes only
+// string values, resolving TypeReference members through aliasOf with a
+// chain-scoped seen set (a copy per chain, so repeated members do not
+// falsely trip the cycle guard). The string&{} widening idiom counts as
+// string only when every other intersection member is an empty type
+// literal; anything else (interfaces, arrays, non-string members) fails.
+func saAliasStrMemberKind(m *ast.Node, aliasOf map[string]*ast.TypeNode, seen map[string]bool) bool {
+	if m == nil {
+		return false
+	}
+	cur := m
+	for cur != nil && cur.Kind == ast.KindParenthesizedType {
+		pt := cur.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return false
+		}
+		cur = pt.Type.AsNode()
+	}
+	if cur == nil {
+		return false
+	}
+	switch cur.Kind {
+	case ast.KindStringKeyword:
+		return true
+	case ast.KindLiteralType:
+		lit := cur.AsLiteralTypeNode().Literal
+		return lit != nil && (lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral)
+	case ast.KindTypeReference:
+		ref := cur.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return false
+		}
+		nm := ref.TypeName.Text()
+		if seen[nm] {
+			return false
+		}
+		ns := map[string]bool{}
+		for k, v := range seen {
+			ns[k] = v
+		}
+		ns[nm] = true
+		tgt, ok := aliasOf[nm]
+		if !ok || tgt == nil {
+			return false
+		}
+		return saAliasStrMemberKind(tgt.AsNode(), aliasOf, ns)
+	case ast.KindUnionType:
+		ut := cur.AsUnionTypeNode()
+		return ut != nil && saAliasStrUnionKind(ut, aliasOf, seen)
+	case ast.KindIntersectionType:
+		it := cur.AsIntersectionTypeNode()
+		if it == nil || it.Types == nil {
+			return false
+		}
+		sawStr := false
+		for _, im := range it.Types.Nodes {
+			if im == nil {
+				return false
+			}
+			ic := im
+			for ic != nil && ic.Kind == ast.KindParenthesizedType {
+				pt := ic.AsParenthesizedTypeNode()
+				if pt == nil || pt.Type == nil {
+					return false
+				}
+				ic = pt.Type.AsNode()
+			}
+			if ic == nil {
+				return false
+			}
+			switch ic.Kind {
+			case ast.KindStringKeyword:
+				sawStr = true
+			case ast.KindTypeLiteral:
+				lt := ic.AsTypeLiteralNode()
+				if lt == nil {
+					return false
+				}
+				if lt.Members != nil && len(lt.Members.Nodes) != 0 {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return sawStr
+	default:
+		return false
+	}
+}
+
+// saAliasStrUnionKind reports whether every non-null member of a union
+// denotes only string values (3_theme2, JEV alias_str_union). Null and
+// undefined members are absorbed, matching saUnionScalarKind; an empty
+// union (all null) is not a string union.
+func saAliasStrUnionKind(ut *ast.UnionTypeNode, aliasOf map[string]*ast.TypeNode, seen map[string]bool) bool {
+	if ut == nil || ut.Types == nil {
+		return false
+	}
+	saw := false
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return false
+		}
+		if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+			continue
+		}
+		if m.Kind == ast.KindLiteralType {
+			if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+				continue
+			}
+		}
+		if !saAliasStrMemberKind(m, aliasOf, seen) {
+			return false
+		}
+		saw = true
+	}
+	return saw
 }
 
 // saMergedFieldKind is saIfaceFieldKind with one correction: a field whose

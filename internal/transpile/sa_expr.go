@@ -2760,7 +2760,38 @@ func saLowerJSONParseDecl(w printer.EmitTextWriter, vd *ast.VariableDeclaration,
 
 // saLowerBooleanArg `Boolean(x)` 真值（字面量折叠 + 具名读；调用形返
 // done=false 由调用方拒；读无副作用形不落字直接折叠）。
-func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, nextTemp *int) (string, bool, string) {
+// saBoolCallKind reports the statically known bool/i32 kind of a call
+// expression for Boolean() truthiness (3_theme2, JEV bool_call_logic):
+// same-file/linked identifier calls via saCallRetKind, array-method calls
+// via saArrCallRet (some/every/findIndex and friends are i32). All other
+// call shapes keep refusing in the caller.
+func saBoolCallKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce == nil || ce.Expression == nil {
+		return "", false
+	}
+	if ce.Expression.Kind == ast.KindIdentifier {
+		if k, ok := saCallRetKind(ce, scope); ok && (k == "bool" || k == "i32") {
+			return k, true
+		}
+		return "", false
+	}
+	if ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		if k, ok := saArrCallRet(ce, scope); ok && k == "i32" {
+			return k, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if a == nil {
+		return "", false, "Boolean takes one argument"
+	}
+	// Transparent wrappers unwrap (parens/as/satisfies/non-null/assertions
+	// carry no value semantics, same discipline as saUnwrapTransparent
+	// callers elsewhere).
+	a = saUnwrapTransparent(a)
 	if a == nil {
 		return "", false, "Boolean takes one argument"
 	}
@@ -2861,6 +2892,100 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 		default:
 			return "", false, "Boolean of " + k + " is not lowerable yet"
 		}
+	case ast.KindCallExpression:
+		// 3_theme2 (JEV bool_call_logic): Boolean() of a bool/i32 call
+		// evaluates the call once and tests ne 0. Other call kinds
+		// soft-fail so the caller keeps the existing loud message; a
+		// call that itself fails to lower reports its own message.
+		ce := a.AsCallExpression()
+		if _, ok := saBoolCallKind(ce, scope); !ok {
+			return "", false, ""
+		}
+		op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		if voidCall {
+			return "", false, "Boolean of void call"
+		}
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, op))
+		return out, true, ""
+	case ast.KindBinaryExpression:
+		// 3_theme2 (JEV bool_call_logic): Boolean(A&&B) and Boolean(A||B)
+		// lower by recursive truthiness with true short-circuit joins
+		// (a side-effecting right side must not run when the left side
+		// already decides, matching JS &&/|| semantics). A right side
+		// that fails to lower refuses after the join prologue is
+		// emitted; that partial emission on a refused program is the
+		// standing late-refusal item, not a new silent mistranslation.
+		be := a.AsBinaryExpression()
+		if be == nil {
+			return "", false, ""
+		}
+		isAnd := saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken
+		isOr := saBinaryOpKind(be) == ast.KindBarBarToken
+		if !isAnd && !isOr {
+			return "", false, ""
+		}
+		l, lok, lmsg := saLowerBooleanArg(w, be.Left, scope, pos, refusals, nextTemp)
+		if lmsg != "" || !lok {
+			return "", false, lmsg
+		}
+		if l == "0" || l == "1" {
+			lt := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s\n", lt, l))
+			l = lt
+		}
+		decideL := fmt.Sprintf("L_bool_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		armL := fmt.Sprintf("L_bool_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_bool_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		saOwnTemp(scope, slot)
+		trueL, falseL := armL, decideL
+		decideVal := "0"
+		if isOr {
+			trueL, falseL = decideL, armL
+			decideVal = "1"
+		}
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", l, trueL, falseL))
+		w.Write(fmt.Sprintf("%s:\n", decideL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, decideVal))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", armL))
+		r, rok, rmsg := saLowerBooleanArg(w, be.Right, scope, pos, refusals, nextTemp)
+		if rmsg != "" || !rok {
+			return "", false, rmsg
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, r))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
+		return out, true, ""
+	case ast.KindPrefixUnaryExpression:
+		// 3_theme2 (JEV bool_call_logic): Boolean(!x) is not-truthy(x).
+		un := a.AsPrefixUnaryExpression()
+		if un == nil || un.Operator != ast.KindExclamationToken || un.Operand == nil {
+			return "", false, ""
+		}
+		t, tok, tmsg := saLowerBooleanArg(w, un.Operand, scope, pos, refusals, nextTemp)
+		if tmsg != "" || !tok {
+			return "", false, tmsg
+		}
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", out, t))
+		return out, true, ""
 	}
 	return "", false, ""
 }
@@ -6688,7 +6813,7 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 			if len(argNodes) != 1 {
 				return "", false, "Boolean takes one argument"
 			}
-			if op, done, msg := saLowerBooleanArg(w, argNodes[0], scope, nextTemp); msg != "" || done {
+			if op, done, msg := saLowerBooleanArg(w, argNodes[0], scope, pos, refusals, nextTemp); msg != "" || done {
 				if msg != "" {
 					return "", false, msg
 				}

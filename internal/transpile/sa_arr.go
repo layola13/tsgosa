@@ -357,6 +357,22 @@ func saFindReceiverLayout(base *ast.Node, scope *saScope) (string, bool) {
 		}
 		return saStructArrElemLayout(u, scope)
 	}
+	if u.Kind == ast.KindCallExpression {
+		// 3_theme2 (JEV filter_chain): filter preserves its receiver's
+		// element layout, so a filter-call receiver resolves through to
+		// the base receiver. Map results are NOT recursed through: map
+		// changes element type, so its input layout is not its output
+		// layout. Other call receivers keep yielding no layout.
+		ce := u.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return "", false
+		}
+		cpa := ce.Expression.AsPropertyAccessExpression()
+		if cpa == nil || cpa.Name() == nil || cpa.Name().Text() != "filter" || cpa.QuestionDotToken != nil {
+			return "", false
+		}
+		return saFindReceiverLayout(cpa.Expression, scope)
+	}
 	return "", false
 }
 
@@ -2961,7 +2977,20 @@ func saTopArrPureRecv(w printer.EmitTextWriter, pa *ast.PropertyAccessExpression
 	if arr.str && pa.Name().Text() != "indexOf" && pa.Name().Text() != "includes" && pa.Name().Text() != "some" && pa.Name().Text() != "every" {
 		return "", false
 	}
-	return saMaterializeTopArr(w, arr, scope, nextTemp), true
+	// 3_theme2 (JEV filter_chain): the materialized handle IS this top
+	// array's elements, so it carries the snapshot's element layout. The
+	// filter case's recv->out propagation and the declaration propagation
+	// then carry it to filter-result temps and named bindings, where
+	// saFindReceiverLayout (identifier arm) finds it; without this mark
+	// those propagations had nothing to propagate.
+	h := saMaterializeTopArr(w, arr, scope, nextTemp)
+	if arr.layout != "" {
+		if scope.arrElemLayout == nil {
+			scope.arrElemLayout = map[string]string{}
+		}
+		scope.arrElemLayout[h] = arr.layout
+	}
+	return h, true
 }
 
 // saTopArrSnapshot 物化顶层 const 数组快照（用点：for-of/for-in 巡回、spread
