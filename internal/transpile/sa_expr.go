@@ -5136,6 +5136,10 @@ func saIsLiteralDefault(n *ast.Node) bool {
 // saIsReplayableDefault 报告省略缺省是否可在短调点回放（JEV default_scope
 // literal_plus_topconst_plus_purecalls，choice 0.59，confidence 0.49 — modest，
 // 故门保持窄口径；empty_array_fresh noul 0.75）：
+// 3_deffile: cross-file identifier/call defaults additionally replay when
+// the callee sig carries a harvest-time defining-file record (defConstText /
+// defCallQual); see saEnrichDefDefaults. Caller-link same-prefix consts are
+// intentionally NOT trusted (subsumed-or-unsafe: see patch note).
 //   - 旧字面量形（不变）；
 //   - 空数组字面量，仅 arr 形参：saArrValueOf 每调用新造空句柄，与 JS
 //     逐调用新数组语义一致；非空字面量仍拒；
@@ -5179,16 +5183,20 @@ func saIsReplayableDefault(n *ast.Node, sig saFuncSig, i int, scope *saScope, fn
 		if _, shadowed := scope.types[name]; shadowed {
 			return false
 		}
-		if _, ok := scope.topConsts[name]; !ok {
+		if _, calleeImported := scope.linkResolve[fname]; calleeImported {
+			// 3_deffile sig-carried: the defining file recorded this
+			// param's folded const text at harvest (private, exported,
+			// or imported-then-preseeded); pad installs it for this one
+			// evaluation and restores the caller scope exactly. Anything
+			// unrecorded keeps refusing: cross-file consts carry no link
+			// entry of their own, and a same-named caller binding must
+			// never stand in for the defining value (2b shadow lesson).
+			if i < len(sig.defConstText) && sig.defConstText[i] != "" {
+				return true
+			}
 			return false
 		}
-		// Cross-file callee (linkResolve[fname] present): the default
-		// resolves in the defining file, and consts carry no link entry
-		// to prove same-module provenance from scope, so refuse. This
-		// keeps defining-private consts (REFRESH_TTL_MS) and caller-file
-		// same-name consts refusing loudly; same-module imported consts
-		// are a documented remains item, not a guessed pass.
-		if _, calleeImported := scope.linkResolve[fname]; calleeImported {
+		if _, ok := scope.topConsts[name]; !ok {
 			return false
 		}
 		return true
@@ -5215,6 +5223,13 @@ func saIsReplayableDefault(n *ast.Node, sig saFuncSig, i int, scope *saScope, fn
 		if qf, calleeImported := scope.linkResolve[fname]; calleeImported {
 			qn, nameLinked := scope.linkResolve[name]
 			if !nameLinked {
+				// 3_deffile sig-carried: the defining file recorded
+				// this param's qualified callee at harvest (the caller
+				// never imported it); pad installs it for this one
+				// evaluation and restores the caller scope exactly.
+				if i < len(sig.defCallQual) && sig.defCallQual[i] != "" && i < len(sig.defCallSigs) {
+					return true
+				}
 				return false
 			}
 			pf := strings.TrimSuffix(qf, fname)
@@ -5258,15 +5273,105 @@ func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, arg
 			return nil, fmt.Sprintf("omitted optional argument %d of %s needs a default or explicit passing", i+1, fname)
 		}
 		if !saIsReplayableDefault(init, sig, i, scope, fname) {
-			return nil, fmt.Sprintf("omitted default argument %d of %s is not a replayable default (only literals, empty arrays, top-const identifiers and zero-arg known calls replay at short calls)", i+1, fname)
+			return nil, fmt.Sprintf("omitted default argument %d of %s is not a replayable default (only literals, empty arrays, top-const identifiers, zero-arg known calls and defining-file recorded consts/calls replay at short calls)", i+1, fname)
 		}
+		// 3_deffile: install a sig-carried defining-file resolution for
+		// this one evaluation, then restore the caller scope exactly
+		// (delete-if-absent), so no later caller code can observe it.
+		restore := saInstallDefDefault(scope, sig, i, fname, init)
 		v, msg := evalOne(i, init, sig.params)
+		restore()
 		if msg != "" {
 			return nil, msg
 		}
 		out = append(out, v)
 	}
 	return out, ""
+}
+
+// saInstallDefDefault temporarily installs a sig-carried defining-file
+// resolution for param i into the caller scope; the returned restore func
+// reinstates the caller scope exactly (delete-if-absent). Cross-file only:
+// same-file calls already evaluate in the defining scope, and their sigs
+// carry no records. The gate (saIsReplayableDefault) has already proven
+// the record exists and the name is not shadowed by a caller local/param
+// (scope.types is consulted before topConsts/linkResolve by the evaluators,
+// so a shadowed name would otherwise silently win over the installed value).
+func saInstallDefDefault(scope *saScope, sig saFuncSig, i int, fname string, init *ast.Node) func() {
+	noop := func() {}
+	if scope == nil || init == nil {
+		return noop
+	}
+	if _, calleeImported := scope.linkResolve[fname]; !calleeImported {
+		return noop
+	}
+	switch init.Kind {
+	case ast.KindIdentifier:
+		if i >= len(sig.defConstText) || sig.defConstText[i] == "" {
+			return noop
+		}
+		name := init.Text()
+		oldText, hadText := scope.topConsts[name]
+		oldStr, hadStr := scope.topStr[name]
+		if scope.topConsts == nil {
+			scope.topConsts = map[string]string{}
+		}
+		scope.topConsts[name] = sig.defConstText[i]
+		if i < len(sig.defConstStr) && sig.defConstStr[i] {
+			if scope.topStr == nil {
+				scope.topStr = map[string]bool{}
+			}
+			scope.topStr[name] = true
+		} else {
+			delete(scope.topStr, name)
+		}
+		return func() {
+			if hadText {
+				scope.topConsts[name] = oldText
+			} else {
+				delete(scope.topConsts, name)
+			}
+			if hadStr {
+				scope.topStr[name] = oldStr
+			} else {
+				delete(scope.topStr, name)
+			}
+		}
+	case ast.KindCallExpression:
+		if i >= len(sig.defCallQual) || sig.defCallQual[i] == "" || i >= len(sig.defCallSigs) {
+			return noop
+		}
+		ce := init.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+			return noop
+		}
+		name := ce.Expression.Text()
+		qual := sig.defCallQual[i]
+		oldLink, hadLink := scope.linkResolve[name]
+		oldSig, hadSig := scope.funcs[qual]
+		if scope.linkResolve == nil {
+			scope.linkResolve = map[string]string{}
+		}
+		scope.linkResolve[name] = qual
+		if scope.funcs == nil {
+			scope.funcs = map[string]saFuncSig{}
+		}
+		scope.funcs[qual] = sig.defCallSigs[i]
+		return func() {
+			if hadLink {
+				scope.linkResolve[name] = oldLink
+			} else {
+				delete(scope.linkResolve, name)
+			}
+			if hadSig {
+				scope.funcs[qual] = oldSig
+			} else {
+				delete(scope.funcs, qual)
+			}
+		}
+	default:
+		return noop
+	}
 }
 
 // saEvalNamedCall lowering具名直调（`f(...)` 与 `f.call(thisArg, ...)` 脱糖共用；
