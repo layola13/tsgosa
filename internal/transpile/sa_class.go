@@ -3680,6 +3680,79 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, map[string]string{}, classes), true
 }
 
+// saNullFieldTypeNode resolves one field's annotation TypeNode by walking an
+// annotation through aliasOf/intersection/literal constituents (first wins,
+// cycle-guarded). Recorded interfaces carry no fdefs (saRecordTypeAlias
+// never sets them), so their fields are recovered from the alias literal
+// when one exists; otherwise it returns nil.
+func saNullFieldTypeNode(t *ast.TypeNode, fname string, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef, seen map[string]bool, depth int) *ast.TypeNode {
+	if t == nil || depth > 8 {
+		return nil
+	}
+	switch t.Kind {
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		if pt == nil {
+			return nil
+		}
+		return saNullFieldTypeNode(pt.Type, fname, aliasOf, classes, seen, depth+1)
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return nil
+		}
+		for _, m := range lit.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			nm := m.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != fname {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil {
+				return nil
+			}
+			return pd.Type
+		}
+		return nil
+	case ast.KindIntersectionType:
+		it := t.AsIntersectionTypeNode()
+		if it == nil || it.Types == nil {
+			return nil
+		}
+		for _, m := range it.Types.Nodes {
+			if m == nil {
+				continue
+			}
+			if got := saNullFieldTypeNode(m, fname, aliasOf, classes, seen, depth+1); got != nil {
+				return got
+			}
+		}
+		return nil
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return nil
+		}
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return nil
+		}
+		nm := ref.TypeName.Text()
+		if seen[nm] {
+			return nil
+		}
+		seen[nm] = true
+		tgt, ok := aliasOf[nm]
+		if !ok || tgt == nil {
+			return nil
+		}
+		return saNullFieldTypeNode(tgt, fname, aliasOf, classes, seen, depth+1)
+	default:
+		return nil
+	}
+}
+
 // saTopObjNullLayout claims top-level const objects whose annotation is an
 // unrecorded alias resolving (through aliasOf) to an intersection or type
 // literal, and whose literal fields are nulls (kind from the merged
@@ -3754,12 +3827,18 @@ func saTopObjNullLayout(vd *ast.VariableDeclaration, classes map[string]*saClass
 			if fk != "arr" {
 				return "", false
 			}
-			fdef, ok := def.fdefs[fname]
-			if !ok || fdef == nil {
+			fnode := saNullFieldTypeNode(vd.Type, fname, aliasOf, classes, map[string]bool{}, 0)
+			if fnode == nil {
 				return "", false
 			}
-			if _, ok := saRecordValueKind(fdef, classes, aliasOf); !ok {
+			if _, ok := saRecordValueKind(fnode, classes, aliasOf); !ok {
 				return "", false
+			}
+			if _, ok := def.fdefs[fname]; !ok || def.fdefs[fname] == nil {
+				if def.fdefs == nil {
+					def.fdefs = map[string]*ast.TypeNode{}
+				}
+				def.fdefs[fname] = fnode
 			}
 		default:
 			litKind := ""
@@ -5170,6 +5249,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 							if msg != "" {
 								return "", "", msg
 							}
+							saOwnTemp(scope, mh)
 							w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
 							continue
 						}
