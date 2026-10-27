@@ -600,40 +600,61 @@ func saRegexPosixRewrite(pat string) string {
 	return b.String()
 }
 
-// saRegexGatePattern 查 JS 特有写法（超 POSIX-ERE 即拒因；"" 为过）。
-// (?: 允许（见 saRegexPosixRewrite）；(?= (? ! (?< (?P< 等前瞻/命名组仍拒。
+// saRegexGatePattern checks JS-only constructs (over POSIX-ERE => refuse; "" passes).
+// (?: is allowed (see saRegexPosixRewrite); (?= (?! (?< (?P< lookahead/named groups still refuse.
+// Word boundaries outside classes are allowed (glibc regcomp passthrough; see
+// saRegexPosixRewrite notes); inside a class they still refuse (JS backspace meaning).
+// Negated escapes inside a positive class are allowed (rewrite handles them);
+// inside a negated class [^...] they still refuse.
 func saRegexGatePattern(pat string) string {
 	inClass := false
-	for i := 0; i < len(pat); i++ {
+	classNeg := false
+	for i := 0; i < len(pat); {
 		if pat[i] == 0 {
 			return "RegExp NUL byte has no sa_std/text/regex projection"
 		}
 		if pat[i] == '\\' && i+1 < len(pat) {
 			n := pat[i+1]
-			if inClass && (n == 'D' || n == 'S' || n == 'W') {
-				return "RegExp \\" + string([]byte{n}) + " inside a character class has no POSIX projection"
+			if inClass && (n == 'b' || n == 'B') {
+				return "RegExp backslash-" + string([]byte{n}) + " inside a character class has no POSIX projection (JS backspace meaning)"
+			}
+			if inClass && classNeg && (n == 'D' || n == 'S' || n == 'W') {
+				return "RegExp backslash-" + string([]byte{n}) + " inside a negated character class has no POSIX projection"
 			}
 			switch n {
-			case 'b', 'B', 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			case 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 				return string("RegExp \\") + string([]byte{n}) + " needs POSIX ERE (no JS escape classes/backrefs)"
 			}
-			i++
+			i += 2
 			continue
 		}
 		if pat[i] == '[' && !inClass {
 			inClass = true
+			classNeg = false
+			i++
+			if i < len(pat) && pat[i] == '^' {
+				classNeg = true
+				i++
+			}
+			if i < len(pat) && pat[i] == ']' {
+				i++
+			}
 			continue
 		}
 		if pat[i] == ']' && inClass {
 			inClass = false
+			classNeg = false
+			i++
 			continue
 		}
 		if pat[i] == '(' && !inClass && i+1 < len(pat) && pat[i+1] == '?' {
 			if i+2 < len(pat) && pat[i+2] == ':' {
+				i += 3
 				continue
 			}
 			return "RegExp (? groups need POSIX ERE (no lookahead/named groups; (?: is rewritten to ()"
 		}
+		i++
 	}
 	return ""
 }
