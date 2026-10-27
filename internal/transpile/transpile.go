@@ -1212,6 +1212,117 @@ func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink, pos func(
 	}
 }
 
+// saPreseedImportedConsts seeds folded scalar consts imported by this
+// file into its fold tables ahead of the top-level fold loop (JEV
+// early_const_seed 1.0), mirroring saPreseedImportedAliases: local
+// const declarations win (seed skipped on collision), specifier ->
+// target via link.specOf, remote name from the specifier's PropertyName
+// (or the local name), defining-file harvest via link.constHarvests
+// with a unique star-target fallback. Type-only imports, bare specs
+// without a specOf edge, namespace/default imports, and unresolvable
+// targets seed nothing (use sites keep refusing loudly, as today).
+// Re-exported const values are NOT seeded: a re-exporter harvests no
+// value for them, the same limitation as the named-import const path
+// (saBindProgImports), which this preseed deliberately mirrors rather
+// than widening.
+func saPreseedImportedConsts(sf *ast.SourceFile, topConsts map[string]string, topStr map[string]bool, link *saFileLink) {
+	if sf == nil || link == nil || link.specOf == nil || link.constHarvests == nil {
+		return
+	}
+	local := map[string]bool{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil {
+				continue
+			}
+			nm := vd.Name()
+			if nm != nil && nm.Kind == ast.KindIdentifier {
+				local[nm.Text()] = true
+			}
+		}
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindImportDeclaration {
+			continue
+		}
+		imp := st.AsImportDeclaration()
+		if imp == nil || imp.ImportClause == nil {
+			continue
+		}
+		if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
+			continue
+		}
+		ms := imp.ModuleSpecifier
+		if ms == nil || ms.Kind != ast.KindStringLiteral {
+			continue
+		}
+		tgt, ok := link.specOf[ms.Text()]
+		if !ok || tgt == "" {
+			continue
+		}
+		clause := imp.ImportClause.AsImportClause()
+		if clause == nil {
+			continue
+		}
+		nb := clause.NamedBindings
+		if nb == nil || nb.Kind != ast.KindNamedImports {
+			continue
+		}
+		ni := nb.AsNamedImports()
+		if ni == nil || ni.Elements == nil {
+			continue
+		}
+		for _, n := range ni.Elements.Nodes {
+			if n == nil || n.Kind != ast.KindImportSpecifier {
+				continue
+			}
+			sp := n.AsImportSpecifier()
+			nm := n.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			name := nm.Text()
+			remote := name
+			if sp.PropertyName != nil {
+				remote = sp.PropertyName.Text()
+			}
+			if local[name] {
+				continue
+			}
+			if _, dup := topConsts[name]; dup {
+				continue
+			}
+			ktgt := tgt
+			if _, ok := link.constHarvests[ktgt][remote]; !ok {
+				if st2, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+					_, ok := link.constHarvests[t][r]
+					return ok
+				}); ok {
+					ktgt = st2
+				}
+			}
+			if ch, ok := link.constHarvests[ktgt][remote]; ok {
+				topConsts[name] = ch.text
+				if ch.isStr {
+					topStr[name] = true
+				}
+			}
+		}
+	}
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -2030,6 +2141,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
+	// Cross-file const folding (JEV early_const_seed 1.0): seed imported
+	// folded scalars BEFORE the top-level fold loop, so consts defined
+	// via imported values (e.g. PREFS_KEY from STORAGE_PREFIX) fold in
+	// loop 1 exactly like same-file consts. Hook C-const below keeps
+	// seeding the same values for function-body scopes (local wins).
+	saPreseedImportedConsts(sf, topConsts, topStr, link)
 	handledTop := map[*ast.Node]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 槽绑定声明无码（封存 tryModState:618-635；注册期拒因已落袋，此处只消费）。
