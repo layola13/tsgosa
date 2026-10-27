@@ -3071,6 +3071,16 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, aliasOf map
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		// par_k244: record the field type node (mirroring
+		// saSynthAnonLayoutAlias). Without fdefs, the forward-fixup pass
+		// cannot upgrade fields referencing imported interfaces, and the
+		// empty-Record gate/materializer arms cannot see the Record type.
+		if pd.Type != nil {
+			if def.fdefs == nil {
+				def.fdefs = map[string]*ast.TypeNode{}
+			}
+			def.fdefs[fn.Text()] = pd.Type
+		}
 		if m.QuestionToken() != nil {
 			if def.fopt == nil {
 				def.fopt = map[string]bool{}
@@ -3691,12 +3701,29 @@ func saLitFieldKind(init *ast.Node, scope *saScope) string {
 
 // saMatchWantIface 注解优先直命中（名在表、键集命中（缺键全可选）即用；
 // 其余一律nil 交既有匹配门，拒因文案零变）。
+// saWantKeySubset reports whether every literal key exists in the layout.
+// Unlike saWantKeyMatch it does not require non-optional fields to be
+// present: the materializer zero-fills missing fields, so a partial
+// literal (e.g. engine: { phase: "idle" } with extra Engine fields) still
+// lowers correctly. Extra keys still fail.
+func saWantKeySubset(def *saClassDef, keys []string) bool {
+	if def == nil || !def.isIface {
+		return false
+	}
+	for _, k := range keys {
+		if _, has := def.offsets[k]; !has {
+			return false
+		}
+	}
+	return true
+}
+
 func saMatchWantIface(want string, keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
 	if want == "" {
 		return nil, ""
 	}
 	def, ok := classes[want]
-	if !ok || def == nil || !def.isIface || !saWantKeyMatch(def, keys) {
+	if !ok || def == nil || !def.isIface || !saWantKeySubset(def, keys) {
 		return nil, ""
 	}
 	return def, ""
@@ -4176,6 +4203,128 @@ func saTopObjNullLayout(vd *ast.VariableDeclaration, classes map[string]*saClass
 // 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
 // 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
 // 方法余形整句不收，沿旧 kind244 门；788）。
+// saTopObjAnnotPropOK reports whether one annotated-interface field value is
+// claimable as a topObj snapshot field (JEV extend_annotated_obj 0.97):
+// scalar literals keep the old i32/str rules; null/undefined stores as the 0
+// handle in any ptr/i32 slot (str/i32 arms already emit 0, the inst arm gains
+// a null case below, jsval boxes null); a nested object literal is allowed
+// only for an inst field with a recorded sub layout whose key set matches and
+// whose own fields pass this same check (depth-capped); an array literal is
+// allowed only for an arr field with scalar-or-empty elements; an empty object
+// literal is allowed only for a Record-typed arr field (the empty-map arm in
+// saLowerObjectLiteral). Float literals stay refused: interface number fields
+// are i32 slots. Anything else (identifiers, calls, spreads, shorthand) keeps
+// the old refusal, so a claim here always has a materialization path.
+func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, depth int) bool {
+	if finit == nil || def == nil {
+		return false
+	}
+	if _, iok := saTopArrElemText(finit); iok {
+		return fk == "i32" || fk == "bool"
+	}
+	if _, sok := saTopArrStrText(finit); sok {
+		return fk == "str"
+	}
+	if finit.Kind == ast.KindNullKeyword || finit.Kind == ast.KindUndefinedKeyword {
+		switch fk {
+		case "str", "i32", "bool", "inst", "arr", "jsval":
+			return true
+		}
+		return false
+	}
+	if finit.Kind == ast.KindArrayLiteralExpression {
+		if fk != "arr" {
+			return false
+		}
+		al := finit.AsArrayLiteralExpression()
+		if al == nil || al.Elements == nil {
+			return true
+		}
+		for _, el := range al.Elements.Nodes {
+			if el == nil {
+				return false
+			}
+			if _, ok := saTopArrElemText(el); ok {
+				continue
+			}
+			if _, ok := saTopArrStrText(el); ok {
+				continue
+			}
+			if el.Kind == ast.KindTrueKeyword || el.Kind == ast.KindFalseKeyword {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	if finit.Kind == ast.KindObjectLiteralExpression {
+		if fk == "arr" {
+			ol := finit.AsObjectLiteralExpression()
+			if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) != 0 {
+				return false
+			}
+			if fdef, ok := def.fdefs[fname]; ok && fdef != nil {
+				if _, ok := saRecordValueKind(fdef, classes, aliasOf); ok {
+					return true
+				}
+				// JEV synth_alias_layout: an empty {} claims as an empty
+				// map even when the value kind is unparseable (no value
+				// kind is needed to materialize an empty map). The
+				// materializer arm mirrors this check.
+				if fdef.Kind == ast.KindTypeReference {
+					if ref := fdef.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+						(ref.TypeName.Text() == "Record" || ref.TypeName.Text() == "Map") {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		if fk != "inst" || depth >= 8 {
+			return false
+		}
+		subName, ok := def.fsub[fname]
+		if !ok || subName == "" {
+			return false
+		}
+		sub, ok := classes[subName]
+		if !ok || sub == nil {
+			return false
+		}
+		ol := finit.AsObjectLiteralExpression()
+		if ol == nil || ol.Properties == nil {
+			return false
+		}
+		var keys []string
+		for _, p := range ol.Properties.Nodes {
+			if p == nil || p.Kind != ast.KindPropertyAssignment {
+				return false
+			}
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return false
+			}
+			sfk, ok := sub.fkinds[fn]
+			if !ok {
+				return false
+			}
+			if !saTopObjAnnotPropOK(p.AsPropertyAssignment().Initializer, sfk, fn, sub, classes, aliasOf, depth+1) {
+				return false
+			}
+			keys = append(keys, fn)
+		}
+		// Subset acceptance: every present key was validated above, and
+		// missing sub-fields zero-fill on materialization (saLowerObjectLiteral
+		// defaults), matching the top-level gate, which iterates literal
+		// properties only. saWantKeyMatch would additionally require every
+		// non-optional sub-field to be present, which the materializer does
+		// not require (e.g. engine: { phase: "idle" } with extra Engine fields).
+		_ = keys
+		return true
+	}
+	return false
+}
+
 func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode) (map[string]saTopObj, map[*ast.Node]bool) {
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
@@ -4290,26 +4439,12 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					break
 				}
 				finit := p.AsPropertyAssignment().Initializer
-				litKind := ""
-				if _, iok := saTopArrElemText(finit); iok {
-					litKind = "i32"
-				} else if _, sok := saTopArrStrText(finit); sok {
-					litKind = "str"
-				} else {
-					propOk = false
-					break
-				}
 				fk, ok := def.fkinds[fname]
 				if !ok {
 					propOk = false
 					break
 				}
-				if litKind == "i32" {
-					if fk != "i32" && fk != "bool" {
-						propOk = false
-						break
-					}
-				} else if fk != "str" {
+				if !saTopObjAnnotPropOK(finit, fk, fname, def, classes, aliasOf, 0) {
 					propOk = false
 					break
 				}
@@ -5576,16 +5711,28 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
 				if sub := o.init.AsObjectLiteralExpression(); sub != nil && sub.Properties != nil && len(sub.Properties.Nodes) == 0 {
 					if fdef, ok := def.fdefs[o.fname]; ok && fdef != nil {
-						if _, ok := saRecordValueKind(fdef, scope.classes, scope.aliasOf); ok {
-							mh, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
-							if msg != "" {
-								return "", "", msg
+						if _, ok := saRecordValueKind(fdef, scope.classes, scope.aliasOf); !ok {
+							// Mirror the gate relaxation: an empty {} for a
+							// direct Record/Map field materializes as an empty
+							// map even without a parseable value kind.
+							if fdef.Kind != ast.KindTypeReference {
+								goto notEmptyMap
 							}
-							saOwnTemp(scope, mh)
-							w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
-							continue
+							ref := fdef.AsTypeReferenceNode()
+							if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+								(ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map") {
+								goto notEmptyMap
+							}
 						}
+						mh, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", "", msg
+						}
+						saOwnTemp(scope, mh)
+						w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
+						continue
 					}
+				notEmptyMap:
 				}
 			}
 		}
@@ -5632,6 +5779,10 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			sub, ok := def.fsub[o.fname]
 			if !ok {
 				return "", "", "nested field " + o.fname + " has no recorded sub layout"
+			}
+			if o.init != nil && (o.init.Kind == ast.KindNullKeyword || o.init.Kind == ast.KindUndefinedKeyword) {
+				w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[o.fname]))
+				continue
 			}
 			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
 				v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)

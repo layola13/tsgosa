@@ -2458,9 +2458,109 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 	}
 	init := vd.Initializer
 	if init.Kind != ast.KindArrowFunction && init.Kind != ast.KindFunctionExpression {
+		// memo(...) wrapper (JEV unwrap_memo 0.81): a single-argument call
+		// to the plain `memo` identifier whose argument is an arrow function
+		// or function expression unwraps to that inner function, which the
+		// existing arrow-const path emits exactly like a plain function
+		// const. Identifier arguments (alias support) and forwardRef
+		// arguments keep refusing.
+		if init.Kind == ast.KindCallExpression {
+			if ce := init.AsCallExpression(); ce != nil && ce.Expression != nil &&
+				ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "memo" &&
+				ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 && len(ce.Arguments.Nodes) <= 2 && ce.Arguments.Nodes[0] != nil {
+				// JEV unwrap_memo_2arg 0.95: a second (comparison) argument is
+				// ignored; it never affects the component's computed values.
+				inner := saUnwrapTransparent(ce.Arguments.Nodes[0])
+				if inner != nil &&
+					(inner.Kind == ast.KindArrowFunction || inner.Kind == ast.KindFunctionExpression) {
+					return nm.Text(), inner, true
+				}
+				// JEV unwrap_forwardref 0.86: memo(forwardRef(inner)) unwraps
+				// both wrappers to the inner function.
+				if inner != nil && inner.Kind == ast.KindCallExpression {
+					if fce := inner.AsCallExpression(); fce != nil && fce.Expression != nil &&
+						fce.Expression.Kind == ast.KindIdentifier && fce.Expression.Text() == "forwardRef" &&
+						fce.Arguments != nil && len(fce.Arguments.Nodes) >= 1 && fce.Arguments.Nodes[0] != nil {
+						if fn := saUnwrapTransparent(fce.Arguments.Nodes[0]); fn != nil &&
+							(fn.Kind == ast.KindArrowFunction || fn.Kind == ast.KindFunctionExpression) {
+							return nm.Text(), fn, true
+						}
+					}
+				}
+			}
+		}
 		return "", nil, false
 	}
 	return nm.Text(), init, true
+}
+
+// saTopFnAlias reports whether st is a top-level function alias: a
+// single-declarator var statement whose initializer (transparently
+// unwrapped) is an Identifier naming a funcs entry, or a memo(...) call
+// (1-2 args, compare ignored) around such an Identifier. JEV
+// alias_funcs_table 0.95: the alias is recorded in the file's function
+// table with the target's signature and emits no body. Cross-file export
+// linking stays out of this claim (no harvest entry). Guards: alias !=
+// target, alias not already in funcs, alias never assigned in the file,
+// and the name `main` is excluded (entry-point status must not be
+// silently lost).
+func saTopFnAlias(st *ast.Node, funcs map[string]saFuncSig, assigned map[string]bool) (string, string, bool) {
+	if st.Kind != ast.KindVariableStatement {
+		return "", "", false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return "", "", false
+	}
+	dl := vs.DeclarationList.AsVariableDeclarationList()
+	if dl == nil || len(dl.Declarations.Nodes) != 1 {
+		return "", "", false
+	}
+	d := dl.Declarations.Nodes[0]
+	vd := d.AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return "", "", false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return "", "", false
+	}
+	alias := nm.Text()
+	if alias == "" || alias == "main" || assigned[alias] {
+		return "", "", false
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil {
+		return "", "", false
+	}
+	target := ""
+	switch {
+	case init.Kind == ast.KindIdentifier:
+		target = init.Text()
+	case init.Kind == ast.KindCallExpression:
+		ce := init.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier || ce.Expression.Text() != "memo" ||
+			ce.Arguments == nil || len(ce.Arguments.Nodes) < 1 || len(ce.Arguments.Nodes) > 2 || ce.Arguments.Nodes[0] == nil {
+			return "", "", false
+		}
+		arg := saUnwrapTransparent(ce.Arguments.Nodes[0])
+		if arg == nil || arg.Kind != ast.KindIdentifier {
+			return "", "", false
+		}
+		target = arg.Text()
+	default:
+		return "", "", false
+	}
+	if target == "" || target == alias {
+		return "", "", false
+	}
+	if _, ok := funcs[target]; !ok {
+		return "", "", false
+	}
+	if _, dup := funcs[alias]; dup {
+		return "", "", false
+	}
+	return alias, target, true
 }
 
 // saTopRegexPrescan 收顶层 const 正则快照（名→原始模式/旗标；整句全为

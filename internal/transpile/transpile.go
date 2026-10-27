@@ -785,6 +785,68 @@ func saSeedTopLayouts(link *saFileLink, tgt string, roots ...string) bool {
 	return true
 }
 
+// saSeedClassClosure transitively seeds nested-interface layouts for
+// imported classes into link.classSeed, so hook C-class merges the full
+// layout closure into the importer's classes table. A named type import
+// seeds only the named class; without its fsub closure, an annotated
+// topObj const in the importer cannot validate or materialize nested
+// fields (real case: imported ClientState with engine/tooling
+// sub-layouts, which the importer never imports by name). Only names
+// absent from classSeed are added (local-wins preserved), and a
+// sub-layout seeds only if exported or synthesized (same gate as
+// saSeedTopLayouts). Sub-layouts resolve across all harvested targets in
+// sorted target order, so the choice is deterministic; the defining file
+// is usually the parent's own file, but the seed carries no target.
+// Cycle-guarded via seen.
+func saSeedClassClosure(link *saFileLink) {
+	if link == nil || len(link.classSeed) == 0 || len(link.classHarvests) == 0 {
+		return
+	}
+	tgts := make([]string, 0, len(link.classHarvests))
+	for t := range link.classHarvests {
+		tgts = append(tgts, t)
+	}
+	sort.Strings(tgts)
+	seen := map[string]bool{}
+	queue := []string{}
+	for name, def := range link.classSeed {
+		seen[name] = true
+		if def != nil {
+			for _, sub := range def.fsub {
+				queue = append(queue, sub)
+			}
+		}
+	}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, dup := link.classSeed[name]; dup {
+			continue
+		}
+		var found *saClassDef
+		for _, t := range tgts {
+			if ch, ok := link.classHarvests[t][name]; ok && ch.def != nil && (ch.exported || ch.def.isSynth) {
+				found = ch.def
+				break
+			}
+		}
+		if found == nil {
+			continue
+		}
+		if link.classSeed == nil {
+			link.classSeed = map[string]*saClassDef{}
+		}
+		link.classSeed[name] = found
+		for _, sub := range found.fsub {
+			queue = append(queue, sub)
+		}
+	}
+}
+
 func saProgChase(link *saFileLink, tgt, remote string, seen map[string]bool) (string, saFuncSig, bool) {
 	key := tgt + "\x00" + remote
 	if seen[key] {
@@ -2455,6 +2517,32 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 跨文件 heritage 预播种（导入类布局须在本地记录期前可见；单文件 link
 	// 空零行为变；形状证据见 saPreseedImportedClasses）。
 	saPreseedImportedClasses(sf, classes, link)
+	// par_k244: early import class seeding, before prescan-1. Imported
+	// interfaces were absent from classes until hook C-class, which runs
+	// after prescan-2c; worse, alias recording itself needs them (an alias
+	// field typed with an imported interface recorded arr, and the
+	// forward-fixup could not upgrade it). Bind imports early (throwaway
+	// diagnostics; prescan-zero re-binds with the real slices and every
+	// seed write is dup-guarded), close the layout closure, and merge
+	// classSeed into classes with local-wins. Only class defs are merged
+	// here; value merging still happens at hook C unchanged.
+	if link != nil {
+		var ignR, ignW []SARefusal
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st != nil && st.Kind == ast.KindImportDeclaration {
+				saBindProgImports(st, link, pos, &ignR, &ignW)
+			}
+		}
+		saSeedClassClosure(link)
+		for local, def := range link.classSeed {
+			if def == nil {
+				continue
+			}
+			if _, dup := classes[local]; !dup {
+				classes[local] = def
+			}
+		}
+	}
 	saPreseedImportedAliases(sf, aliasOf, link)
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
@@ -3058,6 +3146,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			handledTop[st] = true
 		}
 	}
+	// par_k244: seed the transitive nested-layout closure for imported
+	// classes before hook C-class merges classSeed (see saSeedClassClosure).
+	saSeedClassClosure(link)
 	// Program hook C: seed qualified signatures into this file's table.
 	if link != nil {
 		for q, sig := range link.seed {
@@ -3400,6 +3491,61 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
 			if handledTop[st] {
+				continue
+			}
+			// JEV alias_funcs_table 0.95: identifier-alias consts (incl.
+			// memo(id)) record the target's signature under the alias and
+			// emit a thin forwarder body, so calls to the alias resolve to a
+			// declared function. Export linking stays out (no harvest entry).
+			if alias, target, ok := saTopFnAlias(st, funcs, assigned); ok {
+				tsig := funcs[target]
+				if len(tsig.arrowCaps) > 0 || tsig.arrowThis {
+					ln, col := pos(st.Pos())
+					refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "function alias to a capture-carrying arrow const is not lowerable"})
+					continue
+				}
+				funcs[alias] = tsig
+				emitted[alias] = true
+				prefix := saLinkDefPrefix(link)
+				callee := target
+				if q, ok := saLinkResolveMap(link)[target]; ok {
+					callee = q
+				} else if prefix != "" {
+					callee = prefix + target
+				}
+				var pn, pl []string
+				for i := 0; i < tsig.params; i++ {
+					k := "ptr"
+					if i < len(tsig.paramKinds) {
+						k = saSigParamType(tsig.paramKinds[i])
+					}
+					pn = append(pn, fmt.Sprintf("p%d", i))
+					pl = append(pl, fmt.Sprintf("p%d: %s", i, k))
+				}
+				w.Write("@" + prefix + alias + "(" + strings.Join(pl, ", ") + ")")
+				if !tsig.isVoid {
+					w.Write(saSigRetSuffix(tsig.retKind))
+				}
+				w.Write(":\n")
+				args := strings.Join(pn, ", ")
+				retT := ""
+				if tsig.isVoid {
+					w.Write("  call @" + callee + "(" + args + ")\n")
+				} else {
+					retT = fmt.Sprintf("t_%d", nextTemp)
+					nextTemp++
+					w.Write("  " + retT + " = call @" + callee + "(" + args + ")\n")
+				}
+				for _, p := range pn {
+					w.Write("  !" + p + "\n")
+				}
+				if retT != "" {
+					w.Write("  ret " + retT + "\n")
+				} else {
+					// Void bodies need an explicit terminator (sa check
+					// FallthroughForbidden otherwise); bare ret ends a void body.
+					w.Write("  ret\n")
+				}
 				continue
 			}
 			// `import x = require()` 无模块解析底座，定位拒收（禁通用 kind 门）。

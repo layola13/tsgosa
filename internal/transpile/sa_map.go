@@ -880,6 +880,39 @@ func saTopMapValueKindA(t *ast.TypeNode, aliases map[string]*ast.TypeNode) (stri
 		return "i32", true
 	case ast.KindBooleanKeyword:
 		return "i32", true
+	case ast.KindParenthesizedType:
+		if pn := t.AsParenthesizedTypeNode(); pn != nil && pn.Type != nil {
+			return saTopMapValueKindA(pn.Type, aliases)
+		}
+		return "", false
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false
+		}
+		var base *ast.TypeNode
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false
+			}
+			if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if m.Kind == ast.KindLiteralType {
+				if lit := m.AsLiteralTypeNode(); lit != nil && lit.Literal != nil &&
+					(lit.Literal.Kind == ast.KindNullKeyword || lit.Literal.Kind == ast.KindUndefinedKeyword) {
+					continue
+				}
+			}
+			if base != nil {
+				return "", false
+			}
+			base = m
+		}
+		if base == nil {
+			return "", false
+		}
+		return saTopMapValueKindA(base, aliases)
 	case ast.KindTypeReference:
 		ref := t.AsTypeReferenceNode()
 		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
@@ -1198,6 +1231,36 @@ func saTopMapMutated(stmts []*ast.Node, name string) bool {
 
 // saTopMapPrescan 收顶层 const Record/Map 字面量快照（名→快照；
 // 导出形不收；同语句内先声明者可作后声明者的嵌套值）。
+// saTopMapUnwrapAnnot strips one Readonly<> or Partial<> wrapper around a
+// Record/Map annotation, reporting whether the wrapper was Partial (JEV
+// unwrap_record_wraps: readonly is type-level only; Partial-empty literals
+// claim as empty topMaps, non-empty Partial literals keep refusing).
+func saTopMapUnwrapAnnot(t *ast.TypeNode) (*ast.TypeNode, bool) {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return t, false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return t, false
+	}
+	if ref.TypeName.Text() != "Readonly" && ref.TypeName.Text() != "Partial" {
+		return t, false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+		return t, false
+	}
+	inner := ref.TypeArguments.Nodes[0]
+	if inner == nil || inner.Kind != ast.KindTypeReference {
+		return t, false
+	}
+	iref := inner.AsTypeReferenceNode()
+	if iref == nil || iref.TypeName == nil || iref.TypeName.Kind != ast.KindIdentifier ||
+		(iref.TypeName.Text() != "Record" && iref.TypeName.Text() != "Map") {
+		return t, false
+	}
+	return inner, ref.TypeName.Text() == "Partial"
+}
+
 func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLink) (map[string]saTopMap, map[*ast.Node]bool) {
 	aliases := map[string]*ast.TypeNode{}
 	for _, st := range stmts {
@@ -1353,11 +1416,22 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 			// 注解须先验为 TypeReference（内联对象注解如 shared
 			// SA_VM_BUN_PROFILE_GROUPS 曾致 AsTypeReferenceNode 崩溃；
 			// 旧导出跳过曾偶然遮住它；非 Record/Map 注解沿旧门拒）。
-			if vd.Type == nil || vd.Type.Kind != ast.KindTypeReference {
+			if vd.Type == nil {
 				okAll = false
 				break
 			}
-			ref := vd.Type.AsTypeReferenceNode()
+			unwrapType, wasPartial := saTopMapUnwrapAnnot(vd.Type)
+			if unwrapType == nil || unwrapType.Kind != ast.KindTypeReference {
+				okAll = false
+				break
+			}
+			if wasPartial {
+				if ol2 := init.AsObjectLiteralExpression(); ol2 == nil || ol2.Properties == nil || len(ol2.Properties.Nodes) != 0 {
+					okAll = false
+					break
+				}
+			}
+			ref := unwrapType.AsTypeReferenceNode()
 			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || (ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map") {
 				okAll = false
 				break
