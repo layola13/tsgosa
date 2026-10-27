@@ -932,6 +932,37 @@ func saProgConstChase(link *saFileLink, tgt, remote string, seen map[string]bool
 	return false
 }
 
+// saProgConstReexpTarget follows NAMED re-export edges only (no star
+// edges; 3_relesc JEV const_through_named_reexp 0.86) from (tgt, remote)
+// to the defining file and name, cycle-guarded. It mirrors saProgChase
+// but resolves to a file/name pair for const/snapshot lookup instead of
+// a qualified callee. ok=false when no named edge was followed at all
+// (direct lookups already failed then) or on a cycle/malformed edge.
+func saProgConstReexpTarget(link *saFileLink, tgt, remote string) (string, string, bool) {
+	if link == nil {
+		return "", "", false
+	}
+	seen := map[string]bool{}
+	followed := false
+	for {
+		key := tgt + "\x00" + remote
+		if seen[key] {
+			return "", "", false
+		}
+		seen[key] = true
+		edge, ok := link.reexps[tgt][remote]
+		if !ok {
+			return tgt, remote, followed
+		}
+		parts := strings.SplitN(edge, "\x00", 2)
+		if len(parts) != 2 {
+			return "", "", false
+		}
+		tgt, remote = parts[0], parts[1]
+		followed = true
+	}
+}
+
 // saProgOwnConst reports whether an exported top const of THIS file (folded
 // scalar in constHarvest, or claimed array/object/regex snapshot in
 // topConstHarvest) bears the name; used by the local-list claim only, where
@@ -2508,6 +2539,62 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			}); ok {
 				// (par_notexp) star 转发顶层 Map 快照（同上）。
 				if claim, ok := link.topMapHarvests[starTgt][remote]; ok {
+					if link.topMapSeed == nil {
+						link.topMapSeed = map[string]saTopMap{}
+					}
+					link.topMapSeed[local] = claim
+					continue
+				}
+			}
+			// (3_relesc) Const/snapshot through named re-exports (JEV
+			// const_through_named_reexp 0.86; scope plus_top_snapshots
+			// 0.67 vs 0.33, conf 0.34 modest plurality): a folded scalar
+			// or top snapshot imported through a re-exporting barrel
+			// binds from the defining file's harvests. Named edges only
+			// (star consts already bind via the direct block's
+			// saProgStarTarget fallback); direct harvests above keep
+			// precedence (this block runs last before the shim
+			// fallback), and a missing layout refuses loudly via the
+			// saSeedTopLayouts gate (no seed on false, falls through
+			// to the refusal below -- never a silent empty handle).
+			if dtgt, dremote, ok := saProgConstReexpTarget(link, tgt, remote); ok {
+				if ch, ok := link.constHarvests[dtgt][dremote]; ok {
+					if link.constSeed == nil {
+						link.constSeed = map[string]saProgConst{}
+					}
+					link.constSeed[local] = ch
+					continue
+				}
+				if claim, ok := link.topArrHarvests[dtgt][dremote]; ok {
+					if saSeedTopLayouts(link, dtgt, claim.layout) {
+						if link.topArrSeed == nil {
+							link.topArrSeed = map[string]saTopArr{}
+						}
+						link.topArrSeed[local] = claim
+						continue
+					}
+				}
+				if claim, ok := link.topObjHarvests[dtgt][dremote]; ok {
+					roots := []string{claim.layout}
+					for _, l := range claim.arrLayouts {
+						roots = append(roots, l)
+					}
+					if saSeedTopLayouts(link, dtgt, roots...) {
+						if link.topObjSeed == nil {
+							link.topObjSeed = map[string]saTopObj{}
+						}
+						link.topObjSeed[local] = claim
+						continue
+					}
+				}
+				if claim, ok := link.topRegexHarvests[dtgt][dremote]; ok {
+					if link.topRegexSeed == nil {
+						link.topRegexSeed = map[string]saTopRegex{}
+					}
+					link.topRegexSeed[local] = claim
+					continue
+				}
+				if claim, ok := link.topMapHarvests[dtgt][dremote]; ok {
 					if link.topMapSeed == nil {
 						link.topMapSeed = map[string]saTopMap{}
 					}
