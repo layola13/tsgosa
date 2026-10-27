@@ -8982,6 +8982,21 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 				} else if elemLayout != "" {
 					bindKind = "inst:" + elemLayout
 				}
+				if bindKind == "" {
+					// 2b_tmpl: unknown-element receivers (e.g. alias
+					// element types with no recorded layout, duck
+					// ApiMessage[]) never bind the callback parameter,
+					// so the str test below is skipped and template
+					// bodies fall into the i32 callback path. Template
+					// / string-literal bodies are str-valued regardless
+					// of binding, so route them str here; all other
+					// bodies keep the existing i32 path.
+					if be := cb.Body(); be != nil && be.Kind != ast.KindBlock {
+						if u := saUnwrapTransparent(be); u != nil && (u.Kind == ast.KindTemplateExpression || u.Kind == ast.KindStringLiteral || u.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+							mapStr = true
+						}
+					}
+				}
 				if bindKind != "" {
 					bodyExpr := cb.Body()
 					// Multi-statement blocks (JEV extend_mapstr_unwrap 0.82):

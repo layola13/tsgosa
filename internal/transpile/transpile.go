@@ -2940,7 +2940,14 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				// 无注解值函数 i32（表达式体或有形参；与发射位同规则；
 				// 封存 lowerArrowBinding value_fn:1099-1117；仅无参块体
 				// 走 checker（async 恒 void 缺省）。
-				retKind, isVoid = "i32", false
+				// 2b_tmpl: a template/string-literal expression body is
+				// str-valued regardless of bindings, so it returns
+				// string (duck stream.ts enc arrow); other bodies keep i32.
+				if saArrowStrBody(arrow) {
+					retKind, isVoid = "string", false
+				} else {
+					retKind, isVoid = "i32", false
+				}
 			} else if k, v, ok := saPrescanRet(nil, arrow, tcx, classes, aliasOf); ok {
 				retKind = k
 				isVoid = v
@@ -5282,6 +5289,25 @@ func saAnnotKind(t *ast.TypeNode) (string, bool) {
 	case ast.KindStringKeyword:
 		// 字符串为 16 字节 {ptr,len} 句柄（证据：封存 tString:141）。
 		return "str", true
+	case ast.KindLiteralType:
+		// 2b_tmpl (JEV plus_lit_erasure): string-literal types erase to
+		// str, numeric literals to i32, boolean literals to bool, so
+		// interface/class fields typed with a literal (duck
+		// ChatChunk.object: "chat.completion.chunk") get a str slot
+		// instead of falling through to the ptr-handle slot; value
+		// equality for statically-known literals is checked at
+		// saLowerObjectLiteral. Null literals keep refusing (no kind).
+		if lt := t.AsLiteralTypeNode(); lt != nil && lt.Literal != nil {
+			switch lt.Literal.Kind {
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				return "str", true
+			case ast.KindNumericLiteral:
+				return "i32", true
+			case ast.KindTrueKeyword, ast.KindFalseKeyword:
+				return "bool", true
+			}
+		}
+		return "", false
 	case ast.KindUnionType:
 		return saUnionScalarKind(t.AsNode())
 	case ast.KindArrayType:
@@ -5455,6 +5481,20 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 		return "boolean", true
 	case ast.KindStringKeyword:
 		return "string", true
+	case ast.KindLiteralType:
+		// 2b_tmpl: bare literal return annotations erase like
+		// saAnnotKind (string/number/boolean); null keeps refusing.
+		if lt := t.AsLiteralTypeNode(); lt != nil && lt.Literal != nil {
+			switch lt.Literal.Kind {
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				return "string", true
+			case ast.KindNumericLiteral:
+				return "number", true
+			case ast.KindTrueKeyword, ast.KindFalseKeyword:
+				return "boolean", true
+			}
+		}
+		return "", false
 	case ast.KindTemplateLiteralType:
 		// 模板字面量返回即串（上游实发 `-> ptr` 同形）。
 		return "string", true
