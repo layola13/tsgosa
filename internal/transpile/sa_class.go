@@ -1731,6 +1731,16 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 					return false
 				}
 			}
+			if pd.Type == nil {
+				// 2b_tmpl: an unannotated field whose initializer is a
+				// string literal (duck ToolSimulationStream.pending =
+				// "") is a str field, not the i32 default; finit
+				// lowering already has a str case (saLowerFieldInits).
+				// Other initializers keep the i32 default.
+				if init := saUnwrapTransparent(pd.Initializer); init != nil && (init.Kind == ast.KindStringLiteral || init.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					fkind = "str"
+				}
+			}
 			if pd.Initializer != nil && !ast.HasModifier(m, ast.ModifierFlagsStatic) {
 				// 实例字段初值登记（构造时基先派后、先于构造体落槽；ES2022
 				// class fields 语义，见 internal/transformers/estransforms/classfields.go）。
@@ -6987,6 +6997,28 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	}
 	if want != "" && def.name != want {
 		return "", "", "object literal does not match interface " + want
+	}
+	// 2b_tmpl (JEV plus_lit_erasure): a statically-known string
+	// literal value for a string-literal-typed field must equal the
+	// literal type; other values (identifiers, templates, calls)
+	// keep erasure semantics and are checked by kind only.
+	if def.fdefs != nil {
+		for _, o := range ops {
+			if o.fname == "" || o.init == nil {
+				continue
+			}
+			tn, ok := def.fdefs[o.fname]
+			if !ok || tn == nil || tn.Kind != ast.KindLiteralType {
+				continue
+			}
+			lit := tn.AsLiteralTypeNode()
+			if lit == nil || lit.Literal == nil || (lit.Literal.Kind != ast.KindStringLiteral && lit.Literal.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+				continue
+			}
+			if v := saUnwrapTransparent(o.init); v != nil && (v.Kind == ast.KindStringLiteral || v.Kind == ast.KindNoSubstitutionTemplateLiteral) && v.Text() != lit.Literal.Text() {
+				return "", "", "string literal field " + o.fname + " must be \"" + lit.Literal.Text() + "\""
+			}
+		}
 	}
 	h := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++

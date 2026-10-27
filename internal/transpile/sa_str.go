@@ -277,6 +277,16 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 	}
 	if ce.Expression.Kind == ast.KindIdentifier {
 		nm := ce.Expression.Text()
+		// 2b_tmpl: local arrows are recorded as fn:<gen> in types
+		// (saLowerLocalArrow); resolve through the alias like
+		// saCallRetKind does, so enc("...") calls from template-body
+		// arrows are recognized as string calls in string positions
+		// (duck stream.ts opts.write(enc(...))).
+		if k, ok := scope.types[nm]; ok && strings.HasPrefix(k, "fn:") {
+			if sig, ok := scope.funcs[strings.TrimPrefix(k, "fn:")]; ok {
+				return !sig.isVoid && sig.retKind == "string"
+			}
+		}
 		if nm == "String" {
 			return true
 		}

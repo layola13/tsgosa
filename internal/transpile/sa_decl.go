@@ -3786,6 +3786,25 @@ func saFoldNamespaceConsts(st *ast.Node, consts map[string]string, strs map[stri
 // （out-of-line 被调，与函数声明同形；形状证据：封存 tryTopLevelArrow:1015-1032
 // + lowerArrowBinding:1058-1098）。仅顶层无捕获口径：体引用未知名走既有求值
 // 大声拒；生成器/async 形大声拒；表达式体单值返回，无注解值体仍按函数同例拒。
+// saArrowStrBody reports whether an arrow/function-expression body is a
+// syntactically str-valued expression body (template literal, string
+// literal, or no-substitution template), after unwrapping transparent
+// wrappers (as/satisfies/parens/non-null/assertion). Used by the three
+// arrow signature sites (prescan 2b, saLowerArrowConst, saLowerLocalArrow)
+// so they stay in agreement: such bodies return string, not the i32
+// default for unannotated expression bodies.
+func saArrowStrBody(arrow *ast.Node) bool {
+	if arrow == nil {
+		return false
+	}
+	body := arrow.Body()
+	if body == nil {
+		return false
+	}
+	u := saUnwrapTransparent(body)
+	return u != nil && (u.Kind == ast.KindTemplateExpression || u.Kind == ast.KindStringLiteral || u.Kind == ast.KindNoSubstitutionTemplateLiteral)
+}
+
 func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
@@ -3827,7 +3846,13 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		// 无注解表达式体恒为值函数 i32（与局部 1457 行同规则；镜像上游
 		// value_fn 共用规则，封存 saemit.go:1099-1117；checker 回退 void
 		// 不得吞掉该规则）。
-		retKind, isVoid = "i32", false
+		// 2b_tmpl: template/string-literal bodies return string instead
+		// (must match prescan 2b and saLowerLocalArrow).
+		if saArrowStrBody(arrow) {
+			retKind, isVoid = "string", false
+		} else {
+			retKind, isVoid = "i32", false
+		}
 	} else if k, v, ok := saPrescanRet(nil, arrow, tcx, classes, aliasOf); ok {
 		retKind, isVoid = k, v
 	}
@@ -4191,7 +4216,13 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 			retKind, isVoid = k, k == "void"
 		}
 	} else if body.Kind != ast.KindBlock || len(params) > 0 {
-		retKind, isVoid = "i32", false
+		// 2b_tmpl: template/string-literal bodies return string instead
+		// (must match prescan 2b and saLowerArrowConst).
+		if saArrowStrBody(arrow) {
+			retKind, isVoid = "string", false
+		} else {
+			retKind, isVoid = "i32", false
+		}
 	} else if k, v, pok := saPrescanRet(nil, arrow, scope.tcx, scope.classes, scope.aliasOf); pok {
 		retKind, isVoid = k, v
 	}
