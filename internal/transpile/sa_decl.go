@@ -4190,7 +4190,7 @@ func saArrowStrBody(arrow *ast.Node) bool {
 	return u != nil && (u.Kind == ast.KindTemplateExpression || u.Kind == ast.KindStringLiteral || u.Kind == ast.KindNoSubstitutionTemplateLiteral)
 }
 
-func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
+func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topConstSeed map[string]string, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, pendingFns *[]string, arrowSeq *int, link *saFileLink) {
 	if arrow.Kind == ast.KindFunctionExpression {
 		if fe := arrow.AsFunctionExpression(); fe != nil && fe.AsteriskToken != nil {
 			ln, col := pos(arrow.Pos())
@@ -4260,7 +4260,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		return
 	}
 	linkPrefix, linkResolve := saLinkDefPrefix(link), saLinkResolveMap(link)
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topConstSeed: topConstSeed, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, aliasOf: aliasOf, imports: imports, importRemote: importRemote, pendingFns: pendingFns, arrowSeq: arrowSeq}
 	if scope.regexPat == nil {
 		scope.regexPat = map[string]string{}
 	}
