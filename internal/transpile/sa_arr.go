@@ -363,54 +363,58 @@ func saFindReceiverLayout(base *ast.Node, scope *saScope) (string, bool) {
 // (===/==/!==/!=) between a field of its first parameter and another
 // expression: (x) => x.field === other, or a block with a single return of
 // that. It returns the parameter name, field name, negation flag, the other
-// operand node, and true. The other operand must not be the parameter
-// itself (an element-handle comparison is not an equality find).
-func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
+// operand node, the ?? fallback node (nil for a bare field side), and true.
+// A (x.field ?? fallback) side is an equality find whose missing-field
+// value is the fallback (JEV unmask extend_eq_guard); the fallback must be
+// loop-invariant (saFindEqRhsHoistable), otherwise the guard fails. The
+// other operand must not be the parameter itself (an element-handle
+// comparison is not an equality find).
+func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, *ast.Node, bool) {
 	if cb == nil {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	params := cb.Parameters()
 	if len(params) < 1 {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	pd := params[0].AsParameterDeclaration()
 	if pd == nil {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	nm := pd.Name()
 	if nm == nil || nm.Kind != ast.KindIdentifier {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	paramName := nm.Text()
 	body := cb.Body()
 	if body == nil {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	expr := body
 	if body.Kind == ast.KindBlock {
 		bd := body.AsBlock()
 		if bd == nil || bd.Statements == nil || len(bd.Statements.Nodes) != 1 {
-			return "", "", false, nil, false
+			return "", "", false, nil, nil, false
 		}
 		if bd.Statements.Nodes[0].Kind != ast.KindReturnStatement {
-			return "", "", false, nil, false
+			return "", "", false, nil, nil, false
 		}
 		rs := bd.Statements.Nodes[0].AsReturnStatement()
 		if rs == nil || rs.Expression == nil {
-			return "", "", false, nil, false
+			return "", "", false, nil, nil, false
 		}
 		expr = rs.Expression
 	}
 	expr = saUnwrapTransparent(expr)
 	if expr == nil || expr.Kind != ast.KindBinaryExpression {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	be := expr.AsBinaryExpression()
 	if be == nil {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	opKind := saBinaryOpKind(be)
 	neg := false
@@ -420,34 +424,51 @@ func saFindEqGuard(cb *ast.Node) (string, string, bool, *ast.Node, bool) {
 	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
 		neg = true
 	default:
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	var fieldName string
 	var other *ast.Node
+	var fallback *ast.Node
 	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if su := saUnwrapTransparent(side); su != nil && su.Kind == ast.KindBinaryExpression {
+			if bq := su.AsBinaryExpression(); bq != nil && bq.OperatorToken != nil && bq.OperatorToken.Kind == ast.KindQuestionQuestionToken {
+				if lu := saUnwrapTransparent(bq.Left); lu != nil && lu.Kind == ast.KindPropertyAccessExpression {
+					pa := lu.AsPropertyAccessExpression()
+					if pa != nil && pa.QuestionDotToken == nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier &&
+						pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == paramName {
+						if fieldName != "" || bq.Right == nil || !saFindEqRhsHoistable(bq.Right, paramName) {
+							return "", "", false, nil, nil, false
+						}
+						fieldName = pa.Name().Text()
+						fallback = bq.Right
+						continue
+					}
+				}
+			}
+		}
 		if side != nil && side.Kind == ast.KindPropertyAccessExpression {
 			pa := side.AsPropertyAccessExpression()
 			if pa != nil && pa.QuestionDotToken == nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier &&
 				pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == paramName {
 				if fieldName != "" {
-					return "", "", false, nil, false
+					return "", "", false, nil, nil, false
 				}
 				fieldName = pa.Name().Text()
 				continue
 			}
 		}
 		if other != nil {
-			return "", "", false, nil, false
+			return "", "", false, nil, nil, false
 		}
 		other = side
 	}
 	if fieldName == "" || other == nil {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
 	if other.Kind == ast.KindIdentifier && other.Text() == paramName {
-		return "", "", false, nil, false
+		return "", "", false, nil, nil, false
 	}
-	return paramName, fieldName, neg, other, true
+	return paramName, fieldName, neg, other, fallback, true
 }
 
 // saOrDisjunct is one arm of a .find OR predicate (JEV inline_loop_or
@@ -6385,7 +6406,7 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		return "", false
 	}
 	if (m == "find" || m == "findLast") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
-		if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+		if _, _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
 			if layout, ok := saFindReceiverLayout(pa.Expression, scope); ok {
 				return "inst:" + layout, true
 			}
@@ -6395,7 +6416,7 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 		}
 	}
 	if (m == "findIndex" || m == "findLastIndex") && ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
-		if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+		if _, _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
 			if _, ok := saFindReceiverLayout(pa.Expression, scope); ok {
 				return "i32", true
 			}
@@ -8458,7 +8479,7 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return h, "arr", ""
 	case "find", "findIndex", "findLast", "findLastIndex":
-		if eqParam, eqField, eqNeg, eqOther, eqOk := saFindEqGuard(cb); eqOk {
+		if eqParam, eqField, eqNeg, eqOther, eqFallback, eqOk := saFindEqGuard(cb); eqOk {
 			// Equality find (JEV inline_loop_eq 0.98): inline loop over the
 			// element handles, loading the compared field from each element
 			// instance by layout offset. The generic callback path binds the
@@ -8480,6 +8501,9 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			if fkind != "str" && fkind != "i32" && fkind != "bool" {
 				return "", "", "find equality field kind not supported: " + fkind
 			}
+			if eqFallback != nil && fkind != "str" {
+				return "", "", "find equality ?? fallback needs a string field"
+			}
 			off, ok := def.offsets[eqField]
 			if !ok {
 				return "", "", "find equality field has no layout offset"
@@ -8497,6 +8521,14 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 					return "", "", msg
 				}
 				rhsHoisted, rhsHoistedOk = h, true
+			}
+			var fbHoisted string
+			if eqFallback != nil {
+				h, msg := saEvalStr(w, eqFallback, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				fbHoisted = h
 			}
 			slot := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
@@ -8568,20 +8600,50 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fz, fzL, fnzL))
 				// Missing (zero-filled) field handle: it equals only a
 				// zero right-hand side, never a live string; this also
-				// keeps ts_str_equals off a null handle.
+				// keeps ts_str_equals off a null handle. With a ?? fallback
+				// the missing field compares as the fallback instead.
 				w.Write(fmt.Sprintf("%s:\n", fzL))
-				eqv := fmt.Sprintf("t_%d", *nextTemp)
-				*nextTemp++
-				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
-				if eqNeg {
-					pz := fmt.Sprintf("t_%d", *nextTemp)
+				if eqFallback != nil {
+					fbz := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
-					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fbz, fbHoisted))
+					fbzL := fmt.Sprintf("L_feq_fbz_%d", *nextLabel)
+					*nextLabel++
+					fbnzL := fmt.Sprintf("L_feq_fbnz_%d", *nextLabel)
+					*nextLabel++
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fbz, fbzL, fbnzL))
+					w.Write(fmt.Sprintf("%s:\n", fbzL))
+					eqv := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
+					if eqNeg {
+						pz := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+						releaseRhs()
+						w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, hitL, nextL))
+					} else {
+						releaseRhs()
+						w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, hitL, nextL))
+					}
+					w.Write(fmt.Sprintf("%s:\n", fbnzL))
+					pred := saStringContentEq(w, fbHoisted, rhs, eqNeg, scope, nextTemp)
 					releaseRhs()
-					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, hitL, nextL))
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, hitL, nextL))
 				} else {
-					releaseRhs()
-					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, hitL, nextL))
+					eqv := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
+					if eqNeg {
+						pz := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+						releaseRhs()
+						w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, hitL, nextL))
+					} else {
+						releaseRhs()
+						w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, hitL, nextL))
+					}
 				}
 				w.Write(fmt.Sprintf("%s:\n", fnzL))
 				pred := saStringContentEq(w, fh, rhs, eqNeg, scope, nextTemp)
@@ -8629,6 +8691,9 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			w.Write(fmt.Sprintf("%s:\n", endL))
 			if rhsHoistedOk {
 				saReleaseOwnedTemp(w, scope, rhsHoisted)
+			}
+			if eqFallback != nil {
+				saReleaseOwnedTemp(w, scope, fbHoisted)
 			}
 			out := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
@@ -8954,7 +9019,10 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		saReleaseOwnedTemp(w, scope, recv)
 		return out, "i32", ""
 	case "some", "every":
-		if eqParam, eqField, eqNeg, eqOther, eqOk := saFindEqGuard(cb); eqOk {
+		if eqParam, eqField, eqNeg, eqOther, eqFallback, eqOk := saFindEqGuard(cb); eqOk {
+			if eqFallback != nil {
+				return "", "", "some/every equality ?? fallback is not lowerable yet"
+			}
 			// Equality some/every (JEV inline_loop_eq_some 1.0): the
 			// single-equality loop from the find branch, with boolean
 			// result semantics (some: true on first match; every: false

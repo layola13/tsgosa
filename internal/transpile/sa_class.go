@@ -1462,7 +1462,7 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 				if pa != nil && pa.Name() != nil && pa.QuestionDotToken == nil &&
 					(pa.Name().Text() == "find" || pa.Name().Text() == "findLast") &&
 					ce.Arguments != nil && len(ce.Arguments.Nodes) >= 1 {
-					if _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
+					if _, _, _, _, _, ok := saFindEqGuard(ce.Arguments.Nodes[0]); ok {
 						if _, ok := saFindReceiverLayout(pa.Expression, scope); ok {
 							return true
 						}
