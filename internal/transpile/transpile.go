@@ -2139,6 +2139,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned, topArrs)
 	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned, link)
+	topJSONs, topJSONStmts := saTopJSONPrescan(sf.AsSourceFile().Statements.Nodes, assigned, link)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
@@ -2177,6 +2178,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		// 顶层 const Record 快照声明无码（下标用点物化）。
 		if topMapStmts[st] {
+			handledTop[st] = true
+			continue
+		}
+		// 顶层 cast-JSON-import 快照声明无码（点读用点物化）。
+		if topJSONStmts[st] {
 			handledTop[st] = true
 			continue
 		}
@@ -2555,7 +2561,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
 					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
-					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 					restore()
 				}
 				continue
@@ -2620,7 +2626,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
@@ -2647,12 +2653,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 		saScopeLinkFill(escope, link)
 		if escope.regexPat == nil {
 			escope.regexPat = map[string]string{}
@@ -4336,6 +4342,7 @@ type saScope struct {
 	topRegex    map[string]saTopRegex // 顶层 const 正则快照（名→原始模式/旗标；用点编译）
 	topSets     map[string]saTopSet   // 顶层 const Set 快照（名→ new 表达式；.has 用点物化；变异/导出形不收）
 	topMaps     map[string]saTopMap   // 顶层 const Record 快照（名→字面量 + 值种；下标用点物化）
+	topJSONs    map[string]saTopJSON  // 顶层 cast-JSON-import 快照（名→ JSON 对象树；点读用点物化）
 	modVars     map[string]*saModState
 	thisSelf    string
 	thisClass   string
@@ -4563,7 +4570,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -4650,7 +4657,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve

@@ -3939,6 +3939,32 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			}
 			return t, ""
 		}
+		// 顶层 cast-JSON-import 快照点读 `J.k`（JEV nested_json_maps
+		// 0.79）：对象值用点物化为 jsval 值 map；叶值装箱为 jsval；
+		// 缺键与 `?.` 形沿旧门大声拒（禁把缺失读作空柄；与 map 方法
+		// 同名键沿顶层 Record 旧门拒）。
+		if tj, ok := saTopJSONLookup(scope, pa.Expression); ok {
+			if pa.QuestionDotToken != nil {
+				return "", "optional top JSON field reads are not lowerable"
+			}
+			val, ok := tj.tree[nm.Text()]
+			if !ok {
+				return "", "top JSON object has no field " + nm.Text()
+			}
+			if sub, isObj := val.(map[string]any); isObj {
+				slot, msg := saLowerTopJSONNested(w, sub, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return slot, ""
+			}
+			vh, msg := saLowerTopJSONValue(w, val, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			scope.types[vh] = "jsval"
+			return vh, ""
+		}
 		if k, ok := scope.types[pa.Expression.Text()]; ok && k == "map" {
 			recv := pa.Expression.Text()
 			scope.addImport("sa_std/btree_map.sa")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -1199,6 +1200,305 @@ func saLowerTopJSONMap(w printer.EmitTextWriter, jm map[string]string, scope *sa
 		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", slot, kh, vh))
 	}
 	return slot, ""
+}
+
+// saTopJSON 顶层 cast-JSON-import 快照（名→解析后 JSON 对象树；JEV
+// nested_json_maps 0.79：非导出 const，初始化器经透明解包为 .json
+// 默认导入标识符，文件顶层须为对象；点读时用点物化为 jsval 值
+// btree_map，嵌套对象递归物化后以 kind 4 装箱，数组逐元装箱后组装
+// jsval 元数组、以 kind 5 装箱；整体直读与缺键读沿旧门大声拒。
+type saTopJSON struct {
+	tree map[string]any
+}
+
+// saTopJSONLookup 查顶层 JSON 快照（标识符直指、无局部遮蔽；不落字）。
+func saTopJSONLookup(scope *saScope, e *ast.Node) (saTopJSON, bool) {
+	if e == nil || e.Kind != ast.KindIdentifier {
+		return saTopJSON{}, false
+	}
+	name := e.Text()
+	if _, shadowed := scope.types[name]; shadowed {
+		return saTopJSON{}, false
+	}
+	tj, ok := scope.topJSONs[name]
+	if !ok {
+		return saTopJSON{}, false
+	}
+	return tj, true
+}
+
+// saParseJSONObj 读 JSON 文件为对象树：顶层须为对象，否则不收。
+func saParseJSONObj(abs string) (map[string]any, bool) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, false
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// saTopJSONMutated 报告文件内任一语句是否变异给定名（map 方法形
+// .add/.delete/.clear/.set；或以该名为根的赋值左部，点读/下标皆算）。
+func saTopJSONMutated(stmts []*ast.Node, name string) bool {
+	mutated := false
+	var rootIs func(n *ast.Node) bool
+	rootIs = func(n *ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		switch n.Kind {
+		case ast.KindIdentifier:
+			return n.Text() == name
+		case ast.KindPropertyAccessExpression:
+			pa := n.AsPropertyAccessExpression()
+			return pa != nil && rootIs(pa.Expression)
+		case ast.KindElementAccessExpression:
+			ea := n.AsElementAccessExpression()
+			return ea != nil && rootIs(ea.Expression)
+		default:
+			return false
+		}
+	}
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || mutated {
+			return
+		}
+		if n.Kind == ast.KindPropertyAccessExpression {
+			pa := n.AsPropertyAccessExpression()
+			if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == name && pa.Name() != nil {
+				switch pa.Name().Text() {
+				case "add", "delete", "clear", "set":
+					mutated = true
+					return
+				}
+			}
+		}
+		if n.Kind == ast.KindBinaryExpression {
+			be := n.AsBinaryExpression()
+			if be != nil && be.Left != nil && rootIs(be.Left) {
+				switch saBinaryOpKind(be) {
+				case ast.KindEqualsToken, ast.KindPlusEqualsToken, ast.KindMinusEqualsToken, ast.KindAsteriskEqualsToken, ast.KindSlashEqualsToken, ast.KindPercentEqualsToken, ast.KindAmpersandEqualsToken, ast.KindBarEqualsToken, ast.KindCaretEqualsToken, ast.KindLessThanLessThanEqualsToken, ast.KindGreaterThanGreaterThanEqualsToken, ast.KindGreaterThanGreaterThanGreaterThanEqualsToken, ast.KindAsteriskAsteriskEqualsToken, ast.KindAmpersandAmpersandEqualsToken, ast.KindBarBarEqualsToken, ast.KindQuestionQuestionEqualsToken:
+					mutated = true
+					return
+				}
+			}
+		}
+		n.ForEachChild(func(child *ast.Node) bool {
+			if child != nil {
+				walk(child)
+			}
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+		if mutated {
+			return true
+		}
+	}
+	return false
+}
+
+// saTopJSONPrescan 认领顶层 cast-JSON-import const：非导出、const 或
+// 未赋值 let/var、初始化器经透明解包为 .json 默认导入标识符、文件
+// 解析为对象、文件内无变异；多声明须全认领，否则整句沿旧律拒。
+func saTopJSONPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLink) (map[string]saTopJSON, map[*ast.Node]bool) {
+	out := map[string]saTopJSON{}
+	claimed := map[*ast.Node]bool{}
+	imports := map[string]string{}
+	if link != nil && link.jsonOf != nil {
+		for _, st := range stmts {
+			if st == nil || st.Kind != ast.KindImportDeclaration {
+				continue
+			}
+			id := st.AsImportDeclaration()
+			if id == nil || id.ImportClause == nil {
+				continue
+			}
+			cl := id.ImportClause.AsImportClause()
+			if cl == nil || cl.IsTypeOnly() {
+				continue
+			}
+			nm := cl.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			abs, ok := link.jsonOf[saProgModuleSpec(st)]
+			if !ok || abs == "" {
+				continue
+			}
+			imports[nm.Text()] = abs
+		}
+	}
+	if len(imports) == 0 {
+		return out, claimed
+	}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		if ast.HasModifier(st, ast.ModifierFlagsExport) {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+			continue
+		}
+		isConst := vdl.AsNode().Flags&ast.NodeFlagsConst != 0
+		type pend struct {
+			name string
+			tree map[string]any
+		}
+		var pends []pend
+		okAll := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil {
+				okAll = false
+				break
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			name := nm.Text()
+			if _, dup := out[name]; dup {
+				okAll = false
+				break
+			}
+			if !isConst && assigned[name] {
+				okAll = false
+				break
+			}
+			init := saUnwrapTransparent(vd.Initializer)
+			if init == nil || init.Kind != ast.KindIdentifier {
+				okAll = false
+				break
+			}
+			abs, ok := imports[init.Text()]
+			if !ok {
+				okAll = false
+				break
+			}
+			tree, ok := saParseJSONObj(abs)
+			if !ok {
+				okAll = false
+				break
+			}
+			if saTopJSONMutated(stmts, name) {
+				okAll = false
+				break
+			}
+			pends = append(pends, pend{name: name, tree: tree})
+		}
+		if !okAll {
+			continue
+		}
+		for _, p := range pends {
+			out[p.name] = saTopJSON{tree: p.tree}
+		}
+		claimed[st] = true
+	}
+	return out, claimed
+}
+
+// saLowerTopJSONNested 用点物化 JSON 对象树为 jsval 值 btree_map（键
+// 排序保输出确定性；失败只返 msg，调用点定位拒，不静默丢值）。
+func saLowerTopJSONNested(w printer.EmitTextWriter, obj map[string]any, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	h, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("__topjson%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", slot, h))
+	saConsumeOwn(scope, h)
+	saDeclareOwned(scope, slot)
+	scope.types[slot] = "map"
+	saSetMapVal(scope, slot, "jsval")
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		kh := saLowerStringLiteral(w, k, scope, nextTemp)
+		vh, msg := saLowerTopJSONValue(w, obj[k], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", slot, kh, vh))
+	}
+	return slot, ""
+}
+
+// saLowerTopJSONValue 装箱单个 JSON 值：串 kind 1、数值 kind 2（f64）、
+// 布尔 kind 3、null kind 6、对象递归物化后 kind 4、数组逐元装箱组装后
+// kind 5；皆复用 sa_std ts_jsval 装箱 helper（禁内嵌装箱序列）。
+func saLowerTopJSONValue(w printer.EmitTextWriter, v any, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	switch t := v.(type) {
+	case string:
+		sh := saLowerStringLiteral(w, t, scope, nextTemp)
+		b := saBoxJsValStd(w, scope, "ptr", 1, sh, nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	case bool:
+		iv := "0"
+		if t {
+			iv = "1"
+		}
+		b := saBoxJsValStd(w, scope, "i32", 3, iv, nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	case nil:
+		b := saBoxJsValStd(w, scope, "ptr", 6, "0", nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	case float64:
+		lit := strconv.FormatFloat(t, 'g', -1, 64)
+		if !strings.ContainsAny(lit, ".eE") {
+			lit += ".0"
+		}
+		tmp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s\n", tmp, lit))
+		b := saBoxJsValStd(w, scope, "f64", 2, tmp, nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	case map[string]any:
+		sub, msg := saLowerTopJSONNested(w, t, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		b := saBoxJsValStd(w, scope, "ptr", 4, sub, nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	case []any:
+		var hs []string
+		for _, el := range t {
+			ev, msg := saLowerTopJSONValue(w, el, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			hs = append(hs, ev)
+		}
+		arr := saAssembleHandles(w, hs, scope, nextTemp)
+		saMarkArrJsVal(scope, arr)
+		b := saBoxJsValStd(w, scope, "ptr", 5, arr, nextTemp)
+		saOwnTemp(scope, b)
+		return b, ""
+	default:
+		return "", "nested JSON value is not lowerable"
+	}
 }
 
 // saParseJSONFlatStr 读 JSON 文件为扁平串表：顶层须为对象且值全为串；
