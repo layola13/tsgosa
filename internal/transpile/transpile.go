@@ -6977,7 +6977,19 @@ func saProgAdoptFileOutside(files map[string]string, parsed map[string]*ast.Sour
 		return false
 	}
 	files[c] = string(text)
-	abs := "/" + strings.TrimPrefix(c, "/")
+	// Display name for the parser: strip leading "../" segments. The raw
+	// "/../..." name panics inside parser.ParseSourceFile (verified with a
+	// debug build: files[c] was set, then the parse panicked, and the
+	// saLowerProgram recover aborted the whole adoption loop, leaving
+	// exactly one map-order-random outside file adopted per run). The map
+	// key stays the full "../..." key; only the parser display name is
+	// sanitized, and lowering reads source text from files[c], not from
+	// this name.
+	disp := c
+	for strings.HasPrefix(disp, "../") {
+		disp = disp[3:]
+	}
+	abs := "/" + disp
 	parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
 	return true
 }
@@ -7089,11 +7101,23 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 	// 64 walked files (apps/server has 92), which is why the outside file
 	// stayed out of the graph even where adoptRel could have found it.
 	// Only relative specs are followed here; bare/node_modules adoption
-	// keeps the existing capped loop untouched. The adopted count (not the
-	// total set size) is capped, so a runaway outside closure still stops.
-	for adopted := 0; adopted < maxFiles; {
+	// keeps the existing capped loop untouched. The loop runs to fixpoint
+	// over SORTED keys: a cap-truncated fixpoint over Go map order adopted
+	// a random subset per run (server: 84 vs 82 outside files, different
+	// reports), so determinism needs sorted iteration even under the cap.
+	// The cap counts adopted files only (1024, a runaway bound, not the
+	// 64-file node_modules calibration -- repo-relative closures are
+	// genuinely larger than one package).
+	const maxOutsideAdopted = 1024
+	for adopted := 0; adopted < maxOutsideAdopted; {
 		progress := false
-		for p, sf := range parsed {
+		keys := make([]string, 0, len(parsed))
+		for p := range parsed {
+			keys = append(keys, p)
+		}
+		sort.Strings(keys)
+		for _, p := range keys {
+			sf := parsed[p]
 			if sf == nil {
 				continue
 			}
