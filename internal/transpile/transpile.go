@@ -2517,6 +2517,32 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// 跨文件 heritage 预播种（导入类布局须在本地记录期前可见；单文件 link
 	// 空零行为变；形状证据见 saPreseedImportedClasses）。
 	saPreseedImportedClasses(sf, classes, link)
+	// par_k244: early import class seeding, before prescan-1. Imported
+	// interfaces were absent from classes until hook C-class, which runs
+	// after prescan-2c; worse, alias recording itself needs them (an alias
+	// field typed with an imported interface recorded arr, and the
+	// forward-fixup could not upgrade it). Bind imports early (throwaway
+	// diagnostics; prescan-zero re-binds with the real slices and every
+	// seed write is dup-guarded), close the layout closure, and merge
+	// classSeed into classes with local-wins. Only class defs are merged
+	// here; value merging still happens at hook C unchanged.
+	if link != nil {
+		var ignR, ignW []SARefusal
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st != nil && st.Kind == ast.KindImportDeclaration {
+				saBindProgImports(st, link, pos, &ignR, &ignW)
+			}
+		}
+		saSeedClassClosure(link)
+		for local, def := range link.classSeed {
+			if def == nil {
+				continue
+			}
+			if _, dup := classes[local]; !dup {
+				classes[local] = def
+			}
+		}
+	}
 	saPreseedImportedAliases(sf, aliasOf, link)
 	// 预扫一：类型表（类/接口/枚举；函数签名引用须先行）。
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
@@ -2866,31 +2892,6 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 						link.classHarvest[mb.dotted] = saProgClass{def: def, exported: ast.HasModifier(mb.node, ast.ModifierFlagsExport)}
 					}
 				}
-			}
-		}
-	}
-	// par_k244: early import class seeding for prescans. Prescan-2c runs
-	// before prescan-zero binds imports and hook C-class merges classSeed,
-	// so imported interfaces were absent from classes at prescan time and
-	// the annotated topObj path could never claim them. Bind imports early
-	// (throwaway diagnostics; prescan-zero re-binds with the real slices
-	// and every seed write is dup-guarded), close the layout closure, and
-	// merge classSeed into classes with local-wins. Only class defs are
-	// merged here; value merging still happens at hook C unchanged.
-	if link != nil {
-		var ignR, ignW []SARefusal
-		for _, st := range sf.AsSourceFile().Statements.Nodes {
-			if st != nil && st.Kind == ast.KindImportDeclaration {
-				saBindProgImports(st, link, pos, &ignR, &ignW)
-			}
-		}
-		saSeedClassClosure(link)
-		for local, def := range link.classSeed {
-			if def == nil {
-				continue
-			}
-			if _, dup := classes[local]; !dup {
-				classes[local] = def
 			}
 		}
 	}

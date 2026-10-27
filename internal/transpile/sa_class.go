@@ -3071,6 +3071,16 @@ func saRecordTypeAlias(st *ast.Node, classes map[string]*saClassDef, aliasOf map
 		def.fields = append(def.fields, saClassField{name: fn.Text(), offset: off})
 		def.offsets[fn.Text()] = off
 		def.fkinds[fn.Text()] = fkind
+		// par_k244: record the field type node (mirroring
+		// saSynthAnonLayoutAlias). Without fdefs, the forward-fixup pass
+		// cannot upgrade fields referencing imported interfaces, and the
+		// empty-Record gate/materializer arms cannot see the Record type.
+		if pd.Type != nil {
+			if def.fdefs == nil {
+				def.fdefs = map[string]*ast.TypeNode{}
+			}
+			def.fdefs[fn.Text()] = pd.Type
+		}
 		if m.QuestionToken() != nil {
 			if def.fopt == nil {
 				def.fopt = map[string]bool{}
@@ -4256,6 +4266,16 @@ func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, cla
 			if fdef, ok := def.fdefs[fname]; ok && fdef != nil {
 				if _, ok := saRecordValueKind(fdef, classes, aliasOf); ok {
 					return true
+				}
+				// JEV synth_alias_layout: an empty {} claims as an empty
+				// map even when the value kind is unparseable (no value
+				// kind is needed to materialize an empty map). The
+				// materializer arm mirrors this check.
+				if fdef.Kind == ast.KindTypeReference {
+					if ref := fdef.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+						(ref.TypeName.Text() == "Record" || ref.TypeName.Text() == "Map") {
+						return true
+					}
 				}
 			}
 			return false
@@ -5691,16 +5711,28 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
 				if sub := o.init.AsObjectLiteralExpression(); sub != nil && sub.Properties != nil && len(sub.Properties.Nodes) == 0 {
 					if fdef, ok := def.fdefs[o.fname]; ok && fdef != nil {
-						if _, ok := saRecordValueKind(fdef, scope.classes, scope.aliasOf); ok {
-							mh, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
-							if msg != "" {
-								return "", "", msg
+						if _, ok := saRecordValueKind(fdef, scope.classes, scope.aliasOf); !ok {
+							// Mirror the gate relaxation: an empty {} for a
+							// direct Record/Map field materializes as an empty
+							// map even without a parseable value kind.
+							if fdef.Kind != ast.KindTypeReference {
+								goto notEmptyMap
 							}
-							saOwnTemp(scope, mh)
-							w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
-							continue
+							ref := fdef.AsTypeReferenceNode()
+							if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier ||
+								(ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map") {
+								goto notEmptyMap
+							}
 						}
+						mh, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", "", msg
+						}
+						saOwnTemp(scope, mh)
+						w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
+						continue
 					}
+				notEmptyMap:
 				}
 			}
 		}
