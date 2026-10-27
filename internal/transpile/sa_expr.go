@@ -3151,6 +3151,30 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// Response.json() on identifier receivers: parse the body slice.
+		if pa.Name() != nil && pa.Name().Text() == "json" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			scope.types[pa.Expression.Text()] == "inst:Response" {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 0 {
+				return "", false, "Response.json takes no arguments"
+			}
+			return saLowerJsonNode(w, ce, scope, nextTemp), false, ""
+		}
+		// .catch() on a json() call result: parse + node!=0 join (the
+		// zero-param fallback body is not evaluated; callbacks with
+		// parameters refuse loudly via saJsonCatchMsg).
+		if pa.Name() != nil && pa.Name().Text() == "catch" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression &&
+			saIsJsonCall(pa.Expression.AsCallExpression(), scope) {
+			if msg := saJsonCatchMsg(ce); msg != "" {
+				return "", false, msg
+			}
+			return saLowerJsonCatchValue(w, pa.Expression.AsCallExpression(), scope, nextTemp), false, ""
+		}
 		// Response.text() on identifier receivers (fresh str handle over the
 		// body slice; other methods fall through to existing refusals).
 		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&

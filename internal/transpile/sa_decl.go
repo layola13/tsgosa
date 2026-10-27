@@ -1053,6 +1053,34 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 		}
 	}
+	// json as-cast (patch 6): `X as T` on a json value extracts T's scalar
+	// members into a synthetic layout; other cast types fall through.
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindAsExpression {
+		asE := vd.Initializer.AsAsExpression()
+		if asE != nil && asE.Expression != nil && asE.Type != nil {
+			if jcall, hasCatch, msg := saJsonValueOf(asE.Expression, scope); msg != "" {
+				ln, col := pos(vd.Initializer.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			} else if jcall != nil {
+				if members, hasLayout := saJsonCastMembers(asE.Type, scope); hasLayout {
+					var node string
+					if hasCatch {
+						node = saLowerJsonCatchValue(w, jcall, scope, nextTemp)
+					} else {
+						node = saLowerJsonNode(w, jcall, scope, nextTemp)
+					}
+					lname, h := saLowerJsonCast(w, node, members, scope, nextTemp)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "inst:" + lname
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					saCopyInstFn(scope, h, name)
+					return true
+				}
+			}
+		}
+	}
 	// transparent wrappers peel before kind dispatch (type-level only).
 	init := saUnwrapTransparent(vd.Initializer)
 	if init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression {
@@ -1228,6 +1256,22 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saConsumeOwn(scope, h)
 		saDeclareOwned(scope, name)
 		saAdoptHash(scope, name, peeled.AsNode())
+		return true
+	}
+	if jcall, hasCatch, msg := saJsonValueOf(init, scope); msg != "" {
+		ln, col := pos(init.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	} else if jcall != nil {
+		var node string
+		if hasCatch {
+			node = saLowerJsonCatchValue(w, jcall, scope, nextTemp)
+		} else {
+			node = saLowerJsonNode(w, jcall, scope, nextTemp)
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, node))
+		scope.types[name] = "json"
+		saDeclarePlain(scope, name)
 		return true
 	}
 	if init.Kind == ast.KindCallExpression {

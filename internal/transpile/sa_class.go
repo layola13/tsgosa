@@ -865,6 +865,342 @@ func saLowerResponseText(w printer.EmitTextWriter, recv string, ce *ast.CallExpr
 	return h, false, "", true
 }
 
+// saIsJsonCall reports whether ce is `response.json()` on an
+// inst:Response identifier receiver (non-optional, 0 args checked by callers).
+func saIsJsonCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "json" || pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	return scope.types[pa.Expression.Text()] == "inst:Response"
+}
+
+// saJsonCatchMsg validates a .catch() call on a json() result: exactly 1
+// argument, a zero-parameter arrow/function (callbacks with parameters
+// keep refusing loudly). Returns "" or the refusal message.
+func saJsonCatchMsg(ce *ast.CallExpression) string {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "json catch takes 1 argument"
+	}
+	cb := argNodes[0]
+	nparams := -1
+	if cb != nil && cb.Kind == ast.KindArrowFunction {
+		if af := cb.AsArrowFunction(); af != nil {
+			if af.Parameters == nil {
+				nparams = 0
+			} else {
+				nparams = len(af.Parameters.Nodes)
+			}
+		}
+	} else if cb != nil && cb.Kind == ast.KindFunctionExpression {
+		if fe := cb.AsFunctionExpression(); fe != nil {
+			if fe.Parameters == nil {
+				nparams = 0
+			} else {
+				nparams = len(fe.Parameters.Nodes)
+			}
+		}
+	}
+	if nparams != 0 {
+		return "json catch callbacks with parameters are not lowerable (zero-parameter fallbacks only)"
+	}
+	return ""
+}
+
+// saJsonValueOf peels transparent wrappers + await layers around e and
+// reports the inner json value: (jsonCall, hasCatch, msg). msg != "" means
+// a loud refusal (catch arity / callback shape). (nil, false, "") means e
+// is not a json value at all (caller falls through).
+func saJsonValueOf(e *ast.Node, scope *saScope) (*ast.CallExpression, bool, string) {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return nil, false, ""
+	}
+	ce := e.AsCallExpression()
+	if saIsJsonCall(ce, scope) {
+		return ce, false, ""
+	}
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa != nil && pa.Name() != nil && pa.Name().Text() == "catch" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression &&
+			saIsJsonCall(pa.Expression.AsCallExpression(), scope) {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return nil, false, "json catch takes 1 argument"
+			}
+			cb := argNodes[0]
+			nparams := -1
+			if cb != nil && cb.Kind == ast.KindArrowFunction {
+				if af := cb.AsArrowFunction(); af != nil {
+					if af.Parameters == nil {
+						nparams = 0
+					} else {
+						nparams = len(af.Parameters.Nodes)
+					}
+				}
+			} else if cb != nil && cb.Kind == ast.KindFunctionExpression {
+				if fe := cb.AsFunctionExpression(); fe != nil {
+					if fe.Parameters == nil {
+						nparams = 0
+					} else {
+						nparams = len(fe.Parameters.Nodes)
+					}
+				}
+			}
+			if nparams != 0 {
+				return nil, false, "json catch callbacks with parameters are not lowerable (zero-parameter fallbacks only)"
+			}
+			return pa.Expression.AsCallExpression(), true, ""
+		}
+	}
+	return nil, false, ""
+}
+
+// saLowerJsonNode parses a Response body's slice into a u64 node handle
+// (0 on parse failure). The node is a plain value, never owned.
+func saLowerJsonNode(w printer.EmitTextWriter, jsonCall *ast.CallExpression, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/encoding/json.sai")
+	pa := jsonCall.Expression.AsPropertyAccessExpression()
+	recv := pa.Expression.Text()
+	bp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", bp, recv))
+	bl32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", bl32, recv))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as u64\n", bl, bl32))
+	node := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_parse(%s, %s)\n", node, bp, bl))
+	return node
+}
+
+// saLowerJsonCatchValue lowers `response.json().catch(cb)`: parse, then a
+// slot join on node != 0 (success -> node, failure -> 0; the zero-param
+// fallback body is not evaluated).
+func saLowerJsonCatchValue(w printer.EmitTextWriter, jsonCall *ast.CallExpression, scope *saScope, nextTemp *int) string {
+	node := saLowerJsonNode(w, jsonCall, scope, nextTemp)
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, node))
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	okL := fmt.Sprintf("L_json_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	failL := fmt.Sprintf("L_json_fail_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_json_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, okL, failL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as u64\n", slot, node))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", failL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res
+}
+
+type saJsonMember struct {
+	name string
+	kind string
+}
+
+// saJsonCastMembers extracts the scalar members of a cast type: (members,
+// hasLayout). TypeLiteral casts always build a layout (bool/string/number
+// members; number -> f64); TypeReference casts use a claimed interface
+// layout's field kinds (str/bool/i32/f64 only); anything else falls through
+// (hasLayout=false, caller keeps the transparent as-cast behavior).
+func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) {
+	if tn == nil {
+		return nil, false
+	}
+	if tn.Kind == ast.KindTypeLiteral {
+		var members []saJsonMember
+		tl := tn.AsTypeLiteralNode()
+		if tl == nil || tl.Members == nil {
+			return members, true
+		}
+		for _, m := range tl.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				continue
+			}
+			switch pd.Type.Kind {
+			case ast.KindBooleanKeyword:
+				members = append(members, saJsonMember{fn.Text(), "bool"})
+			case ast.KindStringKeyword:
+				members = append(members, saJsonMember{fn.Text(), "str"})
+			case ast.KindNumberKeyword:
+				members = append(members, saJsonMember{fn.Text(), "f64"})
+			}
+		}
+		return members, true
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return nil, false
+		}
+		def, ok := scope.classes[ref.TypeName.Text()]
+		if !ok || def == nil {
+			return nil, false
+		}
+		var members []saJsonMember
+		for _, f := range def.fields {
+			switch def.fkinds[f.name] {
+			case "str", "bool", "i32", "f64":
+				members = append(members, saJsonMember{f.name, def.fkinds[f.name]})
+			}
+		}
+		return members, true
+	}
+	return nil, false
+}
+
+// saLowerJsonCast extracts a json node's scalar members into a fresh
+// synthetic inst layout and returns (layoutName, structTemp). The struct
+// temp is saOwnTemp'd.
+func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMember, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/encoding/json.sai")
+	lname := fmt.Sprintf("__JsonCast_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	offsets := map[string]int{}
+	fkinds := map[string]string{}
+	off := 0
+	for _, m := range members {
+		off = saAlignOff(off, m.kind)
+		offsets[m.name] = off
+		fkinds[m.name] = m.kind
+		width, _ := saFieldWidth(m.kind)
+		off += width
+	}
+	fields := make([]saClassField, 0, len(members))
+	for _, m := range members {
+		fields = append(fields, saClassField{name: m.name, offset: offsets[m.name]})
+	}
+	scope.classes[lname] = &saClassDef{
+		name: lname, fields: fields, offsets: offsets, fkinds: fkinds,
+		fsub: map[string]string{}, fopt: map[string]bool{}, fpos: map[string]int{},
+		methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{}, statics: map[string]saStaticVal{},
+		size: off, isSynth: true,
+	}
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", st, off))
+	for _, m := range members {
+		kh := saLowerStringLiteral(w, m.name, scope, nextTemp)
+		kbp, kbl := saExpandStr(w, kh, nextTemp)
+		switch m.kind {
+		case "bool":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_bool(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v8 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", v8, slot))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v, v8))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		case "str":
+			pslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", pslot))
+			lslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", lslot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_string(%s, &%s, %s, &%s, &%s)\n", gr, node, kbp, kbl, pslot, lslot))
+			saReleaseStmtTemp(w, scope, gr)
+			p := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", p, pslot))
+			l := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", l, lslot))
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, p))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, l))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, offsets[m.name], h))
+			w.Write(fmt.Sprintf("  !%s\n", pslot))
+			w.Write(fmt.Sprintf("  !%s\n", lslot))
+		case "f64":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_f64(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", v, slot))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		case "i32":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_i64(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v64 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v64, slot))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v, v64))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		}
+	}
+	saOwnTemp(scope, st)
+	return lname, st
+}
+
 // saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
 // jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
 // helper (no new inline helper). Constructor args are side-effect evaluated
