@@ -586,6 +586,19 @@ func saFetchCallOf(e *ast.Node, scope *saScope) *ast.CallExpression {
 	return nil
 }
 
+// saPeelAwaitCall peels transparent wrappers + await layers around e and
+// returns the inner call, if any (nil otherwise).
+func saPeelAwaitCall(e *ast.Node, scope *saScope) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e != nil && e.Kind == ast.KindCallExpression {
+		return e.AsCallExpression()
+	}
+	return nil
+}
+
 // saPanicIfErr emits: br <err> != 0 -> panicL (panic(2501) terminator),
 // else okL. The caller writes the panic label, then continues at okL.
 func saPanicIfErr(w printer.EmitTextWriter, err string, scope *saScope, nextTemp *int) (panicL, okL string) {
@@ -768,10 +781,10 @@ func saLowerFetch(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saSco
 	w.Write(fmt.Sprintf("  %s = zext %s as i32\n", status, st16))
 	ge200 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = ge %s, 200\n", ge200, status))
+	w.Write(fmt.Sprintf("  %s = sge %s, 200\n", ge200, status))
 	lt300 := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = lt %s, 300\n", lt300, status))
+	w.Write(fmt.Sprintf("  %s = slt %s, 300\n", lt300, status))
 	ok := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = and %s, %s\n", ok, ge200, lt300))

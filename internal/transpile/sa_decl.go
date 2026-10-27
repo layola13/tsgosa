@@ -1212,6 +1212,24 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		saCopyInstFn(scope, h, name)
 		return true
 	}
+	// Awaited str calls (patch 5b): `const t = await response.text()` /
+	// awaited user str funcs previously fell to the i32 fallback; peel
+	// await + transparent wrappers and bind via the str arm.
+	if peeled := saPeelAwaitCall(init, scope); peeled != nil &&
+		(saCallIsStr(peeled, scope) && !saStrCallIsI32(peeled, scope)) {
+		h, msg := saEvalStr(w, peeled.AsNode(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "str"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		saAdoptHash(scope, name, peeled.AsNode())
+		return true
+	}
 	if init.Kind == ast.KindCallExpression {
 		// 数组/串/date 返回调用按返回种建种。
 		if saIsArrayCtor(init) {
