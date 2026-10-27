@@ -4176,6 +4176,111 @@ func saTopObjNullLayout(vd *ast.VariableDeclaration, classes map[string]*saClass
 // 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
 // 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
 // 方法余形整句不收，沿旧 kind244 门；788）。
+// saTopObjAnnotPropOK reports whether one annotated-interface field value is
+// claimable as a topObj snapshot field (JEV extend_annotated_obj 0.97):
+// scalar literals keep the old i32/str rules; null/undefined stores as the 0
+// handle in any ptr/i32 slot (str/i32 arms already emit 0, the inst arm gains
+// a null case below, jsval boxes null); a nested object literal is allowed
+// only for an inst field with a recorded sub layout whose key set matches and
+// whose own fields pass this same check (depth-capped); an array literal is
+// allowed only for an arr field with scalar-or-empty elements; an empty object
+// literal is allowed only for a Record-typed arr field (the empty-map arm in
+// saLowerObjectLiteral). Float literals stay refused: interface number fields
+// are i32 slots. Anything else (identifiers, calls, spreads, shorthand) keeps
+// the old refusal, so a claim here always has a materialization path.
+func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, depth int) bool {
+	if finit == nil || def == nil {
+		return false
+	}
+	if _, iok := saTopArrElemText(finit); iok {
+		return fk == "i32" || fk == "bool"
+	}
+	if _, sok := saTopArrStrText(finit); sok {
+		return fk == "str"
+	}
+	if finit.Kind == ast.KindNullKeyword || finit.Kind == ast.KindUndefinedKeyword {
+		switch fk {
+		case "str", "i32", "bool", "inst", "arr", "jsval":
+			return true
+		}
+		return false
+	}
+	if finit.Kind == ast.KindArrayLiteralExpression {
+		if fk != "arr" {
+			return false
+		}
+		al := finit.AsArrayLiteralExpression()
+		if al == nil || al.Elements == nil {
+			return true
+		}
+		for _, el := range al.Elements.Nodes {
+			if el == nil {
+				return false
+			}
+			if _, ok := saTopArrElemText(el); ok {
+				continue
+			}
+			if _, ok := saTopArrStrText(el); ok {
+				continue
+			}
+			if el.Kind == ast.KindTrueKeyword || el.Kind == ast.KindFalseKeyword {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	if finit.Kind == ast.KindObjectLiteralExpression {
+		if fk == "arr" {
+			ol := finit.AsObjectLiteralExpression()
+			if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) != 0 {
+				return false
+			}
+			if fdef, ok := def.fdefs[fname]; ok && fdef != nil {
+				if _, ok := saRecordValueKind(fdef, classes, aliasOf); ok {
+					return true
+				}
+			}
+			return false
+		}
+		if fk != "inst" || depth >= 8 {
+			return false
+		}
+		subName, ok := def.fsub[fname]
+		if !ok || subName == "" {
+			return false
+		}
+		sub, ok := classes[subName]
+		if !ok || sub == nil {
+			return false
+		}
+		ol := finit.AsObjectLiteralExpression()
+		if ol == nil || ol.Properties == nil {
+			return false
+		}
+		var keys []string
+		for _, p := range ol.Properties.Nodes {
+			if p == nil || p.Kind != ast.KindPropertyAssignment {
+				return false
+			}
+			fn, ok := saObjPropName(p)
+			if !ok {
+				return false
+			}
+			sfk, ok := sub.fkinds[fn]
+			if !ok {
+				return false
+			}
+			if !saTopObjAnnotPropOK(p.AsPropertyAssignment().Initializer, sfk, fn, sub, classes, aliasOf, depth+1) {
+				return false
+			}
+			keys = append(keys, fn)
+		}
+		return saWantKeyMatch(sub, keys)
+	}
+	return false
+}
+
 func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode) (map[string]saTopObj, map[*ast.Node]bool) {
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
@@ -4290,26 +4395,12 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					break
 				}
 				finit := p.AsPropertyAssignment().Initializer
-				litKind := ""
-				if _, iok := saTopArrElemText(finit); iok {
-					litKind = "i32"
-				} else if _, sok := saTopArrStrText(finit); sok {
-					litKind = "str"
-				} else {
-					propOk = false
-					break
-				}
 				fk, ok := def.fkinds[fname]
 				if !ok {
 					propOk = false
 					break
 				}
-				if litKind == "i32" {
-					if fk != "i32" && fk != "bool" {
-						propOk = false
-						break
-					}
-				} else if fk != "str" {
+				if !saTopObjAnnotPropOK(finit, fk, fname, def, classes, aliasOf, 0) {
 					propOk = false
 					break
 				}
@@ -5632,6 +5723,10 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			sub, ok := def.fsub[o.fname]
 			if !ok {
 				return "", "", "nested field " + o.fname + " has no recorded sub layout"
+			}
+			if o.init != nil && (o.init.Kind == ast.KindNullKeyword || o.init.Kind == ast.KindUndefinedKeyword) {
+				w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[o.fname]))
+				continue
 			}
 			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
 				v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)
