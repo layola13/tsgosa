@@ -587,13 +587,18 @@ func saFetchCallOf(e *ast.Node, scope *saScope) *ast.CallExpression {
 }
 
 // saPeelAwaitCall peels transparent wrappers + await layers around e and
-// returns the inner call, if any (nil otherwise).
+// returns the inner call, if any (nil otherwise). It returns nil when no
+// await layer was peeled (patch 6c): plain calls must fall through to the
+// CallExpression block, which binds special str-call kinds (e.g. the
+// .match() result array) that the awaited-str arm would misbind as str.
 func saPeelAwaitCall(e *ast.Node, scope *saScope) *ast.CallExpression {
 	e = saUnwrapTransparent(e)
+	sawAwait := false
 	for e != nil && e.Kind == ast.KindAwaitExpression {
+		sawAwait = true
 		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
 	}
-	if e != nil && e.Kind == ast.KindCallExpression {
+	if sawAwait && e != nil && e.Kind == ast.KindCallExpression {
 		return e.AsCallExpression()
 	}
 	return nil
