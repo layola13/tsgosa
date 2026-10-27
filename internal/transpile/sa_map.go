@@ -1189,7 +1189,7 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 		okAll := true
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			if vd == nil || vd.Initializer == nil || vd.Type == nil {
+			if vd == nil || vd.Initializer == nil {
 				okAll = false
 				break
 			}
@@ -1208,6 +1208,57 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 				break
 			}
 			init := saUnwrapTransparent(vd.Initializer)
+			// Empty-ctor arm (JEV empty_ctor, guard_only + empty_only):
+			// `new Map()` with no arguments claims regardless of the
+			// annotation value kind (the snapshot is empty, so no value is
+			// ever materialized from it); when the value kind parses (type
+			// arguments on the new-expression, else a Map/Record declaration
+			// annotation) it is recorded so reads work as for literal
+			// topMaps, otherwise vkind "empty" marks the snapshot and value
+			// reads refuse loudly at the read arms (saLowerMapIndexLoad
+			// would otherwise default an unknown mapVal to i32 -- a silent
+			// miscompile). Type arguments may live on the new-expression
+			// (the web EMPTY_* Maps are unannotated) or on the annotation.
+			// Materialization reuses saLowerTopMap: saTopMapInsertAll no-ops
+			// on a non-object-literal init, leaving a fresh empty btree_map.
+			// Non-empty constructor arguments keep refusing (only object
+			// literals and empty ctors are claimed).
+			if init.Kind == ast.KindNewExpression {
+				ce := init.AsNewExpression()
+				if ce == nil || ce.Expression == nil {
+					okAll = false
+					break
+				}
+				ctor := saUnwrapTransparent(ce.Expression)
+				if ctor == nil || ctor.Kind != ast.KindIdentifier || ctor.Text() != "Map" {
+					okAll = false
+					break
+				}
+				if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
+					okAll = false
+					break
+				}
+				vk := "empty"
+				var margs []*ast.TypeNode
+				if ce.TypeArguments != nil {
+					margs = ce.TypeArguments.Nodes
+				} else if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+					if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && (ref.TypeName.Text() == "Map" || ref.TypeName.Text() == "Record") && ref.TypeArguments != nil {
+						margs = ref.TypeArguments.Nodes
+					}
+				}
+				if len(margs) == 2 && margs[0] != nil && margs[1] != nil && saTopMapKeyOK(margs[0], aliases, 0) {
+					if k, ok := saTopMapValueKindA(margs[1], aliases); ok {
+						vk = k
+					}
+				}
+				if saTopMapMutated(stmts, name) {
+					okAll = false
+					break
+				}
+				pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons}})
+				continue
+			}
 			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
 				okAll = false
 				break
@@ -1217,7 +1268,7 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 			// 注解须先验为 TypeReference（内联对象注解如 shared
 			// SA_VM_BUN_PROFILE_GROUPS 曾致 AsTypeReferenceNode 崩溃；
 			// 旧导出跳过曾偶然遮住它；非 Record/Map 注解沿旧门拒）。
-			if vd.Type.Kind != ast.KindTypeReference {
+			if vd.Type == nil || vd.Type.Kind != ast.KindTypeReference {
 				okAll = false
 				break
 			}
@@ -1740,6 +1791,23 @@ type saTopSet struct {
 	folded []string
 }
 
+// saEmptyCtorElemKind maps a Set element type node to a snapshot element
+// kind: string -> str, number/boolean -> i32; anything else (interfaces,
+// unions, arrays, missing) yields "" so the claim refuses loudly (JEV
+// annot_or_typearg: .has key encoding needs a known element kind).
+func saEmptyCtorElemKind(t *ast.TypeNode) string {
+	if t == nil {
+		return ""
+	}
+	switch t.Kind {
+	case ast.KindStringKeyword:
+		return "str"
+	case ast.KindNumberKeyword, ast.KindBooleanKeyword:
+		return "i32"
+	}
+	return ""
+}
+
 // saTopSetLookup 查顶层 Set 快照（标识符直指、无局部遮蔽；不落字）。
 func saTopSetLookup(scope *saScope, e *ast.Node) (saTopSet, bool) {
 	if e == nil || e.Kind != ast.KindIdentifier {
@@ -1994,6 +2062,37 @@ func saTopSetPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, assigned map
 			if ctor == nil || ctor.Kind != ast.KindIdentifier || ctor.Text() != "Set" {
 				okAll = false
 				break
+			}
+			// Empty-ctor arm (JEV empty_ctor, guard_only + annot_or_typearg +
+			// keep_exclusion): `new Set()` with no arguments claims only when
+			// an element kind is recoverable from the new-expression type
+			// arguments or from a Set/ReadonlySet declaration annotation
+			// (ReadonlySet counts: same element type, and the web flip
+			// EMPTY_RUNNING_THREAD_IDS is ReadonlySet<string>-annotated).
+			// The export exclusion at the top of this loop already applies,
+			// and the file-wide mutation guard below applies like the other
+			// arms. Materialization reuses the existing .has path:
+			// saLowerMapNew with zero arguments yields a fresh empty btree_set.
+			if ce.Arguments == nil || len(ce.Arguments.Nodes) == 0 {
+				elemKind := ""
+				if ce.TypeArguments != nil && len(ce.TypeArguments.Nodes) == 1 && ce.TypeArguments.Nodes[0] != nil {
+					elemKind = saEmptyCtorElemKind(ce.TypeArguments.Nodes[0])
+				}
+				if elemKind == "" && vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+					if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && (ref.TypeName.Text() == "Set" || ref.TypeName.Text() == "ReadonlySet") && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+						elemKind = saEmptyCtorElemKind(ref.TypeArguments.Nodes[0])
+					}
+				}
+				if elemKind == "" {
+					okAll = false
+					break
+				}
+				if saTopSetMutated(stmts, name) {
+					okAll = false
+					break
+				}
+				pends = append(pends, pend{name: name, set: saTopSet{init: init, elemKind: elemKind}})
+				continue
 			}
 			if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 || ce.Arguments.Nodes[0] == nil {
 				okAll = false

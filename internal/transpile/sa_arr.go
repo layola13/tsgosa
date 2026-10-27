@@ -3556,6 +3556,9 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 	// Map 种基走 get 脱糖（`m[k]` ≡ `m.get(k)`；Set 无键值，大声拒）。
 	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
 		if tm, ok := saTopMapLookup(scope, ea.Expression); ok {
+			if tm.vkind == "empty" {
+				return "", "empty top map has no readable value kind"
+			}
 			if isOpt {
 				return "", "optional map index reads are not lowerable"
 			}
@@ -4174,6 +4177,9 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 	if nm := pa.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() != "length" &&
 		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && !saIsMapMethod(nm.Text()) {
 		if tm, ok := saTopMapLookup(scope, pa.Expression); ok {
+			if tm.vkind == "empty" {
+				return "", "empty top map has no readable value kind"
+			}
 			if pa.QuestionDotToken != nil {
 				return "", "optional map index reads are not lowerable"
 			}
