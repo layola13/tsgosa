@@ -8770,6 +8770,18 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 				saOwnTemp(scope, av)
 			}
 			return av, ""
+		} else if strings.HasPrefix(wantKind, "inst:") && saUnwrapTransparent(body).Kind == ast.KindObjectLiteralExpression {
+			ol := saUnwrapTransparent(body).AsObjectLiteralExpression()
+			if ol == nil {
+				done()
+				return "", "map object literal is not lowerable"
+			}
+			ov, msg := saLowerMapObjLit(w, ol, wantKind[5:], scope, pos, refusals, nextTemp)
+			if msg != "" {
+				done()
+				return "", msg
+			}
+			v = ov
 		} else if wantKind == "str" {
 			sop, msg := saEvalStr(w, body, scope, pos, refusals, nextTemp)
 			if msg != "" {
@@ -8938,6 +8950,172 @@ func saTruncateBodyOwned(scope *saScope, base int) {
 }
 
 // saHigherOrderMap `map` 内联（新数组逐元回调值压栈；形状证据：封存 lowerHigherOrder:4945-4965）。
+// saLowerMapObjLit materializes one map-callback object literal into a fresh
+// struct under layoutName (2b_tail, JEV map_objlit 0.82 / synth_layout 0.78).
+// Field kinds come from literal values (string/template -> str, integer
+// literals and true/false -> i32/bool, float literals -> f64) or from the
+// bound kind of identifier values (callback params incl. destructured pairs,
+// outer bindings). Calls, property/element accesses, nested literals,
+// spreads, methods and computed keys refuse loudly, as do generic
+// (unresolved type parameter) identifier values via the checker guard.
+// Layout registration is idempotent: an existing def with identical fields
+// (order, kinds, sub-layouts) is reused; a conflicting def refuses loudly,
+// so two map sites never silently share mismatched offsets.
+func saLowerMapObjLit(w printer.EmitTextWriter, ol *ast.ObjectLiteralExpression, layoutName string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 {
+		return "", "map object literal must have at least one field"
+	}
+	type mapObjField struct {
+		name string
+		kind string
+		sub  string
+		val  *ast.Node
+	}
+	var fields []mapObjField
+	seen := map[string]bool{}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil {
+			return "", "map object literal has an empty field"
+		}
+		var fname string
+		var v *ast.Node
+		switch p.Kind {
+		case ast.KindPropertyAssignment:
+			pa := p.AsPropertyAssignment()
+			if pa == nil || pa.Initializer == nil {
+				return "", "map object literal field has no value"
+			}
+			fn, ok := saObjPropName(p)
+			if !ok || fn == "" {
+				return "", "map object literal field name is not lowerable"
+			}
+			fname, v = fn, pa.Initializer.AsNode()
+		case ast.KindShorthandPropertyAssignment:
+			nm := p.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				return "", "map object literal shorthand field is not lowerable"
+			}
+			fname, v = nm.Text(), nm
+		default:
+			return "", "map object literal field kind is not lowerable"
+		}
+		if seen[fname] {
+			return "", "map object literal has a duplicate field " + fname
+		}
+		seen[fname] = true
+		v = saUnwrapTransparent(v)
+		if v == nil {
+			return "", "map object literal field " + fname + " has no value"
+		}
+		var fk, sub string
+		switch {
+		case v.Kind == ast.KindStringLiteral || v.Kind == ast.KindTemplateExpression:
+			fk = "str"
+		case v.Kind == ast.KindTrueKeyword || v.Kind == ast.KindFalseKeyword:
+			fk = "bool"
+		case v != nil && func() bool { _, ok := saTopArrElemText(v); return ok }():
+			fk = "i32"
+		case v != nil && func() bool { _, ok := saTopFloatText(v); return ok }():
+			fk = "f64"
+		case v.Kind == ast.KindIdentifier:
+			if saIsUnresolvedTypeParam(scope.tcx, v) {
+				return "", "map object literal field " + fname + " is generic (unresolved type parameter)"
+			}
+			k, ok := scope.types[v.Text()]
+			if !ok {
+				return "", "map object literal field " + fname + " has unknown kind"
+			}
+			switch {
+			case k == "i32" || k == "bool" || k == "str" || k == "f64" || k == "jsval":
+				fk = k
+			case k == "arr":
+				fk = "arr"
+				sub = scope.arrElemLayout[v.Text()]
+			case strings.HasPrefix(k, "inst:"):
+				fk, sub = "inst", k[5:]
+			default:
+				return "", "map object literal field " + fname + " has unlowerable kind " + k
+			}
+		default:
+			return "", "map object literal field " + fname + " value kind is not lowerable"
+		}
+		fields = append(fields, mapObjField{name: fname, kind: fk, sub: sub, val: v})
+	}
+	if def, ok := scope.classes[layoutName]; ok && def != nil {
+		if len(def.fields) != len(fields) {
+			return "", "conflicting map object layouts for " + layoutName
+		}
+		for i, f := range fields {
+			if def.fields[i].name != f.name || def.fkinds[f.name] != f.kind || def.fsub[f.name] != f.sub {
+				return "", "conflicting map object layouts for " + layoutName
+			}
+		}
+	} else {
+		offsets := map[string]int{}
+		fkinds := map[string]string{}
+		fsub := map[string]string{}
+		off := 0
+		var fdefs []saClassField
+		for _, f := range fields {
+			off = saAlignOff(off, f.kind)
+			offsets[f.name] = off
+			fkinds[f.name] = f.kind
+			if f.sub != "" {
+				fsub[f.name] = f.sub
+			}
+			fdefs = append(fdefs, saClassField{name: f.name, offset: off})
+			width, _ := saFieldWidth(f.kind)
+			off += width
+		}
+		scope.classes[layoutName] = &saClassDef{
+			name: layoutName, fields: fdefs, offsets: offsets, fkinds: fkinds,
+			fsub: fsub, fopt: map[string]bool{}, fpos: map[string]int{},
+			methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{},
+			setters: map[string]*ast.Node{}, statics: map[string]saStaticVal{},
+			size: off, isSynth: true,
+		}
+	}
+	def := scope.classes[layoutName]
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", h, def.size))
+	for _, f := range fields {
+		var v string
+		var msg string
+		switch f.kind {
+		case "str":
+			v, msg = saEvalStr(w, f.val, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], v))
+			}
+		case "f64":
+			v, msg = saEvalF64(w, f.val, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, def.offsets[f.name], v))
+			}
+		case "arr":
+			v, msg = saArrValueOf(w, f.val, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], v))
+			}
+		case "inst", "jsval":
+			v = f.val.Text()
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], v))
+		default:
+			v, msg = saEvalI32(w, f.val, scope, pos, refusals, nextTemp)
+			if msg == "" {
+				w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, def.offsets[f.name], v))
+			}
+		}
+		if msg != "" {
+			return "", msg
+		}
+	}
+	scope.types[h] = "inst:" + layoutName
+	saOwnTemp(scope, h)
+	return h, ""
+}
+
 func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, elemLayout string) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
 	ln := fmt.Sprintf("t_%d", *nextTemp)
@@ -9093,9 +9271,38 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	if retExpr := saCallbackReturnExpr(cb); retExpr != nil && retExpr.Kind == ast.KindArrayLiteralExpression {
 		mapArr = true
 	}
+	// Map-object callbacks (2b_tail): a callback returning an object literal
+	// (concise body, or a block with exactly one return) materializes one
+	// struct per element under a program-unique synth layout; the layout
+	// name travels in cbKind so both the concise and block paths agree.
+	mapObj := false
+	mapObjName := ""
+	// Receiver provenance gate (2b_tail): the element representation must
+	// be proven by a marking or a real element layout. Unmarked receivers
+	// (number[] params, local literal arrays, generic T[] params) bind
+	// their element as a default i32, which may truncate a pointer element
+	// at runtime, so those maps keep refusing loudly along the old path.
+	// The checker cannot supply this proof: it types all map-callback
+	// params as any in this pipeline (verified flags=1), so any/unknown
+	// must not be used as a discriminator inside callbacks.
+	elemProven := elemLayout != "" && scope.classes[elemLayout] != nil ||
+		(scope.arrStr != nil && scope.arrStr[recv]) ||
+		(scope.arrJsVal != nil && scope.arrJsVal[recv]) ||
+		(scope.arrNest != nil && scope.arrNest[recv]) ||
+		(scope.arrPair != nil && scope.arrPair[recv]) ||
+		(scope.matchArr != nil && scope.matchArr[recv]) ||
+		(scope.arrInnerStr != nil && scope.arrInnerStr[recv]) ||
+		(scope.arrElemLayout != nil && scope.arrElemLayout[recv] != "" && scope.classes[scope.arrElemLayout[recv]] != nil)
+	if retExpr := saCallbackReturnExpr(cb); retExpr != nil && saUnwrapTransparent(retExpr).Kind == ast.KindObjectLiteralExpression && elemProven {
+		mapObj = true
+		mapObjName = fmt.Sprintf("__MapObj_%d", *nextLabel)
+		*nextLabel++
+	}
 	cbKind := "i32"
 	if mapArr {
 		cbKind = "arr"
+	} else if mapObj {
+		cbKind = "inst:" + mapObjName
 	} else if mapStr {
 		// String-result callbacks (expression or block body) evaluate
 		// through the str path so block returns land in the ptr slot;
@@ -9113,6 +9320,15 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		}
 		scope.arrNest[h] = true
 	}
+	if mapObj {
+		// Result elements are structs under the synth layout; downstream
+		// for-of / field reads resolve through this element layout.
+		if scope.arrElemLayout == nil {
+			scope.arrElemLayout = map[string]string{}
+		}
+		scope.arrElemLayout[h] = mapObjName
+		saOwnTemp(scope, v)
+	}
 	if mapStr {
 		saMarkArrStr(scope, h)
 	}
@@ -9121,6 +9337,11 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		// Pair-handle ownership moves into the result array (see header):
 		// without this, the drain releases the loop-scoped temp outside
 		// its scope and sa check fails UnknownRegister.
+		saReleaseOwnedTemp(w, scope, v)
+	}
+	if mapObj {
+		// Element-struct ownership moves into the result array, same
+		// discipline as the pair-array path above.
 		saReleaseOwnedTemp(w, scope, v)
 	}
 	inext := fmt.Sprintf("t_%d", *nextTemp)

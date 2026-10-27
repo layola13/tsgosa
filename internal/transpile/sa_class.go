@@ -2779,6 +2779,26 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 			return msg
 		}
 		h, have = th, def.name
+	case e != nil && e.Kind == ast.KindObjectLiteralExpression:
+		ol := e.AsObjectLiteralExpression()
+		if ol == nil {
+			return "method instance return must be an instance"
+		}
+		th, msg := saLowerMapObjLit(w, ol, want, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		h, have = th, want
+	case e != nil && e.Kind == ast.KindObjectLiteralExpression:
+		ol := e.AsObjectLiteralExpression()
+		if ol == nil {
+			return "method instance return must be an instance"
+		}
+		th, msg := saLowerMapObjLit(w, ol, want, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		h, have = th, want
 	default:
 		return "method instance return must be this, a bound instance, new or an instance call"
 	}
