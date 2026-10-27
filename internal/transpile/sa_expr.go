@@ -8577,7 +8577,27 @@ func saLowerNullish(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *s
 	// 否则返前释放在直通臂上引用未定义寄存器（1338 实证 UnknownRegister）；
 	// 左值无条件求值，无此问题）。
 	mark := len(scope.ownOrder)
-	r, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	// 空对象字面量作 map 空合右臂（`m ?? {}`；web 高频形，如
+	// schemaRoot.properties ?? {}）：具化与左同值种的空 map；左无
+	// 值种记录时沿旧门（无种空 map 会让后读默认 i32，静默错种）。
+	r, msg := "", ""
+	if lk, ok := scope.types[l]; ok && lk == "map" && scope.mapVals[l] != "" {
+		if right := saUnwrapTransparent(be.Right); right != nil && right.Kind == ast.KindObjectLiteralExpression {
+			if ol := right.AsObjectLiteralExpression(); ol != nil && (ol.Properties == nil || len(ol.Properties.Nodes) == 0) {
+				mv := scope.mapVals[l]
+				var mh string
+				mh, msg = saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+				if msg == "" {
+					r = mh
+					scope.types[r] = "map"
+					saSetMapVal(scope, r, mv)
+				}
+			}
+		}
+	}
+	if r == "" && msg == "" {
+		r, msg = saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+	}
 	if msg != "" {
 		return "", msg
 	}
