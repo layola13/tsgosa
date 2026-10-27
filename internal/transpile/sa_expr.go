@@ -411,6 +411,37 @@ func saLowerCondLogic(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
 					return t, ""
 				}
+				// Map 句柄真值即非零（与 saCondOperand map 臂同律）。
+				if k == "map" {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
+					return t, ""
+				}
+				// jsval 句柄经 ts_jsval_truthy（与 saCondOperand jsval 臂同律）。
+				if k == "jsval" {
+					scope.addImport("sa_std/ts_jsval.sa")
+					out := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, e.Text()))
+					return out, ""
+				}
+				// 数组句柄真值即非零句柄（match 结果沿 load-head 形）。
+				if k == "arr" {
+					if scope.matchArr != nil && scope.matchArr[e.Text()] {
+						hp := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, e.Text()))
+						res := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
+						return res, ""
+					}
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
+					return t, ""
+				}
 			} else if text, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
 				h := saLowerStringLiteral(w, text, scope, nextTemp)
 				t, _ := struth(h)
@@ -756,7 +787,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
 					return res, ""
 				}
-				return "", "array " + nm + " in condition"
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, nm))
+				return t, ""
 			}
 			if k == "str" {
 				// 串真值（空串/零句柄 falsy；头 +8 读长，上游两者恒真系误编译；可空与非空统一守卫，`?.length` 槽复用；502）。
@@ -2788,6 +2822,12 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, a.Text()))
 			return out, true, ""
+		case k == "jsval":
+			scope.addImport("sa_std/ts_jsval.sa")
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, a.Text()))
+			return out, true, ""
 		case k == "str":
 			_, l := saExpandStr(w, a.Text(), nextTemp)
 			out := fmt.Sprintf("t_%d", *nextTemp)
@@ -3740,6 +3780,27 @@ func saLowerTernaryLazyStr(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 func saEvalLogicOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if p := saPeelParens(e); p != nil && p.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[p.Text()]; ok && strings.HasPrefix(k, "inst:") {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
+			return t, ""
+		}
+		if k, ok := scope.types[p.Text()]; ok && k == "map" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
+			return t, ""
+		}
+		if k, ok := scope.types[p.Text()]; ok && k == "arr" {
+			if scope.matchArr != nil && scope.matchArr[p.Text()] {
+				hp := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, p.Text()))
+				res := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
+				return res, ""
+			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
