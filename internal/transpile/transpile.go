@@ -3429,6 +3429,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
+	// (4_c2) Provenance for runtime-bool folds: names folded by the
+	// typeof-globalThis arm (and their negations), so the negation arm
+	// can only invert a runtime bool, never a plain i32/bool fold.
+	runtimeBools := map[string]bool{}
 	// Cross-file const folding (JEV early_const_seed 1.0): seed imported
 	// folded scalars BEFORE the top-level fold loop, so consts defined
 	// via imported values (e.g. PREFS_KEY from STORAGE_PREFIX) fold in
@@ -3503,7 +3507,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			handledTop[st] = true
 			continue
 		}
-		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals, tcx, topObjs, assigned, topConstNames) {
+		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals, tcx, topObjs, assigned, topConstNames, runtimeBools) {
 			handledTop[st] = true
 			continue
 		}

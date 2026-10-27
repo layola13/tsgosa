@@ -2406,8 +2406,18 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			strAnnot := false
 			unresAnnot := false
+			typelitAnnot := false
 			if vd.Type != nil {
-				if k, ok := saAnnotKind(vd.Type); ok {
+				if el := saArrayElemAnnot(vd.Type); el != nil && el.Kind == ast.KindTypeLiteral {
+					// (4_c2, JEV annot_typelit_arr prescan_only 0.99 / elem_kind_source
+					// literal_values 0.99): an ArrayType whose element is an inline
+					// TypeLiteral counts as 'arr' for this prescan gate only;
+					// saAnnotKind elsewhere is unchanged, and element field kinds
+					// still come from literal values via saTopObjElemParse plus
+					// the layout consistency checks below (annotation members,
+					// e.g. a string-union alias, are NOT a kind source).
+					typelitAnnot = true
+				} else if k, ok := saAnnotKind(vd.Type); ok {
 					if k != "arr" {
 						okAll = false
 						break
@@ -2480,6 +2490,14 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				nKinds++
 			}
 			if !eleOk || nKinds > 1 {
+				okAll = false
+				break
+			}
+			// (4_c2) A TypeLiteral-element annotation promises objects: a
+			// scalar-only or empty element list under it refuses loudly
+			// instead of silently claiming a mistyped plain array (its
+			// layout would be unknowable).
+			if typelitAnnot && len(objs) == 0 {
 				okAll = false
 				break
 			}
