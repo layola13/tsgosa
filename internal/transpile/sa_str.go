@@ -3058,6 +3058,9 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		// 捕获组：按 JS 组顺序取 POSIX 组（(?: 转 ( 后组号会移位，映射表校正；
 		// 未匹配组近似为空串，shared 模式在整匹配时组恒匹配）。
 		if pat, ok := saPatternTextForMatch(args[0], scope); ok {
+			if dec, derr := saRegexDecodeEscapes(pat); derr == "" {
+				pat = dec
+			}
 			if mapping := saJsGroupMapping(pat); mapping != nil {
 				groups := []int{0}
 				groups = append(groups, mapping...)
