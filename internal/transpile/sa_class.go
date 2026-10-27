@@ -1064,6 +1064,16 @@ func saPreseedImportedAliases(sf *ast.SourceFile, aliasOf map[string]*ast.TypeNo
 		}
 		tgt, ok := link.specOf[ms.Text()]
 		if !ok || tgt == "" {
+			// Bare workspace-package type harvest (JEV type_harvest_only):
+			// the spec has no program edge, but its defining file may
+			// still yield the named alias node.
+			saBareImportLoop(link, imp, ms.Text(), sf, func(local, kind string, def *saClassDef, node *ast.TypeNode) {
+				if kind == "alias" && node != nil {
+					if _, dup := aliasOf[local]; !dup {
+						aliasOf[local] = node
+					}
+				}
+			})
 			continue
 		}
 		clause := imp.ImportClause.AsImportClause()
@@ -1110,6 +1120,11 @@ func saPreseedImportedAliases(sf *ast.SourceFile, aliasOf map[string]*ast.TypeNo
 			if ah, ok := link.aliasHarvests[patgt][remote]; ok && ah.exported && ah.node != nil {
 				aliasOf[name] = ah.node
 			}
+			if _, ok := aliasOf[name]; !ok && !saBareLocalDecl(sf, name) {
+				if kind, _, node, ok := saBareHarvestLookup(link, ms.Text(), remote); ok && kind == "alias" && node != nil {
+					aliasOf[name] = node
+				}
+			}
 		}
 	}
 }
@@ -1136,7 +1151,7 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 			continue
 		}
 		imp := st.AsImportDeclaration()
-		if imp == nil || imp.ImportClause == nil || imp.ImportClause.IsTypeOnly() {
+		if imp == nil || imp.ImportClause == nil {
 			continue
 		}
 		ms := imp.ModuleSpecifier
@@ -1145,6 +1160,16 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 		}
 		tgt, ok := link.specOf[ms.Text()]
 		if !ok || tgt == "" {
+			// Bare workspace-package type harvest (JEV type_harvest_only):
+			// the spec has no program edge, but its defining file may
+			// still yield the named interface layout.
+			saBareImportLoop(link, imp, ms.Text(), sf, func(local, kind string, def *saClassDef, node *ast.TypeNode) {
+				if kind == "class" && def != nil {
+					if _, dup := classes[local]; !dup {
+						classes[local] = def
+					}
+				}
+			})
 			continue
 		}
 		clause := imp.ImportClause.AsImportClause()
@@ -1190,6 +1215,11 @@ func saPreseedImportedClasses(sf *ast.SourceFile, classes map[string]*saClassDef
 			}
 			if ch, ok := link.classHarvests[ptgt][remote]; ok && ch.exported && ch.def != nil {
 				classes[name] = ch.def
+			}
+			if _, ok := classes[name]; !ok && !saBareLocalDecl(sf, name) {
+				if kind, def, _, ok := saBareHarvestLookup(link, ms.Text(), remote); ok && kind == "class" && def != nil {
+					classes[name] = def
+				}
 			}
 			// 命名空间成员布局预播种（`import { N }` + `extends N.C` 记录期
 			// 须见 `N_C`；与 hook B 整件绑定同键同序；已记名跳过）。

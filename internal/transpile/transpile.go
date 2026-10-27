@@ -434,6 +434,8 @@ type saFileLink struct {
 	defPrefix        string                            // definition prefix ("" entry; "util__" libs)
 	isEntry          bool                              // entry synthesizes @main; libs refuse top-level execution
 	self             string                            // this file key (for own re-export edges)
+	progDir          string                            // program dir (abs) for bare-type resolution
+	bareTypeCache    map[string]*saBareTypeFile        // abs path -> parsed defining file (shared per build)
 	specOf           map[string]string                 // this file: import spec -> target file
 	jsonOf           map[string]string                 // this file: json import spec -> absolute file path (prescan only; not a program edge, never in specOf/graph)
 	prefixOf         map[string]string                 // all files: target -> prefix
@@ -1378,6 +1380,550 @@ func saPreseedImportedConsts(sf *ast.SourceFile, topConsts map[string]string, to
 	}
 }
 
+// ---- Bare workspace-package type harvest (JEV type_harvest_only 0.66,
+// scope all_layout_consumers 0.65, both_packages 0.41; follow-up
+// remove_skip 1.0, preseed_plus_bind 0.78, keep_refusing_find 0.84) ----
+// A bare import whose spec is not in the program graph (no node_modules
+// in this checkout; Phase 3) can still name a type defined in an in-repo
+// workspace package: tsconfig "paths" maps it (e.g. @cxu/sdk-frontend),
+// or the importer's package.json maps it via a "file:" dependency
+// (e.g. @codex-ui/shared). This harvest resolves the spec to a defining
+// TypeScript file, parses ONLY that file, and extracts just the named
+// interface layout or alias node. The dependency file's code is never
+// lowered and adds no report lines; value bindings stay unlinked, so
+// value uses keep refusing loudly. A harvested layout seeds exactly like
+// an in-graph class/alias harvest (preseed tables + bind link seeds).
+// Non-exported names, unresolvable specs, and parse failures all return
+// false (use sites keep refusing); nothing here ever synthesizes a
+// layout from use-site reads.
+
+type saBareTypeFile struct {
+	sf *ast.SourceFile
+}
+
+func saBareTypeParse(link *saFileLink, abs string) *saBareTypeFile {
+	if link.bareTypeCache == nil {
+		link.bareTypeCache = map[string]*saBareTypeFile{}
+	}
+	if bf, ok := link.bareTypeCache[abs]; ok {
+		return bf
+	}
+	text, err := os.ReadFile(abs)
+	if err != nil {
+		return nil
+	}
+	kind := core.ScriptKindTS
+	if strings.HasSuffix(abs, ".tsx") {
+		kind = core.ScriptKindTSX
+	}
+	sf := parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
+	if sf == nil {
+		return nil
+	}
+	bf := &saBareTypeFile{sf: sf}
+	link.bareTypeCache[abs] = bf
+	return bf
+}
+
+func saBareTypeCandidates(base string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	add(base)
+	if strings.HasSuffix(base, ".js") {
+		trim := strings.TrimSuffix(base, ".js")
+		add(trim + ".ts")
+		add(trim + ".tsx")
+	} else if !strings.HasSuffix(base, ".ts") && !strings.HasSuffix(base, ".tsx") {
+		add(base + ".ts")
+		add(base + ".tsx")
+		add(base + ".d.ts")
+	}
+	add(filepath.Join(base, "index.ts"))
+	add(filepath.Join(base, "index.tsx"))
+	return out
+}
+
+func saBareTypeFirstFile(base string) string {
+	for _, c := range saBareTypeCandidates(base) {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
+func saStripJSONComments(s string) string {
+	var b strings.Builder
+	inStr := false
+	esc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			b.WriteByte(c)
+			if esc {
+				esc = false
+			} else if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			if i < len(s) {
+				b.WriteByte('\n')
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			i += 2
+			for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			i++
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func saBareSpecSplit(spec string) (string, string) {
+	if strings.HasPrefix(spec, "@") {
+		segs := strings.SplitN(spec, "/", 3)
+		if len(segs) < 2 || segs[0] == "@" || segs[1] == "" {
+			return "", ""
+		}
+		pkg := segs[0] + "/" + segs[1]
+		rest := ""
+		if len(segs) > 2 {
+			rest = segs[2]
+		}
+		return pkg, rest
+	}
+	if i := strings.Index(spec, "/"); i >= 0 {
+		return spec[:i], spec[i+1:]
+	}
+	return spec, ""
+}
+
+// saResolveBareTypeFile resolves a bare spec to an in-repo TypeScript file:
+// (a) tsconfig "paths" walking up from the importer dir (exact or prefix/*
+// patterns; target resolved against the tsconfig's dir), (b) the nearest
+// package.json's "file:" dependency (target package's exports types entry
+// or top-level "types"). "" when nothing matches. The walk is capped at
+// 16 levels; the first config found walking up wins for each strategy.
+func saResolveBareTypeFile(importerAbsDir, spec string) string {
+	if importerAbsDir == "" || spec == "" || strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "#") {
+		return ""
+	}
+	pkg, rest := saBareSpecSplit(spec)
+	if pkg == "" {
+		return ""
+	}
+	for dir, depth := importerAbsDir, 0; dir != "" && depth < 16; dir, depth = filepath.Dir(dir), depth+1 {
+		if raw, err := os.ReadFile(filepath.Join(dir, "tsconfig.json")); err == nil {
+			var cfg struct {
+				CompilerOptions struct {
+					Paths map[string][]string `json:"paths"`
+				} `json:"compilerOptions"`
+			}
+			if json.Unmarshal([]byte(saStripJSONComments(string(raw))), &cfg) == nil {
+				for pattern, targets := range cfg.CompilerOptions.Paths {
+					matched := false
+					if pattern == spec {
+						matched = true
+					} else if strings.HasSuffix(pattern, "/*") && strings.HasPrefix(spec, strings.TrimSuffix(pattern, "*")) {
+						matched = true
+					}
+					if !matched {
+						continue
+					}
+					for _, t := range targets {
+						rel := t
+						if strings.Contains(t, "*") {
+							rel = strings.Replace(t, "*", rest, 1)
+						}
+						if abs := saBareTypeFirstFile(filepath.Join(dir, rel)); abs != "" {
+							return abs
+						}
+					}
+				}
+			}
+		}
+		if raw, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+			var pj struct {
+				Dependencies    map[string]string `json:"dependencies"`
+				DevDependencies map[string]string `json:"devDependencies"`
+			}
+			if json.Unmarshal(raw, &pj) == nil {
+				val, ok := pj.Dependencies[pkg]
+				if !ok {
+					val, ok = pj.DevDependencies[pkg]
+				}
+				if ok && strings.HasPrefix(val, "file:") {
+					pkgDir := filepath.Join(dir, strings.TrimPrefix(val, "file:"))
+					if praw, err := os.ReadFile(filepath.Join(pkgDir, "package.json")); err == nil {
+						var pp struct {
+							Types   string                 `json:"types"`
+							Exports map[string]interface{} `json:"exports"`
+						}
+						if json.Unmarshal(praw, &pp) == nil {
+							key := "."
+							if rest != "" {
+								key = "./" + rest
+							}
+							typesRel := ""
+							if ent, ok := pp.Exports[key]; ok {
+								if em, ok := ent.(map[string]interface{}); ok {
+									if tv, ok := em["types"].(string); ok {
+										typesRel = tv
+									}
+								}
+							}
+							if typesRel == "" {
+								typesRel = pp.Types
+							}
+							if typesRel != "" {
+								if abs := saBareTypeFirstFile(filepath.Join(pkgDir, typesRel)); abs != "" {
+									return abs
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	return ""
+}
+
+// saBareTypeLookup finds one exported type in a defining file (and its
+// re-export chain): an interface yields its recorded layout, an alias
+// yields its type node. Direct exported declarations win over re-exports;
+// re-exports are followed in source order (star first-match); depth and
+// visited guards break export cycles. A local declaration that exports
+// the name but fails to record returns false without falling through.
+func saBareTypeLookup(link *saFileLink, abs, name string, depth int, seen map[string]bool) (string, *saClassDef, *ast.TypeNode, bool) {
+	fail := func() (string, *saClassDef, *ast.TypeNode, bool) { return "", nil, nil, false }
+	if link == nil || abs == "" || name == "" || depth > 8 || seen[abs] {
+		return fail()
+	}
+	seen[abs] = true
+	bf := saBareTypeParse(link, abs)
+	if bf == nil || bf.sf == nil {
+		return fail()
+	}
+	stmts := bf.sf.AsSourceFile().Statements.Nodes
+	localEdges := map[string]string{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindExportDeclaration {
+			continue
+		}
+		ed := st.AsExportDeclaration()
+		if ed == nil || ed.ModuleSpecifier != nil {
+			continue
+		}
+		if edges, star := saProgLocalEdges(st); !star {
+			for exp, loc := range edges {
+				localEdges[exp] = loc
+			}
+		}
+	}
+	aliasOf := map[string]*ast.TypeNode{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindTypeAliasDeclaration {
+			continue
+		}
+		ta := st.AsTypeAliasDeclaration()
+		nm := st.Name()
+		if ta == nil || ta.Type == nil || nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		aliasOf[nm.Text()] = ta.Type
+	}
+	for _, st := range stmts {
+		if st == nil {
+			continue
+		}
+		if st.Kind == ast.KindInterfaceDeclaration {
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			d := nm.Text()
+			if !(ast.HasModifier(st, ast.ModifierFlagsExport) && d == name) && localEdges[name] != d {
+				continue
+			}
+			// Record every interface in file order first so extends bases
+			// resolve (single-pass limit, same as the in-graph prescan:
+			// a base declared after its derived type drops its fields).
+			classes := map[string]*saClassDef{}
+			var refusals []SARefusal
+			zeroPos := func(int) (int, int) { return 0, 0 }
+			for _, st2 := range stmts {
+				if st2 != nil && st2.Kind == ast.KindInterfaceDeclaration {
+					saRecordIface(st2, classes, aliasOf, zeroPos, &refusals)
+				}
+			}
+			if def, ok := classes[d]; ok && def != nil {
+				return "class", def, nil, true
+			}
+			return fail()
+		}
+		if st.Kind == ast.KindTypeAliasDeclaration {
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			d := nm.Text()
+			if !(ast.HasModifier(st, ast.ModifierFlagsExport) && d == name) && localEdges[name] != d {
+				continue
+			}
+			if node, ok := aliasOf[d]; ok && node != nil {
+				return "alias", nil, node, true
+			}
+			return fail()
+		}
+	}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindExportDeclaration {
+			continue
+		}
+		spec2, edges2, star2 := saProgReexpEdges(st)
+		if spec2 == "" {
+			continue
+		}
+		var tgtAbs string
+		if strings.HasPrefix(spec2, ".") {
+			tgtAbs = saBareTypeFirstFile(filepath.Join(filepath.Dir(abs), spec2))
+		} else {
+			tgtAbs = saResolveBareTypeFile(filepath.Dir(abs), spec2)
+		}
+		if tgtAbs == "" {
+			continue
+		}
+		if star2 {
+			if kind, def, node, ok := saBareTypeLookup(link, tgtAbs, name, depth+1, seen); ok {
+				return kind, def, node, true
+			}
+			continue
+		}
+		if remote, ok := edges2[name]; ok {
+			if kind, def, node, ok := saBareTypeLookup(link, tgtAbs, remote, depth+1, seen); ok {
+				return kind, def, node, true
+			}
+		}
+	}
+	return fail()
+}
+
+// saBareTypeReexpLookup follows ONLY re-export edges out of a file
+// (direct declarations are the in-graph harvests' job and were already
+// tried by the caller). Used when a relative import's name is missing
+// from its target's harvests: the target may be a shim star-exporting
+// a workspace package (e.g. waterfall/types.ts -> @cxu/sdk-frontend).
+// Relative edges keep following re-exports only; bare edges get the
+// full lookup (their direct declarations are outside the graph).
+func saBareTypeReexpLookup(link *saFileLink, abs, name string, depth int, seen map[string]bool) (string, *saClassDef, *ast.TypeNode, bool) {
+	fail := func() (string, *saClassDef, *ast.TypeNode, bool) { return "", nil, nil, false }
+	if link == nil || abs == "" || name == "" || depth > 8 || seen[abs] {
+		return fail()
+	}
+	seen[abs] = true
+	bf := saBareTypeParse(link, abs)
+	if bf == nil || bf.sf == nil {
+		return fail()
+	}
+	for _, st := range bf.sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindExportDeclaration {
+			continue
+		}
+		spec2, edges2, star2 := saProgReexpEdges(st)
+		if spec2 == "" {
+			continue
+		}
+		var tgtAbs string
+		if strings.HasPrefix(spec2, ".") {
+			tgtAbs = saBareTypeFirstFile(filepath.Join(filepath.Dir(abs), spec2))
+		} else {
+			tgtAbs = saResolveBareTypeFile(filepath.Dir(abs), spec2)
+		}
+		if tgtAbs == "" {
+			continue
+		}
+		if star2 {
+			var kind string
+			var def *saClassDef
+			var node *ast.TypeNode
+			var ok bool
+			if strings.HasPrefix(spec2, ".") {
+				kind, def, node, ok = saBareTypeReexpLookup(link, tgtAbs, name, depth+1, seen)
+			} else {
+				kind, def, node, ok = saBareTypeLookup(link, tgtAbs, name, depth+1, seen)
+			}
+			if ok {
+				return kind, def, node, true
+			}
+			continue
+		}
+		if remote, ok := edges2[name]; ok {
+			var kind string
+			var def *saClassDef
+			var node *ast.TypeNode
+			var ok2 bool
+			if strings.HasPrefix(spec2, ".") {
+				kind, def, node, ok2 = saBareTypeReexpLookup(link, tgtAbs, remote, depth+1, seen)
+			} else {
+				kind, def, node, ok2 = saBareTypeLookup(link, tgtAbs, remote, depth+1, seen)
+			}
+			if ok2 {
+				return kind, def, node, true
+			}
+		}
+	}
+	return fail()
+}
+
+// saBareHarvestLookup resolves one imported type name through bare
+// workspace-package imports (direct) or through a relative import's
+// bare re-export edges (shim). It never seeds anything itself; callers
+// seed the result into their own table (preseed tables or bind link
+// seeds) with their own local-wins guards.
+func saBareHarvestLookup(link *saFileLink, spec, remote string) (string, *saClassDef, *ast.TypeNode, bool) {
+	fail := func() (string, *saClassDef, *ast.TypeNode, bool) { return "", nil, nil, false }
+	if link == nil || link.progDir == "" || spec == "" || remote == "" {
+		return fail()
+	}
+	if strings.HasPrefix(spec, ".") {
+		tgt, ok := link.specOf[spec]
+		if !ok || tgt == "" {
+			return fail()
+		}
+		tgtAbs := filepath.Join(link.progDir, filepath.FromSlash(tgt))
+		return saBareTypeReexpLookup(link, tgtAbs, remote, 0, map[string]bool{})
+	}
+	if strings.HasPrefix(spec, "#") {
+		return fail()
+	}
+	absDir := filepath.Join(link.progDir, filepath.Dir(filepath.FromSlash(link.self)))
+	abs := saResolveBareTypeFile(absDir, spec)
+	if abs == "" {
+		return fail()
+	}
+	return saBareTypeLookup(link, abs, remote, 0, map[string]bool{})
+}
+
+// saBareLocalDecl reports whether the importing file itself declares a
+// class/interface/alias with this name; harvested layouts must never
+// shadow a local declaration (the in-graph duplicate gate would refuse,
+// so skipping is strictly narrower and cannot add refusals).
+func saBareLocalDecl(sf *ast.SourceFile, name string) bool {
+	if sf == nil || name == "" {
+		return false
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil {
+			continue
+		}
+		switch st.Kind {
+		case ast.KindClassDeclaration, ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration:
+			if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// saBareImportLoop is the shared specifier loop for the bare-harvest
+// seeders: for each named specifier of one import statement, harvest
+// the remote name and hand (local, kind, def, node) to seed. Bind passes
+// sf=nil and relies on hook C's local-wins merge (local types are
+// recorded before hook C runs); preseed passes the file to also skip
+// locally declared names outright.
+func saBareImportLoop(link *saFileLink, imp *ast.ImportDeclaration, spec string, sf *ast.SourceFile, seed func(local, kind string, def *saClassDef, node *ast.TypeNode)) {
+	if imp == nil || imp.ImportClause == nil {
+		return
+	}
+	clause := imp.ImportClause.AsImportClause()
+	if clause == nil {
+		return
+	}
+	nb := clause.NamedBindings
+	if nb == nil || nb.Kind != ast.KindNamedImports {
+		return
+	}
+	ni := nb.AsNamedImports()
+	if ni == nil || ni.Elements == nil {
+		return
+	}
+	for _, n := range ni.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindImportSpecifier {
+			continue
+		}
+		sp := n.AsImportSpecifier()
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		local := nm.Text()
+		remote := local
+		if sp.PropertyName != nil {
+			remote = sp.PropertyName.Text()
+		}
+		if saBareLocalDecl(sf, local) {
+			continue
+		}
+		kind, def, node, ok := saBareHarvestLookup(link, spec, remote)
+		if !ok {
+			continue
+		}
+		seed(local, kind, def, node)
+	}
+}
+
+// saBindBareHarvest seeds harvested layouts into bind link seeds
+// (hook C merges them with local-wins into the file tables).
+func saBindBareHarvest(link *saFileLink, imp *ast.ImportDeclaration, spec string) {
+	saBareImportLoop(link, imp, spec, nil, func(local, kind string, def *saClassDef, node *ast.TypeNode) {
+		if kind == "class" && def != nil {
+			if link.classSeed == nil {
+				link.classSeed = map[string]*saClassDef{}
+			}
+			if _, dup := link.classSeed[local]; !dup {
+				link.classSeed[local] = def
+			}
+		}
+		if kind == "alias" && node != nil {
+			if link.aliasSeed == nil {
+				link.aliasSeed = map[string]saProgAlias{}
+			}
+			if _, dup := link.aliasSeed[local]; !dup {
+				link.aliasSeed[local] = saProgAlias{node: node, exported: true}
+			}
+		}
+	})
+}
+
 // saBindProgImports binds one relative named import to qualified callees
 // (signatures seeded from the defining file, lowered earlier in dependency
 // order). Returns true when claimed (emission skips via handledTop).
@@ -1391,18 +1937,25 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	if imp == nil || imp.ImportClause == nil {
 		return false
 	}
-	if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
-		return false
-	}
 	ms := imp.ModuleSpecifier
 	if ms == nil || ms.Kind != ast.KindStringLiteral {
 		return false
 	}
 	spec := ms.Text()
+	if imp.ImportClause.IsTypeOnly() {
+		// Type-only clauses skip value binding, but their layouts still
+		// seed (preseed_plus_bind): bare specs directly, relative specs
+		// through the target's bare re-export edges.
+		saBindBareHarvest(link, imp, spec)
+		return false
+	}
 	if len(spec) > 0 && spec[0] != '.' {
 		// 已链接 bare（node_modules 按需纳入的真实目标）：下探正常绑定；
 		// 其余 bare 警告（driver 聚合 Unresolved；用点自然拒）。
 		if _, ok := link.specOf[spec]; !ok {
+			// Bare workspace-package type harvest (link seeds; the
+			// warning below still fires: value bindings stay unlinked).
+			saBindBareHarvest(link, imp, spec)
 			ln, col := pos(st.Pos())
 			// `#` 前缀是 package.json "imports" 映射（包内别名），非第三方包：
 			// 底座 resolver 原生支持，拒因文案分列（禁文不对题）。
@@ -1734,6 +2287,29 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				}
 				link.topMapSeed[local] = claim
 				continue
+			}
+			// Bare-star shim fallback (JEV type_harvest_only, both_packages):
+			// a name missing from its target's harvests may still resolve
+			// through the target's bare re-export edges (host shim).
+			if kind, def, node, ok := saBareHarvestLookup(link, spec, remote); ok {
+				if kind == "class" && def != nil {
+					if link.classSeed == nil {
+						link.classSeed = map[string]*saClassDef{}
+					}
+					if _, dup := link.classSeed[local]; !dup {
+						link.classSeed[local] = def
+					}
+					continue
+				}
+				if kind == "alias" && node != nil {
+					if link.aliasSeed == nil {
+						link.aliasSeed = map[string]saProgAlias{}
+					}
+					if _, dup := link.aliasSeed[local]; !dup {
+						link.aliasSeed[local] = saProgAlias{node: node, exported: true}
+					}
+					continue
+				}
 			}
 			ln, col := pos(n.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
@@ -6480,11 +7056,14 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	// pass below. Re-lowering is safe: the harvest it recomputes is
 	// deterministic, perFile output is replaced (not appended), and later
 	// files' already-emitted bindings are not rewritten.
+	bareTypeCache := map[string]*saBareTypeFile{}
 	lowerOne := func(p string) *SAOutput {
 		lk := &saFileLink{
 			defPrefix:        prefixOf[p],
 			isEntry:          p == entry,
 			self:             p,
+			progDir:          dir,
+			bareTypeCache:    bareTypeCache,
 			specOf:           specOf[p],
 			jsonOf:           jsonOf[p],
 			harvests:         harvests,
