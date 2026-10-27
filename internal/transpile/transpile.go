@@ -2758,7 +2758,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		isVoid := false
 		retKind := ""
 		if saArrowReturnNode(arrow) == nil {
-			if ab := arrow.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
+			if ab := arrow.Body(); ab != nil && ab.Kind == ast.KindBlock && saJsValReturnScan(arrow) {
+				// Unannotated block-body arrow returning only JSX / object
+				// literals: jsval, matching emit's saPrescanRet (the i32
+				// shortcut below would mismatch the definition).
+				retKind, isVoid = "jsval", false
+			} else if ab := arrow.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
 				// 无注解值函数 i32（表达式体或有形参；与发射位同规则；
 				// 封存 lowerArrowBinding value_fn:1099-1117；仅无参块体
 				// 走 checker（async 恒 void 缺省）。
@@ -3776,10 +3781,33 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 			obj = pt.Type
 		}
 	}
+	// 域种开关（与返回侧 retFieldKind 同律，惟种串不做 number/boolean
+	// 重命名；链式直通与尾部分享，禁双份开关漂移）。
+	paramFieldKind := func(def *saClassDef, field string) (string, bool) {
+		if def == nil {
+			return "", false
+		}
+		fk, ok := def.fkinds[field]
+		if !ok {
+			return "", false
+		}
+		switch fk {
+		case "i32", "bool", "str", "arr", "f64", "map", "jsval":
+			return fk, true
+		case "inst":
+			return saIndexedFieldInstKind(def, field, classes, aliasOf)
+		default:
+			if len(fk) > 5 && fk[:5] == "inst:" {
+				return fk, true
+			}
+			return "", false
+		}
+	}
 	// 链式索引访问（JEV jsval_chain 1.0）：内层解为 jsval（如未知基
 	// ClientState["threads"]）则外层亦 jsval；内层为数组句柄且外层以
 	// number 索引时，元种已不可由种串恢复，亦记 jsval；内层为实例
-	// 布局加字段的情形仍拒（需布局直通，未见于 web 残量）。
+	// 布局时布局直通（JEV par_retann chain passthrough 1.0，与返回侧
+	// 链式分支同律）；未知布局/域仍拒。
 	if obj != nil && obj.Kind == ast.KindIndexedAccessType {
 		innerKind, ok := saIndexedAccessParamKind(obj, classes, aliasOf)
 		if !ok {
@@ -3790,6 +3818,16 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 		}
 		if innerKind == "arr" && ia.IndexType != nil && ia.IndexType.Kind == ast.KindNumberKeyword {
 			return "jsval", true
+		}
+		if len(innerKind) > 5 && innerKind[:5] == "inst:" {
+			if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+				if lit := idx.AsLiteralTypeNode().Literal; lit != nil && (lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					if def, ok := classes[innerKind[5:]]; ok {
+						return paramFieldKind(def, lit.Text())
+					}
+				}
+			}
+			return "", false
 		}
 		return "", false
 	}
@@ -3865,26 +3903,7 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 	if def == nil {
 		return "", false
 	}
-	fk, ok := def.fkinds[field]
-	if !ok {
-		return "", false
-	}
-	switch fk {
-	case "i32", "bool", "str", "arr", "f64", "map", "jsval":
-		return fk, true
-	case "inst":
-		if sub, ok := def.fsub[field]; ok {
-			if _, ok2 := classes[sub]; ok2 {
-				return "inst:" + sub, true
-			}
-		}
-		return "", false
-	default:
-		if len(fk) > 5 && fk[:5] == "inst:" {
-			return fk, true
-		}
-		return "", false
-	}
+	return paramFieldKind(def, field)
 }
 
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
@@ -5887,6 +5906,22 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		saReleaseAllOwnedExcept(w, scope, "")
 		w.Write("  ret\n")
 		return true, false
+	}
+	if scope.retKind == "jsval" && rs.Expression != nil {
+		// 括号/断言包装的三元返回（JEV par_retann sub unwrap 1.0）：
+		// 裸三元沿既有分发；包装三元此前落入求值门而拒。
+		if ue := saUnwrapTransparent(rs.Expression); ue != nil && ue != rs.Expression && ue.Kind == ast.KindConditionalExpression {
+			ce := ue.AsConditionalExpression()
+			t, msg := saLowerTernaryJsVal(w, ce, s, scope, pos, refusals, nextLabel, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
+			saReleaseExceptOp(w, scope, t)
+			w.Write(fmt.Sprintf("  ret %s\n", t))
+			return true, false
+		}
 	}
 	if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
 		ce := rs.Expression.AsConditionalExpression()

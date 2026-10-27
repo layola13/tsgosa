@@ -3296,7 +3296,14 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 		if lit == nil || lit.Members == nil {
 			return false
 		}
-		added := false
+		// A literal member merges successfully when at least one member
+		// is well-formed, even if every field duplicates an earlier member
+		// (JEV pick inst_synth: Pick<...> & {permission, ...} where the
+		// literal fields are already in the base must not veto the merge).
+		// A duplicate re-declared without `?` clears the optional flag
+		// (intersection required-wins); the interface/Pick branches skip
+		// duplicates before copying fopt, so this is order-independent.
+		valid := false
 		for _, m := range lit.Members.Nodes {
 			if m == nil || m.Kind != ast.KindPropertySignature {
 				continue
@@ -3309,7 +3316,11 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 			if pd == nil || pd.Type == nil {
 				continue
 			}
+			valid = true
 			if _, dup := fdefs[nm.Text()]; dup {
+				if m.QuestionToken() == nil {
+					delete(fopt, nm.Text())
+				}
 				continue
 			}
 			*fields = append(*fields, nm.Text())
@@ -3317,9 +3328,8 @@ func saCollectMergedFields(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 			if m.QuestionToken() != nil {
 				fopt[nm.Text()] = true
 			}
-			added = true
 		}
-		return added
+		return valid
 	case ast.KindIntersectionType:
 		it := t.AsIntersectionTypeNode()
 		if it == nil || it.Types == nil {
@@ -5906,6 +5916,85 @@ func saStaticFold(w printer.EmitTextWriter, base *ast.Node, field string, scope 
 // 未知即拒（禁猜）。形状证据：封存 lowerObjectLiteral 键集匹配 9066-9076
 // 无命中时的自然延伸 + saSynthAnonLayout 合成纪律（isSynth 标记，键集匹配
 // 不参与命中，禁误吞多命中门）。
+// saLitArmKind 推断字面量域/三元臂的静态种（JEV par_retann sub agree_kind 0.98）：
+// 透明包装解包；嵌套三元须两臂同种（inst 臂须同子布局）；对象字面量递归合成；
+// 数字/布尔 -> i32，串表达式 -> str，浮点字面量 -> f64；绑定名按已定种；
+// 调用按被调返回种；null/undefined 臂不给种（禁猜可空域），异种臂拒。
+func saLitArmKind(e *ast.Node, scope *saScope) (string, string, bool) {
+	if e == nil {
+		return "", "", false
+	}
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return "", "", false
+	}
+	if u.Kind == ast.KindConditionalExpression {
+		ce := u.AsConditionalExpression()
+		if ce == nil || ce.WhenTrue == nil || ce.WhenFalse == nil {
+			return "", "", false
+		}
+		tk, tsub, tok := saLitArmKind(ce.WhenTrue, scope)
+		fk, fsub, fok := saLitArmKind(ce.WhenFalse, scope)
+		if !tok || !fok || tk == "" || tk != fk {
+			return "", "", false
+		}
+		if tk == "inst" && tsub != fsub {
+			return "", "", false
+		}
+		return tk, tsub, true
+	}
+	if u.Kind == ast.KindObjectLiteralExpression {
+		sub, ok := saSynthLiteralLayout(u.AsObjectLiteralExpression(), scope)
+		if !ok {
+			return "", "", false
+		}
+		return "inst", sub.name, true
+	}
+	if k := saLitFieldKind(u, scope); k != "" {
+		return k, "", true
+	}
+	if u.Kind == ast.KindNumericLiteral && saIsF64Operand(u, scope) {
+		return "f64", "", true
+	}
+	if u.Kind == ast.KindIdentifier {
+		if bk, ok := scope.types[u.Text()]; ok {
+			switch {
+			case bk == "i32" || bk == "bool":
+				return "i32", "", true
+			case bk == "str":
+				return "str", "", true
+			case bk == "arr" || bk == "arrStr":
+				return "arr", "", true
+			case bk == "f64":
+				return "f64", "", true
+			case len(bk) > 5 && bk[:5] == "inst:":
+				return "inst", bk[5:], true
+			}
+		}
+		return "", "", false
+	}
+	if u.Kind == ast.KindCallExpression {
+		ck, ok := saCallRetKind(u.AsCallExpression(), scope)
+		if !ok {
+			return "", "", false
+		}
+		switch {
+		case ck == "i32" || ck == "bool":
+			return "i32", "", true
+		case ck == "str":
+			return "str", "", true
+		case ck == "arr" || ck == "arrStr":
+			return "arr", "", true
+		case ck == "f64":
+			return "f64", "", true
+		case len(ck) > 5 && ck[:5] == "inst:":
+			return "inst", ck[5:], true
+		}
+		return "", "", false
+	}
+	return "", "", false
+}
+
 func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saClassDef, bool) {
 	if ol == nil || ol.Properties == nil {
 		return nil, false
@@ -6023,6 +6112,23 @@ func saSynthLiteralLayout(ol *ast.ObjectLiteralExpression, scope *saScope) (*saC
 				case len(bk) > 5 && bk[:5] == "inst:":
 					k = "inst"
 					subs[fname] = bk[5:]
+				}
+			}
+		}
+		if k == "" && init != nil {
+			// 三元域初值：两臂同种即取该种（JEV par_retann sub agree_kind 0.98；
+			// 异种/null/undefined 臂沿旧门拒，禁猜）。
+			if u := saUnwrapTransparent(init); u != nil && u.Kind == ast.KindConditionalExpression {
+				ce := u.AsConditionalExpression()
+				if ce != nil && ce.WhenTrue != nil && ce.WhenFalse != nil {
+					tk, tsub, tok := saLitArmKind(ce.WhenTrue, scope)
+					fk, fsub, fok := saLitArmKind(ce.WhenFalse, scope)
+					if tok && fok && tk != "" && tk == fk && (tk != "inst" || tsub == fsub) {
+						k = tk
+						if tsub != "" {
+							subs[fname] = tsub
+						}
+					}
 				}
 			}
 		}

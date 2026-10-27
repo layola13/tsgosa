@@ -2027,6 +2027,88 @@ func saUnionEraseKind(ut *ast.UnionTypeNode, classes map[string]*saClassDef, ali
 // Unresolvable bases (external types like ChannelGroupConfig) are jsval
 // opaque (JEV jsval_opaque); a chained inner inst layout projects its
 // field too (NonNullable<C["image"]>["modelPrices"]).
+// saIndexedFieldInstKind resolves an inst field of a (possibly seeded)
+// interface layout to its instance kind. When the recorded sub-layout is
+// present locally it is used as before; when it is absent (imported/seeded
+// layouts: the defining file's pointer is shared read-only and its nested
+// synth layouts are not seeded), the layout is re-synthesized locally from
+// the field's recorded type node -- a type literal, or a nullable union
+// with exactly one type-literal member (null/undefined arms absorb to the
+// 0 handle, as with other nullable inst returns). The seeded def itself is
+// never mutated; synthesis only registers into the local classes map.
+func saIndexedFieldInstKind(def *saClassDef, field string, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if def == nil {
+		return "", false
+	}
+	if sub, ok := def.fsub[field]; ok {
+		if _, ok2 := classes[sub]; ok2 {
+			return "inst:" + sub, true
+		}
+	}
+	ftn, ok := def.fdefs[field]
+	if !ok || ftn == nil {
+		return "", false
+	}
+	for ftn != nil && ftn.Kind == ast.KindParenthesizedType {
+		pt := ftn.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return "", false
+		}
+		ftn = pt.Type
+	}
+	lit := ftn
+	if lit != nil && lit.Kind == ast.KindUnionType {
+		ut := lit.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false
+		}
+		var found *ast.TypeNode
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false
+			}
+			mm := m
+			for mm != nil && mm.Kind == ast.KindParenthesizedType {
+				pt := mm.AsParenthesizedTypeNode()
+				if pt == nil || pt.Type == nil {
+					return "", false
+				}
+				mm = pt.Type
+			}
+			if mm == nil {
+				return "", false
+			}
+			if mm.Kind == ast.KindNullKeyword || mm.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if mm.Kind == ast.KindLiteralType {
+				if l := mm.AsLiteralTypeNode(); l != nil && l.Literal != nil && l.Literal.Kind == ast.KindNullKeyword {
+					continue
+				}
+				return "", false
+			}
+			if mm.Kind != ast.KindTypeLiteral {
+				return "", false
+			}
+			if found != nil {
+				return "", false
+			}
+			found = mm
+		}
+		if found == nil {
+			return "", false
+		}
+		lit = found
+	}
+	if lit == nil || lit.Kind != ast.KindTypeLiteral {
+		return "", false
+	}
+	if lname, ok := saSynthAnonLayoutAlias(lit, classes, aliasOf); ok {
+		return "inst:" + lname, true
+	}
+	return "", false
+}
+
 func saIndexedAccessRetKind(t *ast.TypeNode, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
 	ia := t.AsIndexedAccessTypeNode()
 	if ia == nil || ia.ObjectType == nil || ia.IndexType == nil {
@@ -2074,12 +2156,7 @@ func saIndexedAccessRetKind(t *ast.TypeNode, classes map[string]*saClassDef, ali
 		case "arr", "f64", "map", "jsval":
 			return fk, true
 		case "inst":
-			if sub, ok := def.fsub[field]; ok {
-				if _, ok2 := classes[sub]; ok2 {
-					return "inst:" + sub, true
-				}
-			}
-			return "", false
+			return saIndexedFieldInstKind(def, field, classes, aliasOf)
 		default:
 			if len(fk) > 5 && fk[:5] == "inst:" {
 				return fk, true
@@ -4328,6 +4405,127 @@ func saInferredReturnKind(fnNode *ast.Node, tcx *saTypeCtx) (string, bool) {
 	return out, true
 }
 
+// saJsValReturnExpr reports whether a return expression is a jsval-boxable
+// value for the void-fallback slice (JEV void jsval_return 0.93, scope both):
+// JSX elements / self-closing elements / fragments, object literals, null,
+// and unbound undefined, plus transparent wrappers (parenthesized, as,
+// satisfies, non-null, type assertion) and ternaries whose arms all qualify.
+// Identifiers (except undefined), calls, and all other shapes fail, so their
+// functions keep the void fallback and refuse loudly as before.
+func saJsValReturnExpr(e *ast.Node) bool {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindParenthesizedExpression:
+			pe := e.AsParenthesizedExpression()
+			if pe == nil || pe.Expression == nil {
+				return false
+			}
+			e = pe.Expression
+		case ast.KindAsExpression:
+			ae := e.AsAsExpression()
+			if ae == nil || ae.Expression == nil {
+				return false
+			}
+			e = ae.Expression
+		case ast.KindSatisfiesExpression:
+			se := e.AsSatisfiesExpression()
+			if se == nil || se.Expression == nil {
+				return false
+			}
+			e = se.Expression
+		case ast.KindNonNullExpression:
+			ne := e.AsNonNullExpression()
+			if ne == nil || ne.Expression == nil {
+				return false
+			}
+			e = ne.Expression
+		case ast.KindTypeAssertionExpression:
+			te := e.AsTypeAssertion()
+			if te == nil || te.Expression == nil {
+				return false
+			}
+			e = te.Expression
+		default:
+			goto classified
+		}
+	}
+classified:
+	if e == nil {
+		return false
+	}
+	switch e.Kind {
+	case ast.KindJsxElement, ast.KindJsxSelfClosingElement, ast.KindJsxFragment,
+		ast.KindObjectLiteralExpression, ast.KindNullKeyword:
+		return true
+	case ast.KindIdentifier:
+		return e.Text() == "undefined"
+	case ast.KindConditionalExpression:
+		ce := e.AsConditionalExpression()
+		if ce == nil || ce.WhenTrue == nil || ce.WhenFalse == nil {
+			return false
+		}
+		return saJsValReturnExpr(ce.WhenTrue) && saJsValReturnExpr(ce.WhenFalse)
+	}
+	return false
+}
+
+// saJsValReturnScan reports whether an unannotated function/arrow with a
+// block body returns only jsval-boxable values (see saJsValReturnExpr).
+// The walk stops at nested function-like nodes (their returns belong to
+// the nested function, not this one) and at class nodes (whose methods are
+// nested functions too). A bare return, a non-qualifying value return, or
+// no return at all fails the scan.
+func saJsValReturnScan(fnNode *ast.Node) bool {
+	if fnNode == nil {
+		return false
+	}
+	var body *ast.Node
+	switch fnNode.Kind {
+	case ast.KindFunctionDeclaration, ast.KindArrowFunction, ast.KindFunctionExpression:
+		body = fnNode.Body()
+	default:
+		return false
+	}
+	stmts, ok := saBlockStmts(body)
+	if !ok {
+		return false
+	}
+	found := false
+	good := true
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || !good {
+			return
+		}
+		switch n.Kind {
+		case ast.KindFunctionDeclaration, ast.KindFunctionExpression,
+			ast.KindArrowFunction, ast.KindMethodDeclaration,
+			ast.KindClassDeclaration, ast.KindClassExpression,
+			ast.KindGetAccessor, ast.KindSetAccessor:
+			return
+		case ast.KindReturnStatement:
+			rs := n.AsReturnStatement()
+			if rs == nil || rs.Expression == nil || !saJsValReturnExpr(rs.Expression) {
+				good = false
+				return
+			}
+			found = true
+			return
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+		if !good {
+			return false
+		}
+	}
+	return found && good
+}
+
 // saPrescanRet 定单个函数/箭头的 SA 返回签名（显式注解 > checker 推断 > void；
 // 三处签名表——函数预扫/箭头预扫/定义发射——必须同源，否则调用点与定义错位丢值）。
 func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (retKind string, isVoid, ok bool) {
@@ -4339,6 +4537,9 @@ func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx, clas
 	}
 	if k, good := saInferredReturnKind(fnNode, tcx); good {
 		return k, k == "void", true
+	}
+	if saJsValReturnScan(fnNode) {
+		return "jsval", false, true
 	}
 	return "void", true, true
 }
