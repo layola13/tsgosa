@@ -411,6 +411,37 @@ func saLowerCondLogic(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
 					return t, ""
 				}
+				// Map 句柄真值即非零（与 saCondOperand map 臂同律）。
+				if k == "map" {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
+					return t, ""
+				}
+				// jsval 句柄经 ts_jsval_truthy（与 saCondOperand jsval 臂同律）。
+				if k == "jsval" {
+					scope.addImport("sa_std/ts_jsval.sa")
+					out := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, e.Text()))
+					return out, ""
+				}
+				// 数组句柄真值即非零句柄（match 结果沿 load-head 形）。
+				if k == "arr" {
+					if scope.matchArr != nil && scope.matchArr[e.Text()] {
+						hp := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, e.Text()))
+						res := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
+						return res, ""
+					}
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
+					return t, ""
+				}
 			} else if text, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
 				h := saLowerStringLiteral(w, text, scope, nextTemp)
 				t, _ := struth(h)
@@ -756,7 +787,10 @@ func saCondOperand(w printer.EmitTextWriter, cond *ast.Node, scope *saScope, pos
 					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
 					return res, ""
 				}
-				return "", "array " + nm + " in condition"
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, nm))
+				return t, ""
 			}
 			if k == "str" {
 				// 串真值（空串/零句柄 falsy；头 +8 读长，上游两者恒真系误编译；可空与非空统一守卫，`?.length` 槽复用；502）。
@@ -2793,6 +2827,12 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", out, a.Text()))
 			return out, true, ""
+		case k == "jsval":
+			scope.addImport("sa_std/ts_jsval.sa")
+			out := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", out, a.Text()))
+			return out, true, ""
 		case k == "str":
 			_, l := saExpandStr(w, a.Text(), nextTemp)
 			out := fmt.Sprintf("t_%d", *nextTemp)
@@ -3745,6 +3785,27 @@ func saLowerTernaryLazyStr(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 func saEvalLogicOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if p := saPeelParens(e); p != nil && p.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[p.Text()]; ok && strings.HasPrefix(k, "inst:") {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
+			return t, ""
+		}
+		if k, ok := scope.types[p.Text()]; ok && k == "map" {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
+			return t, ""
+		}
+		if k, ok := scope.types[p.Text()]; ok && k == "arr" {
+			if scope.matchArr != nil && scope.matchArr[p.Text()] {
+				hp := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", hp, p.Text()))
+				res := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = ne %s, 0\n", res, hp))
+				return res, ""
+			}
 			t := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
@@ -6962,6 +7023,18 @@ func saArrIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saInstIdentOperand reports whether e is an identifier bound to an
+// instance handle (any recorded layout: pointer equality is reference
+// equality regardless of layout).
+func saInstIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && strings.HasPrefix(k, "inst:") {
+			return e.Text(), true
+		}
+	}
+	return "", false
+}
+
 // saIsF64Operand reports whether an operand carries f64 (float literal or f64 binding).
 func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 	for e != nil && e.Kind == ast.KindParenthesizedExpression {
@@ -8268,7 +8341,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
 			// handle equality compares directly (arr bindings from enum instantiations
-			// against i32 values; address semantics; string/instance sides keep old gates).
+			// against i32 values; address semantics; inst identifier pairs compare
+			// handles directly (JEV handle_eq 1.0); string sides keep old gates).
 			if ln, ok := saArrIdentOperand(be.Left, scope); ok {
 				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
@@ -8306,6 +8380,22 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				*nextTemp++
 				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, rn))
 				return t, ""
+			}
+			// 实例句柄相等即指针相等（JS 对象 ===/!== 为引用相等；
+			// 与 arr 句柄臂同形；仅标识符对，字段/调用结果沿旧门）。
+			if ln, ok := saInstIdentOperand(be.Left, scope); ok {
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				op2 := "eq"
+				if neg {
+					op2 = "ne"
+				}
+				if rn, ok := saInstIdentOperand(be.Right, scope); ok {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, ln, rn))
+					return t, ""
+				}
 			}
 		}
 		// 布尔相等比较（双边布尔值形经 saEvalBool 归一 0/1 后 eq/ne；
