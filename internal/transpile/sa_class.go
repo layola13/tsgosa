@@ -5288,10 +5288,130 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 // true/false, +/- integer prefixes) -> i32 via the existing
 // saTopArrElemText/saTopArrStrText helpers, nested object literals ->
 // inst slots behind recursively synthesized sub-layouts. Floats, arrays,
-// identifiers, nulls, methods, shorthand, computed keys, spread from a
+// identifiers (except depth-0 folded i32 const identifiers, see
+// saPrescanScalarInts), nulls, methods, shorthand, computed keys,
+// spread from a
 // layout with non-i32/str fields, and empty literals all return false,
 // so the statement keeps refusing kind-244 loudly. Depth-guarded.
-func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr, depth int, arrStr map[string][]string, objClaims map[string]saTopObj) (string, bool) {
+// saPrescanScalarInts folds top-level scalar consts for the reverse
+// i32-identifier arm (4_prescan_filter, JEV folded_i32_const 1.0,
+// any_order_const_unassigned 0.8): the prescan runs before the main
+// fold loop, so this fixpoint pass recovers the folded values the gate
+// needs. Only const-flagged, never-assigned names are folded, and only
+// forms the main fold also accepts (int literals / int expressions /
+// identifier chains / Number / radix-10 parseInt); string literals are
+// recorded in consts+strs like the main fold, so Number(S) folds but a
+// bare string identifier never yields an i32. Member reads, calls other
+// than Number/parseInt, floats, templates, and object/array literals
+// never enter the map. The map is used for the layout gate only.
+func saPrescanScalarInts(stmts []*ast.Node, assigned map[string]bool) map[string]string {
+	type cand struct {
+		name string
+		init *ast.Node
+	}
+	var cands []cand
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Initializer == nil {
+				continue
+			}
+			nm := vd.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if assigned[nm.Text()] {
+				continue
+			}
+			cands = append(cands, cand{name: nm.Text(), init: vd.Initializer})
+		}
+	}
+	consts := map[string]string{}
+	strs := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for _, c := range cands {
+			if _, ok := consts[c.name]; ok {
+				continue
+			}
+			init := saUnwrapTransparent(c.init)
+			if init == nil {
+				continue
+			}
+			switch init.Kind {
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				consts[c.name] = init.Text()
+				strs[c.name] = true
+				changed = true
+			case ast.KindIdentifier:
+				if t, ok := consts[init.Text()]; ok {
+					consts[c.name] = t
+					if strs[init.Text()] {
+						strs[c.name] = true
+					}
+					changed = true
+				}
+			case ast.KindNumericLiteral, ast.KindBinaryExpression, ast.KindPrefixUnaryExpression, ast.KindParenthesizedExpression:
+				if v, ok := saFoldConstInt(init, consts, strs); ok {
+					if s := v.String(); saIsDecimalInt(s) {
+						consts[c.name] = s
+						changed = true
+					}
+				}
+			case ast.KindCallExpression:
+				ce := init.AsCallExpression()
+				if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+					continue
+				}
+				callee := ce.Expression.Text()
+				if callee != "Number" && callee != "parseInt" {
+					continue
+				}
+				if ce.Arguments == nil || len(ce.Arguments.Nodes) == 0 {
+					continue
+				}
+				if callee == "Number" && len(ce.Arguments.Nodes) != 1 {
+					continue
+				}
+				if callee == "parseInt" && len(ce.Arguments.Nodes) > 2 {
+					continue
+				}
+				v, ok := saFoldNumArg(ce.Arguments.Nodes[0], consts, strs)
+				if !ok || !saIsDecimalInt(v) {
+					continue
+				}
+				if callee == "parseInt" && len(ce.Arguments.Nodes) == 2 {
+					radix, ok := saFoldNumArg(ce.Arguments.Nodes[1], consts, strs)
+					if !ok || radix != "10" {
+						continue
+					}
+				}
+				consts[c.name] = v
+				changed = true
+			}
+		}
+	}
+	out := map[string]string{}
+	for name, text := range consts {
+		if !strs[name] && saIsDecimalInt(text) {
+			out[name] = text
+		}
+	}
+	return out
+}
+
+func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr, depth int, arrStr map[string][]string, objClaims map[string]saTopObj, scalars map[string]string) (string, bool) {
 	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 || depth > 8 {
 		return "", false
 	}
@@ -5368,12 +5488,21 @@ func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string
 				fkinds[fname] = "arr"
 				cp := append([]string(nil), arr.elems...)
 				arrStr[fname] = cp
+			} else if _, ok := scalars[nm]; ok {
+				// (4_prescan_filter, JEV folded_i32_const) reverse
+				// direction: a folded i32 const identifier field claims
+				// an i32 slot. The scalar map holds only decimal-int
+				// texts for const-flagged, never-assigned names, so a
+				// string/float/assigned identifier never reaches here;
+				// materialization still resolves the identifier through
+				// final topConsts and refuses loudly if it cannot.
+				fkinds[fname] = "i32"
 			} else {
 				return "", false
 			}
 		} else if finit.Kind == ast.KindObjectLiteralExpression {
 			subOl := finit.AsObjectLiteralExpression()
-			subLay, ok := saTopObjUnannotLayoutOf(subOl, classes, prev, topArrs, depth+1, nil, nil)
+			subLay, ok := saTopObjUnannotLayoutOf(subOl, classes, prev, topArrs, depth+1, nil, nil, scalars)
 			if !ok {
 				return "", false
 			}
@@ -5401,7 +5530,7 @@ func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string
 // (vd.Type == nil) by synthesizing its layout from literal field kinds.
 // Annotated declarations never reach it: the prescan tries it only when
 // vd.Type == nil, so annotated behavior is byte-identical.
-func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr) (string, map[string][]string, map[string]saTopObj, bool) {
+func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr, scalars map[string]string) (string, map[string][]string, map[string]saTopObj, bool) {
 	if vd == nil || vd.Type != nil || vd.Initializer == nil {
 		return "", nil, nil, false
 	}
@@ -5415,7 +5544,7 @@ func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saCl
 	}
 	arrStr := map[string][]string{}
 	objClaims := map[string]saTopObj{}
-	lay, ok := saTopObjUnannotLayoutOf(ol, classes, prev, topArrs, 0, arrStr, objClaims)
+	lay, ok := saTopObjUnannotLayoutOf(ol, classes, prev, topArrs, 0, arrStr, objClaims, scalars)
 	if !ok {
 		return "", nil, nil, false
 	}
@@ -5739,6 +5868,7 @@ func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, cla
 }
 
 func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode, topArrs map[string]saTopArr) (map[string]saTopObj, map[*ast.Node]bool) {
+	scalars := saPrescanScalarInts(stmts, assigned)
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -5792,7 +5922,7 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			// 无注解径（JEV unannot_flat）：注解缺省时试字面量合成布局；
 			// 成则本声明直接认领，败则沿旧门。
 			if vd.Type == nil {
-				if lay, arrStr, objClaims, okU := saTopObjUnannotLayout(vd, classes, out, topArrs); okU {
+				if lay, arrStr, objClaims, okU := saTopObjUnannotLayout(vd, classes, out, topArrs, scalars); okU {
 					initU := saUnwrapTransparent(vd.Initializer)
 					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: initU, arrStrFields: arrStr, objFieldClaims: objClaims}})
 					continue
@@ -5917,7 +6047,7 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				// 成布局认领本声明；合成败则沿旧门。
 				arrStrF := map[string][]string{}
 				objClaimsF := map[string]saTopObj{}
-				if synthLay, okS := saTopObjUnannotLayoutOf(ol, classes, out, topArrs, 0, arrStrF, objClaimsF); okS {
+				if synthLay, okS := saTopObjUnannotLayoutOf(ol, classes, out, topArrs, 0, arrStrF, objClaimsF, scalars); okS {
 					if len(arrStrF) == 0 {
 						arrStrF = nil
 					}
