@@ -4276,7 +4276,14 @@ func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, cla
 			}
 			keys = append(keys, fn)
 		}
-		return saWantKeyMatch(sub, keys)
+		// Subset acceptance: every present key was validated above, and
+		// missing sub-fields zero-fill on materialization (saLowerObjectLiteral
+		// defaults), matching the top-level gate, which iterates literal
+		// properties only. saWantKeyMatch would additionally require every
+		// non-optional sub-field to be present, which the materializer does
+		// not require (e.g. engine: { phase: "idle" } with extra Engine fields).
+		_ = keys
+		return true
 	}
 	return false
 }

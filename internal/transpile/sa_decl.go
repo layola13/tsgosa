@@ -2458,6 +2458,22 @@ func saIsTopLevelArrowConst(st *ast.Node) (string, *ast.Node, bool) {
 	}
 	init := vd.Initializer
 	if init.Kind != ast.KindArrowFunction && init.Kind != ast.KindFunctionExpression {
+		// memo(...) wrapper (JEV unwrap_memo 0.81): a single-argument call
+		// to the plain `memo` identifier whose argument is an arrow function
+		// or function expression unwraps to that inner function, which the
+		// existing arrow-const path emits exactly like a plain function
+		// const. Identifier arguments (alias support) and forwardRef
+		// arguments keep refusing.
+		if init.Kind == ast.KindCallExpression {
+			if ce := init.AsCallExpression(); ce != nil && ce.Expression != nil &&
+				ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "memo" &&
+				ce.Arguments != nil && len(ce.Arguments.Nodes) == 1 && ce.Arguments.Nodes[0] != nil {
+				if inner := saUnwrapTransparent(ce.Arguments.Nodes[0]); inner != nil &&
+					(inner.Kind == ast.KindArrowFunction || inner.Kind == ast.KindFunctionExpression) {
+					return nm.Text(), inner, true
+				}
+			}
+		}
 		return "", nil, false
 	}
 	return nm.Text(), init, true
