@@ -550,6 +550,27 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 			}
 			if _, ok := scope.classes[cname]; !ok {
+				if cname == "URLSearchParams" {
+					var argNodes []*ast.Node
+					if ne.Arguments != nil {
+						argNodes = ne.Arguments.Nodes
+					}
+					if len(argNodes) != 0 {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "URLSearchParams takes no constructor arguments (string-argument construction is not lowerable)"})
+						return false
+					}
+					h := saLowerStringLiteral(w, "", scope, nextTemp)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "str"
+					if scope.urlspVars == nil {
+						scope.urlspVars = map[string]bool{}
+					}
+					scope.urlspVars[name] = true
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					continue
+				}
 				if saIsStdOpaqueClass(cname) {
 					h, msg := saLowerStdOpaqueNew(w, cname, ne, scope, pos, refusals, nextTemp)
 					if msg != "" {

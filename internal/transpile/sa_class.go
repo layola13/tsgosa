@@ -381,6 +381,86 @@ func saStdOpaqueEvalArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, p
 	return "std opaque constructor argument is not lowerable"
 }
 
+// saLowerURLSearchParamsMethod lowers calls on a URLSearchParams accumulator
+// binding (a str handle). set/append evaluate both args as strings, join a
+// runtime "&" separator when the accumulator is non-empty (slot join, the
+// ternary-arm pattern: SA has no phi), concatenate key + "=" + value, and
+// rebind the variable with the str-assignment sequence (release old handle,
+// consume new temp, heap + rebound marks). toString returns the binding
+// itself (a borrow, like any str identifier read). Anything else (get, has,
+// delete, sort, ...) is unhandled and falls through to the existing refusal.
+func saLowerURLSearchParamsMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	if method == "toString" {
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		if len(argNodes) != 0 {
+			return "", false, "URLSearchParams.toString takes no arguments", true
+		}
+		return recv, false, "", true
+	}
+	if method != "set" && method != "append" {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 2 {
+		return "", false, "URLSearchParams." + method + " takes 2 arguments", true
+	}
+	kh, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg, true
+	}
+	vh, msg := saEvalStr(w, argNodes[1], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg, true
+	}
+	// Runtime "&" separator: present iff the accumulator is non-empty.
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	_, oldLen := saExpandStr(w, recv, nextTemp)
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, oldLen))
+	sepL := fmt.Sprintf("L_urlsp_sep_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nosepL := fmt.Sprintf("L_urlsp_nosep_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_urlsp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, sepL, nosepL))
+	w.Write(fmt.Sprintf("%s:\n", sepL))
+	amp := saLowerStringLiteral(w, "&", scope, nextTemp)
+	withSep := saConcatSlices(w, recv, amp, scope, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, withSep))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", nosepL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, recv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	acc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", acc, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	kv := saConcatSlices(w, acc, kh, scope, nextTemp)
+	eq := saLowerStringLiteral(w, "=", scope, nextTemp)
+	kv2 := saConcatSlices(w, kv, eq, scope, nextTemp)
+	final := saConcatSlices(w, kv2, vh, scope, nextTemp)
+	saRebindRelease(w, scope, recv)
+	w.Write(fmt.Sprintf("  %s = %s\n", recv, final))
+	saConsumeOwn(scope, final)
+	if b := saOwnOf(scope, recv); b != nil {
+		b.heap = true
+	}
+	saMarkRebound(scope, recv)
+	saClearNullConst(scope, recv)
+	return "", true, "", true
+}
+
 // saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
 // jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
 // helper (no new inline helper). Constructor args are side-effect evaluated

@@ -3144,6 +3144,20 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// URLSearchParams accumulator methods (.set/.append rewrite the str
+		// binding, .toString() reads it; .get/.has/.delete fall through to
+		// the existing refusal arms).
+		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if scope.urlspVars[pa.Expression.Text()] {
+				if op, voidCall, msg, handled := saLowerURLSearchParamsMethod(w, pa.Expression.Text(), pa.Name().Text(), ce, scope, pos, refusals, nextTemp); handled {
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, voidCall, ""
+				}
+			}
+		}
 		// Opaque std instance methods (AbortController.abort, FormData.append/
 		// set/delete, TextEncoder.encode): receiver must be an identifier bound
 		// by an opaque ctor; unhandled methods fall through to the existing

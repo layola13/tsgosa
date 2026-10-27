@@ -5202,6 +5202,9 @@ type saScope struct {
 	// a layout. Aliasing a handle refuses elsewhere already (explicit clone
 	// rule), so no propagation is needed.
 	stdOpaque map[string]string
+	// urlspVars marks str bindings that are URLSearchParams accumulators
+	// (patch 3): .set/.append rewrite them, .toString() reads them.
+	urlspVars map[string]bool
 	// 回调域内标记（`saInlineTestUnit` 进置 true；顶层/普通函数内调
 	// assertions 无尾声点，大声拒，禁静默无检查）。
 	expectInTest bool
