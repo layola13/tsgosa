@@ -4145,6 +4145,22 @@ func saLowerTernaryInstArmHandle(w printer.EmitTextWriter, e *ast.Node, want str
 // saEvalJsValOperand) and joined through a ptr slot, mirroring the
 // str/arr ternary join idiom. Only used when the function return kind
 // is jsval, so heterogeneous arms (number vs string) are legal here.
+// saJsValTernaryArm evaluates one arm of a jsval ternary (JEV prog38
+// jsval_nest_recurse 0.81, return_ternary_only 0.66): a nested ternary recurses
+// into saLowerTernaryJsVal; all other arms use saEvalJsValOperand. Scoped to
+// jsval ternary arms only, so nested ternaries in other jsval operand
+// positions keep refusing loudly.
+func saJsValTernaryArm(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
+	if e != nil && e.Kind == ast.KindConditionalExpression {
+		ce := e.AsConditionalExpression()
+		if ce == nil {
+			return "", "bad nested jsval ternary"
+		}
+		return saLowerTernaryJsVal(w, ce, e, scope, pos, refusals, nextLabel, nextTemp)
+	}
+	return saEvalJsValOperand(w, e, scope, pos, refusals, nextTemp)
+}
+
 func saLowerTernaryJsVal(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
 	condOp, msg := saCondOperandMat(w, ce.Condition, scope, pos, refusals, nextTemp)
 	if msg != "" {
@@ -4162,7 +4178,7 @@ func saLowerTernaryJsVal(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", condOp, tL, fL))
 	w.Write(fmt.Sprintf("%s:\n", tL))
 	base := len(scope.ownOrder)
-	tv, msg := saEvalJsValOperand(w, ce.WhenTrue, scope, pos, refusals, nextTemp)
+	tv, msg := saJsValTernaryArm(w, ce.WhenTrue, scope, pos, refusals, nextLabel, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
@@ -4171,7 +4187,7 @@ func saLowerTernaryJsVal(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	w.Write(fmt.Sprintf("  jmp %s\n", endL))
 	w.Write(fmt.Sprintf("%s:\n", fL))
 	base = len(scope.ownOrder)
-	fv, msg := saEvalJsValOperand(w, ce.WhenFalse, scope, pos, refusals, nextTemp)
+	fv, msg := saJsValTernaryArm(w, ce.WhenFalse, scope, pos, refusals, nextLabel, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
@@ -4186,6 +4202,63 @@ func saLowerTernaryJsVal(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 	scope.types[res] = "jsval"
 	saOwnTemp(scope, res)
 	return res, ""
+}
+
+// saTernaryArmIsStr reports whether a ternary arm lowers as a string value
+// (JEV prog38 recurse_str_undef 0.94, fdef_kind 0.98, all_positions 0.89):
+// a plain string expression, undefined/null, a nested ternary whose leaf arms
+// are all string-or-undefined, or an optional field read on a .find/.findLast
+// call result whose element layout records the field as str. Used ONLY at the
+// ternary gate in saLowerTernaryValue, not in saIsStrValue generally, so other
+// positions keep their existing kind discipline.
+func saTernaryArmIsStr(e *ast.Node, scope *saScope) bool {
+	return saTernaryArmIsStrDepth(e, scope, 0)
+}
+
+func saTernaryArmIsStrDepth(e *ast.Node, scope *saScope, depth int) bool {
+	if e == nil || depth > 8 {
+		return false
+	}
+	if saIsStrValue(e, scope) {
+		return true
+	}
+	if e.Kind == ast.KindUndefinedKeyword || e.Kind == ast.KindNullKeyword {
+		return true
+	}
+	if e.Kind == ast.KindIdentifier && e.Text() == "undefined" {
+		return true
+	}
+	if e.Kind == ast.KindConditionalExpression {
+		ce := e.AsConditionalExpression()
+		if ce == nil {
+			return false
+		}
+		return saTernaryArmIsStrDepth(ce.WhenTrue, scope, depth+1) && saTernaryArmIsStrDepth(ce.WhenFalse, scope, depth+1)
+	}
+	if e.Kind == ast.KindPropertyAccessExpression {
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindCallExpression {
+			return false
+		}
+		ce := pa.Expression.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return false
+		}
+		meth := ce.Expression.AsPropertyAccessExpression()
+		if meth == nil || meth.Name() == nil || (meth.Name().Text() != "find" && meth.Name().Text() != "findLast") {
+			return false
+		}
+		layout, ok := saFindReceiverLayout(meth.Expression, scope)
+		if !ok {
+			return false
+		}
+		def, ok := scope.classes[layout]
+		if !ok || def == nil {
+			return false
+		}
+		return def.fkinds[pa.Name().Text()] == "str"
+	}
+	return false
 }
 
 func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression, where *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, bool, string) {
@@ -4436,16 +4509,7 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 		}
 	}
 	if saIsStrValue(ce.WhenTrue, scope) || saIsStrValue(ce.WhenFalse, scope) {
-		isUndef := func(e *ast.Node) bool {
-			if e == nil {
-				return false
-			}
-			if e.Kind == ast.KindUndefinedKeyword || e.Kind == ast.KindNullKeyword {
-				return true
-			}
-			return e.Kind == ast.KindIdentifier && e.Text() == "undefined"
-		}
-		if (!saIsStrValue(ce.WhenTrue, scope) && !isUndef(ce.WhenTrue)) || (!saIsStrValue(ce.WhenFalse, scope) && !isUndef(ce.WhenFalse)) {
+		if !saTernaryArmIsStr(ce.WhenTrue, scope) || !saTernaryArmIsStr(ce.WhenFalse, scope) {
 			ln, col := pos(where.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "ternary arms disagree (string vs non-string)"})
 			return "", false, "ternary arms disagree (string vs non-string)"
