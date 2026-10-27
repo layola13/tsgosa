@@ -7880,7 +7880,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		}
 		// 顶层可变槽读（局部遮蔽优先上；被赋值名永不折叠故与 topConsts 无交；
 		// 形状证据：封存 modStateOf:265-279 + emitModLoad:901-938）。
-		if ms, ok := scope.modVars[nm]; ok {
+		// 2b_k244handles patch1：仅 i32 宽走此路（句柄/串槽禁截断误读）。
+		if ms, ok := scope.modVars[nm]; ok && ms.w == "i32" {
 			return saModLoadI32(w, ms, scope, nextTemp), ""
 		}
 		// 顶层纯量折叠读（局部遮蔽优先上；封存 lowerExpr:2775）。
@@ -8275,6 +8276,11 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 									return "", fmt.Sprintf("module state %s stores string literals and string constants only (computed strings are not lowerable yet)", ms.qual)
 								}
 								return saModStoreStr(w, ms, text, scope, nextTemp), ""
+							}
+							if ms.w != "i32" {
+								// 句柄槽值位写不在 patch1 scope（语句位重绑定支外沿旧门大声拒；
+								// 禁 i32 直存误写位槽）。
+								return "", fmt.Sprintf("module handle %s assignment in value position is not lowerable", ms.qual)
 							}
 							op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 							if msg != "" {
@@ -10108,6 +10114,10 @@ func saTypeofKind(e *ast.Node, scope *saScope) (string, string) {
 		if ms, ok := scope.modVars[name]; ok {
 			if ms.w == "str" {
 				return "string", ""
+			}
+			if ms.w == "handle" {
+				// 句柄槽即对象（null 或接口实例；2b_k244handles patch1）。
+				return "object", ""
 			}
 			return "number", ""
 		}

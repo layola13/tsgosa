@@ -3032,6 +3032,13 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				saModStoreStr(w, ms, text, scope, nextTemp)
 				return true
 			}
+			if ms.w != "i32" {
+				// 句柄槽语句写须走已绑定的 inst: 重绑定支（序幕未建时沿旧门大声拒；
+				// 禁 i32 直存误写位槽）。
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("module handle %s assignment needs a bound slot (prologue) — not lowerable here", ms.qual)})
+				return false
+			}
 			op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(s.Pos())
@@ -3053,6 +3060,21 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	if strings.HasPrefix(k, "inst:") {
 		// 实例重绑定（字面量现场构造 + 旧值先释；封存 lowerCompoundAssign
 		// 标识符分支读-改-写回同序；句柄对拷无显式 clone 语义，沿上游拒）。
+		// 句柄槽 null 清空（2b_k244handles patch1：`cur = null` 槽存 0 + 本地
+		// 归零；undefined 不认——JS 中 undefined !== null，误归零即静默错译；
+		// 标识符 RHS 沿旧门拒）。
+		if ms, ok := scope.modVars[name]; ok && ms.w == "handle" && be.Right != nil && be.Right.Kind == ast.KindNullKeyword {
+			saRebindRelease(w, scope, name)
+			saEmitModSetRaw(w, ms.key, "0", scope, nextTemp)
+			scope.addImport("sa_std/modstate.sai")
+			w.Write(fmt.Sprintf("  %s = 0\n", name))
+			if b := saOwnOf(scope, name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, name)
+			saClearNullConst(scope, name)
+			return true
+		}
 		// new 重绑定（`b = new D()` 进 B 注解变量：与声明位 step395/返回位 step397 同规，绑定跟初值，用点取决；封存无检查直重绑）。
 		if be.Right != nil && be.Right.Kind == ast.KindNewExpression {
 			ne := be.Right.AsNewExpression()
@@ -3064,7 +3086,23 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 						return false
 					}
+					if ms, ok := scope.modVars[name]; ok && ms.w == "handle" && ne.Expression.Text() != ms.iface {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("module handle %s expects %s but got %s", ms.qual, ms.iface, ne.Expression.Text())})
+						return false
+					}
 					saRebindRelease(w, scope, name)
+					if ms, ok := scope.modVars[name]; ok && ms.w == "handle" {
+						u := saSlotStoreHandle(w, ms, h, scope, nextTemp)
+						w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+						saConsumeOwn(scope, h)
+						if b := saOwnOf(scope, name); b != nil {
+							b.heap = true
+						}
+						saMarkRebound(scope, name)
+						saClearNullConst(scope, name)
+						return true
+					}
 					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 					saConsumeOwn(scope, h)
 					if b := saOwnOf(scope, name); b != nil {
@@ -3085,6 +3123,18 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				return false
 			}
 			saRebindRelease(w, scope, name)
+			if ms, ok := scope.modVars[name]; ok && ms.w == "handle" {
+				// 调用臂沿本地路不验返回种（本地路亦不验；槽 iface 恒定）。
+				u := saSlotStoreHandle(w, ms, h, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+				saConsumeOwn(scope, h)
+				if b := saOwnOf(scope, name); b != nil {
+					b.heap = true
+				}
+				saMarkRebound(scope, name)
+				saClearNullConst(scope, name)
+				return true
+			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			saConsumeOwn(scope, h)
 			if b := saOwnOf(scope, name); b != nil {
@@ -3102,6 +3152,17 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				return false
 			}
 			saRebindRelease(w, scope, name)
+			if ms, ok := scope.modVars[name]; ok && ms.w == "handle" {
+				u := saSlotStoreHandle(w, ms, h, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+				saConsumeOwn(scope, h)
+				if b := saOwnOf(scope, name); b != nil {
+					b.heap = true
+				}
+				saMarkRebound(scope, name)
+				saClearNullConst(scope, name)
+				return true
+			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			saConsumeOwn(scope, h)
 			if b := saOwnOf(scope, name); b != nil {
@@ -3110,6 +3171,28 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			saMarkRebound(scope, name)
 			saClearNullConst(scope, name)
 			return true
+		}
+		// 句柄槽通用调用重绑定（2b_k244handles patch1：plain/await 调用；
+		// 仅槽名——本地路沿旧门，通用调用臂另议）。
+		if ms, ok := scope.modVars[name]; ok && ms.w == "handle" {
+			if ce := saSlotCallOf(be.Right); ce != nil {
+				h, _, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					ln, col := pos(s.Pos())
+					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+					return false
+				}
+				saRebindRelease(w, scope, name)
+				u := saSlotStoreHandle(w, ms, h, scope, nextTemp)
+				w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+				saConsumeOwn(scope, h)
+				if b := saOwnOf(scope, name); b != nil {
+					b.heap = true
+				}
+				saMarkRebound(scope, name)
+				saClearNullConst(scope, name)
+				return true
+			}
 		}
 		if be.Right == nil || be.Right.Kind != ast.KindObjectLiteralExpression {
 			ln, col := pos(s.Pos())
@@ -3124,6 +3207,17 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 			return false
 		}
 		saRebindRelease(w, scope, name)
+		if ms, ok := scope.modVars[name]; ok && ms.w == "handle" {
+			u := saSlotStoreHandle(w, ms, h, scope, nextTemp)
+			w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+			saConsumeOwn(scope, h)
+			if b := saOwnOf(scope, name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, name)
+			saClearNullConst(scope, name)
+			return true
+		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 		saConsumeOwn(scope, h)
 		// 新鲜句柄入位：置堆 + 复位（saStoreLocal live+temp 分支同形）。

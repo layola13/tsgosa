@@ -3914,6 +3914,17 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 			return
 		}
 	}
+	// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属；
+	// 排除已绑名与直接声明；表达式体以体表达式为根）。
+	var arrowRoots []*ast.Node
+	if body.Kind == ast.KindBlock {
+		if blk := body.AsBlock(); blk != nil {
+			arrowRoots = blk.Statements.Nodes
+		}
+	} else {
+		arrowRoots = []*ast.Node{body}
+	}
+	saEmitSlotPrologue(w, saSlotPrologueNames(arrowRoots, scope, scope.modVars), scope, scope.modVars, nextTemp)
 	if !saLowerArrowBody(w, arrow, body, isVoid, retKind, scope, pos, refusals, needImport, nextLabel, nextTemp) {
 		return
 	}
@@ -4698,12 +4709,13 @@ func saPrescanRet(typeNode *ast.TypeNode, fnNode *ast.Node, tcx *saTypeCtx, clas
 // modWiden:822-882（同宽 trunc 839-851）。
 // 单文件无前缀：键域前缀为空（多文件前缀见 modKeyOf:107-110，单文件投影）。
 type saModState struct {
-	qual string // 饰名（拒因定位；封存 modState.qual:39-55）
-	w    string // "i32" | "str"（i64/u64/f64/obj 后步；封存 modWidthOf:70-82 子集）
-	key  uint64
-	key2 uint64 // len 槽（串独有；封存 modStrKeyOf:112-117）
-	flag uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341；串恒置位）
-	init string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0；串恒有初值）
+	qual  string // 饰名（拒因定位；封存 modState.qual:39-55）
+	w     string // "i32" | "str" | "handle"（i64/u64/f64/obj 后步；封存 modWidthOf:70-82 子集）
+	iface string // handle 槽的接口名（w=="handle" 时有效；2b_k244handles patch1）
+	key   uint64
+	key2  uint64 // len 槽（串独有；封存 modStrKeyOf:112-117）
+	flag  uint64 // 0 即零快道（注册表零填，无分支；封存 modIsZero:321-341；串恒置位）
+	init  string // 非零字面文本（flag != 0 时有效；零初值/无初值 flag 恒 0；串恒有初值）
 }
 
 // saModFnv1a64 即 FNV-1a 64（封存 fnv1a64:84-97）。
@@ -4835,7 +4847,76 @@ func saModInitI32(init *ast.Node) (imm string, zero, ok bool) {
 
 // saModSlotInit 分类槽初值（i32：沿 saModInitI32；串：字面/纯模板，文本直喂落字；
 // 注解须同宽（bool 熨平 i32）；串无初值交旧门；封存 modInitOf:281-319 子集）。
-func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
+// saAnnotNullIface 严格判定 `Iface | null` 注解（2b_k244handles patch1）：
+// 恰两成员——一具名无参 TypeReference（须在 classes 中）+ 一 NullKeyword，
+// 顺序不论；undefined/多成员/匿名 TypeLiteral/带参引用一律不认（saUnionInstKind
+// 的宽松形会误收，此处从严）。
+func saAnnotNullIface(t *ast.Node, classes map[string]*saClassDef) (string, bool) {
+	if t == nil || t.Kind != ast.KindUnionType {
+		return "", false
+	}
+	ut := t.AsUnionTypeNode()
+	if ut == nil || ut.Types == nil || len(ut.Types.Nodes) != 2 {
+		return "", false
+	}
+	iface := ""
+	nullSeen := false
+	for _, m := range ut.Types.Nodes {
+		if m == nil {
+			return "", false
+		}
+		switch m.Kind {
+		case ast.KindNullKeyword:
+			if nullSeen {
+				return "", false
+			}
+			nullSeen = true
+		case ast.KindLiteralType:
+			// 空成员亦可为字面量包 null（saUnionInstKind/saUnionNullBase 同形）。
+			if lit := m.AsLiteralTypeNode().Literal; lit == nil || lit.Kind != ast.KindNullKeyword {
+				return "", false
+			}
+			if nullSeen {
+				return "", false
+			}
+			nullSeen = true
+		case ast.KindTypeReference:
+			if iface != "" {
+				return "", false
+			}
+			ref := m.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+				return "", false
+			}
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) != 0 {
+				return "", false
+			}
+			iface = ref.TypeName.Text()
+		default:
+			return "", false
+		}
+	}
+	if iface == "" || !nullSeen {
+		return "", false
+	}
+	if _, ok := classes[iface]; !ok {
+		return "", false
+	}
+	return iface, true
+}
+
+func saModSlotInit(vd *ast.VariableDeclaration, classes map[string]*saClassDef) (w, lit string, zero, ok bool) {
+	// 2b_k244handles patch1：接口-null 句柄槽（`let x: Iface | null = null` /
+	// 无初值）。严格形见 saAnnotNullIface；初值仅 null 字面或缺省；非 null
+	// 初值沿旧门（认领失败即整句大声拒，不静默半初始化）。
+	if vd.Type != nil {
+		if _, ok2 := saAnnotNullIface(vd.Type, classes); ok2 {
+			if vd.Initializer == nil || vd.Initializer.Kind == ast.KindNullKeyword {
+				return "handle", "", true, true
+			}
+			return "", "", false, false
+		}
+	}
 	if vd.Initializer != nil {
 		switch vd.Initializer.Kind {
 		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
@@ -4876,7 +4957,9 @@ func saModSlotInit(vd *ast.VariableDeclaration) (w, lit string, zero, ok bool) {
 // saModClaimName 判定单 declarator 是否归槽（具名 + `let`/`var` +
 // i32/串初值或串注解零值 + 被赋值（force 置位即命名空间/ambient 无条件认领，
 // 读未写零填充；顶层沿旧门）；`const`/箭头/异形交旧路；封存 modClaim:560-591 子集）。
-func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool, force bool) (string, string, bool) {
+// 句柄槽（2b_k244handles patch1）：严格 `Iface | null` 注解 + null/缺省初值 +
+// 被赋值 + 非导出 + 非强制；余同。
+func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[string]bool, force bool, classes map[string]*saClassDef, exported bool) (string, string, bool) {
 	if vd == nil {
 		return "", "", false
 	}
@@ -4891,8 +4974,13 @@ func saModClaimName(d *ast.Node, vd *ast.VariableDeclaration, assigned map[strin
 	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindArrowFunction {
 		return "", "", false
 	}
-	w, _, _, ok := saModSlotInit(vd)
+	w, _, _, ok := saModSlotInit(vd, classes)
 	if !ok {
+		return "", "", false
+	}
+	if w == "handle" && (force || exported) {
+		// 句柄槽仅同文件非导出 let/var（命名空间/ambient 强制认领与导出
+		// 句柄不在 patch1 scope；沿旧门大声拒）。
 		return "", "", false
 	}
 	_ = d
@@ -4916,7 +5004,7 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 		}
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			name, w, ok := saModClaimName(d, vd, assigned, force)
+			name, w, ok := saModClaimName(d, vd, assigned, force, classes, ast.HasModifier(vs.AsNode(), ast.ModifierFlagsExport))
 			if !ok {
 				continue
 			}
@@ -4935,12 +5023,20 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + name + " collides with an existing definition"})
 				continue
 			}
-			_, lit, zero, _ := saModSlotInit(vd)
+			_, lit, zero, _ := saModSlotInit(vd, classes)
 			if w == "str" {
 				// 串双槽（ptr+len 独立键域；标志恒置位，空串亦物化；封存
 				// registerModState:360-367 + modIsZero 串分支）。
 				ptr, ln, flag := saModStrKeyOf(name)
 				out[name] = &saModState{qual: name, w: "str", key: ptr, key2: ln, flag: flag, init: lit}
+				continue
+			}
+			if w == "handle" {
+				// 句柄槽：u64 位槽（0 即 null），零填即 null；读由函数序幕
+				// 载入，写经槽存（saSlotStoreHandle）；导出/命名空间沿旧门。
+				key, _ := saModKeyOf(name)
+				iface, _ := saAnnotNullIface(vd.Type, classes)
+				out[name] = &saModState{qual: name, w: "handle", key: key, flag: 0, iface: iface}
 				continue
 			}
 			key, flag := saModKeyOf(name)
@@ -5015,8 +5111,12 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "module variable " + key + " collides with an existing definition"})
 				continue
 			}
-			w, lit, zero, ok := saModSlotInit(vd)
+			w, lit, zero, ok := saModSlotInit(vd, classes)
 			if !ok {
+				continue
+			}
+			if w == "handle" {
+				// 命名空间句柄槽不在 patch1 scope（沿旧门；不以 i32 误注册）。
 				continue
 			}
 			if w == "str" {
@@ -5040,7 +5140,7 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 
 // saTryModState 消费槽绑定声明（无码；任一 declarator 被认领即整句消费；
 // 封存 tryModState:618-635 子集）。
-func saTryModState(st *ast.Node, assigned map[string]bool) bool {
+func saTryModState(st *ast.Node, assigned map[string]bool, classes map[string]*saClassDef) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
 	}
@@ -5052,11 +5152,113 @@ func saTryModState(st *ast.Node, assigned map[string]bool) bool {
 		return false
 	}
 	for _, d := range vs.DeclarationList.AsVariableDeclarationList().Declarations.Nodes {
-		if _, _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned, false); ok {
+		if _, _, ok := saModClaimName(d, d.AsVariableDeclaration(), assigned, false, classes, ast.HasModifier(st, ast.ModifierFlagsExport)); ok {
 			return true
 		}
 	}
 	return false
+}
+
+// saSlotPrologueNames 收集函数体根节点中引用的句柄槽名（2b_k244handles patch1）：
+// 遍历全部子节点（含嵌套函数/箭头体——嵌套体另有自己的序幕，外部多载仅为
+// 无害纯读），取 modVars 中宽度为 handle 的名；排除本域已绑名（形参/解构/
+// 预播种，读 scope.types 现状）与根级直接声明（直接声明遮蔽槽名；循环变量
+// 由循环降级覆写，不必排除）。
+func saSlotPrologueNames(roots []*ast.Node, scope *saScope, modVars map[string]*saModState) []string {
+	excl := map[string]bool{}
+	for nm := range scope.types {
+		excl[nm] = true
+	}
+	for _, s := range roots {
+		if s == nil || s.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := s.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil {
+			continue
+		}
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+				continue
+			}
+			excl[vd.Name().Text()] = true
+		}
+	}
+	seen := map[string]bool{}
+	var names []string
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind == ast.KindIdentifier {
+			if nm := n.Text(); !excl[nm] && !seen[nm] {
+				if ms, ok := modVars[nm]; ok && ms.w == "handle" {
+					seen[nm] = true
+					names = append(names, nm)
+				}
+			}
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	for _, s := range roots {
+		walk(s)
+	}
+	return names
+}
+
+// saEmitSlotPrologue 在函数入口为 names 载入句柄槽（2b_k244handles patch1）：
+// 槽值以 u64 位载入同名 SA 变量并登记 inst: 绑定 + 归属（排空 `!` 对 u64
+// 位安全；绑定恒持位、永不持裸 ^ptr，见 patch1 证明）。读到未写得 0（null）。
+func saEmitSlotPrologue(w printer.EmitTextWriter, names []string, scope *saScope, modVars map[string]*saModState, nextTemp *int) {
+	for _, nm := range names {
+		ms := modVars[nm]
+		if ms == nil || ms.w != "handle" {
+			continue
+		}
+		w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
+		scope.types[nm] = "inst:" + ms.iface
+		saDeclareOwned(scope, nm)
+		scope.addImport("sa_std/modstate.sai")
+	}
+}
+
+// saSlotStoreHandle 句柄槽存（2b_k244handles patch1）：句柄位截断 + 原始
+// u64 槽存。h 须为新鲜 ^ptr 临时量（trunc 即消费，不再 own；见 patch1
+// 证明）；返回位临时量 u（调用方以 `name = u` 持有位，永不持裸 ^ptr）。
+func saSlotStoreHandle(w printer.EmitTextWriter, ms *saModState, h string, scope *saScope, nextTemp *int) string {
+	u := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", u, h))
+	// 源临时量末用即释：@main 验器对 Active 临时量要求显式释放（trunc
+	// 消费在 @main 不计，V6/V7 实证）；常规函数中 `!` 已消费临时量亦
+	// 安全（V8/V9 实证）。非临时量名由 saReleaseOwnedTemp 原样放过。
+	saOwnTemp(scope, h)
+	saReleaseOwnedTemp(w, scope, h)
+	saEmitModSetRaw(w, ms.key, u, scope, nextTemp)
+	scope.addImport("sa_std/modstate.sai")
+	return u
+}
+
+// saSlotCallOf 剥透明包装 + await 层取内层调用（2b_k244handles patch1；
+// saFetchCallOf 的无 fetch 门版——槽调用臂专用）。
+func saSlotCallOf(e *ast.Node) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e != nil && e.Kind == ast.KindCallExpression {
+		return e.AsCallExpression()
+	}
+	return nil
 }
 
 // saEmitModSetRaw 原始 u64 槽存 + house 状态检查（非零 panic；封存 emitModSetRaw:668-687）。

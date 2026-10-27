@@ -3177,7 +3177,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	handledTop := map[*ast.Node]bool{}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 槽绑定声明无码（封存 tryModState:618-635；注册期拒因已落袋，此处只消费）。
-		if saTryModState(st, assigned) {
+		if saTryModState(st, assigned, classes) {
 			handledTop[st] = true
 			continue
 		}
@@ -3885,6 +3885,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
+		// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属）。
+		saEmitSlotPrologue(w, saSlotPrologueNames(entryStmts, escope, modVars), escope, modVars, &nextTemp)
 		// 测试缓冲委托（顶层 afterAll/.only 直接子命中才走缓冲核，否则沿旧路）。
 		if saScopeNeedsTestBuffer(entryStmts, escope) {
 			_, term := saLowerBufferedScope(w, entryStmts, false, escope, pos, &refusals, needImport, &nextLabel, &nextTemp)
@@ -5996,6 +5998,9 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		return
 	}
 	terminated := false
+	// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属；
+	// 排除已绑名（形参/解构）与直接声明；嵌套体另有自己的序幕）。
+	saEmitSlotPrologue(w, saSlotPrologueNames(stmts, scope, scope.modVars), scope, scope.modVars, nextTemp)
 	for _, s := range stmts {
 		if terminated {
 			// 终结后的后继是死码，静默抑制（形状证据：封存
