@@ -3635,10 +3635,33 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 			obj = pt.Type
 		}
 	}
+	// 域种开关（与返回侧 retFieldKind 同律，惟种串不做 number/boolean
+	// 重命名；链式直通与尾部分享，禁双份开关漂移）。
+	paramFieldKind := func(def *saClassDef, field string) (string, bool) {
+		if def == nil {
+			return "", false
+		}
+		fk, ok := def.fkinds[field]
+		if !ok {
+			return "", false
+		}
+		switch fk {
+		case "i32", "bool", "str", "arr", "f64", "map", "jsval":
+			return fk, true
+		case "inst":
+			return saIndexedFieldInstKind(def, field, classes, aliasOf)
+		default:
+			if len(fk) > 5 && fk[:5] == "inst:" {
+				return fk, true
+			}
+			return "", false
+		}
+	}
 	// 链式索引访问（JEV jsval_chain 1.0）：内层解为 jsval（如未知基
 	// ClientState["threads"]）则外层亦 jsval；内层为数组句柄且外层以
 	// number 索引时，元种已不可由种串恢复，亦记 jsval；内层为实例
-	// 布局加字段的情形仍拒（需布局直通，未见于 web 残量）。
+	// 布局时布局直通（JEV par_retann chain passthrough 1.0，与返回侧
+	// 链式分支同律）；未知布局/域仍拒。
 	if obj != nil && obj.Kind == ast.KindIndexedAccessType {
 		innerKind, ok := saIndexedAccessParamKind(obj, classes, aliasOf)
 		if !ok {
@@ -3649,6 +3672,16 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 		}
 		if innerKind == "arr" && ia.IndexType != nil && ia.IndexType.Kind == ast.KindNumberKeyword {
 			return "jsval", true
+		}
+		if len(innerKind) > 5 && innerKind[:5] == "inst:" {
+			if idx := ia.IndexType; idx != nil && idx.Kind == ast.KindLiteralType {
+				if lit := idx.AsLiteralTypeNode().Literal; lit != nil && (lit.Kind == ast.KindStringLiteral || lit.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					if def, ok := classes[innerKind[5:]]; ok {
+						return paramFieldKind(def, lit.Text())
+					}
+				}
+			}
+			return "", false
 		}
 		return "", false
 	}
@@ -3724,21 +3757,7 @@ func saIndexedAccessParamKind(t *ast.TypeNode, classes map[string]*saClassDef, a
 	if def == nil {
 		return "", false
 	}
-	fk, ok := def.fkinds[field]
-	if !ok {
-		return "", false
-	}
-	switch fk {
-	case "i32", "bool", "str", "arr", "f64", "map", "jsval":
-		return fk, true
-	case "inst":
-		return saIndexedFieldInstKind(def, field, classes, aliasOf)
-	default:
-		if len(fk) > 5 && fk[:5] == "inst:" {
-			return fk, true
-		}
-		return "", false
-	}
+	return paramFieldKind(def, field)
 }
 
 func saSynthParams(fn *ast.FunctionDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, enums map[string]map[string]int64) ([]string, map[string]string, []saDestructurePending, bool) {
