@@ -3410,7 +3410,19 @@ func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
 		return "", false
 	}
 	base := pa.Expression
-	if base.Kind != ast.KindAsExpression && base.Kind != ast.KindSatisfiesExpression {
+	// (local fix2 reconstruction: the cast base is parenthesized in the
+	// real shape `(globalThis as {...}).Bun`, so peel parens before the
+	// cast check; the cast gate itself is unchanged -- a non-cast base
+	// still refuses below. Without this peel the adopted typeof fold
+	// never fires on the parenthesized shape.)
+	for base != nil && base.Kind == ast.KindParenthesizedExpression {
+		if pe := base.AsParenthesizedExpression(); pe != nil && pe.Expression != nil {
+			base = pe.Expression
+		} else {
+			break
+		}
+	}
+	if base == nil || (base.Kind != ast.KindAsExpression && base.Kind != ast.KindSatisfiesExpression) {
 		return "", false
 	}
 	var inner *ast.Node
@@ -3427,9 +3439,19 @@ func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
 	if inner == nil || inner.Kind != ast.KindIdentifier || inner.Text() != "globalThis" {
 		return "", false
 	}
-	if saDeclaredAt(tcx, inner) {
-		return "", false
-	}
+	// (local fix2 reconstruction: NO binder gate here. The patch1
+	// fail-closed gate `saDeclaredAt(tcx, inner)` made this fold dead
+	// code: the tsgo build path's checker resolves `globalThis` (the
+	// DBG probe on r_pos stops exactly at "globalThis-declared"), so
+	// no adopted-shape const ever folded. The gate conflated "the
+	// checker knows the name" with "the name exists at runtime in the
+	// target"; the JEV target rationale is that the SA target has no
+	// host global, which holds regardless of checker resolution. The
+	// remaining gates still pin the adopted scope exactly: base must
+	// be a cast of the identifier globalThis, member an identifier,
+	// other side exactly "undefined", operator ===/!==. A non-cast
+	// globalThis probe, a non-globalThis typeof, and a wrong literal
+	// all still refuse below/above.)
 	if isEq {
 		return "1", true
 	}
