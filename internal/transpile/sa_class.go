@@ -4955,6 +4955,10 @@ func saObjPropName(p *ast.Node) (string, bool) {
 	switch nm.Kind {
 	case ast.KindIdentifier:
 		return nm.Text(), true
+	case ast.KindNumericLiteral:
+		// (2b_unannot2, JEV numeric_key) bare numeric keys (`50: ...`)
+		// are string keys in JS; the text is the field name.
+		return nm.Text(), true
 	case ast.KindStringLiteral:
 		t := nm.Text()
 		if len(t) >= 2 && t[0] == '"' {
