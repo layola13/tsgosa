@@ -72,6 +72,7 @@ type saClassDef struct {
 	finits        map[string]*ast.Node
 	finitOrder    []string
 	parent        string
+	implements    []string
 	isIface       bool
 	isAbstract    bool
 	isMono        bool
@@ -1404,7 +1405,37 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				continue
 			}
 			if h.AsHeritageClause().Token != ast.KindExtendsKeyword {
-				// implements 子句擦除（上游同形，见上）。
+				// 4_if_flow (JEV record_implements_args 0.95): implements
+				// clauses are recorded, not erased, so that an instance
+				// argument can be accepted where an interface parameter is
+				// expected. Only the name is kept (type arguments stripped,
+				// dotted names flattened like the extends base); unknown or
+				// unrecorded interfaces simply never match, so recording
+				// alone changes no acceptance. Field/method layout is
+				// untouched: implements still contributes no fields.
+				if h.AsHeritageClause().Token == ast.KindImplementsKeyword {
+					if types := h.AsHeritageClause().Types; types != nil {
+						for _, el := range types.Nodes {
+							inm := ""
+							if el.Kind == ast.KindExpressionWithTypeArguments {
+								if ex := el.AsExpressionWithTypeArguments().Expression; ex != nil {
+									if ex.Kind == ast.KindIdentifier {
+										inm = ex.Text()
+									} else if q, ok := saDottedBaseName(ex); ok {
+										inm = q
+									}
+								}
+							} else if el.Kind == ast.KindIdentifier {
+								inm = el.Text()
+							} else if q, ok := saDottedBaseName(el); ok {
+								inm = q
+							}
+							if inm != "" {
+								def.implements = append(def.implements, inm)
+							}
+						}
+					}
+				}
 				continue
 			}
 			types := h.AsHeritageClause().Types
@@ -7805,6 +7836,39 @@ func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 // saSuperBase 解析方法内 super 基（同接收者；形状证据：封存
 // superBaseForRecv:219-232 + lowerSuperMethodCall:237-250）。
 // saIsDerivedFrom 报告sub 是否为 base 本身或其传统派生（跟 parent 链，防环；形状证据：抽象校验祖先链同形）。
+// saClassSatisfies reports whether an instance of class `have` may be
+// passed where class/interface `want` is expected: exact match, the
+// existing parent-chain derivation, or a directly implemented interface
+// on `have` or on any class on `have`'s parent chain (4_if_flow, JEV
+// record_implements_args 0.95). Interface-extends transitivity is NOT
+// included: interface extends is flattened into fields, not a parent
+// link, so a class implementing ChildIface does not yet satisfy a
+// ParentIface parameter. Cycle-guarded (parent cycles are refused at
+// recording, but this helper must never loop on a corrupt map).
+func saClassSatisfies(classes map[string]*saClassDef, have, want string) bool {
+	if have == want {
+		return true
+	}
+	if saIsDerivedFrom(classes, have, want) {
+		return true
+	}
+	seen := map[string]bool{}
+	for c := have; c != "" && !seen[c]; {
+		seen[c] = true
+		d, ok := classes[c]
+		if d == nil || !ok {
+			break
+		}
+		for _, im := range d.implements {
+			if im == want {
+				return true
+			}
+		}
+		c = d.parent
+	}
+	return false
+}
+
 func saIsDerivedFrom(classes map[string]*saClassDef, sub, base string) bool {
 	for p := sub; p != ""; {
 		if p == base {
@@ -9469,15 +9533,8 @@ func saInstArg(w printer.EmitTextWriter, a *ast.Node, want string, scope *saScop
 	default:
 		return "", "method instance argument must be a bound instance"
 	}
-	for c := have; c != ""; {
-		if c == want {
-			return h, ""
-		}
-		d, ok := scope.classes[c]
-		if !ok {
-			break
-		}
-		c = d.parent
+	if saClassSatisfies(scope.classes, have, want) {
+		return h, ""
 	}
 	return "", "method instance argument class mismatch (want " + want + ")"
 }
