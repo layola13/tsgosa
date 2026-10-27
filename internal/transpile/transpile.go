@@ -435,6 +435,7 @@ type saFileLink struct {
 	isEntry          bool                              // entry synthesizes @main; libs refuse top-level execution
 	self             string                            // this file key (for own re-export edges)
 	specOf           map[string]string                 // this file: import spec -> target file
+	jsonOf           map[string]string                 // this file: json import spec -> absolute file path (prescan only; not a program edge, never in specOf/graph)
 	prefixOf         map[string]string                 // all files: target -> prefix
 	harvests         map[string]map[string]saProgFunc  // all files: target -> name -> harvested (driver fills)
 	reexps           map[string]map[string]string      // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
@@ -2137,7 +2138,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
 	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned, topArrs)
-	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
+	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned, link)
 	topConsts := map[string]string{}
 	topStr := map[string]bool{}
 	topMaths := map[string]string{}
@@ -5533,6 +5534,22 @@ func saProgResolveRelative(importer, spec string, files map[string]string, dir s
 	return ""
 }
 
+// saProgResolveJSONFile 解析 JSON 导入为绝对文件路径（仅供预扫读表；
+// 不入程序文件集、不建图边、不进 specOf）：相对导入方目录拼 dir，
+// 存在且非目录才认；否则 ""（调用方沿旧律，导入保持不可解）。
+func saProgResolveJSONFile(importer, spec, dir string) string {
+	d := path.Dir(importer)
+	rel := spec
+	if d != "." && d != "" {
+		rel = d + "/" + spec
+	}
+	abs := filepath.Join(dir, filepath.FromSlash(path.Clean(rel)))
+	if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+		return abs
+	}
+	return ""
+}
+
 // saProgPrefix sanitizes a path to a definition prefix (entry keeps "").
 func saProgPrefix(p, entry string) string {
 	if p == entry {
@@ -6012,6 +6029,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 		graph[rt] = append(graph[rt], ty)
 	}
 	specOf := map[string]map[string]string{}
+	jsonOf := map[string]map[string]string{}
 	reexpOf := map[string]map[string]string{}
 	starOf := map[string][]string{}
 	impOf := map[string]map[string]string{}
@@ -6098,6 +6116,17 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			}
 			spec := saProgModuleSpec(st)
 			if spec == "" {
+				continue
+			}
+			// JSON 导入不入程序边（JEV nested_json_maps）：仅记绝对路径
+			// 供顶层 Record 预扫读表；specOf/图/impOf 沿旧律（无边）。
+			if strings.HasSuffix(spec, ".json") {
+				if abs := saProgResolveJSONFile(p, spec, dir); abs != "" {
+					if jsonOf[p] == nil {
+						jsonOf[p] = map[string]string{}
+					}
+					jsonOf[p][spec] = abs
+				}
 				continue
 			}
 			if tgt := addEdge(p, spec, false); tgt != "" {
@@ -6244,6 +6273,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			isEntry:          p == entry,
 			self:             p,
 			specOf:           specOf[p],
+			jsonOf:           jsonOf[p],
 			harvests:         harvests,
 			prefixOf:         prefixOf,
 			reexps:           reexpOf,

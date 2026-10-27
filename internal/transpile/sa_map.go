@@ -2,7 +2,10 @@
 package transpile
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -764,11 +767,12 @@ func saLowerRecordLiteral(w printer.EmitTextWriter, name, vkind string, n *ast.N
 // topmap_materialize 1.0, chain_maps 0.92）：值种编码 str/i32，或
 // map:<内值种>（嵌套 Record 递归）。仅同文件已认领快照可作嵌套值；
 // 导出形、变异形（.set/.delete/.clear 或下标写）一律不收；JSON 导入值
-// 不收（JSON 导入是后续独立子片，见 jev_kind244_record_request.json
-// 的弱票 read_json_maps 0.33）。
+// 可作嵌套值（JEV nested_json_maps 0.69，flat_str_only 0.63）：默认导入
+// 的 .json 文件须为扁平串对象，解析入 jsonVals，物化时按标识符查表。
 type saTopMap struct {
-	init  *ast.Node
-	vkind string
+	init     *ast.Node
+	vkind    string
+	jsonVals map[string]map[string]string // JSON 导入名→扁平串表（nil 表无 JSON 值；物化时标识符臂查）
 }
 
 // saTopMapValueKind 解析 Record/Map 注解的值种：串/数/布尔直值，或
@@ -866,7 +870,7 @@ func saTopMapKeyOK(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int)
 // saTopMapLitOK 校验字面量与值种一致：str 须串字面量，i32 须整/布尔
 // 直接量，map 须内嵌字面量（递归）或已认领同值种快照标识符；简写
 // 仅 map 值可用（即 {enPack} 形）；方法/spread/计算键一律不收。
-func saTopMapLitOK(init *ast.Node, vkind string, out map[string]saTopMap) bool {
+func saTopMapLitOK(init *ast.Node, vkind string, out map[string]saTopMap, jsons map[string]map[string]string) bool {
 	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
 		return false
 	}
@@ -913,12 +917,20 @@ func saTopMapLitOK(init *ast.Node, vkind string, out map[string]saTopMap) bool {
 		case strings.HasPrefix(vkind, "map:"):
 			inner := vkind[4:]
 			if val.Kind == ast.KindObjectLiteralExpression {
-				if !saTopMapLitOK(val, inner, out) {
+				if !saTopMapLitOK(val, inner, out, jsons) {
 					return false
 				}
 			} else if val.Kind == ast.KindIdentifier {
-				ref, ok := out[val.Text()]
-				if !ok || ref.vkind != inner {
+				if ref, ok := out[val.Text()]; ok {
+					if ref.vkind != inner {
+						return false
+					}
+				} else if _, ok := jsons[val.Text()]; ok {
+					// JSON 导入即扁平串表，只可作 str 内值（JEV flat_str_only）。
+					if inner != "str" {
+						return false
+					}
+				} else {
 					return false
 				}
 			} else {
@@ -981,7 +993,7 @@ func saTopMapMutated(stmts []*ast.Node, name string) bool {
 
 // saTopMapPrescan 收顶层 const Record/Map 字面量快照（名→快照；
 // 导出形不收；同语句内先声明者可作后声明者的嵌套值）。
-func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]saTopMap, map[*ast.Node]bool) {
+func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLink) (map[string]saTopMap, map[*ast.Node]bool) {
 	aliases := map[string]*ast.TypeNode{}
 	for _, st := range stmts {
 		if st == nil || st.Kind != ast.KindTypeAliasDeclaration {
@@ -999,6 +1011,36 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]sa
 	}
 	out := map[string]saTopMap{}
 	claimed := map[*ast.Node]bool{}
+	// JSON 导入表（默认导入名→扁平串表；JEV nested_json_maps）：驱动
+	// 层经 link.jsonOf 给出 .json 绝对路径（非程序边，不入 specOf/图）；
+	// 非扁平串对象（嵌套/数组/数值/解析失败）不入表，语句沿旧律拒。
+	jsons := map[string]map[string]string{}
+	if link != nil && link.jsonOf != nil {
+		for _, st := range stmts {
+			if st == nil || st.Kind != ast.KindImportDeclaration {
+				continue
+			}
+			id := st.AsImportDeclaration()
+			if id == nil || id.ImportClause == nil {
+				continue
+			}
+			cl := id.ImportClause.AsImportClause()
+			if cl == nil || cl.IsTypeOnly() {
+				continue
+			}
+			nm := cl.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			abs, ok := link.jsonOf[saProgModuleSpec(st)]
+			if !ok || abs == "" {
+				continue
+			}
+			if jm, ok := saParseJSONFlatStr(abs); ok {
+				jsons[nm.Text()] = jm
+			}
+		}
+	}
 	for _, st := range stmts {
 		if st == nil || st.Kind != ast.KindVariableStatement {
 			continue
@@ -1073,7 +1115,7 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]sa
 			for _, p := range pends {
 				view[p.name] = p.tm
 			}
-			if !saTopMapLitOK(init, vk, view) {
+			if !saTopMapLitOK(init, vk, view, jsons) {
 				okAll = false
 				break
 			}
@@ -1081,7 +1123,7 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]sa
 				okAll = false
 				break
 			}
-			pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk}})
+			pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons}})
 		}
 		if !okAll {
 			continue
@@ -1131,6 +1173,56 @@ func saLowerTopMap(w printer.EmitTextWriter, tm saTopMap, scope *saScope, pos fu
 	return slot, ""
 }
 
+// saLowerTopJSONMap 用点物化 JSON 导入扁平串表：新建 btree_map，键排序
+// 后逐键 insert（Go map 遍历随机，排序保输出确定性；串值经
+// saLowerStringLiteral，池化去重；槽归属同 saLowerTopMap）。
+func saLowerTopJSONMap(w printer.EmitTextWriter, jm map[string]string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	h, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	slot := fmt.Sprintf("__topmap%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = %s\n", slot, h))
+	saConsumeOwn(scope, h)
+	saDeclareOwned(scope, slot)
+	scope.types[slot] = "map"
+	saSetMapVal(scope, slot, "str")
+	keys := make([]string, 0, len(jm))
+	for k := range jm {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		kh := saLowerStringLiteral(w, k, scope, nextTemp)
+		vh := saLowerStringLiteral(w, jm[k], scope, nextTemp)
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", slot, kh, vh))
+	}
+	return slot, ""
+}
+
+// saParseJSONFlatStr 读 JSON 文件为扁平串表：顶层须为对象且值全为串；
+// 否则（嵌套/数组/数值/布尔/null/解析失败）返回 not ok，调用方沿旧律拒。
+func saParseJSONFlatStr(abs string) (map[string]string, bool) {
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, false
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, false
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			return nil, false
+		}
+		out[k] = s
+	}
+	return out, true
+}
+
 func saTopMapInsertAll(w printer.EmitTextWriter, slot string, tm saTopMap, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
 	ol := tm.init.AsObjectLiteralExpression()
 	if ol == nil || ol.Properties == nil {
@@ -1172,21 +1264,27 @@ func saTopMapInsertAll(w printer.EmitTextWriter, slot string, tm saTopMap, scope
 		case strings.HasPrefix(tm.vkind, "map:"):
 			inner := tm.vkind[4:]
 			if val.Kind == ast.KindObjectLiteralExpression {
-				sub, msg := saLowerTopMap(w, saTopMap{init: val, vkind: inner}, scope, pos, refusals, nextTemp)
+				sub, msg := saLowerTopMap(w, saTopMap{init: val, vkind: inner, jsonVals: tm.jsonVals}, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return msg
 				}
 				v = sub
 			} else if val.Kind == ast.KindIdentifier {
-				ref, ok := scope.topMaps[val.Text()]
-				if !ok {
+				if ref, ok := scope.topMaps[val.Text()]; ok {
+					sub, msg := saLowerTopMap(w, ref, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return msg
+					}
+					v = sub
+				} else if jm, ok := tm.jsonVals[val.Text()]; ok {
+					sub, msg := saLowerTopJSONMap(w, jm, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return msg
+					}
+					v = sub
+				} else {
 					return "top map value is not a claimed top map"
 				}
-				sub, msg := saLowerTopMap(w, ref, scope, pos, refusals, nextTemp)
-				if msg != "" {
-					return msg
-				}
-				v = sub
 			} else {
 				return "top map value is not lowerable"
 			}
