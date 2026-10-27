@@ -559,6 +559,44 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 			}
 			if _, ok := scope.classes[cname]; !ok {
+				if cname == "URLSearchParams" {
+					var argNodes []*ast.Node
+					if ne.Arguments != nil {
+						argNodes = ne.Arguments.Nodes
+					}
+					if len(argNodes) != 0 {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "URLSearchParams takes no constructor arguments (string-argument construction is not lowerable)"})
+						return false
+					}
+					h := saLowerStringLiteral(w, "", scope, nextTemp)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "str"
+					if scope.urlspVars == nil {
+						scope.urlspVars = map[string]bool{}
+					}
+					scope.urlspVars[name] = true
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					continue
+				}
+				if saIsStdOpaqueClass(cname) {
+					h, msg := saLowerStdOpaqueNew(w, cname, ne, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "jsval"
+					if scope.stdOpaque == nil {
+						scope.stdOpaque = map[string]string{}
+					}
+					scope.stdOpaque[name] = cname
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					continue
+				}
 				ln, col := pos(vd.Initializer.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + cname})
 				return false
@@ -1024,6 +1062,34 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 		}
 	}
+	// json as-cast (patch 6): `X as T` on a json value extracts T's scalar
+	// members into a synthetic layout; other cast types fall through.
+	if vd.Initializer != nil && vd.Initializer.Kind == ast.KindAsExpression {
+		asE := vd.Initializer.AsAsExpression()
+		if asE != nil && asE.Expression != nil && asE.Type != nil {
+			if jcall, hasCatch, msg := saJsonValueOf(asE.Expression, scope); msg != "" {
+				ln, col := pos(vd.Initializer.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			} else if jcall != nil {
+				if members, hasLayout := saJsonCastMembers(asE.Type, scope); hasLayout {
+					var node string
+					if hasCatch {
+						node = saLowerJsonCatchValue(w, jcall, scope, nextTemp)
+					} else {
+						node = saLowerJsonNode(w, jcall, scope, nextTemp)
+					}
+					lname, h := saLowerJsonCast(w, node, members, scope, nextTemp)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "inst:" + lname
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					saCopyInstFn(scope, h, name)
+					return true
+				}
+			}
+		}
+	}
 	// transparent wrappers peel before kind dispatch (type-level only).
 	init := saUnwrapTransparent(vd.Initializer)
 	if init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression {
@@ -1169,6 +1235,54 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 		}
 	}
+	if fce := saFetchCallOf(init, scope); fce != nil {
+		h, _, msg := saEvalCall(w, fce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "inst:Response"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		saCopyInstFn(scope, h, name)
+		return true
+	}
+	// Awaited str calls (patch 5b): `const t = await response.text()` /
+	// awaited user str funcs previously fell to the i32 fallback; peel
+	// await + transparent wrappers and bind via the str arm.
+	if peeled := saPeelAwaitCall(init, scope); peeled != nil &&
+		(saCallIsStr(peeled, scope) && !saStrCallIsI32(peeled, scope)) {
+		h, msg := saEvalStr(w, peeled.AsNode(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "str"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		saAdoptHash(scope, name, peeled.AsNode())
+		return true
+	}
+	if jcall, hasCatch, msg := saJsonValueOf(init, scope); msg != "" {
+		ln, col := pos(init.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	} else if jcall != nil {
+		var node string
+		if hasCatch {
+			node = saLowerJsonCatchValue(w, jcall, scope, nextTemp)
+		} else {
+			node = saLowerJsonNode(w, jcall, scope, nextTemp)
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, node))
+		scope.types[name] = "json"
+		saDeclarePlain(scope, name)
+		return true
+	}
 	if init.Kind == ast.KindCallExpression {
 		// 数组/串/date 返回调用按返回种建种。
 		if saIsArrayCtor(init) {
@@ -1186,6 +1300,20 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
+		}
+		if saIsStatsCall(init.AsCallExpression(), scope) {
+			h, _, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "inst:Stats"
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			saCopyInstFn(scope, h, name)
+			return true
 		}
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
 			// Standalone equality find (e.g. `const preset = PRESETS.find(...)`):
@@ -2412,6 +2540,16 @@ func saAnnotInstKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, b
 	}
 	if _, ok := classes[ref.TypeName.Text()]; ok {
 		return "inst:" + ref.TypeName.Text(), true
+	}
+	// Synthetic std layouts (patch 4/5): `let r: Response` / `: Stats`
+	// resolve without a user declaration; user-declared names win above.
+	if ref.TypeName.Text() == "Response" {
+		saSeedResponseLayout(classes)
+		return "inst:Response", true
+	}
+	if ref.TypeName.Text() == "Stats" {
+		saSeedStatsLayout(classes)
+		return "inst:Stats", true
 	}
 	return "", false
 }

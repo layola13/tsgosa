@@ -370,6 +370,14 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 			return true
 		}
 	}
+	// Response `.text()` returns a fresh str handle (patch 5c: must
+	// precede the non-str-method early return below, since text is not
+	// in saIsStrMethod).
+	if pa.Name() != nil && pa.Name().Text() == "text" && pa.QuestionDotToken == nil &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+		scope.types[pa.Expression.Text()] == "inst:Response" {
+		return true
+	}
 	if pa.Name() == nil || !saIsStrMethod(pa.Name().Text()) {
 		// crypto Hash 终结即串值（`h.digest()` hex 串柄；update 值位另行拒）。
 		if pa.Name() != nil && pa.Name().Text() == "digest" {
@@ -409,6 +417,14 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 		return false
 	}
 	// i32 `toString()` 即串返回（`String(x)` interp 同形；可证 i32 门内聚）。
+	// URLSearchParams `.toString()` returns the accumulator binding
+	// itself (patch 3: the binding is already a str handle, and the
+	// call arm returns the binding name).
+	if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+		scope.urlspVars[pa.Expression.Text()] {
+		return true
+	}
 	if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil &&
 		saIsToStringableI32(pa.Expression, scope) {
 		return true

@@ -3077,6 +3077,40 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				}
 			}
 		}
+		if fce := saFetchCallOf(be.Right, scope); fce != nil {
+			h, _, msg := saEvalCall(w, fce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			saRebindRelease(w, scope, name)
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			saConsumeOwn(scope, h)
+			if b := saOwnOf(scope, name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, name)
+			saClearNullConst(scope, name)
+			return true
+		}
+		if be.Right != nil && be.Right.Kind == ast.KindCallExpression && saIsStatsCall(be.Right.AsCallExpression(), scope) {
+			h, _, msg := saEvalCall(w, be.Right.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false
+			}
+			saRebindRelease(w, scope, name)
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			saConsumeOwn(scope, h)
+			if b := saOwnOf(scope, name); b != nil {
+				b.heap = true
+			}
+			saMarkRebound(scope, name)
+			saClearNullConst(scope, name)
+			return true
+		}
 		if be.Right == nil || be.Right.Kind != ast.KindObjectLiteralExpression {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct reassignment needs an object literal"})

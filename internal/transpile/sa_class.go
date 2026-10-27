@@ -76,6 +76,7 @@ type saClassDef struct {
 	isAbstract    bool
 	isMono        bool
 	isSynth       bool
+	isStdBase     bool
 }
 
 // saIsBareTypeParamField 报告字段声明类型是否为裸类型参引用（未决泛型擦除
@@ -149,6 +150,1130 @@ func saTopLevelClassExpr(st *ast.Node) (string, *ast.Node, bool) {
 		return "", nil, false
 	}
 	return nm.Text(), init, true
+}
+
+// saStdBaseDef synthesizes a web std base class layout (JEV par_std
+// seed_synth_bases): Error carries message:str + name:str, DOMException
+// carries name:str + message:str, EventTarget carries no fields. The def
+// has no ctor AST, so super(...) in a subclass hits the existing nil-ctor
+// arm (args evaluated in order, then discarded); subclass-owned fields and
+// methods lower exactly like any other inheritance. A user-declared class
+// of the same name recorded BEFORE the subclass wins (lookup hits first);
+// a later user declaration still hits the existing duplicate-class refusal.
+func saStdBaseDef(name string) *saClassDef {
+	mk := func(fields []saClassField, fkinds map[string]string, size int) *saClassDef {
+		offsets := map[string]int{}
+		for _, f := range fields {
+			offsets[f.name] = f.offset
+		}
+		return &saClassDef{name: name, fields: fields, offsets: offsets, fkinds: fkinds,
+			methods: map[string]*ast.Node{}, staticMethods: map[string]*ast.Node{},
+			getters: map[string]*ast.Node{}, setters: map[string]*ast.Node{},
+			staticGetters: map[string]*ast.Node{}, staticSetters: map[string]*ast.Node{},
+			statics: map[string]saStaticVal{}, fopt: map[string]bool{},
+			fdefs: map[string]*ast.TypeNode{}, size: size, isStdBase: true}
+	}
+	switch name {
+	case "Error":
+		return mk([]saClassField{{name: "message", offset: 0}, {name: "name", offset: 8}},
+			map[string]string{"message": "str", "name": "str"}, 16)
+	case "DOMException":
+		return mk([]saClassField{{name: "name", offset: 0}, {name: "message", offset: 8}},
+			map[string]string{"name": "str", "message": "str"}, 16)
+	case "EventTarget":
+		return mk(nil, map[string]string{}, 0)
+	}
+	return nil
+}
+
+// saSeedStdBase records the synthetic std base in classes if absent.
+func saSeedStdBase(classes map[string]*saClassDef, base string) bool {
+	if _, ok := classes[base]; ok {
+		return false
+	}
+	def := saStdBaseDef(base)
+	if def == nil {
+		return false
+	}
+	classes[base] = def
+	return true
+}
+
+// saIsStdOpaqueClass reports whether name is a web std class lowered as an
+// opaque jsval box (JEV par_std jsval_opaque): the value is never observed
+// field-by-field by tsgosa, only passed along (fetch options/bodies) or
+// touched through the small method table below. Promise is NOT in this set
+// (JEV keep_refusing); Response is NOT either (fetch slice: synthetic inst).
+func saIsStdOpaqueClass(name string) bool {
+	switch name {
+	case "AbortController", "Headers", "FormData", "Blob", "DataView",
+		"CompressionStream", "DecompressionStream", "TextEncoder", "URL":
+		return true
+	}
+	return false
+}
+
+// saStdOpaqueMethod maps (class, method) to a result kind: "void" for
+// fire-and-forget mutators, "jsval" for opaque value results. Anything else
+// keeps refusing loudly (URL protocol/hostname/pathname reads, Headers.get,
+// URLSearchParams-style accessors, stream readable/writable chains).
+func saStdOpaqueMethod(class, method string) (string, bool) {
+	switch class {
+	case "AbortController":
+		if method == "abort" {
+			return "void", true
+		}
+	case "FormData":
+		if method == "append" || method == "set" || method == "delete" {
+			return "void", true
+		}
+	case "TextEncoder":
+		if method == "encode" {
+			return "jsval", true
+		}
+	}
+	return "", false
+}
+
+// saStdOpaquePure reports whether a ctor/method argument node is side-effect
+// free (scalar literals, bound identifiers, literals composed of pure nodes).
+// Pure args are discarded unevaluated: the opaque value never observes them.
+// Impure args go through saStdOpaqueEvalArg instead.
+func saStdOpaquePure(a *ast.Node, scope *saScope) bool {
+	if a == nil {
+		return true
+	}
+	switch a.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword,
+		ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	case ast.KindIdentifier:
+		if _, ok := scope.types[a.Text()]; ok {
+			return true
+		}
+		if _, ok := scope.topConsts[a.Text()]; ok {
+			return true
+		}
+		if scope.topStr[a.Text()] {
+			return true
+		}
+		return false
+	case ast.KindArrayLiteralExpression:
+		al := a.AsArrayLiteralExpression()
+		if al == nil {
+			return false
+		}
+		for _, el := range al.Elements.Nodes {
+			if !saStdOpaquePure(el, scope) {
+				return false
+			}
+		}
+		return true
+	case ast.KindObjectLiteralExpression:
+		ol := a.AsObjectLiteralExpression()
+		if ol == nil {
+			return false
+		}
+		for _, m := range ol.Properties.Nodes {
+			if m == nil || m.Kind != ast.KindPropertyAssignment {
+				return false
+			}
+			if pa := m.AsPropertyAssignment(); pa == nil || !saStdOpaquePure(pa.Initializer, scope) {
+				return false
+			}
+		}
+		return true
+	case ast.KindParenthesizedExpression:
+		if pe := a.AsParenthesizedExpression(); pe != nil {
+			return saStdOpaquePure(pe.Expression, scope)
+		}
+		return false
+	}
+	return false
+}
+
+// saStdOpaqueEvalArg evaluates one opaque ctor/method argument for its side
+// effects, discarding the value. Pure args need no emission. Call args are
+// evaluated (a refused call refuses the site); templates are evaluated only
+// when they contain calls (saEvalStr + release-if-temp). Anything else that
+// is not already lowerable refuses loudly (JEV: evaluate where lowerable,
+// else refuse) instead of silently dropping an effect.
+func saStdOpaqueEvalArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	if a == nil || saStdOpaquePure(a, scope) {
+		return ""
+	}
+	// Transparent wrappers peel to the inner node (parens/as/satisfies/non-null).
+	inner := a
+	for inner != nil {
+		switch inner.Kind {
+		case ast.KindParenthesizedExpression:
+			if pe := inner.AsParenthesizedExpression(); pe != nil {
+				inner = pe.Expression
+				continue
+			}
+		case ast.KindAsExpression:
+			if ae := inner.AsAsExpression(); ae != nil {
+				inner = ae.Expression
+				continue
+			}
+		case ast.KindSatisfiesExpression:
+			if se := inner.AsSatisfiesExpression(); se != nil {
+				inner = se.Expression
+				continue
+			}
+		case ast.KindNonNullExpression:
+			if nn := inner.AsNonNullExpression(); nn != nil {
+				inner = nn.Expression
+				continue
+			}
+		case ast.KindAwaitExpression:
+			if aw := inner.AsAwaitExpression(); aw != nil {
+				inner = aw.Expression
+				continue
+			}
+		}
+		break
+	}
+	if inner == nil {
+		return ""
+	}
+	if saStdOpaquePure(inner, scope) {
+		return ""
+	}
+	switch inner.Kind {
+	case ast.KindCallExpression:
+		op, _, msg := saEvalCall(w, inner.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		if saIsTempOp(op) {
+			saReleaseStmtTemp(w, scope, op)
+		}
+		return ""
+	case ast.KindTemplateExpression:
+		h, msg := saEvalStr(w, inner, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		if saIsTempOp(h) {
+			saReleaseStmtTemp(w, scope, h)
+		}
+		return ""
+	case ast.KindPropertyAccessExpression, ast.KindElementAccessExpression:
+		// A field/index read on a bound base is a pure read (no emission
+		// needed); on an unbound base it is not lowerable, so refuse.
+		var base *ast.Node
+		if inner.Kind == ast.KindPropertyAccessExpression {
+			if pa := inner.AsPropertyAccessExpression(); pa != nil {
+				base = pa.Expression
+			}
+		} else if ea := inner.AsElementAccessExpression(); ea != nil {
+			base = ea.Expression
+		}
+		if base != nil && base.Kind == ast.KindIdentifier {
+			if _, ok := scope.types[base.Text()]; ok {
+				return ""
+			}
+		}
+		return "std opaque constructor argument is not lowerable"
+	}
+	return "std opaque constructor argument is not lowerable"
+}
+
+// saLowerURLSearchParamsMethod lowers calls on a URLSearchParams accumulator
+// binding (a str handle). set/append evaluate both args as strings, join a
+// runtime "&" separator when the accumulator is non-empty (slot join, the
+// ternary-arm pattern: SA has no phi), concatenate key + "=" + value, and
+// rebind the variable with the str-assignment sequence (release old handle,
+// consume new temp, heap + rebound marks). toString returns the binding
+// itself (a borrow, like any str identifier read). Anything else (get, has,
+// delete, sort, ...) is unhandled and falls through to the existing refusal.
+func saLowerURLSearchParamsMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	if method == "toString" {
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		if len(argNodes) != 0 {
+			return "", false, "URLSearchParams.toString takes no arguments", true
+		}
+		return recv, false, "", true
+	}
+	if method != "set" && method != "append" {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 2 {
+		return "", false, "URLSearchParams." + method + " takes 2 arguments", true
+	}
+	kh, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg, true
+	}
+	vh, msg := saEvalStr(w, argNodes[1], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg, true
+	}
+	// Runtime "&" separator: present iff the accumulator is non-empty.
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	_, oldLen := saExpandStr(w, recv, nextTemp)
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, oldLen))
+	sepL := fmt.Sprintf("L_urlsp_sep_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nosepL := fmt.Sprintf("L_urlsp_nosep_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_urlsp_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, sepL, nosepL))
+	w.Write(fmt.Sprintf("%s:\n", sepL))
+	amp := saLowerStringLiteral(w, "&", scope, nextTemp)
+	withSep := saConcatSlices(w, recv, amp, scope, nextTemp)
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, withSep))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", nosepL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, recv))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	acc := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", acc, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	kv := saConcatSlices(w, acc, kh, scope, nextTemp)
+	eq := saLowerStringLiteral(w, "=", scope, nextTemp)
+	kv2 := saConcatSlices(w, kv, eq, scope, nextTemp)
+	final := saConcatSlices(w, kv2, vh, scope, nextTemp)
+	saRebindRelease(w, scope, recv)
+	w.Write(fmt.Sprintf("  %s = %s\n", recv, final))
+	saConsumeOwn(scope, final)
+	if b := saOwnOf(scope, recv); b != nil {
+		b.heap = true
+	}
+	saMarkRebound(scope, recv)
+	saClearNullConst(scope, recv)
+	return "", true, "", true
+}
+
+// saSeedStatsLayout records the synthetic emitter Stats layout (patch 4)
+// if absent; a user-declared class of the same name wins (lookup hits
+// first). Fields are named exactly like the TS Stats surface so generic
+// inst field loads serve .mode/.size/.mtimeMs (and .isFile/.isDirectory as
+// fields); .isFile()/.isDirectory() calls go through saLowerStatsMethod.
+func saSeedStatsLayout(classes map[string]*saClassDef) {
+	if _, ok := classes["Stats"]; ok {
+		return
+	}
+	classes["Stats"] = &saClassDef{
+		name: "Stats",
+		fields: []saClassField{
+			{name: "isFile", offset: 0},
+			{name: "isDirectory", offset: 4},
+			{name: "mode", offset: 8},
+			{name: "size", offset: 12},
+			{name: "mtimeMs", offset: 16},
+		},
+		offsets: map[string]int{"isFile": 0, "isDirectory": 4, "mode": 8, "size": 12, "mtimeMs": 16},
+		fkinds:  map[string]string{"isFile": "i32", "isDirectory": "i32", "mode": "i32", "size": "i32", "mtimeMs": "i32"},
+		fsub:    map[string]string{},
+		fopt:    map[string]bool{},
+		fpos:    map[string]int{},
+		methods: map[string]*ast.Node{},
+		getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{},
+		statics: map[string]saStaticVal{},
+		size:    20,
+	}
+}
+
+// saIsStatsCall reports whether ce is a projected `statSync(...)` call
+// (named import from node:fs, recorded as mod "fs").
+func saIsStatsCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ce.Expression.Text() != "statSync" {
+		return false
+	}
+	mod, ok := scope.imports["statSync"]
+	return ok && mod == "fs"
+}
+
+// saLowerStatsMethod lowers isFile()/isDirectory() on a Stats handle value
+// (an identifier name or a temp holding the struct). Anything else is
+// unhandled and falls through to the existing refusal arms.
+func saLowerStatsMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, nextTemp *int) (string, bool, string, bool) {
+	off, ok := map[string]int{"isFile": 0, "isDirectory": 4}[method]
+	if !ok {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 0 {
+		return "", false, "Stats." + method + " takes no arguments", true
+	}
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, recv, off))
+	return v, false, "", true
+}
+
+// saSeedResponseLayout records the synthetic emitter Response layout
+// (patch 5) if absent; a user-declared class of the same name wins.
+// status/ok are real i32 fields (generic inst field loads serve them);
+// __bodyPtr/__bodyLen are internal slots read only by saLowerResponseText.
+func saSeedResponseLayout(classes map[string]*saClassDef) {
+	if _, ok := classes["Response"]; ok {
+		return
+	}
+	classes["Response"] = &saClassDef{
+		name: "Response",
+		fields: []saClassField{
+			{name: "status", offset: 0},
+			{name: "ok", offset: 4},
+			{name: "__bodyPtr", offset: 8},
+			{name: "__bodyLen", offset: 16},
+		},
+		offsets: map[string]int{"status": 0, "ok": 4, "__bodyPtr": 8, "__bodyLen": 16},
+		fkinds:  map[string]string{"status": "i32", "ok": "i32", "__bodyPtr": "f64", "__bodyLen": "i32"},
+		fsub:    map[string]string{},
+		fopt:    map[string]bool{},
+		fpos:    map[string]int{},
+		methods: map[string]*ast.Node{},
+		getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{},
+		statics: map[string]saStaticVal{},
+		size:    20,
+	}
+}
+
+// saIsFetchCall reports whether ce is a bare-global `fetch(...)` call (a
+// user-declared or imported fetch wins and is not hijacked).
+func saIsFetchCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ce.Expression.Text() != "fetch" {
+		return false
+	}
+	if _, ok := scope.funcs["fetch"]; ok {
+		return false
+	}
+	if _, ok := scope.imports["fetch"]; ok {
+		return false
+	}
+	return true
+}
+
+// saFetchCallOf peels transparent wrappers + await layers around e and
+// returns the inner fetch call, if any (async-erasure: await is transparent).
+func saFetchCallOf(e *ast.Node, scope *saScope) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e != nil && e.Kind == ast.KindCallExpression && saIsFetchCall(e.AsCallExpression(), scope) {
+		return e.AsCallExpression()
+	}
+	return nil
+}
+
+// saPeelAwaitCall peels transparent wrappers + await layers around e and
+// returns the inner call, if any (nil otherwise). It returns nil when no
+// await layer was peeled (patch 6c): plain calls must fall through to the
+// CallExpression block, which binds special str-call kinds (e.g. the
+// .match() result array) that the awaited-str arm would misbind as str.
+func saPeelAwaitCall(e *ast.Node, scope *saScope) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	sawAwait := false
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		sawAwait = true
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if sawAwait && e != nil && e.Kind == ast.KindCallExpression {
+		return e.AsCallExpression()
+	}
+	return nil
+}
+
+// saPanicIfErr emits: br <err> != 0 -> panicL (panic(2501) terminator),
+// else okL. The caller writes the panic label, then continues at okL.
+func saPanicIfErr(w printer.EmitTextWriter, err string, scope *saScope, nextTemp *int) (panicL, okL string) {
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, err))
+	panicL = fmt.Sprintf("L_fetch_panic_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL = fmt.Sprintf("L_fetch_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, panicL, okL))
+	w.Write(fmt.Sprintf("%s:\n", panicL))
+	w.Write("  panic(2501)\n")
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	return panicL, okL
+}
+
+// saLowerFetch lowers `fetch(url, opts?)` to a synchronous http_client
+// exchange. Returns (Response struct temp, false, "") or a refusal message.
+// The struct temp is saOwnTemp'd; the caller (decl/assign/statement) claims
+// or releases it. The http response buffer is intentionally NOT freed: the
+// struct's __bodyPtr points into it (one resp leak per fetch, documented).
+func saLowerFetch(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) < 1 || len(argNodes) > 2 {
+		return "", false, "fetch takes 1 or 2 arguments"
+	}
+	urlH, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	useTLS := 0
+	if lit := saUnwrapTransparent(argNodes[0]); lit != nil && lit.Kind == ast.KindStringLiteral {
+		if strings.HasPrefix(lit.Text(), "https://") {
+			useTLS = 1
+		}
+	}
+	methodCode := 1
+	type hdrEnt struct{ kbp, kbl, vbp, vbl string }
+	var headers []hdrEnt
+	var bodyBp, bodyBl string
+	hasBody := false
+	if len(argNodes) == 2 {
+		opts := saUnwrapTransparent(argNodes[1])
+		if opts == nil || opts.Kind != ast.KindObjectLiteralExpression {
+			return "", false, "fetch options must be an object literal"
+		}
+		for _, prop := range opts.AsObjectLiteralExpression().Properties.Nodes {
+			if prop == nil || prop.Kind != ast.KindPropertyAssignment {
+				continue
+			}
+			pa := prop.AsPropertyAssignment()
+			if pa.Name() == nil {
+				continue
+			}
+			var pname string
+			switch pa.Name().Kind {
+			case ast.KindIdentifier:
+				pname = pa.Name().Text()
+			case ast.KindStringLiteral:
+				pname = pa.Name().Text()
+			default:
+				continue
+			}
+			switch pname {
+			case "method":
+				mLit := saUnwrapTransparent(pa.Initializer)
+				if mLit == nil || mLit.Kind != ast.KindStringLiteral {
+					return "", false, "fetch method must be a string literal"
+				}
+				switch strings.ToLower(mLit.Text()) {
+				case "get":
+					methodCode = 1
+				case "post":
+					methodCode = 2
+				case "put":
+					methodCode = 3
+				case "delete":
+					methodCode = 4
+				default:
+					return "", false, "fetch method " + mLit.Text() + " is not mappable (GET/POST/PUT/DELETE only)"
+				}
+			case "headers":
+				hLit := saUnwrapTransparent(pa.Initializer)
+				if hLit == nil || hLit.Kind != ast.KindObjectLiteralExpression {
+					return "", false, "fetch headers must be an object literal"
+				}
+				for _, hp := range hLit.AsObjectLiteralExpression().Properties.Nodes {
+					if hp == nil || hp.Kind != ast.KindPropertyAssignment {
+						continue
+					}
+					hpa := hp.AsPropertyAssignment()
+					if hpa.Name() == nil {
+						continue
+					}
+					var hname string
+					switch hpa.Name().Kind {
+					case ast.KindIdentifier:
+						hname = hpa.Name().Text()
+					case ast.KindStringLiteral:
+						hname = hpa.Name().Text()
+					default:
+						continue
+					}
+					kh := saLowerStringLiteral(w, hname, scope, nextTemp)
+					kbp, kbl := saExpandStr(w, kh, nextTemp)
+					vh, vmsg := saEvalStr(w, hpa.Initializer, scope, pos, refusals, nextTemp)
+					if vmsg != "" {
+						return "", false, vmsg
+					}
+					vbp, vbl := saExpandStr(w, vh, nextTemp)
+					headers = append(headers, hdrEnt{kbp, kbl, vbp, vbl})
+				}
+			case "body":
+				bh, bmsg := saEvalStr(w, pa.Initializer, scope, pos, refusals, nextTemp)
+				if bmsg != "" {
+					return "", false, bmsg
+				}
+				bodyBp, bodyBl = saExpandStr(w, bh, nextTemp)
+				hasBody = true
+			default:
+				// signal, cache, credentials, ...: ignored without
+				// evaluation (async-erasure stance, documented).
+			}
+		}
+	}
+	scope.addImport("sa_std/http_client.sai")
+	saSeedResponseLayout(scope.classes)
+	bp, bl := saExpandStr(w, urlH, nextTemp)
+	clientSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", clientSlot))
+	cerr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_new(%d, &%s)\n", cerr, useTLS, clientSlot))
+	saPanicIfErr(w, cerr, scope, nextTemp)
+	client := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", client, clientSlot))
+	reqSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", reqSlot))
+	rerr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_new(%s, %d, &%s, %s, &%s)\n", rerr, client, methodCode, bp, bl, reqSlot))
+	saPanicIfErr(w, rerr, scope, nextTemp)
+	req := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", req, reqSlot))
+	for _, he := range headers {
+		herr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_add_header(%s, &%s, %s, &%s, %s)\n", herr, req, he.kbp, he.kbl, he.vbp, he.vbl))
+		saPanicIfErr(w, herr, scope, nextTemp)
+	}
+	if hasBody {
+		berr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_set_body(%s, &%s, %s)\n", berr, req, bodyBp, bodyBl))
+		saPanicIfErr(w, berr, scope, nextTemp)
+	}
+	respSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", respSlot))
+	serr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_send(%s, &%s)\n", serr, req, respSlot))
+	saPanicIfErr(w, serr, scope, nextTemp)
+	resp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", resp, respSlot))
+	st16 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_resp_status(%s)\n", st16, resp))
+	status := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as i32\n", status, st16))
+	ge200 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sge %s, 200\n", ge200, status))
+	lt300 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, 300\n", lt300, status))
+	ok := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", ok, ge200, lt300))
+	bPtrSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", bPtrSlot))
+	bLenSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", bLenSlot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", bPtrSlot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", bLenSlot))
+	bsl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_resp_body_slice(%s, &%s, &%s)\n", bsl, resp, bPtrSlot, bLenSlot))
+	saReleaseStmtTemp(w, scope, bsl)
+	bodyPtr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", bodyPtr, bPtrSlot))
+	bodyLen64 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", bodyLen64, bLenSlot))
+	bodyLen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", bodyLen, bodyLen64))
+	rst := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 20\n", rst))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", rst, status))
+	w.Write(fmt.Sprintf("  store %s + 4, %s as i32\n", rst, ok))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as ptr\n", rst, bodyPtr))
+	w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", rst, bodyLen))
+	rf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_free(%s)\n", rf, req))
+	saReleaseStmtTemp(w, scope, rf)
+	cf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_free(%s)\n", cf, client))
+	saReleaseStmtTemp(w, scope, cf)
+	w.Write(fmt.Sprintf("  !%s\n", clientSlot))
+	w.Write(fmt.Sprintf("  !%s\n", reqSlot))
+	w.Write(fmt.Sprintf("  !%s\n", respSlot))
+	w.Write(fmt.Sprintf("  !%s\n", bPtrSlot))
+	w.Write(fmt.Sprintf("  !%s\n", bLenSlot))
+	saOwnTemp(scope, rst)
+	return rst, false, ""
+}
+
+// saLowerResponseText lowers response.text() (0 args): a fresh str handle
+// {bodyPtr, bodyLen-as-u64} over the response buffer (which the Response
+// struct keeps alive by not freeing it).
+func saLowerResponseText(w printer.EmitTextWriter, recv string, ce *ast.CallExpression, scope *saScope, nextTemp *int) (string, bool, string, bool) {
+	if ce == nil || ce.Expression == nil {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 0 {
+		return "", false, "Response.text takes no arguments", true
+	}
+	bp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", bp, recv))
+	bl32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", bl32, recv))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as u64\n", bl, bl32))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, bp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, bl))
+	saOwnTemp(scope, h)
+	return h, false, "", true
+}
+
+// saIsJsonCall reports whether ce is `response.json()` on an
+// inst:Response identifier receiver (non-optional, 0 args checked by callers).
+func saIsJsonCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "json" || pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	return scope.types[pa.Expression.Text()] == "inst:Response"
+}
+
+// saJsonCatchMsg validates a .catch() call on a json() result: exactly 1
+// argument, a zero-parameter arrow/function (callbacks with parameters
+// keep refusing loudly). Returns "" or the refusal message.
+func saJsonCatchMsg(ce *ast.CallExpression) string {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "json catch takes 1 argument"
+	}
+	cb := argNodes[0]
+	nparams := -1
+	if cb != nil && cb.Kind == ast.KindArrowFunction {
+		if af := cb.AsArrowFunction(); af != nil {
+			if af.Parameters == nil {
+				nparams = 0
+			} else {
+				nparams = len(af.Parameters.Nodes)
+			}
+		}
+	} else if cb != nil && cb.Kind == ast.KindFunctionExpression {
+		if fe := cb.AsFunctionExpression(); fe != nil {
+			if fe.Parameters == nil {
+				nparams = 0
+			} else {
+				nparams = len(fe.Parameters.Nodes)
+			}
+		}
+	}
+	if nparams != 0 {
+		return "json catch callbacks with parameters are not lowerable (zero-parameter fallbacks only)"
+	}
+	return ""
+}
+
+// saJsonValueOf peels transparent wrappers + await layers around e and
+// reports the inner json value: (jsonCall, hasCatch, msg). msg != "" means
+// a loud refusal (catch arity / callback shape). (nil, false, "") means e
+// is not a json value at all (caller falls through).
+func saJsonValueOf(e *ast.Node, scope *saScope) (*ast.CallExpression, bool, string) {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e == nil || e.Kind != ast.KindCallExpression {
+		return nil, false, ""
+	}
+	ce := e.AsCallExpression()
+	if saIsJsonCall(ce, scope) {
+		return ce, false, ""
+	}
+	if ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa != nil && pa.Name() != nil && pa.Name().Text() == "catch" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression &&
+			saIsJsonCall(pa.Expression.AsCallExpression(), scope) {
+			var argNodes []*ast.Node
+			if ce.Arguments != nil {
+				argNodes = ce.Arguments.Nodes
+			}
+			if len(argNodes) != 1 {
+				return nil, false, "json catch takes 1 argument"
+			}
+			cb := argNodes[0]
+			nparams := -1
+			if cb != nil && cb.Kind == ast.KindArrowFunction {
+				if af := cb.AsArrowFunction(); af != nil {
+					if af.Parameters == nil {
+						nparams = 0
+					} else {
+						nparams = len(af.Parameters.Nodes)
+					}
+				}
+			} else if cb != nil && cb.Kind == ast.KindFunctionExpression {
+				if fe := cb.AsFunctionExpression(); fe != nil {
+					if fe.Parameters == nil {
+						nparams = 0
+					} else {
+						nparams = len(fe.Parameters.Nodes)
+					}
+				}
+			}
+			if nparams != 0 {
+				return nil, false, "json catch callbacks with parameters are not lowerable (zero-parameter fallbacks only)"
+			}
+			return pa.Expression.AsCallExpression(), true, ""
+		}
+	}
+	return nil, false, ""
+}
+
+// saLowerJsonNode parses a Response body's slice into a u64 node handle
+// (0 on parse failure). The node is a plain value, never owned.
+func saLowerJsonNode(w printer.EmitTextWriter, jsonCall *ast.CallExpression, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/encoding/json.sai")
+	pa := jsonCall.Expression.AsPropertyAccessExpression()
+	recv := pa.Expression.Text()
+	bp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", bp, recv))
+	bl32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", bl32, recv))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as u64\n", bl, bl32))
+	node := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_parse(&%s, %s)\n", node, bp, bl))
+	return node
+}
+
+// saLowerJsonCatchValue lowers `response.json().catch(cb)`: parse, then a
+// slot join on node != 0 (success -> node, failure -> 0; the zero-param
+// fallback body is not evaluated).
+func saLowerJsonCatchValue(w printer.EmitTextWriter, jsonCall *ast.CallExpression, scope *saScope, nextTemp *int) string {
+	node := saLowerJsonNode(w, jsonCall, scope, nextTemp)
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, node))
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	okL := fmt.Sprintf("L_json_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	failL := fmt.Sprintf("L_json_fail_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_json_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, okL, failL))
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as u64\n", slot, node))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", failL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	res := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", res, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	return res
+}
+
+type saJsonMember struct {
+	name string
+	kind string
+}
+
+// saJsonCastMembers extracts the scalar members of a cast type: (members,
+// hasLayout). TypeLiteral casts always build a layout (bool/string/number
+// members; number -> f64); TypeReference casts use a claimed interface
+// layout's field kinds (str/bool/i32/f64 only); anything else falls through
+// (hasLayout=false, caller keeps the transparent as-cast behavior).
+func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) {
+	if tn == nil {
+		return nil, false
+	}
+	if tn.Kind == ast.KindTypeLiteral {
+		var members []saJsonMember
+		tl := tn.AsTypeLiteralNode()
+		if tl == nil || tl.Members == nil {
+			return members, true
+		}
+		for _, m := range tl.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				continue
+			}
+			switch pd.Type.Kind {
+			case ast.KindBooleanKeyword:
+				members = append(members, saJsonMember{fn.Text(), "bool"})
+			case ast.KindStringKeyword:
+				members = append(members, saJsonMember{fn.Text(), "str"})
+			case ast.KindNumberKeyword:
+				members = append(members, saJsonMember{fn.Text(), "f64"})
+			}
+		}
+		return members, true
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return nil, false
+		}
+		def, ok := scope.classes[ref.TypeName.Text()]
+		if !ok || def == nil {
+			return nil, false
+		}
+		var members []saJsonMember
+		for _, f := range def.fields {
+			switch def.fkinds[f.name] {
+			case "str", "bool", "i32", "f64":
+				members = append(members, saJsonMember{f.name, def.fkinds[f.name]})
+			}
+		}
+		return members, true
+	}
+	return nil, false
+}
+
+// saLowerJsonCast extracts a json node's scalar members into a fresh
+// synthetic inst layout and returns (layoutName, structTemp). The struct
+// temp is saOwnTemp'd.
+func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMember, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/encoding/json.sai")
+	lname := fmt.Sprintf("__JsonCast_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	offsets := map[string]int{}
+	fkinds := map[string]string{}
+	off := 0
+	for _, m := range members {
+		off = saAlignOff(off, m.kind)
+		offsets[m.name] = off
+		fkinds[m.name] = m.kind
+		width, _ := saFieldWidth(m.kind)
+		off += width
+	}
+	fields := make([]saClassField, 0, len(members))
+	for _, m := range members {
+		fields = append(fields, saClassField{name: m.name, offset: offsets[m.name]})
+	}
+	scope.classes[lname] = &saClassDef{
+		name: lname, fields: fields, offsets: offsets, fkinds: fkinds,
+		fsub: map[string]string{}, fopt: map[string]bool{}, fpos: map[string]int{},
+		methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{}, statics: map[string]saStaticVal{},
+		size: off, isSynth: true,
+	}
+	st := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", st, off))
+	for _, m := range members {
+		kh := saLowerStringLiteral(w, m.name, scope, nextTemp)
+		kbp, kbl := saExpandStr(w, kh, nextTemp)
+		switch m.kind {
+		case "bool":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_bool(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v8 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", v8, slot))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v, v8))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		case "str":
+			pslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", pslot))
+			lslot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", lslot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_string(%s, &%s, %s, &%s, &%s)\n", gr, node, kbp, kbl, pslot, lslot))
+			saReleaseStmtTemp(w, scope, gr)
+			p := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", p, pslot))
+			l := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", l, lslot))
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, p))
+			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, l))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, offsets[m.name], h))
+			w.Write(fmt.Sprintf("  !%s\n", pslot))
+			w.Write(fmt.Sprintf("  !%s\n", lslot))
+		case "f64":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_f64(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", v, slot))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		case "i32":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get_i64(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			v64 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v64, slot))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v, v64))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+		}
+	}
+	saOwnTemp(scope, st)
+	return lname, st
+}
+
+// saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
+// jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
+// helper (no new inline helper). Constructor args are side-effect evaluated
+// per saStdOpaqueEvalArg; the box itself carries no observable state.
+func saLowerStdOpaqueNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	for _, a := range argNodes {
+		if msg := saStdOpaqueEvalArg(w, a, scope, pos, refusals, nextTemp); msg != "" {
+			return "", msg
+		}
+	}
+	h := saBoxJsValStd(w, scope, "ptr", 4, "0", nextTemp)
+	saOwnTemp(scope, h)
+	scope.types[h] = "jsval"
+	return h, ""
+}
+
+// saLowerStdOpaqueMethod lowers a method call on an identifier bound by an
+// opaque ctor. Returns (op, voidCall, msg, handled): unhandled methods fall
+// through to the existing refusal arms; handled methods with bad args refuse
+// with their own message (no fall-through to a confusing second refusal).
+func saLowerStdOpaqueMethod(w printer.EmitTextWriter, class, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	res, ok := saStdOpaqueMethod(class, method)
+	if !ok {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	want := -1
+	switch method {
+	case "abort":
+		want = 0
+	case "delete":
+		want = 1
+	case "append", "set":
+		want = 2
+	case "encode":
+		want = 1
+	}
+	if want >= 0 && len(argNodes) != want {
+		return "", false, class + "." + method + " takes " + fmt.Sprintf("%d", want) + " arguments", true
+	}
+	if res == "jsval" {
+		// TextEncoder.encode(str): evaluate the string arg, discard it, and
+		// return a fresh opaque jsval box (the bytes are unobserved here).
+		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		if saIsTempOp(h) {
+			saReleaseStmtTemp(w, scope, h)
+		}
+		box := saBoxJsValStd(w, scope, "ptr", 4, "0", nextTemp)
+		saOwnTemp(scope, box)
+		scope.types[box] = "jsval"
+		return box, false, "", true
+	}
+	for _, a := range argNodes {
+		if msg := saStdOpaqueEvalArg(w, a, scope, pos, refusals, nextTemp); msg != "" {
+			return "", false, msg, true
+		}
+	}
+	return "", true, "", true
 }
 
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
@@ -317,6 +1442,13 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				return false
 			}
 			bdef, ok := classes[base]
+			if !ok {
+				// Synthetic std base (Error/EventTarget/DOMException): seed on
+				// first extends use; user declarations recorded earlier win.
+				if saSeedStdBase(classes, base) {
+					bdef, ok = classes[base]
+				}
+			}
 			qbase := base
 			if (!ok || bdef.isIface) && nsScope != "" {
 				if qb, ok2 := classes[nsScope+"_"+base]; ok2 && !qb.isIface {
@@ -6239,6 +7371,9 @@ func saLowerNewStmt(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	def, ok := scope.classes[name]
 	if !ok {
+		if saIsStdOpaqueClass(name) {
+			return saLowerStdOpaqueNew(w, name, ce, scope, pos, refusals, nextTemp)
+		}
 		return "", "unknown class " + name
 	}
 	if def.isIface {
@@ -6288,7 +7423,7 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if pd == nil {
 			return "", "destructured constructor parameters are not lowerable"
 		}
-		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return "", "constructor parameter shape is not lowerable"
 		}
 		nm := pd.Name()
@@ -7714,7 +8849,7 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "destructured constructor parameters are not lowerable"})
 			return false
 		}
-		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+		if pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "constructor parameter shape is not lowerable"})
 			return false

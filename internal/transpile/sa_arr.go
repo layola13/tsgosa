@@ -4483,6 +4483,18 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			return idx, ""
 		}
 	}
+	// Opaque std instance field: `controller.signal` on an AbortController
+	// binding yields a fresh opaque jsval box (the signal itself is only ever
+	// passed along into fetch options, never observed field-by-field).
+	if pa.QuestionDotToken == nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier && pa.Name().Text() == "signal" &&
+		pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		if cls, ok := scope.stdOpaque[pa.Expression.Text()]; ok && cls == "AbortController" {
+			h := saBoxJsValStd(w, scope, "ptr", 4, "0", nextTemp)
+			saOwnTemp(scope, h)
+			scope.types[h] = "jsval"
+			return h, ""
+		}
+	}
 	if nm := pa.Name(); nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != "length" {
 		return "", "only .length member access lowerable"
 	}
