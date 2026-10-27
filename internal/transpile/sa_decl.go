@@ -1849,6 +1849,28 @@ func saResolveAliasKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (stri
 		if k, ok := saAnnotKind(tgt); ok {
 			return k, true
 		}
+		// 3_theme2 (JEV alias_str_union): an alias target that is a
+		// union of only string inhabitants (through further aliases
+		// and/or string&{} members) is a string field, not an arr
+		// handle slot; parenthesized unions unwrap the same way.
+		// Non-string unions fall through to the existing stop below.
+		utgt := tgt
+		for utgt != nil && utgt.Kind == ast.KindParenthesizedType {
+			pt := utgt.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				break
+			}
+			utgt = pt.Type
+		}
+		if utgt != nil && utgt.Kind == ast.KindUnionType {
+			useen := map[string]bool{}
+			for k, v := range seen {
+				useen[k] = v
+			}
+			if ut := utgt.AsNode().AsUnionTypeNode(); ut != nil && saAliasStrUnionKind(ut, aliasOf, useen) {
+				return "str", true
+			}
+		}
 		// 目标仍为单标识符引用则继续跟随，否则（如接口/字面量）止步拒。
 		if tgt.Kind != ast.KindTypeReference {
 			return "", false
