@@ -6842,6 +6842,20 @@ func saJsValSnippet(a *ast.Node) string {
 	if a == nil {
 		return ""
 	}
+	if u := saUnwrapTransparent(a); u != nil && u != a {
+		return saJsValSnippet(u)
+	}
+	if a.Kind == ast.KindAwaitExpression {
+		aw := a.AsAwaitExpression()
+		if aw == nil || aw.Expression == nil {
+			return ""
+		}
+		inner := saJsValSnippet(aw.Expression)
+		if inner == "" {
+			return ""
+		}
+		return "await " + inner
+	}
 	switch a.Kind {
 	case ast.KindIdentifier, ast.KindPrivateIdentifier,
 		ast.KindStringLiteral, ast.KindNumericLiteral, ast.KindBigIntLiteral,
