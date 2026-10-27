@@ -10772,7 +10772,95 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()
 	if pa.QuestionDotToken != nil {
-		return "", "", "optional member call not lowerable"
+		// Optional array callback call `a?.some/filter/map/forEach/every(cb)`
+		// (2b_optcall, JEV str_inst_arr 0.78): evaluate the receiver once,
+		// branch on the 0 handle (undefined/null), and re-enter the plain
+		// path with the `?.` cleared for the non-nil arm. The re-entry
+		// re-evaluates the receiver, which is sound only for pure reads
+		// (identifier / property access): no user code runs between the
+		// two reads, so the value cannot change. Call/computed receivers,
+		// jsval receivers, and non-callback methods (push, find, reduce,
+		// ...) keep refusing loudly, exactly as before.
+		if pa.Name() == nil {
+			return "", "", "optional member call not lowerable"
+		}
+		method0 := pa.Name().Text()
+		resKind := "i32"
+		switch method0 {
+		case "some", "every", "forEach":
+		case "filter", "map":
+			resKind = "arr"
+		default:
+			return "", "", "optional member call not lowerable"
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.types[pa.Expression.Text()] == "jsval" {
+			return "", "", "optional member call not lowerable"
+		}
+		if pa.Expression == nil || (pa.Expression.Kind != ast.KindIdentifier && pa.Expression.Kind != ast.KindPropertyAccessExpression) {
+			return "", "", "optional member call not lowerable"
+		}
+		if !saIsArrValue(pa.Expression, scope) {
+			return "", "", "optional member call not lowerable"
+		}
+		recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
+				recv = h
+			} else {
+				return "", "", msg
+			}
+		}
+		storeKind := "i32"
+		if resKind == "arr" {
+			storeKind = "ptr"
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		saOwnTemp(scope, slot)
+		isnull := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, recv))
+		nullL := fmt.Sprintf("L_optarr_null_%d", *nextLabel)
+		*nextLabel++
+		okL := fmt.Sprintf("L_optarr_ok_%d", *nextLabel)
+		*nextLabel++
+		endL := fmt.Sprintf("L_optarr_end_%d", *nextLabel)
+		*nextLabel++
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
+		w.Write(fmt.Sprintf("%s:\n", nullL))
+		// Nil arm: some/every/forEach yield false/void (i32 0, falsy like
+		// JS undefined in condition positions); filter/map yield the nil
+		// array handle (0), the arr-slot undefined-equivalent.
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as %s\n", slot, storeKind))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", okL))
+		qd := pa.QuestionDotToken
+		pa.QuestionDotToken = nil
+		out, _, msg := saLowerArrCall(w, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+		pa.QuestionDotToken = qd
+		if msg != "" {
+			return "", "", msg
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as %s\n", slot, out, storeKind))
+		saReleaseOwnedTemp(w, scope, out)
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		res := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as %s\n", res, slot, storeKind))
+		saReleaseOwnedTemp(w, scope, slot)
+		if resKind == "arr" {
+			// Preserve the inner result handle markings on the wrapper
+			// result (same propagators the filter case applies to its
+			// own result, from inner temp to wrapper temp).
+			saPropArrNest(scope, out, res)
+			saPropArrStr(scope, out, res)
+			saPropArrInnerStr(scope, out, res)
+			saPropArrJsVal(scope, out, res)
+			saPropArrElemLayout(scope, out, res)
+		}
+		return res, resKind, ""
 	}
 	recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {

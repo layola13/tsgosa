@@ -1987,9 +1987,11 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			// Optional string method call `s?.method(...)` where s is str-valued
 			// (identifier, element access on arrStr/matchArr, etc.): branch on the
 			// receiver handle being 0 (undefined/null) and return 0, else call the
-			// method with the already-evaluated handle. Only str-returning methods
-			// are covered here; i32/bool-returning optional methods keep refusing
-			// loudly (their undefined arm is not a string handle). Method must be
+			// method with the already-evaluated handle. Str-returning methods
+			// and bool-returning methods (startsWith/endsWith/includes, nil arm
+			// false) are covered here; i32-returning optional methods keep
+			// refusing loudly (their undefined arm is not a string handle and
+			// has no faithful i32 value). Method must be
 			// in the known str-returning set, otherwise refuse before emitting
 			// any SA (method lowering itself would fail after partial emission).
 			if pa.Name() == nil {
@@ -2000,8 +2002,19 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			case "toLowerCase", "toUpperCase", "trim", "trimStart", "trimEnd",
 				"slice", "substring", "repeat", "padStart", "padEnd",
 				"replace", "replaceAll", "concat", "charAt", "at":
+			case "startsWith", "endsWith", "includes":
 			default:
 				return "", false, "optional member call not lowerable"
+			}
+			// Bool-returning optional str calls (2b_optcall, JEV str_inst_arr
+			// 0.78): nil receiver yields false (i32 0), exact in both
+			// condition and value positions. i32-returning methods
+			// (indexOf, charCodeAt, ...) keep refusing: nil has no faithful
+			// i32 undefined-equivalent (0 would mistranslate indexOf).
+			isBool := mname == "startsWith" || mname == "endsWith" || mname == "includes"
+			storeKind := "ptr"
+			if isBool {
+				storeKind = "i32"
 			}
 			if !saIsStrExpr(pa.Expression, scope) {
 				return "", false, "optional member call not lowerable"
@@ -2014,6 +2027,10 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
 			saOwnTemp(scope, slot)
+			// Depth snapshot for branch-local release (patch 2): temps
+			// created by the method call in the ok branch are released
+			// there (below), not by the epilogue drain after the join.
+			optBase := len(scope.ownOrder)
 			isnull := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, recv))
@@ -2025,20 +2042,25 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			*scope.nextLabel++
 			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, okL))
 			w.Write(fmt.Sprintf("%s:\n", nullL))
-			w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as %s\n", slot, storeKind))
 			w.Write(fmt.Sprintf("  jmp %s\n", endL))
 			w.Write(fmt.Sprintf("%s:\n", okL))
 			mres, _, mmsg := saLowerStrMethod(w, recv, mname, ce, scope, pos, refusals, nextTemp)
 			if mmsg != "" {
 				return "", false, mmsg
 			}
-			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, mres))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as %s\n", slot, mres, storeKind))
 			saReleaseOwnedTemp(w, scope, mres)
+			// Release method-call temps inside the ok branch (literal-arg
+			// handles etc.): after the join their block does not dominate
+			// and the epilogue drain would fail sa check (UnknownRegister).
+			// Slot (index < optBase) and outer temps survive.
+			saReleaseDeeperThan(w, scope, optBase)
 			w.Write(fmt.Sprintf("  jmp %s\n", endL))
 			w.Write(fmt.Sprintf("%s:\n", endL))
 			res := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
-			w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as %s\n", res, slot, storeKind))
 			saReleaseOwnedTemp(w, scope, slot)
 			return res, false, ""
 		}
