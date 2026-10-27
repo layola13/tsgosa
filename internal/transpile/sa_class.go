@@ -2063,6 +2063,14 @@ func saAliasUnionScalarKind(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) (
 				return "", false
 			}
 			cur = pt.Type
+		case ast.KindTypeOperator:
+			// keyof 值恒为串（JEV keyof_to_str 1.0；keyof5 的域解析同律）；
+			// 非 keyof 操作符沿旧门（循环内无 readonly 解包，keyof 直解）。
+			to := cur.AsTypeOperatorNode()
+			if to == nil || to.Operator != ast.KindKeyOfKeyword || to.Type == nil {
+				return "", false
+			}
+			return "str", true
 		case ast.KindTypeReference:
 			ref := cur.AsTypeReferenceNode()
 			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil || len(aliasOf) == 0 {

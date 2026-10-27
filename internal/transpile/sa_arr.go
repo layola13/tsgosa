@@ -261,7 +261,9 @@ func saArrElemLayoutOfElem(el *ast.TypeNode, classes map[string]*saClassDef, ali
 			}
 		}
 	case ast.KindTypeLiteral:
-		return saSynthAnonLayout(el, classes)
+		// 元素布局用别名感知合成（nil 表时与旧行为一致；JEV
+		// elem_layout_only 0.7；原先此处丢表致 keyof 域落 arr 槽）。
+		return saSynthAnonLayoutAlias(el, classes, aliasOf)
 	}
 	return "", false
 }
