@@ -3587,7 +3587,11 @@ type saTopObj struct {
 // 沿旧 kind-244 门。合成布局写入 prescan 共用的 classes 表，
 // 用点字段读与 saLowerObjectLiteral 同形；合成布局无 fopt，
 // 故字面量域须齐全。
-func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef) (string, bool) {
+// spread 形（JEV merge_at_prescan 0.94）：SpreadAssignment 源须为同文件
+// 已认领顶层对象快照（prev，即 prescan 已累积 out），其布局域须全为
+// i32/str；展开域先并入，显式域后写覆盖（JS 语义），同名显式域仍
+// 按重名拒；未认领/跨文件/含非 i32/str 域的源沿旧门大声拒。
+func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj) (string, bool) {
 	if vd == nil || vd.Type == nil || vd.Initializer == nil {
 		return "", false
 	}
@@ -3619,18 +3623,48 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 	}
 	var fields []string
 	fkinds := map[string]string{}
+	ownSeen := map[string]bool{}
 	for _, p := range ol.Properties.Nodes {
-		if p == nil || p.Kind != ast.KindPropertyAssignment {
+		if p == nil {
+			return "", false
+		}
+		if p.Kind == ast.KindSpreadAssignment {
+			se := saUnwrapTransparent(p.AsSpreadAssignment().Expression.AsNode())
+			if se == nil || se.Kind != ast.KindIdentifier {
+				return "", false
+			}
+			srcTo, ok := prev[se.Text()]
+			if !ok {
+				return "", false
+			}
+			sdef, ok := classes[srcTo.layout]
+			if !ok || sdef == nil {
+				return "", false
+			}
+			for _, f := range sdef.fields {
+				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" {
+					return "", false
+				}
+				if _, seen := fkinds[f.name]; !seen {
+					fields = append(fields, f.name)
+				}
+				fkinds[f.name] = sdef.fkinds[f.name]
+			}
+			continue
+		}
+		if p.Kind != ast.KindPropertyAssignment {
 			return "", false
 		}
 		fname, ok := saObjPropName(p)
 		if !ok || fname == "" {
 			return "", false
 		}
-		if _, dup := fkinds[fname]; dup {
+		if ownSeen[fname] {
 			return "", false
 		}
+		ownSeen[fname] = true
 		finit := p.AsPropertyAssignment().Initializer
+		_, wasSpread := fkinds[fname]
 		if _, iok := saTopArrElemText(finit); iok {
 			fkinds[fname] = "i32"
 		} else if _, sok := saTopArrStrText(finit); sok {
@@ -3638,7 +3672,9 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 		} else {
 			return "", false
 		}
-		fields = append(fields, fname)
+		if !wasSpread {
+			fields = append(fields, fname)
+		}
 	}
 	sort.Strings(fields)
 	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, map[string]string{}, classes), true
@@ -3715,7 +3751,7 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					pends = append(pends, pend{name: name, obj: to2})
 					continue
 				}
-				if lay, ok3 := saTopObjLitLayout(vd, classes); ok3 {
+				if lay, ok3 := saTopObjLitLayout(vd, classes, out); ok3 {
 					init3 := saUnwrapTransparent(vd.Initializer)
 					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: init3}})
 					continue
@@ -4739,6 +4775,18 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			switch {
 			case se.Kind == ast.KindIdentifier:
 				nm := se.Text()
+				if to, ok := scope.topObjs[nm]; ok {
+					sd, ok := scope.classes[to.layout]
+					if !ok || sd == nil {
+						return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
+					}
+					sh2, _, msg2 := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+					if msg2 != "" {
+						return "", "", msg2
+					}
+					sh, sdef = sh2, sd
+					break
+				}
 				k, ok := scope.types[nm]
 				if !ok {
 					return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
@@ -4924,7 +4972,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 		}
 	}
-	for _, o := range ops {
+	for oi, o := range ops {
 		if o.fe != nil {
 			if msg := saEmitFromEntriesSpread(w, h, def, o.fe, scope, pos, refusals, nextTemp); msg != "" {
 				return "", "", msg
@@ -4933,8 +4981,27 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		}
 		if o.spread >= 0 {
 			// spread 逐域复制（源序；后者覆盖前者；种错配拒，封存 9095 原文）。
+			// 后静态 op（显式域/后 spread）覆盖的域不复制：其值必被后写
+			// 覆盖，复制是死代码，且覆盖改种时旧种复制会误报错配。
+			// fromEntries 是动态写域，不计入后写集合。
+			skip := map[string]bool{}
+			for _, later := range ops[oi+1:] {
+				if later.fe != nil {
+					continue
+				}
+				if later.spread >= 0 {
+					for _, f := range spreads[later.spread].def.fields {
+						skip[f.name] = true
+					}
+				} else if later.fname != "" {
+					skip[later.fname] = true
+				}
+			}
 			src := spreads[o.spread]
 			for _, f := range src.def.fields {
+				if skip[f.name] {
+					continue
+				}
 				sk := src.def.fkinds[f.name]
 				if sk == "" {
 					sk = "i32"
