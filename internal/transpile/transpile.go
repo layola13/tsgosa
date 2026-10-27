@@ -3492,6 +3492,61 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if handledTop[st] {
 				continue
 			}
+			// JEV alias_funcs_table 0.95: identifier-alias consts (incl.
+			// memo(id)) record the target's signature under the alias and
+			// emit a thin forwarder body, so calls to the alias resolve to a
+			// declared function. Export linking stays out (no harvest entry).
+			if alias, target, ok := saTopFnAlias(st, funcs, assigned); ok {
+				tsig := funcs[target]
+				if len(tsig.arrowCaps) > 0 || tsig.arrowThis {
+					ln, col := pos(st.Pos())
+					refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "function alias to a capture-carrying arrow const is not lowerable"})
+					continue
+				}
+				funcs[alias] = tsig
+				emitted[alias] = true
+				prefix := saLinkDefPrefix(link)
+				callee := target
+				if q, ok := saLinkResolveMap(link)[target]; ok {
+					callee = q
+				} else if prefix != "" {
+					callee = prefix + target
+				}
+				var pn, pl []string
+				for i := 0; i < tsig.params; i++ {
+					k := "ptr"
+					if i < len(tsig.paramKinds) {
+						k = saSigParamType(tsig.paramKinds[i])
+					}
+					pn = append(pn, fmt.Sprintf("p%d", i))
+					pl = append(pl, fmt.Sprintf("p%d: %s", i, k))
+				}
+				w.Write("@" + prefix + alias + "(" + strings.Join(pl, ", ") + ")")
+				if !tsig.isVoid {
+					w.Write(saSigRetSuffix(tsig.retKind))
+				}
+				w.Write(":\n")
+				args := strings.Join(pn, ", ")
+				retT := ""
+				if tsig.isVoid {
+					w.Write("  call @" + callee + "(" + args + ")\n")
+				} else {
+					retT = fmt.Sprintf("t_%d", nextTemp)
+					nextTemp++
+					w.Write("  " + retT + " = call @" + callee + "(" + args + ")\n")
+				}
+				for _, p := range pn {
+					w.Write("  !" + p + "\n")
+				}
+				if retT != "" {
+					w.Write("  ret " + retT + "\n")
+				} else {
+					// Void bodies need an explicit terminator (sa check
+					// FallthroughForbidden otherwise); bare ret ends a void body.
+					w.Write("  ret\n")
+				}
+				continue
+			}
 			// `import x = require()` 无模块解析底座，定位拒收（禁通用 kind 门）。
 			if st.Kind == ast.KindImportEqualsDeclaration {
 				ln, col := pos(st.Pos())
