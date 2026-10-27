@@ -932,6 +932,37 @@ func saProgConstChase(link *saFileLink, tgt, remote string, seen map[string]bool
 	return false
 }
 
+// saProgConstReexpTarget follows NAMED re-export edges only (no star
+// edges; 3_relesc JEV const_through_named_reexp 0.86) from (tgt, remote)
+// to the defining file and name, cycle-guarded. It mirrors saProgChase
+// but resolves to a file/name pair for const/snapshot lookup instead of
+// a qualified callee. ok=false when no named edge was followed at all
+// (direct lookups already failed then) or on a cycle/malformed edge.
+func saProgConstReexpTarget(link *saFileLink, tgt, remote string) (string, string, bool) {
+	if link == nil {
+		return "", "", false
+	}
+	seen := map[string]bool{}
+	followed := false
+	for {
+		key := tgt + "\x00" + remote
+		if seen[key] {
+			return "", "", false
+		}
+		seen[key] = true
+		edge, ok := link.reexps[tgt][remote]
+		if !ok {
+			return tgt, remote, followed
+		}
+		parts := strings.SplitN(edge, "\x00", 2)
+		if len(parts) != 2 {
+			return "", "", false
+		}
+		tgt, remote = parts[0], parts[1]
+		followed = true
+	}
+}
+
 // saProgOwnConst reports whether an exported top const of THIS file (folded
 // scalar in constHarvest, or claimed array/object/regex snapshot in
 // topConstHarvest) bears the name; used by the local-list claim only, where
@@ -2508,6 +2539,62 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 			}); ok {
 				// (par_notexp) star 转发顶层 Map 快照（同上）。
 				if claim, ok := link.topMapHarvests[starTgt][remote]; ok {
+					if link.topMapSeed == nil {
+						link.topMapSeed = map[string]saTopMap{}
+					}
+					link.topMapSeed[local] = claim
+					continue
+				}
+			}
+			// (3_relesc) Const/snapshot through named re-exports (JEV
+			// const_through_named_reexp 0.86; scope plus_top_snapshots
+			// 0.67 vs 0.33, conf 0.34 modest plurality): a folded scalar
+			// or top snapshot imported through a re-exporting barrel
+			// binds from the defining file's harvests. Named edges only
+			// (star consts already bind via the direct block's
+			// saProgStarTarget fallback); direct harvests above keep
+			// precedence (this block runs last before the shim
+			// fallback), and a missing layout refuses loudly via the
+			// saSeedTopLayouts gate (no seed on false, falls through
+			// to the refusal below -- never a silent empty handle).
+			if dtgt, dremote, ok := saProgConstReexpTarget(link, tgt, remote); ok {
+				if ch, ok := link.constHarvests[dtgt][dremote]; ok {
+					if link.constSeed == nil {
+						link.constSeed = map[string]saProgConst{}
+					}
+					link.constSeed[local] = ch
+					continue
+				}
+				if claim, ok := link.topArrHarvests[dtgt][dremote]; ok {
+					if saSeedTopLayouts(link, dtgt, claim.layout) {
+						if link.topArrSeed == nil {
+							link.topArrSeed = map[string]saTopArr{}
+						}
+						link.topArrSeed[local] = claim
+						continue
+					}
+				}
+				if claim, ok := link.topObjHarvests[dtgt][dremote]; ok {
+					roots := []string{claim.layout}
+					for _, l := range claim.arrLayouts {
+						roots = append(roots, l)
+					}
+					if saSeedTopLayouts(link, dtgt, roots...) {
+						if link.topObjSeed == nil {
+							link.topObjSeed = map[string]saTopObj{}
+						}
+						link.topObjSeed[local] = claim
+						continue
+					}
+				}
+				if claim, ok := link.topRegexHarvests[dtgt][dremote]; ok {
+					if link.topRegexSeed == nil {
+						link.topRegexSeed = map[string]saTopRegex{}
+					}
+					link.topRegexSeed[local] = claim
+					continue
+				}
+				if claim, ok := link.topMapHarvests[dtgt][dremote]; ok {
 					if link.topMapSeed == nil {
 						link.topMapSeed = map[string]saTopMap{}
 					}
@@ -7153,53 +7240,63 @@ func saProgAdoptFileAs(files map[string]string, parsed map[string]*ast.SourceFil
 	return true
 }
 
-func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile, typesOf map[string]string) {
-	const maxFiles = 64
-	tried := map[string]bool{}
-	adoptRel := func(p, spec string) bool {
-		base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
-		cands := []string{base, base + ".ts", base + ".tsx", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"), filepath.Join(base, "index.js")}
-		// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
-		if strings.HasSuffix(base, ".js") {
-			cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
-		}
-		for _, cand := range cands {
-			// 逐字候选（spec 原文）只收代码文件（.ts/.tsx/.js 系）；资源
-			// 导入（.json/.css 等）不得以 TS 源码纳入——否则 JSON 文本
-			// 被当 TS 降，徒增顶层语句拒收，且 JSON 导入的默认绑定
-			// 永远链不上（JEV nested_json_maps 的 jsonOf 路径读表，
-			// 不走程序文件）。其余候选自带代码扩展，无需再滤。
-			if cand == base && !saIsTSPath(cand) && !saIsJSPath(cand) && !strings.HasSuffix(cand, ".tsx") {
-				continue
-			}
-			kind := core.ScriptKindTS
-			if strings.HasSuffix(cand, ".tsx") {
-				kind = core.ScriptKindTSX
-			} else if strings.HasSuffix(cand, ".js") {
-				kind = core.ScriptKindJS
-			}
-			if saProgAdoptFile(files, parsed, dir, cand, kind) {
-				return true
-			}
-			if saProgAdoptFileOutside(files, parsed, dir, cand, kind) {
-				return true
-			}
-		}
-		return false
+// saProgAdoptRel adopts one relative target of file p (spec) into the file
+// set, trying the in-dir key first and the outside-dir key second (moved
+// verbatim from saProgIncludeBare's closure so the post-bare fixpoint can
+// reuse it; 3_relesc).
+func saProgAdoptRel(files map[string]string, parsed map[string]*ast.SourceFile, dir, p, spec string) bool {
+	base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
+	cands := []string{base, base + ".ts", base + ".tsx", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"), filepath.Join(base, "index.js")}
+	// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
+	if strings.HasSuffix(base, ".js") {
+		cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
 	}
-	// Relative-outside adoption (2b_xfn): reachable relative imports that
-	// escape the build dir are adopted here, NOT gated by the total file
-	// count -- the capped loop below never runs for packages already above
-	// 64 walked files (apps/server has 92), which is why the outside file
-	// stayed out of the graph even where adoptRel could have found it.
-	// Only relative specs are followed here; bare/node_modules adoption
-	// keeps the existing capped loop untouched. The loop runs to fixpoint
-	// over SORTED keys: a cap-truncated fixpoint over Go map order adopted
-	// a random subset per run (server: 84 vs 82 outside files, different
-	// reports), so determinism needs sorted iteration even under the cap.
-	// The cap counts adopted files only (1024, a runaway bound, not the
-	// 64-file node_modules calibration -- repo-relative closures are
-	// genuinely larger than one package).
+	for _, cand := range cands {
+		// 逐字候选（spec 原文）只收代码文件（.ts/.tsx/.js 系）；资源
+		// 导入（.json/.css 等）不得以 TS 源码纳入——否则 JSON 文本
+		// 被当 TS 降，徒增顶层语句拒收，且 JSON 导入的默认绑定
+		// 永远链不上（JEV nested_json_maps 的 jsonOf 路径读表，
+		// 不走程序文件）。其余候选自带代码扩展，无需再滤。
+		if cand == base && !saIsTSPath(cand) && !saIsJSPath(cand) && !strings.HasSuffix(cand, ".tsx") {
+			continue
+		}
+		kind := core.ScriptKindTS
+		if strings.HasSuffix(cand, ".tsx") {
+			kind = core.ScriptKindTSX
+		} else if strings.HasSuffix(cand, ".js") {
+			kind = core.ScriptKindJS
+		}
+		if saProgAdoptFile(files, parsed, dir, cand, kind) {
+			return true
+		}
+		if saProgAdoptFileOutside(files, parsed, dir, cand, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+// saProgAdoptRelativeOutside runs the relative-outside adoption fixpoint
+// (2b_xfn): reachable relative specs that escape the build dir are adopted
+// here, NOT gated by the total file count -- the capped loop below never
+// runs for packages already above 64 walked files (apps/server has 92),
+// which is why the outside file stayed out of the graph even where
+// adoptRel could have found it. Only relative specs are followed here;
+// bare/node_modules adoption keeps the existing capped loop untouched. The
+// loop runs to fixpoint over SORTED keys: a cap-truncated fixpoint over Go
+// map order adopted a random subset per run (server: 84 vs 82 outside
+// files, different reports), so determinism needs sorted iteration even
+// under the cap. The cap counts adopted files only (1024, a runaway bound,
+// not the 64-file node_modules calibration -- repo-relative closures are
+// genuinely larger than one package).
+// (3_relesc) The driver reruns this after the bare-spec pre-pass with
+// onlyReexp=true (JEV adopt_after_bare 0.96; scope reexports_only 0.52 vs
+// 0.48, conf 0.04 near-tie): files adopted by the bare pass (e.g. a shared
+// barrel adopted as a re-export's defining file) never had their relative
+// re-export targets adopted, because this fixpoint ran before the bare
+// pass; rerunning it for export-from specs closes that gap without
+// widening the adopted set to their relative imports.
+func saProgAdoptRelativeOutside(files map[string]string, parsed map[string]*ast.SourceFile, dir string, rs *saProgResolvers, onlyReexp bool) {
 	const maxOutsideAdopted = 1024
 	for adopted := 0; adopted < maxOutsideAdopted; {
 		progress := false
@@ -7220,6 +7317,9 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				var spec string
 				switch st.Kind {
 				case ast.KindImportDeclaration:
+					if onlyReexp {
+						continue
+					}
 					if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
 						continue
 					}
@@ -7236,7 +7336,7 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; ok {
 					continue
 				}
-				if adoptRel(p, spec) {
+				if saProgAdoptRel(files, parsed, dir, p, spec) {
 					progress = true
 					adopted++
 				}
@@ -7246,6 +7346,12 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 			break
 		}
 	}
+}
+
+func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile, typesOf map[string]string) {
+	const maxFiles = 64
+	tried := map[string]bool{}
+	saProgAdoptRelativeOutside(files, parsed, dir, rs, false)
 	for len(files) < maxFiles {
 		progress := false
 		for p, sf := range parsed {
@@ -7281,7 +7387,7 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				// 相对目标：files 集外但落盘存在即纳入。
 				if strings.HasPrefix(spec, ".") {
 					if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; !ok {
-						if adoptRel(p, spec) {
+						if saProgAdoptRel(files, parsed, dir, p, spec) {
 							progress = true
 						}
 					}
@@ -7522,6 +7628,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	if dirAbs, err := filepath.Abs(dir); err == nil {
 		saBareReexpLink(dirAbs, files, parsed, rs, graph, reexpOf, starOf)
 	}
+	// (3_relesc) Relative re-exports of bare-adopted files were never
+	// adopted (fixpoint ran before the bare pass): rerun it for
+	// export-from specs only, before the edge loop below.
+	saProgAdoptRelativeOutside(files, parsed, dir, rs, true)
 	// addEdge links importer→target for spec. typeOnly keeps the type
 	// resolver (纯类型导入/重导出只取类型侧，不链运行时文件，禁静默扩面).
 	addEdge := func(p, spec string, typeOnly bool) string {
