@@ -4237,6 +4237,59 @@ func saLowerTernaryInstArmHandle(w printer.EmitTextWriter, e *ast.Node, want str
 // saEvalJsValOperand) and joined through a ptr slot, mirroring the
 // str/arr ternary join idiom. Only used when the function return kind
 // is jsval, so heterogeneous arms (number vs string) are legal here.
+// saJsValTernaryShapeOk is the PURE pre-check for the arr-field jsval
+// ternary fallback (JEV arr_fallback 1.0): every arm must be a jsval
+// operand, a null/undefined literal, an object literal, or a nested
+// ternary of such (depth-capped). It emits nothing, so a failed
+// pre-check leaves the existing saEvalI32 fallback byte-identical.
+// saJsValTernaryHasLiteral reports whether such a shape contains at
+// least one object-literal arm (the gate: only literal arms can fail
+// the i32 fallback, so only they may divert to the jsval join).
+func saJsValTernaryShapeOk(e *ast.Node, scope *saScope, depth int) bool {
+	if e == nil || depth > 8 {
+		return false
+	}
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return false
+	}
+	if u.Kind == ast.KindConditionalExpression {
+		ce := u.AsConditionalExpression()
+		if ce == nil {
+			return false
+		}
+		return saJsValTernaryShapeOk(ce.WhenTrue, scope, depth+1) && saJsValTernaryShapeOk(ce.WhenFalse, scope, depth+1)
+	}
+	if saIsJsValOperand(u, scope) {
+		return true
+	}
+	if saIsNullLit(u, scope) {
+		return true
+	}
+	if u.Kind == ast.KindObjectLiteralExpression {
+		return true
+	}
+	return false
+}
+
+func saJsValTernaryHasLiteral(e *ast.Node, scope *saScope, depth int) bool {
+	if e == nil || depth > 8 {
+		return false
+	}
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return false
+	}
+	if u.Kind == ast.KindConditionalExpression {
+		ce := u.AsConditionalExpression()
+		if ce == nil {
+			return false
+		}
+		return saJsValTernaryHasLiteral(ce.WhenTrue, scope, depth+1) || saJsValTernaryHasLiteral(ce.WhenFalse, scope, depth+1)
+	}
+	return u.Kind == ast.KindObjectLiteralExpression
+}
+
 // saJsValTernaryArm evaluates one arm of a jsval ternary (JEV prog38
 // jsval_nest_recurse 0.81, return_ternary_only 0.66): a nested ternary recurses
 // into saLowerTernaryJsVal; all other arms use saEvalJsValOperand. Scoped to
@@ -4380,6 +4433,45 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 						litNode = side
 					}
 				}
+				if typeOp == nil || litNode == nil {
+					// && guard extraction (JEV extend_block 1.0): a typeof
+					// === "string" conjunct narrows the true arm exactly as a
+					// direct guard does; the whole && was already evaluated
+					// as condOp above, so the true arm runs only if it held.
+					var findGuard func(n *ast.Node) (*ast.Node, *ast.Node)
+					findGuard = func(n *ast.Node) (*ast.Node, *ast.Node) {
+						if n == nil || n.Kind != ast.KindBinaryExpression {
+							return nil, nil
+						}
+						b := n.AsBinaryExpression()
+						if b == nil {
+							return nil, nil
+						}
+						if saBinaryOpKind(b) == ast.KindAmpersandAmpersandToken {
+							if t, l := findGuard(b.Left); t != nil && l != nil {
+								return t, l
+							}
+							return findGuard(b.Right)
+						}
+						if saBinaryOpKind(b) != ast.KindEqualsEqualsToken && saBinaryOpKind(b) != ast.KindEqualsEqualsEqualsToken {
+							return nil, nil
+						}
+						var t, l *ast.Node
+						for _, side := range []*ast.Node{b.Left, b.Right} {
+							if side != nil && side.Kind == ast.KindTypeOfExpression {
+								t = side
+							}
+							if side != nil && side.Kind == ast.KindStringLiteral {
+								l = side
+							}
+						}
+						if t != nil && l != nil {
+							return t, l
+						}
+						return nil, nil
+					}
+					typeOp, litNode = findGuard(ce.Condition)
+				}
 				if typeOp != nil && litNode != nil && litNode.Text() == "string" {
 					inner := typeOp.AsTypeOfExpression().Expression
 					if inner != nil && inner.Kind == ast.KindIdentifier {
@@ -4387,7 +4479,8 @@ func saLowerTernaryValue(w printer.EmitTextWriter, ce *ast.ConditionalExpression
 						if origKind, ok := scope.types[nm]; ok && origKind == "jsval" {
 							// Check arms are str when narrowed.
 							scope.types[nm] = "str"
-							isStrArms := saIsStrValue(ce.WhenTrue, scope) && saIsStrValue(ce.WhenFalse, scope)
+							isUndefArm := ce.WhenFalse != nil && (ce.WhenFalse.Kind == ast.KindUndefinedKeyword || ce.WhenFalse.Kind == ast.KindNullKeyword || (ce.WhenFalse.Kind == ast.KindIdentifier && ce.WhenFalse.Text() == "undefined"))
+							isStrArms := saIsStrValue(ce.WhenTrue, scope) && (saIsStrValue(ce.WhenFalse, scope) || isUndefArm)
 							scope.types[nm] = origKind
 							if isStrArms {
 								slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -6442,6 +6535,23 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		// release-except-op does not free the box payload), then box via
 		// the sa_std branch helper (no new inline helper).
 		if lit := saUnwrapTransparent(a); lit != nil && lit.Kind == ast.KindObjectLiteralExpression {
+			// Empty literal (JEV empty_struct_box 0.94): synth refuses
+			// empty key sets, so materialize the zero-size struct the
+			// literal lowering emits when def.size == 0 (alloc 4) and box
+			// it as a kind-4 object via the existing sa_std branch helper.
+			// Non-empty literals keep the inferred-layout path below.
+			if ol := lit.AsObjectLiteralExpression(); ol != nil && (ol.Properties == nil || len(ol.Properties.Nodes) == 0) {
+				h := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 4\n", h))
+				saOwnTemp(scope, h)
+				scope.addImport("sa_std/ts_jsval.sa")
+				bh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_inst(%s)\n", bh, h))
+				saOwnTemp(scope, bh)
+				return bh, ""
+			}
 			h, _, msg := saLowerObjectLiteral(w, lit, "", scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
@@ -6475,6 +6585,19 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 			w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_inst(%s)\n", bh, op))
 			saOwnTemp(scope, bh)
 			return bh, ""
+		}
+		// jsval ternary arms (JEV reuse_jsval_ternary 1.0, arg_and_field_only):
+		// slot-joined jsval ternary, the same helper as jsval return
+		// position; arms box through saEvalJsValOperand (object literals
+		// via the inferred-layout arm above, null/undefined as kind 0/6).
+		if a != nil && a.Kind == ast.KindConditionalExpression {
+			if ce := a.AsConditionalExpression(); ce != nil && saJsValTernaryShapeOk(a, scope, 0) && saJsValTernaryHasLiteral(a, scope, 0) {
+				h, msg := saLowerTernaryJsVal(w, ce, a, scope, pos, refusals, scope.nextLabel, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return h, ""
+			}
 		}
 		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
 			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
@@ -9791,6 +9914,89 @@ func saLowerTypeofCompare(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 			}
 			return "", "jsval typeof against unknown kind " + lit
 		}
+	}
+	if inner != nil && saIsJsValOperand(inner, scope) && (inner.Kind == ast.KindPropertyAccessExpression || inner.Kind == ast.KindElementAccessExpression) {
+		// jsval map-field typeof (JEV runtime_tag_field 1.0, map_field_only 1.0):
+		// same tag comparison as the identifier arm, via the map-read
+		// handle; a 0 handle (missing key / null base) is undefined.
+		h, msg := saEvalJsValHandle(w, inner, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		tagL := fmt.Sprintf("L_typeof_tag_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		missL := fmt.Sprintf("L_typeof_miss_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_typeof_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		nz := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, h))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, tagL, missL))
+		w.Write(fmt.Sprintf("%s:\n", missL))
+		missVal := "0"
+		if (lit == "undefined") != neg {
+			missVal = "1"
+		}
+		missT := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		if missVal == "1" {
+			w.Write(fmt.Sprintf("  %s = eq 1, 1\n", missT))
+		} else {
+			w.Write(fmt.Sprintf("  %s = ne 1, 1\n", missT))
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, missT))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", tagL))
+		tag := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", tag, h))
+		if lit == "object" {
+			isObj := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 4\n", isObj, tag))
+			isArr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 5\n", isArr, tag))
+			isNull := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 6\n", isNull, tag))
+			or1 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = or %s, %s\n", or1, isObj, isArr))
+			or2 := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = or %s, %s\n", or2, or1, isNull))
+			ot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if neg {
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", ot, or2))
+			} else {
+				w.Write(fmt.Sprintf("  %s = eq %s, 1\n", ot, or2))
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, ot))
+		} else if code, ok := saJsValKindCode(lit); ok {
+			ct := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			if neg {
+				w.Write(fmt.Sprintf("  %s = ne %s, %d\n", ct, tag, code))
+			} else {
+				w.Write(fmt.Sprintf("  %s = eq %s, %d\n", ct, tag, code))
+			}
+			w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", slot, ct))
+		} else {
+			return "", "jsval typeof against unknown kind " + lit
+		}
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		res := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		return res, ""
 	}
 	kind, msg := saTypeofKind(typeOp, scope)
 	if msg != "" {
