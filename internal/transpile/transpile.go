@@ -3242,7 +3242,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			handledTop[st] = true
 			continue
 		}
-		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals, tcx) {
+		if saFoldTopLevelConst(st, topConsts, topStr, topMaths, pos, &refusals, tcx, topObjs, assigned, topConstNames) {
 			handledTop[st] = true
 			continue
 		}

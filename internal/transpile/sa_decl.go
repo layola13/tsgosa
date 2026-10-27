@@ -3227,7 +3227,117 @@ func saFoldNumArg(n *ast.Node, consts map[string]string, strs map[string]bool) (
 	}
 }
 
-func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx) bool {
+// saLazyMemberInt resolves a same-file const object literal's i32 field
+// (3_lazy, JEV int_str_member_pure / same_file_only / strict_no_mutation):
+// base must be a const declaration in this file, neither base nor
+// base.field may be assigned anywhere in the file, and base must be claimed
+// as a topObj snapshot (a missing layout refuses loudly, never a silent
+// zero). Field value forms: int literal, signed int literal, a previously
+// folded non-string const, or a pure int expression via saFoldConstInt.
+// String fields, floats, nested objects, spreads, computed names, and
+// duplicate target fields all refuse.
+func saLazyMemberInt(pa *ast.Node, consts map[string]string, strs map[string]bool, topObjs map[string]saTopObj, assigned map[string]bool, topConstNames map[string]bool) (string, bool) {
+	if pa == nil || pa.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	acc := pa.AsPropertyAccessExpression()
+	if acc == nil || acc.Expression == nil || acc.Expression.Kind != ast.KindIdentifier || acc.Name() == nil || acc.Name().Kind != ast.KindIdentifier {
+		return "", false
+	}
+	base := acc.Expression.Text()
+	field := acc.Name().Text()
+	if !topConstNames[base] {
+		return "", false
+	}
+	if assigned[base] || assigned[base+"."+field] {
+		return "", false
+	}
+	claim, ok := topObjs[base]
+	if !ok || claim.init == nil || claim.init.Kind != ast.KindObjectLiteralExpression {
+		return "", false
+	}
+	ol := claim.init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil {
+		return "", false
+	}
+	found := false
+	result := ""
+	for _, p := range ol.Properties.Nodes {
+		if p == nil {
+			return "", false
+		}
+		if p.Kind == ast.KindSpreadAssignment {
+			return "", false
+		}
+		fname, ok := saObjPropName(p)
+		if !ok || fname == "" {
+			return "", false
+		}
+		if fname != field {
+			continue
+		}
+		if found {
+			return "", false
+		}
+		found = true
+		var finit *ast.Node
+		if p.Kind == ast.KindShorthandPropertyAssignment {
+			if t, ok2 := consts[fname]; ok2 && !strs[fname] && saIsDecimalInt(t) {
+				result = t
+				continue
+			}
+			return "", false
+		}
+		if p.Kind != ast.KindPropertyAssignment {
+			return "", false
+		}
+		finit = p.AsPropertyAssignment().Initializer
+		if finit == nil {
+			return "", false
+		}
+		finit = saUnwrapTransparent(finit)
+		if finit == nil {
+			return "", false
+		}
+		switch finit.Kind {
+		case ast.KindNumericLiteral:
+			if !saIsDecimalInt(finit.Text()) {
+				return "", false
+			}
+			result = finit.Text()
+		case ast.KindPrefixUnaryExpression:
+			un := finit.AsPrefixUnaryExpression()
+			if un == nil || un.Operand == nil || un.Operand.Kind != ast.KindNumericLiteral || !saIsDecimalInt(un.Operand.Text()) {
+				return "", false
+			}
+			if un.Operator == ast.KindMinusToken {
+				result = "-" + un.Operand.Text()
+			} else if un.Operator == ast.KindPlusToken {
+				result = un.Operand.Text()
+			} else {
+				return "", false
+			}
+		case ast.KindIdentifier:
+			t, ok2 := consts[finit.Text()]
+			if !ok2 || strs[finit.Text()] || !saIsDecimalInt(t) {
+				return "", false
+			}
+			result = t
+		default:
+			v, ok2 := saFoldConstInt(finit, consts, strs)
+			if !ok2 {
+				return "", false
+			}
+			result = v.String()
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return result, true
+}
+
+func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx, topObjs map[string]saTopObj, assigned map[string]bool, topConstNames map[string]bool) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
 	}
@@ -3239,6 +3349,7 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 	if dl == nil || len(dl.Declarations.Nodes) == 0 {
 		return false
 	}
+	isConst := dl.AsNode().Flags&ast.NodeFlagsConst != 0
 	// `using`/`await using` 同旗（后者含 Using 位），显式释放无 SA 域退出钩子，
 	// 顶层亦大声拒（不可静默吞掉；封存 lowerVarDeclList:1395-1398 同门）。
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
@@ -3353,6 +3464,14 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 					break
 				}
 			}
+			// 3_lazy: member read of a same-file const object's i32 field.
+			// Strict guard: lazy statement const, lazy name never assigned.
+			if isConst && !assigned[nm.Text()] {
+				if v, ok := saLazyMemberInt(init, consts, strs, topObjs, assigned, topConstNames); ok {
+					consts[nm.Text()] = v
+					break
+				}
+			}
 			m, ok := saMathMethodName(init)
 			if !ok {
 				return false
@@ -3395,7 +3514,16 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 			}
 			v, ok := saFoldNumArg(ce.Arguments.Nodes[0], consts, strs)
 			if !ok {
-				return false
+				// 3_lazy: Number(<i32 member read>) only; parseInt over a
+				// member, and non-const lazy statements, keep refusing.
+				if callee != "Number" || !isConst || assigned[nm.Text()] {
+					return false
+				}
+				mv, mok := saLazyMemberInt(ce.Arguments.Nodes[0], consts, strs, topObjs, assigned, topConstNames)
+				if !mok {
+					return false
+				}
+				v = mv
 			}
 			if callee == "parseInt" && len(ce.Arguments.Nodes) == 2 {
 				radix, ok := saFoldNumArg(ce.Arguments.Nodes[1], consts, strs)
