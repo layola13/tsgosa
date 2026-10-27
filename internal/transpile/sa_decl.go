@@ -1237,6 +1237,26 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 	}
+	// 顶层 claimed map 作局部初值（JEV local_map_binding
+	// materialize_fresh_bind 0.98，scope all_claimed 0.86）：与数组/
+	// 对象别名不同，map 快照可具化为新鲜 btree_map 后绑定（与
+	// saLowerRecordLiteral 的具名绑定同律：name = slot，种 map，
+	// 值种记 tm.vkind，slot 归属转移至 name）。具名局部遮蔽由
+	// saTopMapLookup 内门排除；具化失败沿旧门大声拒。
+	if tm, ok := saTopMapLookup(scope, init); ok {
+		slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, slot))
+		scope.types[name] = "map"
+		saSetMapVal(scope, name, tm.vkind)
+		saConsumeOwn(scope, slot)
+		saDeclareOwned(scope, name)
+		return true
+	}
 	// 顶层 const 数组别名大声拒（快照无共享柄，`const B = A` 无源可借；逐元直读；
 	// 本地 `const r = a` 513 同门；698）。
 	if init.Kind == ast.KindIdentifier {

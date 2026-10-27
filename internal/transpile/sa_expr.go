@@ -1253,6 +1253,19 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			if k, ok := scope.types[e.Text()]; ok && k == "map" {
 				return e.Text(), ""
 			}
+			// 顶层 claimed map 整体返回（JEV whole_map_return
+			// materialize_fresh 0.98，scope all_claimed 0.94）：具名顶层
+			// map 不在 scope.types 内，沿旧门拒；此处经 saTopMapLookup
+			// 具化新鲜 btree_map 槽后直返（返前释放除外口守住该槽；
+			// 调用方得到快照拷贝的所有权，快照本身不变；具名局部遮蔽
+			// 由 saTopMapLookup 内门排除）。具化失败沿旧门大声拒。
+			if tm, ok := saTopMapLookup(scope, e); ok {
+				slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return slot, ""
+			}
 			return "", "map return needs matching map value"
 		}
 	}
