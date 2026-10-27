@@ -8448,6 +8448,12 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		saMarkArrStr(scope, h)
 	}
 	saLowerArrayPush(w, h, v, scope, nextTemp)
+	if mapArr {
+		// Pair-handle ownership moves into the result array (see header):
+		// without this, the drain releases the loop-scoped temp outside
+		// its scope and sa check fails UnknownRegister.
+		saReleaseOwnedTemp(w, scope, v)
+	}
 	inext := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
