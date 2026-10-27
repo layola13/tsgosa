@@ -2755,6 +2755,9 @@ func saTopLevelArrowInitIsMemoCall(st *ast.Node) bool {
 	if vd == nil || vd.Initializer == nil {
 		return false
 	}
+	if vd.Initializer.Kind != ast.KindCallExpression {
+		return false
+	}
 	ce := vd.Initializer.AsCallExpression()
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		return false
