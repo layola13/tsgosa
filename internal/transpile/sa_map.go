@@ -3362,3 +3362,531 @@ func saLowerMapCall(w printer.EmitTextWriter, recv, kind, method string, ce *ast
 		return "", "", "Set." + method + " is not a projected surface"
 	}
 }
+
+// 2b_k244handles patch2: shared Map/Set slot helpers.
+
+// saCollValueKind derives a slot value/elem kind from a type node:
+// "str" | "i32" | "inst:X" (named class/interface, no type args).
+// Parenthesized types and null/undefined-stripped unions recurse; aliases
+// recurse (depth-guarded); nested Record/Map, arrays, jsval, and unknown
+// kinds fail (stay refused) rather than risk a silent misread.
+func saCollValueKind(t *ast.TypeNode, classes map[string]*saClassDef, aliases map[string]*ast.TypeNode, depth int) (string, bool) {
+	if t == nil || depth > 4 {
+		return "", false
+	}
+	switch t.Kind {
+	case ast.KindStringKeyword:
+		return "str", true
+	case ast.KindNumberKeyword, ast.KindBooleanKeyword:
+		return "i32", true
+	case ast.KindParenthesizedType:
+		pn := t.AsParenthesizedTypeNode()
+		if pn != nil && pn.Type != nil {
+			return saCollValueKind(pn.Type, classes, aliases, depth+1)
+		}
+		return "", false
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false
+		}
+		var base *ast.TypeNode
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false
+			}
+			if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if m.Kind == ast.KindLiteralType {
+				lit := m.AsLiteralTypeNode()
+				if lit != nil && lit.Literal != nil && (lit.Literal.Kind == ast.KindNullKeyword || lit.Literal.Kind == ast.KindUndefinedKeyword) {
+					continue
+				}
+			}
+			if base != nil {
+				return "", false
+			}
+			base = m
+		}
+		if base == nil {
+			return "", false
+		}
+		return saCollValueKind(base, classes, aliases, depth+1)
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		name := ref.TypeName.Text()
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return "", false
+		}
+		if aliased, ok := aliases[name]; ok {
+			return saCollValueKind(aliased, classes, aliases, depth+1)
+		}
+		if _, ok := classes[name]; ok {
+			return "inst:" + name, true
+		}
+		return "", false
+	case ast.KindIdentifier:
+		if aliased, ok := aliases[t.Text()]; ok {
+			return saCollValueKind(aliased, classes, aliases, depth+1)
+		}
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// saCollSeedIdentOK: a seed identifier is safe only when it names an
+// immutable top-level const (folded by lowering time). Mutable slot names
+// are rejected: lazy ensure would read the slot at first use, not at
+// declaration time (a timing deviation, not just a value difference).
+func saCollSeedIdentOK(nm string, topConstNames map[string]bool, modVars map[string]*saModState) bool {
+	if _, ok := modVars[nm]; ok {
+		return false
+	}
+	return topConstNames[nm]
+}
+
+// saCollSeedOK: seed expressions safe for lazy ensure. Literals, array
+// literals (recursive), object literals (property values recursive;
+// shorthand values are identifiers; spread/methods rejected), and
+// top-level-const identifiers. Calls, member reads, element access,
+// templates, and unknown identifiers are rejected: their values or
+// side effects depend on evaluation time.
+func saCollSeedOK(n *ast.Node, topConstNames map[string]bool, modVars map[string]*saModState) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case ast.KindStringLiteral, ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	case ast.KindArrayLiteralExpression:
+		al := n.AsArrayLiteralExpression()
+		if al == nil || al.Elements == nil {
+			return false
+		}
+		for _, el := range al.Elements.Nodes {
+			if !saCollSeedOK(el, topConstNames, modVars) {
+				return false
+			}
+		}
+		return true
+	case ast.KindObjectLiteralExpression:
+		ol := n.AsObjectLiteralExpression()
+		if ol == nil || ol.Properties == nil {
+			return false
+		}
+		for _, p := range ol.Properties.Nodes {
+			if p == nil {
+				return false
+			}
+			switch p.Kind {
+			case ast.KindPropertyAssignment:
+				pa := p.AsPropertyAssignment()
+				if pa == nil || !saCollSeedOK(pa.Initializer, topConstNames, modVars) {
+					return false
+				}
+			case ast.KindShorthandPropertyAssignment:
+				sa := p.AsShorthandPropertyAssignment()
+				if sa == nil || sa.Name() == nil {
+					return false
+				}
+				if !saCollSeedIdentOK(sa.Name().Text(), topConstNames, modVars) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		return true
+	case ast.KindIdentifier:
+		return saCollSeedIdentOK(n.Text(), topConstNames, modVars)
+	default:
+		return false
+	}
+}
+
+// saTryCollSlot registers a non-exported same-file Map/Set const (or
+// let/var, since reassignment refuses loudly via the assignment k-check)
+// as a shared slot, unless the snapshot prescans already claimed it
+// (this runs after those checks, so nothing is stolen from snapshots).
+// Seeds must be empty or a single array literal of seed-OK elements
+// (Map: 2-element [key, value] pairs). Computed seeds, unparseable
+// value kinds, and name collisions keep kind-244.
+func saTryCollSlot(st *ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, modVars map[string]*saModState, aliases map[string]*ast.TypeNode, topConstNames map[string]bool) bool {
+	if st == nil || st.Kind != ast.KindVariableStatement {
+		return false
+	}
+	if ast.HasModifier(st, ast.ModifierFlagsExport) {
+		return false
+	}
+	vs := st.AsVariableStatement()
+	if vs == nil || vs.DeclarationList == nil {
+		return false
+	}
+	vdl := vs.DeclarationList.AsVariableDeclarationList()
+	if vdl == nil || vdl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
+		return false
+	}
+	if vdl.Declarations == nil || len(vdl.Declarations.Nodes) != 1 {
+		return false
+	}
+	vd := vdl.Declarations.Nodes[0].AsVariableDeclaration()
+	if vd == nil || vd.Initializer == nil {
+		return false
+	}
+	nm := vd.Name()
+	if nm == nil || nm.Kind != ast.KindIdentifier {
+		return false
+	}
+	name := nm.Text()
+	if _, dup := modVars[name]; dup {
+		return false
+	}
+	if _, dup := funcs[name]; dup {
+		return false
+	}
+	if _, dup := classes[name]; dup {
+		return false
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindNewExpression {
+		return false
+	}
+	ce := init.AsNewExpression()
+	if ce == nil || ce.Expression == nil {
+		return false
+	}
+	ctor := saUnwrapTransparent(ce.Expression)
+	if ctor == nil || ctor.Kind != ast.KindIdentifier {
+		return false
+	}
+	coll := ctor.Text()
+	if coll != "Map" && coll != "Set" {
+		return false
+	}
+	var vk string
+	var ok bool
+	var hasKind bool
+	if coll == "Map" {
+		var vt *ast.TypeNode
+		if ce.TypeArguments != nil && len(ce.TypeArguments.Nodes) == 2 {
+			vt = ce.TypeArguments.Nodes[1]
+		} else if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+			ref := vd.Type.AsTypeReferenceNode()
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && (ref.TypeName.Text() == "Map" || ref.TypeName.Text() == "Record") && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 2 {
+				vt = ref.TypeArguments.Nodes[1]
+			}
+		}
+		if vt != nil {
+			vk, ok = saCollValueKind(vt, classes, aliases, 0)
+			if !ok {
+				return false
+			}
+			hasKind = true
+		}
+	} else {
+		var et *ast.TypeNode
+		if ce.TypeArguments != nil && len(ce.TypeArguments.Nodes) == 1 {
+			et = ce.TypeArguments.Nodes[0]
+		} else if vd.Type != nil && vd.Type.Kind == ast.KindTypeReference {
+			ref := vd.Type.AsTypeReferenceNode()
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && (ref.TypeName.Text() == "Set" || ref.TypeName.Text() == "ReadonlySet") && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 {
+				et = ref.TypeArguments.Nodes[0]
+			}
+		}
+		if et != nil {
+			vk, ok = saCollValueKind(et, classes, aliases, 0)
+			if !ok {
+				return false
+			}
+			hasKind = true
+		}
+	}
+	if ce.Arguments != nil && len(ce.Arguments.Nodes) > 0 {
+		if len(ce.Arguments.Nodes) != 1 {
+			return false
+		}
+		arg := ce.Arguments.Nodes[0]
+		if arg == nil || arg.Kind != ast.KindArrayLiteralExpression {
+			return false
+		}
+		al := arg.AsArrayLiteralExpression()
+		if al == nil || al.Elements == nil {
+			return false
+		}
+		for _, el := range al.Elements.Nodes {
+			if coll == "Map" {
+				if el == nil || el.Kind != ast.KindArrayLiteralExpression {
+					return false
+				}
+				pair := el.AsArrayLiteralExpression()
+				if pair == nil || pair.Elements == nil || len(pair.Elements.Nodes) != 2 {
+					return false
+				}
+				if !saCollSeedOK(pair.Elements.Nodes[0], topConstNames, modVars) {
+					return false
+				}
+				if !saCollSeedOK(pair.Elements.Nodes[1], topConstNames, modVars) {
+					return false
+				}
+			} else {
+				if !saCollSeedOK(el, topConstNames, modVars) {
+					return false
+				}
+			}
+		}
+	}
+	// No type info: derive from literal seeds. Maps need a uniform
+	// literal value kind (else the .get return kind is unknowable, and
+	// the "" default would silently read i32). Sets may stay kind-less:
+	// their operations are kind-dynamic (.add seeds setVals per call),
+	// and the iteration gate refuses on an empty table.
+	if !hasKind {
+		if coll == "Map" {
+			derived, ok := saCollSeedMapKind(ce)
+			if !ok {
+				return false
+			}
+			vk = derived
+		} else {
+			vk = saCollSeedSetKind(ce)
+		}
+	}
+	key, _ := saModKeyOf(name)
+	flagKey, _ := saModKeyOf(name + "\x00collinit")
+	modVars[name] = &saModState{qual: name, w: "map", vkind: vk, initNode: init, key: key, flagKey: flagKey}
+	if coll == "Set" {
+		modVars[name].w = "set"
+	}
+	return true
+}
+
+// saEmitModEnsureMap: lazy-once creation for a shared Map/Set slot.
+// Flag check (saEmitModEnsure idiom: labels from scope.nextLabel, guard
+// temp owned + released); on first use, create the btree handle, seed
+// from the stored NewExpression, trunc + store + set the flag. Seed
+// failures refuse loudly at the declaration position (initNode.Pos).
+// The fresh handle temp is owned + released after trunc (patch-1c
+// @main rule: call temps stay Active after trunc in @main).
+func saEmitModEnsureMap(w printer.EmitTextWriter, ms *saModState, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
+	if ms == nil || ms.initNode == nil || ms.initNode.Kind != ast.KindNewExpression {
+		return false
+	}
+	ce := ms.initNode.AsNewExpression()
+	if ce == nil {
+		return false
+	}
+	f := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", f, ms.flagKey))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	doneL := fmt.Sprintf("L_ms_done_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	initL := fmt.Sprintf("L_ms_init_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", c, f))
+	saOwnTemp(scope, f)
+	saReleaseOwnedTemp(w, scope, f)
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, doneL, initL))
+	w.Write(fmt.Sprintf("%s:\n", initL))
+	ctor := "Map"
+	if ms.w == "set" {
+		ctor = "Set"
+	}
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	if ms.w == "map" {
+		w.Write(fmt.Sprintf("  %s = call @sa_btree_map_new()\n", h))
+	} else {
+		w.Write(fmt.Sprintf("  %s = call @sa_btree_set_new()\n", h))
+	}
+	saOwnTemp(scope, h)
+	// Snapshot the owned list: seeding adds branch-scoped temps (key
+	// slices, str values, inst handles) that the drain must never
+	// reference (UnknownRegister) and must never free (map entries
+	// reference the value/handle structs). Untracked below, on success.
+	ownBefore := len(scope.ownOrder)
+	var msg string
+	if ms.w == "map" && len(ms.vkind) > 5 && ms.vkind[:5] == "inst:" {
+		msg = saLowerMapNewSeedsInst(w, h, ce, ms.vkind, scope, pos, refusals, nextTemp)
+	} else {
+		msg = saLowerMapNewSeeds(w, h, ctor, ce, scope, pos, refusals, nextTemp)
+	}
+	if msg != "" {
+		ln, col := pos(ms.initNode.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return false
+	}
+	// Untrack (do NOT release) branch-local seed temps: the drain runs
+	// outside the init branch, and the map entries reference the
+	// value/handle structs. The ensure is flag-guarded (once per
+	// process), so the leak is bounded to the seed structs themselves.
+	for _, t := range scope.ownOrder[ownBefore:] {
+		delete(scope.ownState, t)
+	}
+	scope.ownOrder = scope.ownOrder[:ownBefore]
+	u := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as u64\n", u, h))
+	saReleaseOwnedTemp(w, scope, h)
+	saEmitModSetRaw(w, ms.key, u, scope, nextTemp)
+	saEmitModSetRaw(w, ms.flagKey, "1", scope, nextTemp)
+	w.Write(fmt.Sprintf("  jmp %s\n", doneL))
+	w.Write(fmt.Sprintf("%s:\n", doneL))
+	scope.addImport("sa_std/modstate.sai")
+	return true
+}
+
+// saLowerMapNewSeedsInst: Map seed loop for inst-valued maps (mirrors
+// the .set inst arm: object-literal values, identifiers with the exact
+// inst kind, element/call temps with the exact inst kind). Other value
+// shapes refuse loudly; the caller positions the refusal at the
+// declaration. Str/i32 maps use saLowerMapNewSeeds unchanged.
+func saLowerMapNewSeedsInst(w printer.EmitTextWriter, t string, ce *ast.NewExpression, vkind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	want := vkind[5:]
+	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return ""
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg == nil || arg.Kind != ast.KindArrayLiteralExpression {
+		return "shared map seeds need an array literal"
+	}
+	al := arg.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil {
+		return "shared map seeds need an array literal"
+	}
+	for _, el := range al.Elements.Nodes {
+		if el == nil || el.Kind != ast.KindArrayLiteralExpression {
+			return "shared map seeds need [key, value] pairs"
+		}
+		pair := el.AsArrayLiteralExpression()
+		if pair == nil || pair.Elements == nil || len(pair.Elements.Nodes) != 2 {
+			return "shared map seeds need [key, value] pairs"
+		}
+		ks, kcell, msg := saMapKeySlice(w, pair.Elements.Nodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		rhs := pair.Elements.Nodes[1]
+		var v string
+		if rhs != nil && rhs.Kind == ast.KindObjectLiteralExpression {
+			lh, lname, msg := saLowerObjectLiteral(w, rhs, want, scope, pos, refusals, nextTemp)
+			if msg != "" || lname != want {
+				saReleaseKeySlice(w, ks, kcell)
+				return "record value does not match interface " + want
+			}
+			v = lh
+		} else if rhs != nil && rhs.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[rhs.Text()]; !ok || k != vkind {
+				saReleaseKeySlice(w, ks, kcell)
+				return "record value does not match interface " + want
+			}
+			v = rhs.Text()
+		} else if rhs != nil && (rhs.Kind == ast.KindElementAccessExpression || rhs.Kind == ast.KindCallExpression) {
+			tt, msg := saEvalI32(w, rhs, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				saReleaseKeySlice(w, ks, kcell)
+				return msg
+			}
+			if k, ok := scope.types[tt]; !ok || k != vkind {
+				saReleaseKeySlice(w, ks, kcell)
+				return "record value does not match interface " + want
+			}
+			v = tt
+		} else {
+			saReleaseKeySlice(w, ks, kcell)
+			return "record value does not match interface " + want
+		}
+		w.Write(fmt.Sprintf("  call @sa_btree_map_insert(&%s, &%s, %s)\n", t, ks, v))
+		saReleaseKeySlice(w, ks, kcell)
+	}
+	return ""
+}
+
+// saCollSeedLitKind: seed literal -> value kind ("str" for strings,
+// "i32" for numbers/bools), else "" (non-literal or other shape).
+func saCollSeedLitKind(n *ast.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case ast.KindStringLiteral:
+		return "str"
+	case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "i32"
+	default:
+		return ""
+	}
+}
+
+// saCollSeedMapKind derives a Map value kind from seed pair literals:
+// every pair value must be a literal of one uniform kind, and at least
+// one pair must exist. Anything else fails (stay refused).
+func saCollSeedMapKind(ce *ast.NewExpression) (string, bool) {
+	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return "", false
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg == nil || arg.Kind != ast.KindArrayLiteralExpression {
+		return "", false
+	}
+	al := arg.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) == 0 {
+		return "", false
+	}
+	kind := ""
+	for _, el := range al.Elements.Nodes {
+		if el == nil || el.Kind != ast.KindArrayLiteralExpression {
+			return "", false
+		}
+		pair := el.AsArrayLiteralExpression()
+		if pair == nil || pair.Elements == nil || len(pair.Elements.Nodes) != 2 {
+			return "", false
+		}
+		k := saCollSeedLitKind(pair.Elements.Nodes[1])
+		if k == "" {
+			return "", false
+		}
+		if kind == "" {
+			kind = k
+		} else if kind != k {
+			return "", false
+		}
+	}
+	return kind, true
+}
+
+// saCollSeedSetKind derives a Set elem kind from seed literals: the
+// uniform literal kind, or "" when seeds are absent, mixed, or
+// non-literal (kind-less sets still work: set ops are kind-dynamic).
+func saCollSeedSetKind(ce *ast.NewExpression) string {
+	if ce == nil || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return ""
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg == nil || arg.Kind != ast.KindArrayLiteralExpression {
+		return ""
+	}
+	al := arg.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil || len(al.Elements.Nodes) == 0 {
+		return ""
+	}
+	kind := ""
+	for _, el := range al.Elements.Nodes {
+		k := saCollSeedLitKind(el)
+		if k == "" {
+			return ""
+		}
+		if kind == "" {
+			kind = k
+		} else if kind != k {
+			return ""
+		}
+	}
+	return kind
+}
