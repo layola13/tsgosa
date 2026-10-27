@@ -6833,6 +6833,60 @@ func saJsValMaskedMsg(a *ast.Node, scope *saScope, inner string) string {
 	return head + ": " + inner + saJsValShapeSuffix(a, scope)
 }
 
+// saJsValSnippet returns a short source name for a failing jsval value.
+// Node.Text() is defined ONLY for leaf kinds (identifiers, literals,
+// templates, regex) and panics on composite nodes, so Text() is called
+// only under those Kind guards; property/call/element nodes get a
+// structural description built from Kind-guarded children instead.
+func saJsValSnippet(a *ast.Node) string {
+	if a == nil {
+		return ""
+	}
+	switch a.Kind {
+	case ast.KindIdentifier, ast.KindPrivateIdentifier,
+		ast.KindStringLiteral, ast.KindNumericLiteral, ast.KindBigIntLiteral,
+		ast.KindNoSubstitutionTemplateLiteral, ast.KindTemplateHead,
+		ast.KindTemplateMiddle, ast.KindTemplateTail,
+		ast.KindRegularExpressionLiteral:
+		return a.Text()
+	case ast.KindPropertyAccessExpression:
+		pa := a.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil {
+			return ""
+		}
+		base := saJsValSnippet(pa.Expression)
+		name := ""
+		if pa.Name().Kind == ast.KindIdentifier {
+			name = pa.Name().Text()
+		}
+		if base != "" && name != "" {
+			return base + "." + name
+		}
+		return name
+	case ast.KindCallExpression:
+		ce := a.AsCallExpression()
+		if ce == nil || ce.Expression == nil {
+			return ""
+		}
+		callee := saJsValSnippet(ce.Expression)
+		if callee == "" {
+			return ""
+		}
+		return callee + "(…)"
+	case ast.KindElementAccessExpression:
+		ea := a.AsElementAccessExpression()
+		if ea == nil || ea.Expression == nil {
+			return ""
+		}
+		base := saJsValSnippet(ea.Expression)
+		if base == "" {
+			return ""
+		}
+		return base + "[…]"
+	}
+	return ""
+}
+
 func saJsValShapeSuffix(a *ast.Node, scope *saScope) string {
 	if a == nil {
 		return " (expr <nil>)"
@@ -6847,7 +6901,7 @@ func saJsValShapeSuffix(a *ast.Node, scope *saScope) string {
 		}
 	}
 	txt := ""
-	if t := a.Text(); t != "" {
+	if t := saJsValSnippet(a); t != "" {
 		txt = strings.Join(strings.Fields(t), " ")
 		if len(txt) > 80 {
 			txt = txt[:80] + "…"
