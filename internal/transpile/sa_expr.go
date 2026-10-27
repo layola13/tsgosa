@@ -404,6 +404,13 @@ func saLowerCondLogic(w printer.EmitTextWriter, be *ast.BinaryExpression, scope 
 				if k == "bool" {
 					return e.Text(), ""
 				}
+				// 实例句柄真值即非零（与 saCondOperand 标识符臂同律）。
+				if strings.HasPrefix(k, "inst:") {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, e.Text()))
+					return t, ""
+				}
 			} else if text, ok := scope.topConsts[e.Text()]; ok && scope.topStr[e.Text()] {
 				h := saLowerStringLiteral(w, text, scope, nextTemp)
 				t, _ := struth(h)
@@ -3723,10 +3730,29 @@ func saLowerTernaryLazyStr(w printer.EmitTextWriter, ce *ast.ConditionalExpressi
 
 // saLowerLogicValue lowering 逻辑值（`&&` 回左假值/右值、`||` 回左真值/右值；
 // 短路分支（右部副作用按 e1 锁跳过）；槽+臂释放与三元惰性形同律；归 i32）。
+
+// saEvalLogicOperand evaluates a &&/|| operand as a 0/1 truthiness value.
+// Inst-handle identifiers lower as handle != 0: a find result is 0 exactly
+// when not found, so ne-0 is the faithful test, mirroring the map arm in
+// saCondOperand. Identifier-only: call results and field reads keep the
+// old loud refusal, and saEvalBool is untouched so bool-annotated
+// initializers still refuse inst handles by design.
+func saEvalLogicOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	if p := saPeelParens(e); p != nil && p.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[p.Text()]; ok && strings.HasPrefix(k, "inst:") {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = ne %s, 0\n", t, p.Text()))
+			return t, ""
+		}
+	}
+	return saEvalBool(w, e, scope, pos, refusals, nextTemp)
+}
+
 func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	isAnd := saBinaryOpKind(be) == ast.KindAmpersandAmpersandToken
 	// 操作数经布尔位（具名布尔直取 0/1 槽；i32 操作数回落同义；串等错种沿 i32 门大声拒）。
-	l, msg := saEvalBool(w, be.Left, scope, pos, refusals, nextTemp)
+	l, msg := saEvalLogicOperand(w, be.Left, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
@@ -3804,7 +3830,7 @@ func saLowerLogicValue(w printer.EmitTextWriter, be *ast.BinaryExpression, scope
 			}
 		}
 	}
-	r, msg := saEvalBool(w, be.Right, scope, pos, refusals, nextTemp)
+	r, msg := saEvalLogicOperand(w, be.Right, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		for nm, origKind := range savedKinds {
 			scope.types[nm] = origKind
