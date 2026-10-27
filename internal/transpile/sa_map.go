@@ -1046,9 +1046,13 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 		if st == nil || st.Kind != ast.KindVariableStatement {
 			continue
 		}
-		if ast.HasModifier(st, ast.ModifierFlagsExport) {
-			continue
-		}
+		// 导出形亦认领为文件内快照（JEV claim_exported_local 0.55；
+		// unimported 0.41 接近，keep_refusing 0.04）：跨文件可见性不
+		// 因此改变（topConstHarvest 只收 arr/obj/regex 快照，不收
+		// topMap，故跨文件读仍沿 not-exported 旧门拒）；文件内变异
+		// 仍由 saTopMapMutated 守。明示风险：导入方若以属性写变异
+		// 该 Record，定义文件守不住，同文件读将见字面量值而非变异
+		// 值（快照/引用语义分叉，该情形下静默；Set 导出排除仍保留）。
 		vs := st.AsVariableStatement()
 		if vs == nil || vs.DeclarationList == nil {
 			continue

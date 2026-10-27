@@ -3912,6 +3912,13 @@ func saIsStrFieldRead(pa *ast.PropertyAccessExpression, scope *saScope) bool {
 				return atClass(d)
 			}
 		}
+		// 顶层 Record 快照串域点读 `T.k`（vkind str；求值见 saEvalStr
+		// 顶层 Record 点读臂；`?.` 与 map 方法同名键沿旧门）。
+		if pa.QuestionDotToken == nil && !saIsMapMethod(field) {
+			if tm, ok := saTopMapLookup(scope, base); ok && tm.vkind == "str" {
+				return true
+			}
+		}
 		return false
 	}
 	if base != nil && base.Kind == ast.KindThisKeyword && scope.thisSelf != "" {

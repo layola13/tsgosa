@@ -831,6 +831,17 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					}
 				}
 			}
+			// 顶层 Record 快照串域点读 `T.k`（vkind str；具化走既有点读臂
+			// saLowerLengthExpr；`?.` 与 map 方法同名键沿旧门）。
+			if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.QuestionDotToken == nil && pa.Name() != nil && !saIsMapMethod(pa.Name().Text()) {
+				if tm, ok := saTopMapLookup(scope, pa.Expression); ok && tm.vkind == "str" {
+					t, msg := saLowerLengthExpr(w, pa, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return t, ""
+				}
+			}
 			// 实例 str 域读（头指针即串值，临时量已记 str）。
 			if saCouldBeInst(pa.Expression, scope) {
 				// const 空实例串域读必崩（`p.s`/`p?.s` 皆读零址；t29a/t29d SIGSEGV 实证；本站无守卫径，一律大声拒；493）。
