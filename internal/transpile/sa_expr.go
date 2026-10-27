@@ -2849,7 +2849,7 @@ func saLowerBooleanArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, ne
 	return "", false, ""
 }
 
-func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	// 括号被调透明（`(f)(…)` 即 `f(…)`；与注解/表达式侧括号解包同律；
 	// 上游同位拒收系过严（`functions are not first-class values`），本仓
 	// thin-lead（step373 同例）；成员接收者括号另步。
@@ -3589,6 +3589,17 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 		return "", false, "only direct function calls lowerable"
 	}
 	return saEvalNamedCall(w, ce.Expression.Text(), ce, scope, pos, refusals, nextTemp)
+}
+
+// saEvalCall 调用核包装（2b_k244handles patch1d）：内层求值成功后刷新
+// 句柄槽序幕绑定（被调函数可能改写槽；调用点之后读槽须见新值）。
+// 内层递归调用亦走包装（冗余刷新无害，纯读幂等）。
+func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	op, voidCall, msg := saEvalCallInner(w, ce, scope, pos, refusals, nextTemp)
+	if msg == "" {
+		saRefreshSlotPrologue(w, scope)
+	}
+	return op, voidCall, msg
 }
 
 // saIIFEArrow 取调用表达式的立即调用箭头/函数表达式被调（括号透明；

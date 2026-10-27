@@ -5737,7 +5737,8 @@ type saScope struct {
 	lastHash *saHashState
 	// curFunc 是当前发射函数在 funcs 表中的键（函数声明发射置位；
 	// 顶层/局部箭头体内为 ""；函数值返回登记 retFn 用）。
-	curFunc string
+	curFunc      string
+	slotPrologue map[string]bool // 句柄槽序幕绑定（2b_k244handles patch1：函数入口载入的槽名；调用后刷新用）
 }
 
 // saInlineRet 是高阶回调体 return 拦截态（封存 inlineRetState 的薄口子集）：

@@ -5227,6 +5227,10 @@ func saEmitSlotPrologue(w printer.EmitTextWriter, names []string, scope *saScope
 		w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
 		scope.types[nm] = "inst:" + ms.iface
 		saDeclareOwned(scope, nm)
+		if scope.slotPrologue == nil {
+			scope.slotPrologue = map[string]bool{}
+		}
+		scope.slotPrologue[nm] = true
 		scope.addImport("sa_std/modstate.sai")
 	}
 }
@@ -5259,6 +5263,38 @@ func saSlotCallOf(e *ast.Node) *ast.CallExpression {
 		return e.AsCallExpression()
 	}
 	return nil
+}
+
+// saRefreshSlotPrologue 调用后刷新句柄槽序幕绑定（2b_k244handles patch1d）：
+// 被调函数可能改写槽，调用点之后读槽须见新值（序幕单次载入在跨函数改写
+// 后过期，h_null 原生 segfault 实证）。仅刷新仍为槽绑定的名（种表须仍
+// 为 inst:iface；异种遮蔽沿旧门）；无槽时零开销；名序排序保确定性。
+func saRefreshSlotPrologue(w printer.EmitTextWriter, scope *saScope) {
+	if scope == nil || len(scope.slotPrologue) == 0 {
+		return
+	}
+	names := make([]string, 0, len(scope.slotPrologue))
+	for nm := range scope.slotPrologue {
+		names = append(names, nm)
+	}
+	sort.Strings(names)
+	for _, nm := range names {
+		ms := scope.modVars[nm]
+		if ms == nil || ms.w != "handle" {
+			continue
+		}
+		if k, ok := scope.types[nm]; !ok || k != "inst:"+ms.iface {
+			continue
+		}
+		saRebindRelease(w, scope, nm)
+		w.Write(fmt.Sprintf("  %s = call @sa_modstate_get_u64(%d)\n", nm, ms.key))
+		if b := saOwnOf(scope, nm); b != nil {
+			b.heap = true
+		}
+		saMarkRebound(scope, nm)
+		saClearNullConst(scope, nm)
+		scope.addImport("sa_std/modstate.sai")
+	}
 }
 
 // saEmitModSetRaw 原始 u64 槽存 + house 状态检查（非零 panic；封存 emitModSetRaw:668-687）。
