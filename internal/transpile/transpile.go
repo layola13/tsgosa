@@ -3954,7 +3954,17 @@ func saSynthParamNodes(paramNodes []*ast.Node, classes map[string]*saClassDef, a
 						}
 						// `Record<string,T>` 形参记 map 种（值种绑定点播种；
 						// 不可识别沿旧门拒；封存 annotationType 用户类型面）。
-						if _, ok := saRecordValueKind(pd.Type, classes, aliasOf); ok {
+						if vkind, ok := saRecordValueKind(pd.Type, classes, aliasOf); ok {
+							// JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64:
+							// Record<string, T> where T is a named alias resolving to a JSON
+							// union takes a jsval param, not a map param (the pre-harvest
+							// behaviour when the alias was unresolvable). Record<string,
+							// unknown/any> keeps map kind per map_with_jsval_values: its
+							// value arg is not a JSON-union alias.
+							if vkind == "jsval" && saRecordValueIsJSONUnion(pd.Type, aliasOf) {
+								kinds[name] = "jsval"
+								continue
+							}
 							kinds[name] = "map"
 							continue
 						}

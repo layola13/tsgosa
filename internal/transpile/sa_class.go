@@ -2843,6 +2843,16 @@ func saSynthUnionRetLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, cl
 					}
 				}
 			}
+			// JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64:
+			// a field whose type is a named alias resolving to a JSON union
+			// (e.g. shared JsonValue) takes a jsval slot, restoring the
+			// pre-harvest behaviour where the unresolvable name took jsval
+			// via the rule above. The kind == "arr" guard keeps scalar-union
+			// fields (str/i32 via saAliasUnionScalarKind) on their existing
+			// kinds; direct union field types are untouched.
+			if kind == "arr" && saIsJSONUnionAlias(fdef, aliasOf) {
+				kind = "jsval"
+			}
 		}
 		if kind == "" {
 			return "", false
@@ -7778,6 +7788,15 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 				if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 					// `Record<string,T>` 形参记 map 种（值种播种与函数序同形）。
 					if vkind, ok := saRecordValueKind(pd.Type, scope.classes, scope.aliasOf); ok {
+						// JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64:
+						// Record<string, T> where T is a named alias resolving to a JSON
+						// union takes a jsval param, not a map param (same rule as the
+						// free-function param path; Record<string, unknown/any> keeps
+						// map kind per map_with_jsval_values).
+						if vkind == "jsval" && saRecordValueIsJSONUnion(pd.Type, scope.aliasOf) {
+							kinds[i] = "jsval"
+							continue
+						}
 						kinds[i] = "map"
 						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 							saSetMapVal(scope, nm.Text(), vkind)

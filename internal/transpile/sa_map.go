@@ -664,6 +664,91 @@ func saIsJsValAbleType(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, seen m
 	}
 }
 
+// saIsJSONUnionAlias reports whether t is a plain named reference (no type
+// arguments) that resolves through aliasOf, cycle-guarded, to a union type
+// whose members are all JSON-compatible per saIsJsValAbleType (scalars,
+// null/undefined, arrays, index-signature maps, and references to JSON
+// unions, including self-recursive ones). Direct union nodes, scalar-only
+// unions reached without an alias, and non-union targets are not JSON-union
+// aliases: their existing scalar-erasure and Record value-kind paths stand.
+// (JEV jvunion jsval_box 0.97, scope union_return_and_record 0.64: shared
+// JsonValue is the motivating shape.)
+func saIsJSONUnionAlias(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	cur := t
+	for i := 0; i <= len(aliasOf)+2 && cur != nil; i++ {
+		switch cur.Kind {
+		case ast.KindParenthesizedType:
+			pt := cur.AsParenthesizedTypeNode()
+			if pt == nil || pt.Type == nil {
+				return false
+			}
+			cur = pt.Type
+		case ast.KindTypeReference:
+			r := cur.AsTypeReferenceNode()
+			if r == nil || r.TypeName == nil || r.TypeName.Kind != ast.KindIdentifier || r.TypeArguments != nil {
+				return false
+			}
+			nm := r.TypeName.Text()
+			if seen[nm] {
+				return false
+			}
+			seen[nm] = true
+			nxt, ok := aliasOf[nm]
+			if !ok || nxt == nil {
+				return false
+			}
+			cur = nxt
+		case ast.KindUnionType:
+			ut := cur.AsUnionTypeNode()
+			if ut == nil || ut.Types == nil {
+				return false
+			}
+			for _, m := range ut.Types.Nodes {
+				if m == nil || !saIsJsValAbleType(m, aliasOf, map[string]bool{}) {
+					return false
+				}
+			}
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// saRecordValueIsJSONUnion reports whether t is Record<string, T> or
+// Map<string, T> with T a JSON-union alias per saIsJSONUnionAlias. The
+// string-key requirement mirrors saRecordValueKind; unknown/any value args
+// are not references, so Record<string, unknown/any> keeps map kind per
+// map_with_jsval_values.
+func saRecordValueIsJSONUnion(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map" {
+		return false
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
+		return false
+	}
+	if ref.TypeArguments.Nodes[0] == nil || ref.TypeArguments.Nodes[0].Kind != ast.KindStringKeyword {
+		return false
+	}
+	return saIsJSONUnionAlias(ref.TypeArguments.Nodes[1], aliasOf)
+}
+
 // saLowerRecordLiteral lowering `const m: Record<string,T> = {a: v}`
 // （Map 具化 + 逐键 insert；i32 值经 i32 求值，str 值经串求值，具名接口值经该布局现场构造或
 // 同布局绑定直传；方法/spread/计算键/错种值沿旧门大声拒）。
