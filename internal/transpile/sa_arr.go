@@ -9116,6 +9116,38 @@ func saLowerMapObjLit(w printer.EmitTextWriter, ol *ast.ObjectLiteralExpression,
 	return h, ""
 }
 
+// saMapObjSingleReturn reports whether cb's body is a block containing
+// exactly one return statement in total (nested arrows/functions excluded:
+// their returns belong to them). saCallbackReturnExpr alone counts only
+// top-level returns, which over-claims blocks whose nested returns (e.g. an
+// if-nested `return item`) cannot share the synth layout.
+func saMapObjSingleReturn(cb *ast.Node) bool {
+	body := cb.Body()
+	if body == nil || body.Kind != ast.KindBlock {
+		return false
+	}
+	count := 0
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || count > 1 {
+			return
+		}
+		switch n.Kind {
+		case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindFunctionDeclaration:
+			return
+		case ast.KindReturnStatement:
+			count++
+			return
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	walk(body)
+	return count == 1
+}
+
 func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, elemLayout string) (string, string) {
 	h := saNewEmptyArray(w, nextTemp)
 	ln := fmt.Sprintf("t_%d", *nextTemp)
@@ -9293,7 +9325,7 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		(scope.matchArr != nil && scope.matchArr[recv]) ||
 		(scope.arrInnerStr != nil && scope.arrInnerStr[recv]) ||
 		(scope.arrElemLayout != nil && scope.arrElemLayout[recv] != "" && scope.classes[scope.arrElemLayout[recv]] != nil)
-	if retExpr := saCallbackReturnExpr(cb); retExpr != nil && saUnwrapTransparent(retExpr).Kind == ast.KindObjectLiteralExpression && elemProven {
+	if retExpr := saCallbackReturnExpr(cb); retExpr != nil && saUnwrapTransparent(retExpr).Kind == ast.KindObjectLiteralExpression && elemProven && (cb.Body() == nil || cb.Body().Kind != ast.KindBlock || saMapObjSingleReturn(cb)) {
 		mapObj = true
 		mapObjName = fmt.Sprintf("__MapObj_%d", *nextLabel)
 		*nextLabel++
