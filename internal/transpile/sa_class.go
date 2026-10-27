@@ -8290,6 +8290,18 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 			if to.init == nil {
 				return "", nil, "top object has no recorded initializer"
 			}
+			// Pre-check the chain step before emitting: a failed probe must
+			// not leak a dead snapshot into a fall-through arm (NEST.a.length
+			// went 20 -> 36 instr without this). Mirrors the tail checks.
+			if _, ok := d.offsets[leaf]; !ok {
+				return "", nil, "unknown field " + leaf
+			}
+			if d.fkinds[leaf] != "inst" {
+				return "", nil, "chained field " + leaf + " is not a nested object"
+			}
+			if _, ok := scope.classes[d.fsub[leaf]]; !ok {
+				return "", nil, "nested field " + leaf + " has no recorded sub layout"
+			}
 			h2, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", nil, msg
