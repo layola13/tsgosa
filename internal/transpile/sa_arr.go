@@ -8415,8 +8415,19 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 		// inst-param path, the same shape as for-of row release.
 		paramKinds = []string{"inst:" + elemLayout, "i32"}
 	}
+	// Pair-array callbacks (JEV map_arr_push 1.0): a callback returning an
+	// array literal (concise body, or a block with exactly one return)
+	// evaluates through the existing saCallbackValue arr path (the
+	// flatMap path: array literals via saLowerArrayLiteral, nested-array
+	// returns refused loudly) instead of falling into saEvalI32.
+	mapArr := false
+	if retExpr := saCallbackReturnExpr(cb); retExpr != nil && retExpr.Kind == ast.KindArrayLiteralExpression {
+		mapArr = true
+	}
 	cbKind := "i32"
-	if mapStr {
+	if mapArr {
+		cbKind = "arr"
+	} else if mapStr {
 		// String-result callbacks (expression or block body) evaluate
 		// through the str path so block returns land in the ptr slot;
 		// i32 results keep the existing i32 path.
@@ -8425,6 +8436,13 @@ func saHigherOrderMap(w printer.EmitTextWriter, recv string, cb *ast.Node, scope
 	v, msg := saCallbackValue(w, cb, []string{el, i}, true, cbKind, scope, pos, refusals, needImport, nextLabel, nextTemp, true, paramKinds)
 	if msg != "" {
 		return "", msg
+	}
+	if mapArr {
+		// Result elements are pair-array handles, not scalars.
+		if scope.arrNest == nil {
+			scope.arrNest = map[string]bool{}
+		}
+		scope.arrNest[h] = true
 	}
 	if mapStr {
 		saMarkArrStr(scope, h)

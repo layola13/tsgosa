@@ -2698,10 +2698,36 @@ func saSeedElemKind(n *ast.Node, paramName, paramKind string, scope *saScope) (s
 			}
 		}
 		return "", false
+	case ast.KindPrefixUnaryExpression:
+		// JEV arith_i32: prefix -/+ on an i32 operand is i32.
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || (un.Operator != ast.KindMinusToken && un.Operator != ast.KindPlusToken) {
+			return "", false
+		}
+		if k, ok := saSeedElemKind(un.Operand, paramName, paramKind, scope); ok && k == "i32" {
+			return "i32", true
+		}
+		return "", false
 	case ast.KindBinaryExpression:
 		be := n.AsBinaryExpression()
 		if be == nil || be.OperatorToken == nil {
 			return "", false
+		}
+		// JEV arith_i32: arithmetic/shift/bitwise/comparison over i32
+		// operands analyses to i32 (comparisons fold bool to i32, as
+		// elsewhere in this helper). Str concat cannot reach here:
+		// saIsStrExpr runs first at the top of this function.
+		switch be.OperatorToken.Kind {
+		case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindSlashToken, ast.KindPercentToken, ast.KindAsteriskAsteriskToken, ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken, ast.KindGreaterThanGreaterThanGreaterThanToken, ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken, ast.KindLessThanToken, ast.KindLessThanEqualsToken, ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken, ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken, ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+			lk, ok := saSeedElemKind(be.Left, paramName, paramKind, scope)
+			if !ok || lk != "i32" {
+				return "", false
+			}
+			rk, ok := saSeedElemKind(be.Right, paramName, paramKind, scope)
+			if !ok || rk != "i32" {
+				return "", false
+			}
+			return "i32", true
 		}
 		if be.OperatorToken.Kind != ast.KindQuestionQuestionToken && be.OperatorToken.Kind != ast.KindBarBarToken {
 			return "", false
