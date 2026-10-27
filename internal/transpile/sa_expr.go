@@ -6446,7 +6446,7 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		// position; arms box through saEvalJsValOperand (object literals
 		// via the inferred-layout arm above, null/undefined as kind 0/6).
 		if a != nil && a.Kind == ast.KindConditionalExpression {
-			if ce := a.AsConditionalExpression(); ce != nil {
+			if ce := a.AsConditionalExpression(); ce != nil && saJsValTernaryShapeOk(a, scope, 0) && saJsValTernaryHasLiteral(a, scope, 0) {
 				h, msg := saLowerTernaryJsVal(w, ce, a, scope, pos, refusals, scope.nextLabel, nextTemp)
 				if msg != "" {
 					return "", msg
