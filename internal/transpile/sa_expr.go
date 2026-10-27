@@ -5106,9 +5106,107 @@ func saIsLiteralDefault(n *ast.Node) bool {
 	}
 }
 
+// saIsReplayableDefault 报告省略缺省是否可在短调点回放（JEV default_scope
+// literal_plus_topconst_plus_purecalls，choice 0.59，confidence 0.49 — modest，
+// 故门保持窄口径；empty_array_fresh noul 0.75）：
+//   - 旧字面量形（不变）；
+//   - 空数组字面量，仅 arr 形参：saArrValueOf 每调用新造空句柄，与 JS
+//     逐调用新数组语义一致；非空字面量仍拒；
+//   - 标识符：须为调用方可见顶层常量（scope.topConsts，含导入常量收割）且
+//     未被调用方局部/形参遮蔽（scope.types）；被调为跨文件（linkResolve
+//     有 fname）时一律拒——常量无 link 条目，无法证同模块来源；被调文件
+//     私有常量（如 REFRESH_TTL_MS）与调用方同名常量均仍拒；
+//   - 零参调用：同文件被调须为已知函数（scope.funcs）；跨文件被调仅当
+//     缺省被调亦经 link 解析且前缀与被调同文件时放行（evalOne 经同 link
+//     径求值）；零参即无 earlier-param 捕获，短调点求值恰为每省略调用
+//     一次，与 JS 一致。成员读（process.platform）、带参调用（可捕获
+//     earlier param）与其余形仍拒。
+//
+// 门只放行，真正求值仍走 evalOne 的按种求值；求值失败沿其旧门大声拒。
+func saIsReplayableDefault(n *ast.Node, sig saFuncSig, i int, scope *saScope, fname string) bool {
+	if n == nil {
+		return false
+	}
+	switch n.Kind {
+	case ast.KindNumericLiteral, ast.KindStringLiteral,
+		ast.KindNoSubstitutionTemplateLiteral, ast.KindTrueKeyword,
+		ast.KindFalseKeyword, ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	default:
+	}
+	if scope == nil {
+		return false
+	}
+	switch n.Kind {
+	case ast.KindArrayLiteralExpression:
+		if i >= len(sig.paramKinds) || sig.paramKinds[i] != "arr" {
+			return false
+		}
+		al := n.AsArrayLiteralExpression()
+		if al == nil {
+			return false
+		}
+		return al.Elements == nil || len(al.Elements.Nodes) == 0
+	case ast.KindIdentifier:
+		name := n.Text()
+		if _, shadowed := scope.types[name]; shadowed {
+			return false
+		}
+		if _, ok := scope.topConsts[name]; !ok {
+			return false
+		}
+		// Cross-file callee (linkResolve[fname] present): the default
+		// resolves in the defining file, and consts carry no link entry
+		// to prove same-module provenance from scope, so refuse. This
+		// keeps defining-private consts (REFRESH_TTL_MS) and caller-file
+		// same-name consts refusing loudly; same-module imported consts
+		// are a documented remains item, not a guessed pass.
+		if _, calleeImported := scope.linkResolve[fname]; calleeImported {
+			return false
+		}
+		return true
+	case ast.KindCallExpression:
+		ce := n.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+			return false
+		}
+		if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
+			return false
+		}
+		name := ce.Expression.Text()
+		if _, shadowed := scope.types[name]; shadowed {
+			return false
+		}
+		// Cross-file callee (linkResolve[fname] present: qualified name
+		// like a__avail): the default callee resolves in the defining
+		// file. Pass only if the callee is itself link-resolved with
+		// the SAME defining-file prefix (d_xfile_imported_call) — evalOne
+		// then lowers it through the same link path as an explicit call.
+		// A caller-file function of the same name (d_xfile_shadow_neg:
+		// caller-file arrow plat replayed for defining-file plat silently
+		// flips avail() from 1 to 0) has no link entry and refuses.
+		if qf, calleeImported := scope.linkResolve[fname]; calleeImported {
+			qn, nameLinked := scope.linkResolve[name]
+			if !nameLinked {
+				return false
+			}
+			pf := strings.TrimSuffix(qf, fname)
+			pn := strings.TrimSuffix(qn, name)
+			if pf == "" || pf != pn {
+				return false
+			}
+			return true
+		}
+		_, ok := scope.funcs[name]
+		return ok
+	default:
+		return false
+	}
+}
+
 // saPadDefaultArgs 在短调点回放省略的尾部缺省（JS 逐调用求值；调用方作用域求值，
 // 种导向经 evalOne；非字面量大声拒；形状证据：封存 padDefaultArgs）。
-func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, args []string, evalOne func(int, *ast.Node, int) (string, string)) ([]string, string) {
+func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, args []string, evalOne func(int, *ast.Node, int) (string, string), scope *saScope) ([]string, string) {
 	if len(args) >= sig.params {
 		return args, ""
 	}
@@ -5132,8 +5230,8 @@ func saPadDefaultArgs(w printer.EmitTextWriter, fname string, sig saFuncSig, arg
 			}
 			return nil, fmt.Sprintf("omitted optional argument %d of %s needs a default or explicit passing", i+1, fname)
 		}
-		if !saIsLiteralDefault(init) {
-			return nil, fmt.Sprintf("omitted default argument %d of %s is not a literal (non-literal defaults do not replay at short calls)", i+1, fname)
+		if !saIsReplayableDefault(init, sig, i, scope, fname) {
+			return nil, fmt.Sprintf("omitted default argument %d of %s is not a replayable default (only literals, empty arrays, top-const identifiers and zero-arg known calls replay at short calls)", i+1, fname)
 		}
 		v, msg := evalOne(i, init, sig.params)
 		if msg != "" {
@@ -7024,7 +7122,7 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 		}
 	}
 	if len(args) != sig.params {
-		if padded, msg := saPadDefaultArgs(w, name, sig, args, evalOne); msg != "" {
+		if padded, msg := saPadDefaultArgs(w, name, sig, args, evalOne, scope); msg != "" {
 			return "", false, msg
 		} else if len(padded) == sig.params {
 			args = padded
