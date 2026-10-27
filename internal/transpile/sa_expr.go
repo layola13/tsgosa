@@ -6004,6 +6004,79 @@ func saLowerBufferConcat(w printer.EmitTextWriter, ce *ast.CallExpression, scope
 	return out, false, "", true
 }
 
+// saEvalSetterCall lowers a direct useState setter call setV(x) to an
+// assignment v = x through saStoreLocal (the existing assignment path),
+// evaluating x in the state value's kind channel. Returns ("0", true, "")
+// (void): statement-position callers accept it, value-position callers
+// refuse void-in-value as usual. The nullConst entry for a null-initial
+// state value is cleared, mirroring straight-line assignment clearing.
+func saEvalSetterCall(w printer.EmitTextWriter, name, vName string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	if ce.QuestionDotToken != nil {
+		return "", false, name + " setter call cannot be optional"
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, name + " setter takes exactly one argument"
+	}
+	vkind, ok := scope.types[vName]
+	if !ok {
+		return "", false, name + " setter has no bound state value"
+	}
+	arg := argNodes[0]
+	var op, msg string
+	switch {
+	case vkind == "str":
+		op, msg = saEvalStr(w, arg, scope, pos, refusals, nextTemp)
+	case vkind == "i32" || vkind == "bool":
+		op, msg = saEvalI32(w, arg, scope, pos, refusals, nextTemp)
+	case vkind == "arr":
+		op, msg = saArrValueOf(w, arg, scope, pos, refusals, nextTemp)
+	case len(vkind) > 5 && vkind[:5] == "inst:":
+		layout := vkind[5:]
+		uw := saUnwrapTransparent(arg)
+		if uw != nil && uw.Kind == ast.KindObjectLiteralExpression {
+			var lname string
+			op, lname, msg = saLowerObjectLiteral(w, uw, layout, scope, pos, refusals, nextTemp)
+			if msg == "" && lname != layout {
+				msg = name + " setter value does not match state layout"
+			}
+		} else if uw != nil && uw.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[uw.Text()]; !ok || k != vkind {
+				return "", false, name + " setter value does not match state layout"
+			}
+			op = uw.Text()
+		} else if uw != nil && uw.Kind == ast.KindCallExpression {
+			if k, ok := saCallRetKind(uw.AsCallExpression(), scope); !ok || k != vkind {
+				return "", false, name + " setter value does not match state layout"
+			}
+			var voidCall bool
+			op, voidCall, msg = saEvalCall(w, uw.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg == "" && voidCall {
+				msg = name + " setter value cannot be void"
+			}
+		} else {
+			return "", false, name + " setter value does not match state layout"
+		}
+	default:
+		return "", false, name + " setter state kind is not lowerable"
+	}
+	if msg != "" {
+		return "", false, msg
+	}
+	saStoreLocal(w, vName, op, scope, nextTemp)
+	if vkind == "arr" {
+		saPropArrStr(scope, op, vName)
+		saPropArrNest(scope, op, vName)
+		saPropArrInnerStr(scope, op, vName)
+		saPropArrElemLayout(scope, op, vName)
+	}
+	delete(scope.nullConst, vName)
+	return "0", true, ""
+}
+
 func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
 	callName := name
 	if name == "main" && scope.mainRenamed {
@@ -6042,6 +6115,12 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		// arrowAliases:588 + lowerCall 的 arrowAlias 分支）。
 		if strings.HasPrefix(k, "fn:") {
 			return saEvalFuncCall(w, name, strings.TrimPrefix(k, "fn:"), scope.funcs[strings.TrimPrefix(k, "fn:")], ce, scope, pos, refusals, nextTemp)
+		}
+		// useState setter (JEV state_cell 1.0, direct_only_visible 0.98):
+		// a direct call lowers to an assignment to the bound state local
+		// through the existing assignment path.
+		if strings.HasPrefix(k, "setter:") {
+			return saEvalSetterCall(w, name, strings.TrimPrefix(k, "setter:"), ce, scope, pos, refusals, nextTemp)
 		}
 		return "", false, name + " is not a function"
 	}

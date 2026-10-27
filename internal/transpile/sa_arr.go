@@ -4687,11 +4687,491 @@ func saArrBase(scope *saScope, n *ast.Node) (string, bool) {
 // 大声拒；对象位按布局偏移直读（注解优先，次之源绑定 `inst:` 布局；串域记
 // str 其余 i32，与形参排空同门）。
 // 数组源须为数组句柄（已绑定数组直传；字面量现场构造）；函数值不可解构。
+
+// saUseStateTypeKind maps a useState type argument to (kind, arrStr,
+// elemLayout, ok). Unions fold null/undefined away and require all
+// remaining members to agree (literal bools fold to i32 in unions,
+// mirroring saUnionScalarKind); interface references resolve through
+// scope.classes (generic instantiation when arguments are present) and
+// aliases through scope.aliasOf.
+func saUseStateTypeKind(t *ast.TypeNode, scope *saScope, depth int, inUnion bool) (string, bool, string, bool) {
+	if t == nil || depth > 6 {
+		return "", false, "", false
+	}
+	switch t.Kind {
+	case ast.KindNumberKeyword, ast.KindBigIntKeyword:
+		return "i32", false, "", true
+	case ast.KindBooleanKeyword:
+		return "bool", false, "", true
+	case ast.KindStringKeyword, ast.KindTemplateLiteralType:
+		return "str", false, "", true
+	case ast.KindArrayType:
+		el := t.AsArrayTypeNode().ElementType
+		if el == nil {
+			return "", false, "", false
+		}
+		if el.Kind == ast.KindStringKeyword || el.Kind == ast.KindTemplateLiteralType {
+			return "arr", true, "", true
+		}
+		if el.Kind == ast.KindTypeReference {
+			ref := el.AsTypeReferenceNode()
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+				if _, ok := scope.classes[ref.TypeName.Text()]; ok {
+					lname := ref.TypeName.Text()
+					if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+						if ln, ok := saInstantiateIface(lname, ref.TypeArguments.Nodes, scope.classes); ok {
+							lname = ln
+						} else {
+							return "", false, "", false
+						}
+					}
+					return "arr", false, lname, true
+				}
+			}
+		}
+		if el.Kind == ast.KindUnionType {
+			k, s, l, ok := saUseStateTypeKind(el, scope, depth+1, true)
+			if !ok {
+				return "", false, "", false
+			}
+			if k == "str" {
+				return "arr", true, "", true
+			}
+			if k == "i32" {
+				return "arr", false, "", true
+			}
+			if len(k) > 5 && k[:5] == "inst:" {
+				return "arr", false, k[5:], true
+			}
+			return "", false, "", false
+		}
+		return "arr", false, "", true
+	case ast.KindTupleType:
+		return "arr", false, "", true
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false, "", false
+		}
+		switch ref.TypeName.Text() {
+		case "i32":
+			return "i32", false, "", true
+		case "bool", "boolean":
+			return "bool", false, "", true
+		case "str":
+			return "str", false, "", true
+		case "arr":
+			return "arr", false, "", true
+		case "Array", "ReadonlyArray":
+			if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 || ref.TypeArguments.Nodes[0] == nil {
+				return "", false, "", false
+			}
+			// Wrap the element kind into arr (mirror of the ArrayType
+			// arm); returning the element kind directly would bind
+			// useState<Array<string>> as str instead of arr.
+			ek, es, el, ok := saUseStateTypeKind(ref.TypeArguments.Nodes[0], scope, depth+1, inUnion)
+			if !ok {
+				return "", false, "", false
+			}
+			switch {
+			case ek == "str":
+				return "arr", true, "", true
+			case ek == "i32" || ek == "bool":
+				return "arr", false, "", true
+			case len(ek) > 5 && ek[:5] == "inst:":
+				return "arr", false, ek[5:], true
+			case ek == "arr":
+				return "arr", false, "", true
+			case es:
+				return "arr", true, "", true
+			}
+			return "", false, "", false
+		case "NoInfer":
+			if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 || ref.TypeArguments.Nodes[0] == nil {
+				return "", false, "", false
+			}
+			return saUseStateTypeKind(ref.TypeArguments.Nodes[0], scope, depth+1, inUnion)
+		}
+		name := ref.TypeName.Text()
+		if _, ok := scope.classes[name]; ok {
+			lname := name
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+				if ln, ok := saInstantiateIface(lname, ref.TypeArguments.Nodes, scope.classes); ok {
+					lname = ln
+				} else {
+					return "", false, "", false
+				}
+			}
+			return "inst:" + lname, false, "", true
+		}
+		if alias, ok := scope.aliasOf[name]; ok && alias != nil {
+			return saUseStateTypeKind(alias, scope, depth+1, inUnion)
+		}
+		return "", false, "", false
+	case ast.KindUnionType:
+		ut := t.AsUnionTypeNode()
+		if ut == nil || ut.Types == nil {
+			return "", false, "", false
+		}
+		kind := ""
+		arrStr := false
+		elemLayout := ""
+		first := true
+		for _, m := range ut.Types.Nodes {
+			if m == nil {
+				return "", false, "", false
+			}
+			if m.Kind == ast.KindNullKeyword || m.Kind == ast.KindUndefinedKeyword {
+				continue
+			}
+			if m.Kind == ast.KindLiteralType {
+				if lit := m.AsLiteralTypeNode().Literal; lit != nil && lit.Kind == ast.KindNullKeyword {
+					continue
+				}
+			}
+			k, s, l, ok := saUseStateTypeKind(m, scope, depth+1, true)
+			if !ok {
+				return "", false, "", false
+			}
+			if m.Kind == ast.KindLiteralType {
+				if lit := m.AsLiteralTypeNode().Literal; lit != nil && (lit.Kind == ast.KindTrueKeyword || lit.Kind == ast.KindFalseKeyword) {
+					k = "i32"
+				}
+			}
+			if first {
+				kind, arrStr, elemLayout, first = k, s, l, false
+				continue
+			}
+			if k != kind {
+				return "", false, "", false
+			}
+			if kind == "arr" {
+				arrStr = arrStr && s
+				if elemLayout != l {
+					elemLayout = ""
+				}
+			}
+		}
+		if first {
+			return "", false, "", false
+		}
+		return kind, arrStr, elemLayout, true
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		if pt != nil && pt.Type != nil {
+			return saUseStateTypeKind(pt.Type, scope, depth+1, inUnion)
+		}
+		return "", false, "", false
+	case ast.KindTypeOperator:
+		to := t.AsTypeOperatorNode()
+		if to == nil {
+			return "", false, "", false
+		}
+		if to.Operator == ast.KindReadonlyKeyword && to.Type != nil {
+			return saUseStateTypeKind(to.Type, scope, depth+1, inUnion)
+		}
+		if to.Operator == ast.KindKeyOfKeyword {
+			return "str", false, "", true
+		}
+		return "", false, "", false
+	case ast.KindLiteralType:
+		lit := t.AsLiteralTypeNode().Literal
+		if lit == nil {
+			return "", false, "", false
+		}
+		switch lit.Kind {
+		case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+			return "str", false, "", true
+		case ast.KindNumericLiteral:
+			if saIsFloatLit(lit.Text()) {
+				return "", false, "", false
+			}
+			return "i32", false, "", true
+		case ast.KindTrueKeyword, ast.KindFalseKeyword:
+			if inUnion {
+				return "i32", false, "", true
+			}
+			return "bool", false, "", true
+		}
+		return "", false, "", false
+	}
+	return "", false, "", false
+}
+
+// saUseStateInitialKind infers a state value kind from the initial value
+// (no type argument present). Lazy initializers (function values),
+// object literals without a layout, null/undefined, and f64/jsval
+// values fail: the site keeps refusing loudly.
+func saUseStateInitialKind(initial *ast.Node, scope *saScope) (string, bool, string, bool) {
+	initial = saUnwrapTransparent(initial)
+	if initial == nil {
+		return "", false, "", false
+	}
+	switch initial.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral, ast.KindTemplateExpression, ast.KindTaggedTemplateExpression:
+		return "str", false, "", true
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(initial.Text()) {
+			return "", false, "", false
+		}
+		return "i32", false, "", true
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "bool", false, "", true
+	case ast.KindArrayLiteralExpression:
+		return "arr", saLiteralIsStrArray(initial, scope), "", true
+	case ast.KindIdentifier:
+		if k, ok := scope.types[initial.Text()]; ok {
+			switch {
+			case k == "str":
+				return "str", false, "", true
+			case k == "i32" || k == "bool":
+				return k, false, "", true
+			case k == "arr":
+				arrStr := scope.arrStr != nil && scope.arrStr[initial.Text()]
+				return "arr", arrStr, scope.arrElemLayout[initial.Text()], true
+			case len(k) > 5 && k[:5] == "inst:":
+				return k, false, "", true
+			}
+		}
+		return "", false, "", false
+	case ast.KindCallExpression:
+		ce := initial.AsCallExpression()
+		if k, ok := saArrCallRet(ce, scope); ok {
+			switch k {
+			case "arr":
+				return "arr", false, "", true
+			case "str":
+				return "str", false, "", true
+			case "i32":
+				return "i32", false, "", true
+			case "arrStr":
+				return "arr", true, "", true
+			}
+			if len(k) > 5 && k[:5] == "inst:" {
+				return k, false, "", true
+			}
+		}
+		if k, ok := saCallRetKind(ce, scope); ok {
+			switch k {
+			case "arr":
+				return "arr", false, "", true
+			case "arrStr":
+				return "arr", true, "", true
+			case "str":
+				return "str", false, "", true
+			case "i32", "bool":
+				return k, false, "", true
+			}
+			if len(k) > 5 && k[:5] == "inst:" {
+				return k, false, "", true
+			}
+		}
+		return "", false, "", false
+	case ast.KindPropertyAccessExpression:
+		if saIsStrExpr(initial, scope) {
+			return "str", false, "", true
+		}
+		pa := initial.AsPropertyAccessExpression()
+		if pa != nil && pa.Name() != nil && pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				return saFieldValueKind(k[5:], pa.Name().Text(), scope)
+			}
+		}
+		return "", false, "", false
+	case ast.KindElementAccessExpression:
+		if saIsStrExpr(initial, scope) {
+			return "str", false, "", true
+		}
+		ea := initial.AsElementAccessExpression()
+		if ea != nil && ea.QuestionDotToken == nil {
+			return saReceiverElemKind(ea.Expression, scope)
+		}
+		return "", false, "", false
+	}
+	return "", false, "", false
+}
+
+// saLowerUseStateDestructuringDecl lowers `const [v, setV] = useState(...)`.
+// Returns (handled, ok): handled=false means "not a useState pair shape,
+// fall through to the existing paths".
+func saLowerUseStateDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (bool, bool) {
+	fail := func(msg string) (bool, bool) {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	if pat.Kind != ast.KindArrayBindingPattern || vd.Type != nil {
+		return false, false
+	}
+	els := pat.AsBindingPattern().Elements.Nodes
+	if len(els) != 2 {
+		return false, false
+	}
+	names := []string{}
+	for _, el := range els {
+		if el == nil || el.Kind != ast.KindBindingElement {
+			return false, false
+		}
+		be := el.AsBindingElement()
+		if be.DotDotDotToken != nil || be.Initializer != nil || be.PropertyName != nil {
+			return false, false
+		}
+		nm := be.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			return false, false
+		}
+		names = append(names, nm.Text())
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindCallExpression {
+		return false, false
+	}
+	ce := init.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier || ce.Expression.Text() != "useState" {
+		return false, false
+	}
+	// A user-defined useState shadows the hook: fall through.
+	if _, ok := scope.funcs["useState"]; ok {
+		return false, false
+	}
+	if _, ok := scope.types["useState"]; ok {
+		return false, false
+	}
+	for _, nm := range names {
+		if _, dup := scope.types[nm]; dup {
+			return fail("duplicate local " + nm)
+		}
+		if _, dup := scope.funcs[nm]; dup {
+			return fail("duplicate local " + nm)
+		}
+	}
+	vName, setName := names[0], names[1]
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	var targs []*ast.Node
+	if ce.TypeArguments != nil {
+		targs = ce.TypeArguments.Nodes
+	}
+	var kind string
+	var typeArrStr bool
+	var typeElemLayout string
+	if len(targs) == 1 {
+		k, s, l, ok := saUseStateTypeKind(targs[0], scope, 0, false)
+		if !ok {
+			return fail("useState type argument is not lowerable")
+		}
+		kind, typeArrStr, typeElemLayout = k, s, l
+	} else if len(targs) > 1 {
+		return fail("useState takes at most one type argument")
+	} else {
+		if len(argNodes) != 1 {
+			return fail("useState needs exactly one initial value")
+		}
+		k, s, l, ok := saUseStateInitialKind(argNodes[0], scope)
+		if !ok {
+			return fail("useState initial value kind is not lowerable")
+		}
+		kind, typeArrStr, typeElemLayout = k, s, l
+	}
+	if len(argNodes) != 1 {
+		return fail("useState needs exactly one initial value")
+	}
+	initial := argNodes[0]
+	unwrapped := saUnwrapTransparent(initial)
+	if unwrapped != nil && (unwrapped.Kind == ast.KindNullKeyword || unwrapped.Kind == ast.KindUndefinedKeyword) {
+		// Null initial with a determined kind: the 0 handle, recorded in
+		// nullConst like other null bindings; the setter handler clears
+		// the entry on assignment.
+		w.Write(fmt.Sprintf("  %s = 0\n", vName))
+		scope.types[vName] = kind
+		saDeclarePlain(scope, vName)
+		if scope.nullConst == nil {
+			scope.nullConst = map[string]string{}
+		}
+		scope.nullConst[vName] = kind
+		scope.types[setName] = "setter:" + vName
+		return true, true
+	}
+	var op, msg string
+	switch {
+	case kind == "str":
+		op, msg = saEvalStr(w, initial, scope, pos, refusals, nextTemp)
+	case kind == "i32" || kind == "bool":
+		op, msg = saEvalI32(w, initial, scope, pos, refusals, nextTemp)
+	case kind == "arr":
+		op, msg = saArrValueOf(w, initial, scope, pos, refusals, nextTemp)
+	case len(kind) > 5 && kind[:5] == "inst:":
+		layout := kind[5:]
+		if unwrapped != nil && unwrapped.Kind == ast.KindObjectLiteralExpression {
+			var lname string
+			op, lname, msg = saLowerObjectLiteral(w, unwrapped, layout, scope, pos, refusals, nextTemp)
+			if msg == "" && lname != layout {
+				msg = "useState value does not match state layout"
+			}
+		} else if unwrapped != nil && unwrapped.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[unwrapped.Text()]; !ok || k != kind {
+				return fail("useState value does not match state layout")
+			}
+			op = unwrapped.Text()
+		} else if unwrapped != nil && unwrapped.Kind == ast.KindCallExpression {
+			if k, ok := saCallRetKind(unwrapped.AsCallExpression(), scope); !ok || k != kind {
+				return fail("useState value does not match state layout")
+			}
+			var voidCall bool
+			op, voidCall, msg = saEvalCall(w, unwrapped.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg == "" && voidCall {
+				msg = "useState value cannot be void"
+			}
+		} else {
+			return fail("useState value does not match state layout")
+		}
+	default:
+		return fail("useState state kind is not lowerable")
+	}
+	if msg != "" {
+		ln, col := pos(d.Pos())
+		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		return true, false
+	}
+	scope.types[vName] = kind
+	saStoreLocal(w, vName, op, scope, nextTemp)
+	if kind == "arr" {
+		saPropArrStr(scope, op, vName)
+		saPropArrNest(scope, op, vName)
+		saPropArrInnerStr(scope, op, vName)
+		saPropArrElemLayout(scope, op, vName)
+		if typeArrStr {
+			saMarkArrStr(scope, vName)
+		}
+		if typeElemLayout != "" {
+			if scope.arrElemLayout == nil {
+				scope.arrElemLayout = map[string]string{}
+			}
+			scope.arrElemLayout[vName] = typeElemLayout
+		}
+		if unwrapped != nil && unwrapped.Kind == ast.KindCallExpression {
+			if saFuncReturnsStrArray(unwrapped.AsCallExpression(), scope) {
+				saMarkArrStr(scope, vName)
+			}
+			if saCallReturnsPairArray(unwrapped.AsCallExpression()) {
+				saMarkArrPair(scope, vName)
+			}
+		}
+	}
+	scope.types[setName] = "setter:" + vName
+	return true, true
+}
+
 func saLowerDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, pat *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if vd.Initializer != nil && (vd.Initializer.Kind == ast.KindArrowFunction || vd.Initializer.Kind == ast.KindFunctionExpression) {
 		ln, col := pos(d.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function values do not destructure"})
 		return false
+	}
+	if handled, ok := saLowerUseStateDestructuringDecl(w, d, vd, pat, scope, pos, refusals, nextTemp); handled {
+		return ok
 	}
 	if pat.Kind == ast.KindObjectBindingPattern {
 		return saLowerObjDestructuringDecl(w, d, vd, pat, scope, pos, refusals, nextTemp)
