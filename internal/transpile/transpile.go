@@ -7153,53 +7153,63 @@ func saProgAdoptFileAs(files map[string]string, parsed map[string]*ast.SourceFil
 	return true
 }
 
-func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile, typesOf map[string]string) {
-	const maxFiles = 64
-	tried := map[string]bool{}
-	adoptRel := func(p, spec string) bool {
-		base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
-		cands := []string{base, base + ".ts", base + ".tsx", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"), filepath.Join(base, "index.js")}
-		// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
-		if strings.HasSuffix(base, ".js") {
-			cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
-		}
-		for _, cand := range cands {
-			// 逐字候选（spec 原文）只收代码文件（.ts/.tsx/.js 系）；资源
-			// 导入（.json/.css 等）不得以 TS 源码纳入——否则 JSON 文本
-			// 被当 TS 降，徒增顶层语句拒收，且 JSON 导入的默认绑定
-			// 永远链不上（JEV nested_json_maps 的 jsonOf 路径读表，
-			// 不走程序文件）。其余候选自带代码扩展，无需再滤。
-			if cand == base && !saIsTSPath(cand) && !saIsJSPath(cand) && !strings.HasSuffix(cand, ".tsx") {
-				continue
-			}
-			kind := core.ScriptKindTS
-			if strings.HasSuffix(cand, ".tsx") {
-				kind = core.ScriptKindTSX
-			} else if strings.HasSuffix(cand, ".js") {
-				kind = core.ScriptKindJS
-			}
-			if saProgAdoptFile(files, parsed, dir, cand, kind) {
-				return true
-			}
-			if saProgAdoptFileOutside(files, parsed, dir, cand, kind) {
-				return true
-			}
-		}
-		return false
+// saProgAdoptRel adopts one relative target of file p (spec) into the file
+// set, trying the in-dir key first and the outside-dir key second (moved
+// verbatim from saProgIncludeBare's closure so the post-bare fixpoint can
+// reuse it; 3_relesc).
+func saProgAdoptRel(files map[string]string, parsed map[string]*ast.SourceFile, dir, p, spec string) bool {
+	base := filepath.Join(filepath.Dir(filepath.Join(dir, filepath.FromSlash(p))), filepath.FromSlash(spec))
+	cands := []string{base, base + ".ts", base + ".tsx", base + ".js", filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"), filepath.Join(base, "index.js")}
+	// TS 语义 `./x.js` 回退 `x.ts`（底座 resolver 同形）。
+	if strings.HasSuffix(base, ".js") {
+		cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
 	}
-	// Relative-outside adoption (2b_xfn): reachable relative imports that
-	// escape the build dir are adopted here, NOT gated by the total file
-	// count -- the capped loop below never runs for packages already above
-	// 64 walked files (apps/server has 92), which is why the outside file
-	// stayed out of the graph even where adoptRel could have found it.
-	// Only relative specs are followed here; bare/node_modules adoption
-	// keeps the existing capped loop untouched. The loop runs to fixpoint
-	// over SORTED keys: a cap-truncated fixpoint over Go map order adopted
-	// a random subset per run (server: 84 vs 82 outside files, different
-	// reports), so determinism needs sorted iteration even under the cap.
-	// The cap counts adopted files only (1024, a runaway bound, not the
-	// 64-file node_modules calibration -- repo-relative closures are
-	// genuinely larger than one package).
+	for _, cand := range cands {
+		// 逐字候选（spec 原文）只收代码文件（.ts/.tsx/.js 系）；资源
+		// 导入（.json/.css 等）不得以 TS 源码纳入——否则 JSON 文本
+		// 被当 TS 降，徒增顶层语句拒收，且 JSON 导入的默认绑定
+		// 永远链不上（JEV nested_json_maps 的 jsonOf 路径读表，
+		// 不走程序文件）。其余候选自带代码扩展，无需再滤。
+		if cand == base && !saIsTSPath(cand) && !saIsJSPath(cand) && !strings.HasSuffix(cand, ".tsx") {
+			continue
+		}
+		kind := core.ScriptKindTS
+		if strings.HasSuffix(cand, ".tsx") {
+			kind = core.ScriptKindTSX
+		} else if strings.HasSuffix(cand, ".js") {
+			kind = core.ScriptKindJS
+		}
+		if saProgAdoptFile(files, parsed, dir, cand, kind) {
+			return true
+		}
+		if saProgAdoptFileOutside(files, parsed, dir, cand, kind) {
+			return true
+		}
+	}
+	return false
+}
+
+// saProgAdoptRelativeOutside runs the relative-outside adoption fixpoint
+// (2b_xfn): reachable relative specs that escape the build dir are adopted
+// here, NOT gated by the total file count -- the capped loop below never
+// runs for packages already above 64 walked files (apps/server has 92),
+// which is why the outside file stayed out of the graph even where
+// adoptRel could have found it. Only relative specs are followed here;
+// bare/node_modules adoption keeps the existing capped loop untouched. The
+// loop runs to fixpoint over SORTED keys: a cap-truncated fixpoint over Go
+// map order adopted a random subset per run (server: 84 vs 82 outside
+// files, different reports), so determinism needs sorted iteration even
+// under the cap. The cap counts adopted files only (1024, a runaway bound,
+// not the 64-file node_modules calibration -- repo-relative closures are
+// genuinely larger than one package).
+// (3_relesc) The driver reruns this after the bare-spec pre-pass with
+// onlyReexp=true (JEV adopt_after_bare 0.96; scope reexports_only 0.52 vs
+// 0.48, conf 0.04 near-tie): files adopted by the bare pass (e.g. a shared
+// barrel adopted as a re-export's defining file) never had their relative
+// re-export targets adopted, because this fixpoint ran before the bare
+// pass; rerunning it for export-from specs closes that gap without
+// widening the adopted set to their relative imports.
+func saProgAdoptRelativeOutside(files map[string]string, parsed map[string]*ast.SourceFile, dir string, rs *saProgResolvers, onlyReexp bool) {
 	const maxOutsideAdopted = 1024
 	for adopted := 0; adopted < maxOutsideAdopted; {
 		progress := false
@@ -7220,6 +7230,9 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				var spec string
 				switch st.Kind {
 				case ast.KindImportDeclaration:
+					if onlyReexp {
+						continue
+					}
 					if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
 						continue
 					}
@@ -7236,7 +7249,7 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; ok {
 					continue
 				}
-				if adoptRel(p, spec) {
+				if saProgAdoptRel(files, parsed, dir, p, spec) {
 					progress = true
 					adopted++
 				}
@@ -7246,6 +7259,12 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 			break
 		}
 	}
+}
+
+func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers, parsed map[string]*ast.SourceFile, typesOf map[string]string) {
+	const maxFiles = 64
+	tried := map[string]bool{}
+	saProgAdoptRelativeOutside(files, parsed, dir, rs, false)
 	for len(files) < maxFiles {
 		progress := false
 		for p, sf := range parsed {
@@ -7281,7 +7300,7 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 				// 相对目标：files 集外但落盘存在即纳入。
 				if strings.HasPrefix(spec, ".") {
 					if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; !ok {
-						if adoptRel(p, spec) {
+						if saProgAdoptRel(files, parsed, dir, p, spec) {
 							progress = true
 						}
 					}
@@ -7522,6 +7541,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	if dirAbs, err := filepath.Abs(dir); err == nil {
 		saBareReexpLink(dirAbs, files, parsed, rs, graph, reexpOf, starOf)
 	}
+	// (3_relesc) Relative re-exports of bare-adopted files were never
+	// adopted (fixpoint ran before the bare pass): rerun it for
+	// export-from specs only, before the edge loop below.
+	saProgAdoptRelativeOutside(files, parsed, dir, rs, true)
 	// addEdge links importer→target for spec. typeOnly keeps the type
 	// resolver (纯类型导入/重导出只取类型侧，不链运行时文件，禁静默扩面).
 	addEdge := func(p, spec string, typeOnly bool) string {
