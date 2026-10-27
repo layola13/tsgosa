@@ -1705,6 +1705,13 @@ func saParseJSONFlatStr(abs string) (map[string]string, bool) {
 }
 
 func saTopMapInsertAll(w printer.EmitTextWriter, slot string, tm saTopMap, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	// Kind guard (empty-Map claims carry a NewExpression init; the hard
+	// cast below panics on it -- ec_map_str crashed the whole build
+	// before this guard). Non-object-literal inits have no entries to
+	// insert, so the empty map materializes with zero inserts.
+	if tm.init == nil || tm.init.Kind != ast.KindObjectLiteralExpression {
+		return ""
+	}
 	ol := tm.init.AsObjectLiteralExpression()
 	if ol == nil || ol.Properties == nil {
 		return ""
