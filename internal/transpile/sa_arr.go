@@ -3844,6 +3844,33 @@ func saKeyofLitText(key *ast.Node) (string, bool) {
 	return key.Text(), true
 }
 
+// saTopObjIndexKey resolves a top-object index argument to a field key
+// text (3_unannot3, JEV grey_num_index / grey_str_index /
+// topobj_str_index): numeric literals by their text (JS numeric keys
+// are strings, and the wave-2 claim stores them by key text), string
+// literals unquoted exactly as saObjPropName does. Anything else
+// (identifiers, calls, templates) is not a static key.
+func saTopObjIndexKey(ea *ast.ElementAccessExpression) (string, bool) {
+	if ea == nil || ea.ArgumentExpression == nil {
+		return "", false
+	}
+	key := ea.ArgumentExpression
+	switch key.Kind {
+	case ast.KindNumericLiteral:
+		return key.Text(), true
+	case ast.KindStringLiteral:
+		t := key.Text()
+		if len(t) >= 2 && t[0] == '"' {
+			if unq, err := strconv.Unquote(t); err == nil {
+				return unq, true
+			}
+			return "", false
+		}
+		return t, true
+	}
+	return "", false
+}
+
 // saLowerIndexLoadExpr lowering 下标读表达式 `a[i]`/`a?.[i]`（基为绑定数组或数组值调用；
 // `?.` 空基归零；下标走 i32 求值，读回走越界归零 join）。
 func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
@@ -3871,6 +3898,49 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 				return "", "optional map index reads are not lowerable"
 			}
 			return saLowerMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
+		}
+	}
+	// 顶层对象常量下标读（3_unannot3, JEV grey_num_index 0.93 /
+	// grey_str_index 0.77 / topobj_str_index 0.90）：字面量键按
+	// 键文本映射到点读域（`grey[500]` ≡ `grey` 的 "500" 域，
+	// `grey["500"]` 同形，`O["h1"]` ≡ `O.h1`）；具化与点读臂
+	// 同形（saLowerTopObjClaim + saLowerClassFieldLoad），布局
+	// 缺失大声拒（禁静默空柄）。通用下标位只承
+	// i32 域：串域须走串位（saEvalStr 顶层对象臂），f64/
+	// 数组/实例域沿旧门大声拒；`?.`/非字面量键/
+	// 未知域一律大声拒。
+	if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+		if to, ok := saTopObjLookup(scope, ea.Expression); ok {
+			if ea.QuestionDotToken != nil {
+				return "", "optional top-object index reads are not lowerable"
+			}
+			key, keyOK := saTopObjIndexKey(ea)
+			if !keyOK {
+				return "", "top-object index key must be a string or numeric literal"
+			}
+			def, ok := scope.classes[to.layout]
+			if !ok {
+				return "", "unknown class " + to.layout
+			}
+			fk, present := def.fkinds[key]
+			if !present {
+				return "", "unknown field " + key + " on top-level object " + ea.Expression.Text()
+			}
+			if fk != "i32" {
+				return "", "top-object index read of non-i32 field " + key + " is not lowerable here"
+			}
+			if _, ok := def.offsets[key]; !ok {
+				return "", "unknown field " + key + " on top-level object " + ea.Expression.Text()
+			}
+			h, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			t, msg := saLowerClassFieldLoad(w, h, def, key, scope, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			return t, ""
 		}
 	}
 	// keyof 动态键读先行（`p[k]`；实例基非数组，saArrValueOf 不识；字面量
