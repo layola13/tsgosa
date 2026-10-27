@@ -2578,6 +2578,201 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 	return true
 }
 
+// saEnrichDefDefaults records defining-file-scope default resolutions into
+// harvested sigs (JEV def_scope sig_full, choice 0.98, confidence 0.97).
+// Runs once per file at harvest time, after const folding, so topConsts
+// holds defining-file folded values (private consts, exported consts, and
+// preseeded imported consts alike). For each harvested function signature:
+//   - identifier default: record topConsts text iff the param kind matches
+//     (str + string const, i32 + decimal integer text). Other kinds are
+//     never recorded (fail closed).
+//   - zero-arg identifier-call default: resolve in DEFINING scope -- a local
+//     prescan function first (qualified as defPrefix+name), else the defining
+//     file's own import chain via saProgChase (re-export chains included).
+//     Recorded only when the callee return kind matches the param kind
+//     family (string->str, i32->i32, bool->bool). The name "main" is never
+//     recorded (entry rename would misdirect the call).
+//
+// Namespace-member harvest keys (dotted) are skipped: their emission names
+// are not defPrefix+name, so a recorded qual would misdirect.
+// Unrecorded shapes keep refusing at pad time; nothing here changes
+// same-file lowering (local funcs map is untouched, harvest copies only).
+func saEnrichDefDefaults(sf *ast.SourceFile, funcs map[string]saFuncSig, topConsts map[string]string, topStr map[string]bool, link *saFileLink) {
+	if sf == nil || link == nil {
+		return
+	}
+	// Defining-file import chain: local name -> resolved (qualified, sig).
+	type impRes struct {
+		q   string
+		sig saFuncSig
+	}
+	imported := map[string]impRes{}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindImportDeclaration {
+			continue
+		}
+		imp := st.AsImportDeclaration()
+		if imp == nil || imp.ImportClause == nil {
+			continue
+		}
+		if cl := imp.ImportClause; cl != nil && cl.IsTypeOnly() {
+			continue
+		}
+		ms := imp.ModuleSpecifier
+		if ms == nil || ms.Kind != ast.KindStringLiteral {
+			continue
+		}
+		tgt, ok := link.specOf[ms.Text()]
+		if !ok || tgt == "" {
+			continue
+		}
+		clause := imp.ImportClause.AsImportClause()
+		if clause == nil {
+			continue
+		}
+		if nm := clause.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			if q, sig, ok := saProgChase(link, tgt, "default", map[string]bool{}); ok {
+				imported[nm.Text()] = impRes{q: q, sig: sig}
+			}
+		}
+		nb := clause.NamedBindings
+		if nb == nil || nb.Kind != ast.KindNamedImports {
+			continue
+		}
+		ni := nb.AsNamedImports()
+		if ni == nil || ni.Elements == nil {
+			continue
+		}
+		for _, n := range ni.Elements.Nodes {
+			if n == nil || n.Kind != ast.KindImportSpecifier {
+				continue
+			}
+			sp := n.AsImportSpecifier()
+			nm := n.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			local := nm.Text()
+			remote := local
+			if sp != nil && sp.PropertyName != nil {
+				remote = sp.PropertyName.Text()
+			}
+			if q, sig, ok := saProgChase(link, tgt, remote, map[string]bool{}); ok {
+				imported[local] = impRes{q: q, sig: sig}
+			}
+		}
+	}
+	for name, hv := range link.harvest {
+		if strings.Contains(name, ".") {
+			continue
+		}
+		sig := hv.sig
+		if len(sig.defaults) != sig.params || len(sig.defaultExprs) != sig.params {
+			continue
+		}
+		changed := false
+		for i := 0; i < sig.params; i++ {
+			if !sig.defaults[i] || i >= len(sig.defaultExprs) || sig.defaultExprs[i] == nil {
+				continue
+			}
+			init := sig.defaultExprs[i]
+			kind := ""
+			if i < len(sig.paramKinds) {
+				kind = sig.paramKinds[i]
+			}
+			switch init.Kind {
+			case ast.KindIdentifier:
+				text, ok := topConsts[init.Text()]
+				if !ok {
+					continue
+				}
+				isStr := topStr[init.Text()]
+				if kind == "str" && !isStr {
+					continue
+				}
+				if kind == "i32" && !saIsIntLitText(text) {
+					continue
+				}
+				if kind != "str" && kind != "i32" {
+					continue
+				}
+				for len(sig.defConstText) < sig.params {
+					sig.defConstText = append(sig.defConstText, "")
+					sig.defConstStr = append(sig.defConstStr, false)
+				}
+				sig.defConstText[i] = text
+				sig.defConstStr[i] = isStr
+				changed = true
+			case ast.KindCallExpression:
+				ce := init.AsCallExpression()
+				if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+					continue
+				}
+				if ce.Arguments != nil && len(ce.Arguments.Nodes) != 0 {
+					continue
+				}
+				cname := ce.Expression.Text()
+				if cname == "main" {
+					continue
+				}
+				var q string
+				var csig saFuncSig
+				if lsig, ok := funcs[cname]; ok {
+					q, csig = link.defPrefix+cname, lsig
+				} else if imp, ok := imported[cname]; ok {
+					q, csig = imp.q, imp.sig
+				} else {
+					continue
+				}
+				retOK := false
+				switch kind {
+				case "str":
+					retOK = csig.retKind == "string"
+				case "i32":
+					retOK = csig.retKind == "i32"
+				case "bool":
+					retOK = csig.retKind == "bool"
+				}
+				if !retOK {
+					continue
+				}
+				for len(sig.defCallQual) < sig.params {
+					sig.defCallQual = append(sig.defCallQual, "")
+					sig.defCallSigs = append(sig.defCallSigs, saFuncSig{})
+				}
+				sig.defCallQual[i] = q
+				sig.defCallSigs[i] = csig
+				changed = true
+			}
+		}
+		if changed {
+			hv.sig = sig
+			link.harvest[name] = hv
+		}
+	}
+}
+
+// saIsIntLitText reports whether t is a plain decimal integer literal
+// (optional leading minus). Folded const text only; hex/float/expression
+// text never qualifies, so it can never reach an i32 slot as a literal.
+func saIsIntLitText(t string) bool {
+	if t == "" {
+		return false
+	}
+	if t[0] == '-' {
+		t = t[1:]
+	}
+	if t == "" {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saFileLink) (string, []SARefusal, []SARefusal) {
 	w := printer.NewTextWriter("\n", 2)
 	var refusals []SARefusal
@@ -3420,6 +3615,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			link.slotHarvest[name] = ms
 		}
+	}
+
+	// 3_deffile: enrich harvested sigs with defining-file default resolutions
+	// (after const folding + hook A harvest; the driver copies lk.harvest to
+	// harvests[p] after this file lowers, so dependents see enriched sigs).
+	if link != nil {
+		saEnrichDefDefaults(sf, funcs, topConsts, topStr, link)
 	}
 
 	// prescan zero: builtin projection imports (fs/net direct calls need no linking).
@@ -5617,6 +5819,16 @@ type saFuncSig struct {
 	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
 	retFn        string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
 	retMapVal    string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
+	// 3_deffile sig-carried defining-file default resolutions (JEV def_scope
+	// sig_full): per-param, parallel to defaults/defaultExprs, "" = none.
+	// Recorded at defining-file harvest time from defining-file state only
+	// (folded topConsts, local funcs, own import chain); never from caller
+	// scope. Cross-file pad replays ONLY a recorded resolution, installing
+	// it in the caller scope for that one evaluation and restoring exactly.
+	defConstText []string    // defining-file folded const text per param
+	defConstStr  []bool      // defining-file const is a string per param
+	defCallQual  []string    // defining-file qualified callee per param (zero-arg call defaults)
+	defCallSigs  []saFuncSig // copied sig of the defining-file default callee per param
 }
 
 // saLoop 是 break/continue 的跳转栈帧（unlabeled 经栈顶；labeled 经 scope.labels
