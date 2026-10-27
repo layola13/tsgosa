@@ -103,7 +103,7 @@ func saIsBareTypeParamField(def *saClassDef, fname string) bool {
 // saFieldWidth 返回字段槽宽与对齐（i32 系 4/4，str/arr/inst/f64 句柄与
 // 双精度 8/8；形状证据：封存 widthOf:268-279 + alignTo:281-289）。
 func saFieldWidth(kind string) (int, int) {
-	if kind == "str" || kind == "arr" || kind == "inst" || kind == "f64" {
+	if kind == "str" || kind == "arr" || kind == "inst" || kind == "f64" || kind == "jsval" {
 		return 8, 8
 	}
 	return 4, 4
@@ -2703,6 +2703,157 @@ func saSynthUnionLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, class
 	}
 }
 
+// saSynthUnionRetLayout synthesizes an inst layout for a single-variant
+// union return literal (JEV cfg296 jsval_field 0.92, lit_to_str 1.0,
+// scope union_return_literal_only 0.48): the single non-null member must
+// be a TypeLiteral. String literal fields resolve to str (mirroring
+// saSynthUnionLayout's literal branch, which the nil-alias Anon path
+// lacks), and fields declared with an unresolvable named type (plain
+// TypeReference, no type args, in neither classes nor aliasOf) resolve
+// to a jsval field kind (ptr slot holding a tagged jsval box; the
+// object-literal jsval arm boxes at the store and saLowerClassFieldLoad
+// marks reads jsval). The synthesis ONLY fires when at least one field
+// changes kind versus saAnonFieldKindAlias (exactly the
+// previously-refusing shapes); otherwise it returns false and the
+// existing saUnionInstKind/saSynthUnionLayout paths run unchanged, so
+// all currently-passing union returns are unaffected. Same-file
+// interfaces are recorded in the harvest pass before function lowering,
+// so an unrecorded name at return-kind time is genuinely external
+// (e.g. JsonValue imported from another package), not a forward ref.
+func saSynthUnionRetLayout(t *ast.TypeNode, aliasOf map[string]*ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	ut := saResolveUnionNode(t, aliasOf)
+	if ut == nil || ut.Types == nil {
+		return "", false
+	}
+	var litMember *ast.TypeNode
+	for _, m := range ut.Types.Nodes {
+		if saIsUnionNullMember(m) {
+			continue
+		}
+		if litMember != nil {
+			return "", false
+		}
+		litMember = m
+	}
+	if litMember == nil || litMember.Kind != ast.KindTypeLiteral {
+		return "", false
+	}
+	lit := litMember.AsTypeLiteralNode()
+	if lit == nil || lit.Members == nil {
+		return "", false
+	}
+	var fields []string
+	fdefs := map[string]*ast.TypeNode{}
+	fopt := map[string]bool{}
+	for _, mm := range lit.Members.Nodes {
+		if mm == nil || mm.Kind != ast.KindPropertySignature {
+			continue
+		}
+		fn := mm.Name()
+		if fn == nil || fn.Kind != ast.KindIdentifier {
+			continue
+		}
+		if _, dup := fdefs[fn.Text()]; dup {
+			continue
+		}
+		pd := mm.AsPropertySignatureDeclaration()
+		if pd == nil || pd.Type == nil {
+			continue
+		}
+		fields = append(fields, fn.Text())
+		fdefs[fn.Text()] = pd.Type
+		if mm.QuestionToken() != nil {
+			fopt[fn.Text()] = true
+		}
+	}
+	if len(fields) == 0 {
+		return "", false
+	}
+	fkinds := map[string]string{}
+	fsub := map[string]string{}
+	changed := false
+	for _, fname := range fields {
+		fdef := fdefs[fname]
+		var kind string
+		if fdef != nil && fdef.Kind == ast.KindLiteralType {
+			litn := fdef.AsLiteralTypeNode()
+			if litn == nil || litn.Literal == nil {
+				return "", false
+			}
+			switch litn.Literal.Kind {
+			case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+				kind = "str"
+			case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+				kind = "i32"
+			default:
+				return "", false
+			}
+		} else {
+			probe := &saClassDef{fsub: map[string]string{}}
+			kind = saAnonFieldKindAlias(fdef, fname, probe, classes, aliasOf)
+			if sub, ok := probe.fsub[fname]; ok {
+				fsub[fname] = sub
+			}
+			if kind == "arr" && fdef != nil && fdef.Kind == ast.KindTypeReference {
+				ref := fdef.AsTypeReferenceNode()
+				if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+					nm := ref.TypeName.Text()
+					if _, inClasses := classes[nm]; !inClasses {
+						if _, inAlias := aliasOf[nm]; !inAlias {
+							kind = "jsval"
+						}
+					}
+				}
+			}
+		}
+		if kind == "" {
+			return "", false
+		}
+		oldProbe := &saClassDef{fsub: map[string]string{}}
+		if oldKind := saAnonFieldKindAlias(fdef, fname, oldProbe, classes, aliasOf); oldKind != kind {
+			changed = true
+		}
+		fkinds[fname] = kind
+	}
+	if !changed {
+		return "", false
+	}
+	base := "UnionRet_" + saMonoName(strings.Join(fields, "_"))
+	for n := 0; ; n++ {
+		name := base
+		if n > 0 {
+			name = fmt.Sprintf("%s_%d", base, n+1)
+		}
+		if def, ok := classes[name]; ok {
+			if saUnionLayoutEqual(def, fields, fkinds, fopt, fsub) {
+				return def.name, true
+			}
+			continue
+		}
+		def := &saClassDef{name: name, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isSynth: true, fdefs: map[string]*ast.TypeNode{}, fopt: map[string]bool{}, fsub: map[string]string{}}
+		off := 0
+		for _, fname := range fields {
+			fkind := fkinds[fname]
+			off = saAlignOff(off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: off})
+			def.offsets[fname] = off
+			def.fkinds[fname] = fkind
+			def.fdefs[fname] = fdefs[fname]
+			if fopt[fname] {
+				def.fopt[fname] = true
+			}
+			if sub, ok := fsub[fname]; ok {
+				def.fsub[fname] = sub
+			}
+			sz, _ := saFieldWidth(fkind)
+			off += sz
+		}
+		def.size = off
+		classes[name] = def
+		return def.name, true
+	}
+}
+
 // saRestLayoutEqual 判定既有剩余布局与给定源域集同形（域序/种全等；
 // 子布局名随种走，不等即不复用，后缀另建，与匿名合成同律）。
 func saRestLayoutEqual(def, src *saClassDef, fields []string) bool {
@@ -5211,7 +5362,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				}
 				t := fmt.Sprintf("t_%d", *nextTemp)
 				*nextTemp++
-				if sk == "str" || sk == "arr" || sk == "inst" {
+				if sk == "str" || sk == "arr" || sk == "inst" || sk == "jsval" {
 					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, src.h, src.def.offsets[f.name]))
 					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[f.name], t))
 					continue
@@ -5229,6 +5380,19 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 		if fk := def.fkinds[o.fname]; fk == "str" {
 			// str 域具化存头指针（封存 9109 `store ... as <type>` 同形）。
 			v, msg := saEvalStr(w, o.init, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+			continue
+		}
+		if fk := def.fkinds[o.fname]; fk == "jsval" {
+			// jsval field (JEV cfg296 jsval_field 0.92): box the supplied
+			// value through the existing jsval call-arg ladder (reuses
+			// @ts_jsval_box_* sa_std helpers; no new inline helper) and
+			// store the box handle as ptr.
+			fakeSig := saFuncSig{paramKinds: []string{"jsval"}}
+			v, msg := saEvalCallArg(w, fakeSig, 0, o.init, 1, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", "", msg
 			}
@@ -7738,6 +7902,13 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 		}
 		return t, ""
 	}
+	if def.fkinds[field] == "jsval" {
+		t := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+		scope.types[t] = "jsval"
+		return t, ""
+	}
 	if def.fkinds[field] == "f64" {
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
@@ -8092,6 +8263,9 @@ func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef,
 	if def.fkinds[field] == "f64" {
 		w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", h, off, v))
 		return ""
+	}
+	if def.fkinds[field] == "jsval" {
+		return "jsval field assignment is not lowerable yet"
 	}
 	w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", h, off, v))
 	return ""

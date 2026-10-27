@@ -2477,7 +2477,7 @@ func saMaterializeTopObjElem(w printer.EmitTextWriter, o saTopObjElem, def *saCl
 			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
 			continue
 		}
-		if def.fkinds[f.name] == "str" || def.fkinds[f.name] == "f64" || def.fkinds[f.name] == "arr" || def.fkinds[f.name] == "inst" {
+		if def.fkinds[f.name] == "str" || def.fkinds[f.name] == "f64" || def.fkinds[f.name] == "arr" || def.fkinds[f.name] == "inst" || def.fkinds[f.name] == "jsval" {
 			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", h, def.offsets[f.name]))
 		} else {
 			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", h, def.offsets[f.name]))
