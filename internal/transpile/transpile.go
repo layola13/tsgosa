@@ -2752,27 +2752,6 @@ func saEnrichDefDefaults(sf *ast.SourceFile, funcs map[string]saFuncSig, topCons
 	}
 }
 
-// saIsIntLitText reports whether t is a plain decimal integer literal
-// (optional leading minus). Folded const text only; hex/float/expression
-// text never qualifies, so it can never reach an i32 slot as a literal.
-func saIsIntLitText(t string) bool {
-	if t == "" {
-		return false
-	}
-	if t[0] == '-' {
-		t = t[1:]
-	}
-	if t == "" {
-		return false
-	}
-	for i := 0; i < len(t); i++ {
-		if t[i] < '0' || t[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saFileLink) (string, []SARefusal, []SARefusal) {
 	w := printer.NewTextWriter("\n", 2)
 	var refusals []SARefusal
