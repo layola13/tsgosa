@@ -4513,6 +4513,34 @@ func saLowerLengthExpr(w printer.EmitTextWriter, pa *ast.PropertyAccessExpressio
 			return t, ""
 		}
 	}
+	// 顶层 const 对象数组域取长（快照物化 + 域句柄 +8，读后即释；与顶层
+	// 数组取长臂同形；直接链 `foo.tags.length` 不经链臂，该臂只认 inst 叶，
+	// 故此处直供 arr 叶；局部遮蔽由 saTopObjLookup 守，`?.` 基沿旧路）。
+	if e := saUnwrapTransparent(pa.Expression); e != nil && e.Kind == ast.KindPropertyAccessExpression {
+		if inner := e.AsPropertyAccessExpression(); inner != nil && inner.QuestionDotToken == nil &&
+			inner.Expression != nil && inner.Expression.Kind == ast.KindIdentifier && inner.Name() != nil {
+			if to, ok := saTopObjLookup(scope, inner.Expression); ok {
+				if d, ok := scope.classes[to.layout]; ok && d != nil && to.init != nil {
+					if leaf := inner.Name().Text(); d.fkinds[leaf] == "arr" {
+						if off, ok := d.offsets[leaf]; ok {
+							h, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
+							v := fmt.Sprintf("t_%d", *nextTemp)
+							*nextTemp++
+							w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", v, h, off))
+							t := fmt.Sprintf("t_%d", *nextTemp)
+							*nextTemp++
+							w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", t, v))
+							saReleaseOwnedTemp(w, scope, h)
+							return t, ""
+						}
+					}
+				}
+			}
+		}
+	}
 	// 链式下标基（`pairs[0].length` 经句柄总线递归求内层句柄；与读位同形）。
 	if pa.Expression != nil && pa.Expression.Kind == ast.KindElementAccessExpression {
 		if h, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
