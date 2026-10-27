@@ -10322,6 +10322,355 @@ func saArrCallbackNode(args []*ast.Node) (*ast.Node, int, string) {
 	return nil, -1, ""
 }
 
+// saArrElemKindOf derives an array handle's element kind from the same
+// receiver marks the generic higher-order loops use (arrStr / arrJsVal /
+// element layout / nested slices); anything else is a plain i32 word.
+// This is the established elimination convention of the array subsystem:
+// a marked kind is positive evidence, i32 is the unmarked default.
+func saArrElemKindOf(scope *saScope, recv, elemLayout string) string {
+	if scope.arrStr != nil && scope.arrStr[recv] {
+		return "str"
+	}
+	if scope.arrJsVal != nil && scope.arrJsVal[recv] {
+		return "jsval"
+	}
+	if elemLayout != "" {
+		return "inst:" + elemLayout
+	}
+	if scope.arrElemLayout != nil {
+		if l, ok := scope.arrElemLayout[recv]; ok {
+			return "inst:" + l
+		}
+	}
+	if scope.arrNest != nil && scope.arrNest[recv] {
+		return "arr"
+	}
+	if scope.arrInnerStr != nil && scope.arrInnerStr[recv] {
+		return "arr"
+	}
+	return "i32"
+}
+
+// saHigherOrderFilterBoolean lowers arr.filter(Boolean): keep elements
+// whose truthiness matches the existing Boolean()/condition arms per
+// element kind (str: length != 0; i32/inst/arr: word != 0; jsval:
+// @ts_jsval_truthy). The loop skeleton mirrors the generic filter loop.
+func saHigherOrderFilterBoolean(w printer.EmitTextWriter, recv string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+	elemKind := saArrElemKindOf(scope, recv, "")
+	isInst := strings.HasPrefix(elemKind, "inst:")
+	if elemKind != "i32" && elemKind != "str" && elemKind != "jsval" && elemKind != "arr" && !isInst {
+		return "", "filter(Boolean) needs i32, string, instance, jsval or array elements"
+	}
+	h := saNewEmptyArray(w, nextTemp)
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_fb_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_fb_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_fb_end_%d", *nextLabel)
+	*nextLabel++
+	takeL := fmt.Sprintf("L_fb_take_%d", *nextLabel)
+	*nextLabel++
+	skipL := fmt.Sprintf("L_fb_skip_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	var tv string
+	switch elemKind {
+	case "str":
+		_, bl := saExpandStr(w, el, nextTemp)
+		tv = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", tv, bl))
+	case "jsval":
+		needImport("sa_std/ts_jsval.sa")
+		tv = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_jsval_truthy(%s)\n", tv, el))
+	default:
+		tv = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", tv, el))
+	}
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", tv, takeL, skipL))
+	w.Write(fmt.Sprintf("%s:\n", takeL))
+	saLowerArrayPush(w, h, el, scope, nextTemp)
+	w.Write(fmt.Sprintf("  jmp %s\n", skipL))
+	w.Write(fmt.Sprintf("%s:\n", skipL))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	saOwnTemp(scope, h)
+	saReleaseOwnedTemp(w, scope, recv)
+	return h, ""
+}
+
+// saHigherOrderMapString lowers arr.map(String): i32 elements via the
+// integer-decimal render path (the same conversion the i32 toString arm
+// uses), str elements pass through. jsval/instance elements keep
+// refusing loudly: String() of those values is not lowerable elsewhere
+// either. The loop skeleton mirrors saHigherOrderMap.
+func saHigherOrderMapString(w printer.EmitTextWriter, recv string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
+	elemKind := saArrElemKindOf(scope, recv, "")
+	if elemKind != "i32" && elemKind != "str" {
+		return "", "map(String) needs i32 or string elements"
+	}
+	h := saNewEmptyArray(w, nextTemp)
+	saMarkArrStr(scope, h)
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_ms_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_ms_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_ms_end_%d", *nextLabel)
+	*nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	var v string
+	if elemKind == "i32" {
+		ownBase := len(scope.ownOrder)
+		v = saRenderInterp(w, el, scope, nextTemp, "10")
+		// Per-iteration render temps (numbuf/numlen/vslice) must not reach
+		// the function-end drain: they are loop-body-scoped registers and
+		// the drain would emit `!t` for an undeclared register (generic map
+		// avoids this via saCallbackValue's inLoop truncate; same discipline).
+		saTruncateBodyOwned(scope, ownBase)
+	} else {
+		v = el
+	}
+	saLowerArrayPush(w, h, v, scope, nextTemp)
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	saOwnTemp(scope, h)
+	saReleaseOwnedTemp(w, scope, recv)
+	return h, ""
+}
+
+// saHigherOrderNamedFn lowers arr.<method>(namedFn) for forEach, filter,
+// map, some and every by calling the already-emitted top-level function
+// once per element. It returns handled=false (emitting nothing) when
+// the identifier is not a resolvable same-file function, so the caller
+// falls through to the existing loud refusal. Any resolution or shape
+// failure after that point returns handled=true with a loud message.
+// Callee/signature resolution mirrors saEvalNamedCall's link logic.
+func saHigherOrderNamedFn(w printer.EmitTextWriter, recv, method, name string, pa *ast.PropertyAccessExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string, bool, string) {
+	if name == "Boolean" || name == "String" {
+		return "", "", false, ""
+	}
+	if _, shadowed := scope.types[name]; shadowed {
+		return "", "", false, ""
+	}
+	sig, ok := scope.funcs[name]
+	callee := name
+	if q, linked := saLinkCallee(scope, name); linked {
+		if lsig, ok2 := scope.funcs[q]; ok2 {
+			callee, sig, ok = q, lsig, true
+		} else if _, isImport := scope.linkResolve[name]; !isImport {
+			if sig2, ok2 := scope.funcs[name]; ok2 {
+				callee, sig, ok = q, sig2, true
+			} else {
+				return "", "", false, ""
+			}
+		} else {
+			return "", "", false, ""
+		}
+	}
+	if !ok {
+		return "", "", false, ""
+	}
+	if name == "main" && scope.mainRenamed {
+		callee = "main__user"
+	}
+	if sig.hasRest || len(sig.arrowCaps) > 0 || sig.arrowThis {
+		return "", "", true, "named callback " + name + " has rest/captured parameters (inline the arrow)"
+	}
+	if sig.params < 1 || sig.params > 2 {
+		return "", "", true, "named callback " + name + " takes 1-2 parameters"
+	}
+	elemLayout := ""
+	if pa != nil {
+		if layout, ok := saFindReceiverLayout(pa.Expression, scope); ok {
+			elemLayout = layout
+		}
+	}
+	elemKind := saArrElemKindOf(scope, recv, elemLayout)
+	if len(sig.paramKinds) < 1 || sig.paramKinds[0] != elemKind {
+		return "", "", true, "named callback " + name + " parameter kind does not match the array element kind"
+	}
+	if sig.params == 2 && (len(sig.paramKinds) < 2 || sig.paramKinds[1] != "i32") {
+		return "", "", true, "named callback " + name + " second parameter must be the i32 index"
+	}
+	switch method {
+	case "forEach":
+	case "some", "every", "filter":
+		if sig.isVoid || (sig.retKind != "boolean" && sig.retKind != "bool") {
+			return "", "", true, "named callback " + name + " must return a boolean for " + method
+		}
+	case "map":
+		if sig.isVoid || (sig.retKind != "number" && sig.retKind != "i32" && sig.retKind != "boolean" && sig.retKind != "bool" && sig.retKind != "string") {
+			return "", "", true, "named callback " + name + " must return i32, boolean or string for map"
+		}
+	}
+	call := func(args ...string) string {
+		text := fmt.Sprintf("call @%s(%s)", callee, strings.Join(args, ", "))
+		if sig.isVoid {
+			w.Write(fmt.Sprintf("  %s\n", text))
+			return ""
+		}
+		r := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = %s\n", r, text))
+		return r
+	}
+	callArgs := func(el, i string) []string {
+		if sig.params == 2 {
+			return []string{el, i}
+		}
+		return []string{el}
+	}
+	ln := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", ln, recv))
+	data := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", data, recv))
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = 0\n", i))
+	topL := fmt.Sprintf("L_nf_top_%d", *nextLabel)
+	*nextLabel++
+	bodyL := fmt.Sprintf("L_nf_body_%d", *nextLabel)
+	*nextLabel++
+	endL := fmt.Sprintf("L_nf_end_%d", *nextLabel)
+	*nextLabel++
+	var hitL, nextL, takeL, skipL string
+	var slot string
+	if method == "some" || method == "every" {
+		hitL = fmt.Sprintf("L_nf_hit_%d", *nextLabel)
+		*nextLabel++
+		nextL = fmt.Sprintf("L_nf_next_%d", *nextLabel)
+		*nextLabel++
+		slot = fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		saOwnTemp(scope, slot)
+		init, stop := "0", "1"
+		if method == "every" {
+			init, stop = "1", "0"
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, init))
+		_ = stop
+	} else if method == "filter" {
+		takeL = fmt.Sprintf("L_nf_take_%d", *nextLabel)
+		*nextLabel++
+		skipL = fmt.Sprintf("L_nf_skip_%d", *nextLabel)
+		*nextLabel++
+	}
+	var h string
+	if method == "filter" || method == "map" {
+		h = saNewEmptyArray(w, nextTemp)
+		if method == "map" && sig.retKind == "string" {
+			saMarkArrStr(scope, h)
+		}
+	}
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, i, ln))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	el := saArrElemAt(w, data, i, nextTemp)
+	switch method {
+	case "forEach":
+		r := call(callArgs(el, i)...)
+		if r != "" && (sig.retKind == "string" || strings.HasPrefix(sig.retKind, "inst:") || sig.retKind == "arr" || sig.retKind == "arrStr" || sig.retKind == "map" || sig.retKind == "jsval" || sig.retKind == "date") {
+			saOwnTemp(scope, r)
+			saReleaseOwnedTemp(w, scope, r)
+		}
+	case "some", "every":
+		r := call(callArgs(el, i)...)
+		stop := "1"
+		if method == "every" {
+			stop = "0"
+		}
+		if method == "some" {
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", r, hitL, nextL))
+		} else {
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", r, nextL, hitL))
+		}
+		w.Write(fmt.Sprintf("%s:\n", hitL))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, stop))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", nextL))
+	case "filter":
+		r := call(callArgs(el, i)...)
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", r, takeL, skipL))
+		w.Write(fmt.Sprintf("%s:\n", takeL))
+		saLowerArrayPush(w, h, el, scope, nextTemp)
+		w.Write(fmt.Sprintf("  jmp %s\n", skipL))
+		w.Write(fmt.Sprintf("%s:\n", skipL))
+	case "map":
+		r := call(callArgs(el, i)...)
+		saLowerArrayPush(w, h, r, scope, nextTemp)
+	}
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	switch method {
+	case "forEach":
+		saReleaseOwnedTemp(w, scope, recv)
+		return "0", "i32", true, ""
+	case "some", "every":
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", out, slot))
+		saReleaseOwnedTemp(w, scope, slot)
+		saReleaseOwnedTemp(w, scope, recv)
+		return out, "i32", true, ""
+	case "filter", "map":
+		saOwnTemp(scope, h)
+		saReleaseOwnedTemp(w, scope, recv)
+		return h, "arr", true, ""
+	}
+	return "", "", true, "unsupported named-callback method " + method
+}
+
 // saLowerArrCall 数组调用总线（成员 + Array.from；返回 (operand, 种, errMsg)。
 // 种 ∈ {"i32","arr","str"}；形状证据：封存 lowerArrayMethod:6137-6397）。
 func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string, string) {
@@ -11066,6 +11415,53 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		}
 		return h, "arr", ""
 	case "forEach", "map", "filter", "flatMap", "find", "findIndex", "findLast", "findLastIndex", "some", "every":
+		// Named-callback widening (JEV 2026-10-27): a single identifier
+		// callback resolves before the inline-arrow gate. Boolean for
+		// filter, String for map, and a same-file named function for
+		// forEach/filter/map/some/every. Anything else still falls
+		// through to saArrCallbackNode's loud refusal below.
+		if len(argNodes) == 1 {
+			if id := saUnwrapTransparent(argNodes[0]); id != nil && id.Kind == ast.KindIdentifier {
+				switch id.Text() {
+				case "Boolean":
+					if method == "filter" {
+						out, msg := saHigherOrderFilterBoolean(w, recv, scope, pos, refusals, needImport, nextLabel, nextTemp)
+						if msg != "" {
+							return "", "", msg
+						}
+						saPropArrNest(scope, recv, out)
+						saPropArrStr(scope, recv, out)
+						saPropArrInnerStr(scope, recv, out)
+						saPropArrJsVal(scope, recv, out)
+						saPropArrElemLayout(scope, recv, out)
+						return out, "arr", ""
+					}
+				case "String":
+					if method == "map" {
+						out, msg := saHigherOrderMapString(w, recv, scope, pos, refusals, nextLabel, nextTemp)
+						if msg != "" {
+							return "", "", msg
+						}
+						return out, "arr", ""
+					}
+				}
+				if method == "forEach" || method == "filter" || method == "map" || method == "some" || method == "every" {
+					if out, kind, handled, msg := saHigherOrderNamedFn(w, recv, method, id.Text(), pa, scope, pos, refusals, nextLabel, nextTemp); handled {
+						if msg != "" {
+							return "", "", msg
+						}
+						if method == "filter" {
+							saPropArrNest(scope, recv, out)
+							saPropArrStr(scope, recv, out)
+							saPropArrInnerStr(scope, recv, out)
+							saPropArrJsVal(scope, recv, out)
+							saPropArrElemLayout(scope, recv, out)
+						}
+						return out, kind, ""
+					}
+				}
+			}
+		}
 		cb, _, msg := saArrCallbackNode(argNodes)
 		if msg != "" {
 			return "", "", msg

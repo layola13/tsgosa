@@ -39,6 +39,20 @@ func saIsDateNew(e *ast.Node) bool {
 	return ne.Arguments == nil || len(ne.Arguments.Nodes) == 0
 }
 
+// saIsDateNewArgShape reports a one-arg `new Date(x)` shape (millis
+// form). The arg itself is lowered (and may refuse loudly) by the
+// existing saLowerDateNewArg; this helper is shape-only.
+func saIsDateNewArgShape(e *ast.Node) bool {
+	if e == nil || e.Kind != ast.KindNewExpression {
+		return false
+	}
+	ne := e.AsNewExpression()
+	if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier || ne.Expression.Text() != "Date" {
+		return false
+	}
+	return ne.Arguments != nil && len(ne.Arguments.Nodes) == 1
+}
+
 // saLowerDateNew `new Date()`（零参 now 形；返回 millis 不透明临时量。
 // 形状证据：封存 lowerNew:8609-8613 + new Date 测试 d1/d3）。
 func saLowerDateNew(w printer.EmitTextWriter, scope *saScope, nextTemp *int) string {
@@ -198,10 +212,16 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 		}
 		return "", "", "unknown Date member " + method
 	}
-	// 实例位：基须为 date 绑定或行内 `new Date()`。
+	// 实例位：基须为 date 绑定或行内 `new Date()` / `new Date(x)`。
 	var ms string
 	if saIsDateNew(pa.Expression) {
 		ms = saLowerDateNew(w, scope, nextTemp)
+	} else if saIsDateNewArgShape(pa.Expression) {
+		var msg string
+		ms, msg = saLowerDateNewArg(w, pa.Expression.AsNewExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", "", msg
+		}
 	} else if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 		k, ok := scope.types[pa.Expression.Text()]
 		if !ok || k != "date" {
@@ -313,6 +333,9 @@ func saLowerDateCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 // saDateBaseKind 基种判定（date 绑定或行内 new Date()）。
 func saDateBaseKind(e *ast.Node, scope *saScope) bool {
 	if saIsDateNew(e) {
+		return true
+	}
+	if saIsDateNewArgShape(e) {
 		return true
 	}
 	if e != nil && e.Kind == ast.KindIdentifier {
