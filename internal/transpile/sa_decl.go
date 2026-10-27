@@ -1198,6 +1198,20 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			}
 		}
 	}
+	if fce := saFetchCallOf(init, scope); fce != nil {
+		h, _, msg := saEvalCall(w, fce, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(init.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "inst:Response"
+		saConsumeOwn(scope, h)
+		saDeclareOwned(scope, name)
+		saCopyInstFn(scope, h, name)
+		return true
+	}
 	if init.Kind == ast.KindCallExpression {
 		// 数组/串/date 返回调用按返回种建种。
 		if saIsArrayCtor(init) {
@@ -2455,6 +2469,16 @@ func saAnnotInstKind(t *ast.TypeNode, classes map[string]*saClassDef) (string, b
 	}
 	if _, ok := classes[ref.TypeName.Text()]; ok {
 		return "inst:" + ref.TypeName.Text(), true
+	}
+	// Synthetic std layouts (patch 4/5): `let r: Response` / `: Stats`
+	// resolve without a user declaration; user-declared names win above.
+	if ref.TypeName.Text() == "Response" {
+		saSeedResponseLayout(classes)
+		return "inst:Response", true
+	}
+	if ref.TypeName.Text() == "Stats" {
+		saSeedStatsLayout(classes)
+		return "inst:Stats", true
 	}
 	return "", false
 }

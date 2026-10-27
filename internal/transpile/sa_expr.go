@@ -3000,6 +3000,13 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// URLSearchParams .toString() reads the accumulator binding
+		// itself; it must not fall into the str-method arm below, whose
+		// toString case only handles numeric receivers (patch 3c).
+		if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && scope.urlspVars[pa.Expression.Text()] {
+			return pa.Expression.Text(), false, ""
+		}
 		if pa.Name() != nil && saIsStrMethod(pa.Name().Text()) && saIsStrExpr(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}
@@ -3143,6 +3150,18 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 				return "", false, msg
 			}
 			return op, false, ""
+		}
+		// Response.text() on identifier receivers (fresh str handle over the
+		// body slice; other methods fall through to existing refusals).
+		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			scope.types[pa.Expression.Text()] == "inst:Response" && pa.Name().Text() == "text" {
+			if op, voidCall, msg, handled := saLowerResponseText(w, pa.Expression.Text(), ce, scope, nextTemp); handled {
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, voidCall, ""
+			}
 		}
 		// Stats methods on identifier receivers (isFile()/isDirectory() load
 		// the eagerly extracted i32 field; other methods fall through).
@@ -5112,8 +5131,14 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 		st := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = alloc 20\n", st))
-		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", st, isF))
-		w.Write(fmt.Sprintf("  store %s + 4, %s as i32\n", st, isD))
+		isF32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = zext %s as i32\n", isF32, isF))
+		isD32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = zext %s as i32\n", isD32, isD))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", st, isF32))
+		w.Write(fmt.Sprintf("  store %s + 4, %s as i32\n", st, isD32))
 		mode32 := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", mode32, mode))
@@ -6223,6 +6248,10 @@ func saEvalNamedCall(w printer.EmitTextWriter, name string, ce *ast.CallExpressi
 		return "", false, "call to unknown function " + name + " (declare it before use)"
 	}
 	if !ok {
+		// fetch bare global (patch 5): user-declared/imported fetch wins above.
+		if name == "fetch" {
+			return saLowerFetch(w, ce, scope, pos, refusals, nextTemp)
+		}
 		// structuredClone builtin fallback (locals, math aliases and user functions win above).
 		if name == "structuredClone" {
 			return saLowerStructuredClone(w, ce, scope, pos, refusals, nextTemp)

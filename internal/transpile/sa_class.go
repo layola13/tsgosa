@@ -526,6 +526,332 @@ func saLowerStatsMethod(w printer.EmitTextWriter, recv, method string, ce *ast.C
 	return v, false, "", true
 }
 
+// saSeedResponseLayout records the synthetic emitter Response layout
+// (patch 5) if absent; a user-declared class of the same name wins.
+// status/ok are real i32 fields (generic inst field loads serve them);
+// __bodyPtr/__bodyLen are internal slots read only by saLowerResponseText.
+func saSeedResponseLayout(classes map[string]*saClassDef) {
+	if _, ok := classes["Response"]; ok {
+		return
+	}
+	classes["Response"] = &saClassDef{
+		name: "Response",
+		fields: []saClassField{
+			{name: "status", offset: 0},
+			{name: "ok", offset: 4},
+			{name: "__bodyPtr", offset: 8},
+			{name: "__bodyLen", offset: 16},
+		},
+		offsets: map[string]int{"status": 0, "ok": 4, "__bodyPtr": 8, "__bodyLen": 16},
+		fkinds:  map[string]string{"status": "i32", "ok": "i32", "__bodyPtr": "f64", "__bodyLen": "i32"},
+		fsub:    map[string]string{},
+		fopt:    map[string]bool{},
+		fpos:    map[string]int{},
+		methods: map[string]*ast.Node{},
+		getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{},
+		statics: map[string]saStaticVal{},
+		size:    20,
+	}
+}
+
+// saIsFetchCall reports whether ce is a bare-global `fetch(...)` call (a
+// user-declared or imported fetch wins and is not hijacked).
+func saIsFetchCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ce.Expression.Text() != "fetch" {
+		return false
+	}
+	if _, ok := scope.funcs["fetch"]; ok {
+		return false
+	}
+	if _, ok := scope.imports["fetch"]; ok {
+		return false
+	}
+	return true
+}
+
+// saFetchCallOf peels transparent wrappers + await layers around e and
+// returns the inner fetch call, if any (async-erasure: await is transparent).
+func saFetchCallOf(e *ast.Node, scope *saScope) *ast.CallExpression {
+	e = saUnwrapTransparent(e)
+	for e != nil && e.Kind == ast.KindAwaitExpression {
+		e = saUnwrapTransparent(e.AsAwaitExpression().Expression)
+	}
+	if e != nil && e.Kind == ast.KindCallExpression && saIsFetchCall(e.AsCallExpression(), scope) {
+		return e.AsCallExpression()
+	}
+	return nil
+}
+
+// saPanicIfErr emits: br <err> != 0 -> panicL (panic(2501) terminator),
+// else okL. The caller writes the panic label, then continues at okL.
+func saPanicIfErr(w printer.EmitTextWriter, err string, scope *saScope, nextTemp *int) (panicL, okL string) {
+	nz := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, err))
+	panicL = fmt.Sprintf("L_fetch_panic_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	okL = fmt.Sprintf("L_fetch_ok_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, panicL, okL))
+	w.Write(fmt.Sprintf("%s:\n", panicL))
+	w.Write("  panic(2501)\n")
+	w.Write(fmt.Sprintf("%s:\n", okL))
+	return panicL, okL
+}
+
+// saLowerFetch lowers `fetch(url, opts?)` to a synchronous http_client
+// exchange. Returns (Response struct temp, false, "") or a refusal message.
+// The struct temp is saOwnTemp'd; the caller (decl/assign/statement) claims
+// or releases it. The http response buffer is intentionally NOT freed: the
+// struct's __bodyPtr points into it (one resp leak per fetch, documented).
+func saLowerFetch(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) < 1 || len(argNodes) > 2 {
+		return "", false, "fetch takes 1 or 2 arguments"
+	}
+	urlH, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", false, msg
+	}
+	useTLS := 0
+	if lit := saUnwrapTransparent(argNodes[0]); lit != nil && lit.Kind == ast.KindStringLiteral {
+		if strings.HasPrefix(lit.Text(), "https://") {
+			useTLS = 1
+		}
+	}
+	methodCode := 1
+	type hdrEnt struct{ kbp, kbl, vbp, vbl string }
+	var headers []hdrEnt
+	var bodyBp, bodyBl string
+	hasBody := false
+	if len(argNodes) == 2 {
+		opts := saUnwrapTransparent(argNodes[1])
+		if opts == nil || opts.Kind != ast.KindObjectLiteralExpression {
+			return "", false, "fetch options must be an object literal"
+		}
+		for _, prop := range opts.AsObjectLiteralExpression().Properties.Nodes {
+			if prop == nil || prop.Kind != ast.KindPropertyAssignment {
+				continue
+			}
+			pa := prop.AsPropertyAssignment()
+			if pa.Name() == nil {
+				continue
+			}
+			var pname string
+			switch pa.Name().Kind {
+			case ast.KindIdentifier:
+				pname = pa.Name().Text()
+			case ast.KindStringLiteral:
+				pname = pa.Name().Text()
+			default:
+				continue
+			}
+			switch pname {
+			case "method":
+				mLit := saUnwrapTransparent(pa.Initializer)
+				if mLit == nil || mLit.Kind != ast.KindStringLiteral {
+					return "", false, "fetch method must be a string literal"
+				}
+				switch strings.ToLower(mLit.Text()) {
+				case "get":
+					methodCode = 1
+				case "post":
+					methodCode = 2
+				case "put":
+					methodCode = 3
+				case "delete":
+					methodCode = 4
+				default:
+					return "", false, "fetch method " + mLit.Text() + " is not mappable (GET/POST/PUT/DELETE only)"
+				}
+			case "headers":
+				hLit := saUnwrapTransparent(pa.Initializer)
+				if hLit == nil || hLit.Kind != ast.KindObjectLiteralExpression {
+					return "", false, "fetch headers must be an object literal"
+				}
+				for _, hp := range hLit.AsObjectLiteralExpression().Properties.Nodes {
+					if hp == nil || hp.Kind != ast.KindPropertyAssignment {
+						continue
+					}
+					hpa := hp.AsPropertyAssignment()
+					if hpa.Name() == nil {
+						continue
+					}
+					var hname string
+					switch hpa.Name().Kind {
+					case ast.KindIdentifier:
+						hname = hpa.Name().Text()
+					case ast.KindStringLiteral:
+						hname = hpa.Name().Text()
+					default:
+						continue
+					}
+					kh := saLowerStringLiteral(w, hname, scope, nextTemp)
+					kbp, kbl := saExpandStr(w, kh, nextTemp)
+					vh, vmsg := saEvalStr(w, hpa.Initializer, scope, pos, refusals, nextTemp)
+					if vmsg != "" {
+						return "", false, vmsg
+					}
+					vbp, vbl := saExpandStr(w, vh, nextTemp)
+					headers = append(headers, hdrEnt{kbp, kbl, vbp, vbl})
+				}
+			case "body":
+				bh, bmsg := saEvalStr(w, pa.Initializer, scope, pos, refusals, nextTemp)
+				if bmsg != "" {
+					return "", false, bmsg
+				}
+				bodyBp, bodyBl = saExpandStr(w, bh, nextTemp)
+				hasBody = true
+			default:
+				// signal, cache, credentials, ...: ignored without
+				// evaluation (async-erasure stance, documented).
+			}
+		}
+	}
+	scope.addImport("sa_std/http_client.sai")
+	saSeedResponseLayout(scope.classes)
+	bp, bl := saExpandStr(w, urlH, nextTemp)
+	clientSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", clientSlot))
+	cerr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_new(%d, &%s)\n", cerr, useTLS, clientSlot))
+	saPanicIfErr(w, cerr, scope, nextTemp)
+	client := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", client, clientSlot))
+	reqSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", reqSlot))
+	rerr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_new(%s, %d, &%s, %s, &%s)\n", rerr, client, methodCode, bp, bl, reqSlot))
+	saPanicIfErr(w, rerr, scope, nextTemp)
+	req := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", req, reqSlot))
+	for _, he := range headers {
+		herr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_add_header(%s, &%s, %s, &%s, %s)\n", herr, req, he.kbp, he.kbl, he.vbp, he.vbl))
+		saPanicIfErr(w, herr, scope, nextTemp)
+	}
+	if hasBody {
+		berr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_set_body(%s, &%s, %s)\n", berr, req, bodyBp, bodyBl))
+		saPanicIfErr(w, berr, scope, nextTemp)
+	}
+	respSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", respSlot))
+	serr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_send(%s, &%s)\n", serr, req, respSlot))
+	saPanicIfErr(w, serr, scope, nextTemp)
+	resp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", resp, respSlot))
+	st16 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_resp_status(%s)\n", st16, resp))
+	status := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as i32\n", status, st16))
+	ge200 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ge %s, 200\n", ge200, status))
+	lt300 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = lt %s, 300\n", lt300, status))
+	ok := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = and %s, %s\n", ok, ge200, lt300))
+	bPtrSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", bPtrSlot))
+	bLenSlot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", bLenSlot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", bPtrSlot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", bLenSlot))
+	bsl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_resp_body_slice(%s, &%s, &%s)\n", bsl, resp, bPtrSlot, bLenSlot))
+	saReleaseStmtTemp(w, scope, bsl)
+	bodyPtr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", bodyPtr, bPtrSlot))
+	bodyLen64 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", bodyLen64, bLenSlot))
+	bodyLen := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", bodyLen, bodyLen64))
+	rst := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 20\n", rst))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", rst, status))
+	w.Write(fmt.Sprintf("  store %s + 4, %s as i32\n", rst, ok))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as ptr\n", rst, bodyPtr))
+	w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", rst, bodyLen))
+	rf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_req_free(%s)\n", rf, req))
+	saReleaseStmtTemp(w, scope, rf)
+	cf := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_http_client_free(%s)\n", cf, client))
+	saReleaseStmtTemp(w, scope, cf)
+	w.Write(fmt.Sprintf("  !%s\n", clientSlot))
+	w.Write(fmt.Sprintf("  !%s\n", reqSlot))
+	w.Write(fmt.Sprintf("  !%s\n", respSlot))
+	w.Write(fmt.Sprintf("  !%s\n", bPtrSlot))
+	w.Write(fmt.Sprintf("  !%s\n", bLenSlot))
+	saOwnTemp(scope, rst)
+	return rst, false, ""
+}
+
+// saLowerResponseText lowers response.text() (0 args): a fresh str handle
+// {bodyPtr, bodyLen-as-u64} over the response buffer (which the Response
+// struct keeps alive by not freeing it).
+func saLowerResponseText(w printer.EmitTextWriter, recv string, ce *ast.CallExpression, scope *saScope, nextTemp *int) (string, bool, string, bool) {
+	if ce == nil || ce.Expression == nil {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 0 {
+		return "", false, "Response.text takes no arguments", true
+	}
+	bp := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 8 as ptr\n", bp, recv))
+	bl32 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 16 as i32\n", bl32, recv))
+	bl := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = zext %s as u64\n", bl, bl32))
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, bp))
+	w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, bl))
+	saOwnTemp(scope, h)
+	return h, false, "", true
+}
+
 // saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
 // jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
 // helper (no new inline helper). Constructor args are side-effect evaluated
