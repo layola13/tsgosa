@@ -6939,6 +6939,18 @@ func saArrIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saInstIdentOperand reports whether e is an identifier bound to an
+// instance handle (any recorded layout: pointer equality is reference
+// equality regardless of layout).
+func saInstIdentOperand(e *ast.Node, scope *saScope) (string, bool) {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[e.Text()]; ok && strings.HasPrefix(k, "inst:") {
+			return e.Text(), true
+		}
+	}
+	return "", false
+}
+
 // saIsF64Operand reports whether an operand carries f64 (float literal or f64 binding).
 func saIsF64Operand(e *ast.Node, scope *saScope) bool {
 	for e != nil && e.Kind == ast.KindParenthesizedExpression {
@@ -8245,7 +8257,8 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
 			// handle equality compares directly (arr bindings from enum instantiations
-			// against i32 values; address semantics; string/instance sides keep old gates).
+			// against i32 values; address semantics; inst identifier pairs compare
+			// handles directly (JEV handle_eq 1.0); string sides keep old gates).
 			if ln, ok := saArrIdentOperand(be.Left, scope); ok {
 				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
@@ -8283,6 +8296,22 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				*nextTemp++
 				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, l, rn))
 				return t, ""
+			}
+			// 实例句柄相等即指针相等（JS 对象 ===/!== 为引用相等；
+			// 与 arr 句柄臂同形；仅标识符对，字段/调用结果沿旧门）。
+			if ln, ok := saInstIdentOperand(be.Left, scope); ok {
+				neg := be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
+					be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken
+				op2 := "eq"
+				if neg {
+					op2 = "ne"
+				}
+				if rn, ok := saInstIdentOperand(be.Right, scope); ok {
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = %s %s, %s\n", t, op2, ln, rn))
+					return t, ""
+				}
 			}
 		}
 		// 布尔相等比较（双边布尔值形经 saEvalBool 归一 0/1 后 eq/ne；
