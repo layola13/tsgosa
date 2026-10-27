@@ -3839,6 +3839,115 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, map[string]string{}, classes), true
 }
 
+// saTopObjUnannotLayoutOf synthesizes a layout for one unannotated object
+// literal under the lit rule (JEV unannot_flat lit_synth 0.64, scope
+// flat_nested 0.67): string literals -> str, integer literals (and
+// true/false, +/- integer prefixes) -> i32 via the existing
+// saTopArrElemText/saTopArrStrText helpers, nested object literals ->
+// inst slots behind recursively synthesized sub-layouts. Floats, arrays,
+// identifiers, nulls, methods, shorthand, computed keys, spread from a
+// layout with non-i32/str fields, and empty literals all return false,
+// so the statement keeps refusing kind-244 loudly. Depth-guarded.
+func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string]*saClassDef, prev map[string]saTopObj, depth int) (string, bool) {
+	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 || depth > 8 {
+		return "", false
+	}
+	var fields []string
+	fkinds := map[string]string{}
+	subs := map[string]string{}
+	ownSeen := map[string]bool{}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil {
+			return "", false
+		}
+		if p.Kind == ast.KindSpreadAssignment {
+			se := saUnwrapTransparent(p.AsSpreadAssignment().Expression.AsNode())
+			if se == nil || se.Kind != ast.KindIdentifier {
+				return "", false
+			}
+			srcTo, ok := prev[se.Text()]
+			if !ok {
+				return "", false
+			}
+			sdef, ok := classes[srcTo.layout]
+			if !ok || sdef == nil {
+				return "", false
+			}
+			for _, f := range sdef.fields {
+				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" {
+					return "", false
+				}
+				if _, seen := fkinds[f.name]; !seen {
+					fields = append(fields, f.name)
+				}
+				fkinds[f.name] = sdef.fkinds[f.name]
+			}
+			continue
+		}
+		if p.Kind != ast.KindPropertyAssignment {
+			return "", false
+		}
+		fname, ok := saObjPropName(p)
+		if !ok || fname == "" {
+			return "", false
+		}
+		if ownSeen[fname] {
+			return "", false
+		}
+		ownSeen[fname] = true
+		finit := p.AsPropertyAssignment().Initializer
+		if finit == nil {
+			return "", false
+		}
+		if _, iok := saTopArrElemText(finit); iok {
+			fkinds[fname] = "i32"
+		} else if _, sok := saTopArrStrText(finit); sok {
+			fkinds[fname] = "str"
+		} else if finit.Kind == ast.KindObjectLiteralExpression {
+			subOl := finit.AsObjectLiteralExpression()
+			subLay, ok := saTopObjUnannotLayoutOf(subOl, classes, prev, depth+1)
+			if !ok {
+				return "", false
+			}
+			fkinds[fname] = "inst"
+			subs[fname] = subLay
+		} else {
+			return "", false
+		}
+		found := false
+		for _, f := range fields {
+			if f == fname {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fields = append(fields, fname)
+		}
+	}
+	sort.Strings(fields)
+	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, subs, classes), true
+}
+
+// saTopObjUnannotLayout claims an unannotated top-level const object
+// (vd.Type == nil) by synthesizing its layout from literal field kinds.
+// Annotated declarations never reach it: the prescan tries it only when
+// vd.Type == nil, so annotated behavior is byte-identical.
+func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj) (string, bool) {
+	if vd == nil || vd.Type != nil || vd.Initializer == nil {
+		return "", false
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+		return "", false
+	}
+	ol := init.AsObjectLiteralExpression()
+	if ol == nil {
+		return "", false
+	}
+	return saTopObjUnannotLayoutOf(ol, classes, prev, 0)
+}
+
 // saNullFieldTypeNode resolves one field's annotation TypeNode by walking an
 // annotation through aliasOf/intersection/literal constituents (first wins,
 // cycle-guarded). Recorded interfaces carry no fdefs (saRecordTypeAlias
@@ -4055,7 +4164,7 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 		okAll := true
 		for _, d := range vdl.Declarations.Nodes {
 			vd := d.AsVariableDeclaration()
-			if vd == nil || vd.Initializer == nil || vd.Type == nil {
+			if vd == nil || vd.Initializer == nil {
 				okAll = false
 				break
 			}
@@ -4075,6 +4184,17 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			// 非 const 声明须未被赋值（等价 const 快照；818）。
 			if !isConst && assigned[name] {
+				okAll = false
+				break
+			}
+			// 无注解径（JEV unannot_flat）：注解缺省时试字面量合成布局；
+			// 成则本声明直接认领，败则沿旧门。
+			if vd.Type == nil {
+				if lay, okU := saTopObjUnannotLayout(vd, classes, out); okU {
+					initU := saUnwrapTransparent(vd.Initializer)
+					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: initU}})
+					continue
+				}
 				okAll = false
 				break
 			}
