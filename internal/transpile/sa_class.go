@@ -2047,10 +2047,44 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes 
 			continue
 		}
 		pd := p.AsParameterDeclaration()
-		if pd == nil || pd.Type == nil {
+		if pd == nil {
 			ln, col := pos(p.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter property " + fname + " needs a type annotation (slot width)"})
 			return false
+		}
+		if pd.Type == nil {
+			// (par_notexp) 无标注参数属性：槽宽由字面量初值推断
+			// （整数 i32、串 str、布尔 bool；余形仍大声拒）。
+			init := saUnwrapTransparent(pd.Initializer)
+			fkind := ""
+			if init != nil {
+				switch init.Kind {
+				case ast.KindNumericLiteral:
+					if !saIsFloatLit(init.Text()) {
+						fkind = "i32"
+					}
+				case ast.KindPrefixUnaryExpression:
+					if un := init.AsPrefixUnaryExpression(); un != nil && un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral && !saIsFloatLit(un.Operand.Text()) && (un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
+						fkind = "i32"
+					}
+				case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+					fkind = "str"
+				case ast.KindTrueKeyword, ast.KindFalseKeyword:
+					fkind = "bool"
+				}
+			}
+			if fkind == "" {
+				ln, col := pos(p.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "parameter property " + fname + " needs a type annotation (slot width)"})
+				return false
+			}
+			*off = saAlignOff(*off, fkind)
+			def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+			def.offsets[fname] = *off
+			def.fkinds[fname] = fkind
+			sz, _ := saFieldWidth(fkind)
+			*off += sz
+			continue
 		}
 		k, ok := saAnnotKind(pd.Type)
 		if ok && (k == "i32" || k == "bool" || k == "str" || k == "arr" || k == "f64") {
@@ -2067,6 +2101,16 @@ func saRecordParamPropFields(def *saClassDef, ctor *ast.Node, off *int, classes 
 			def.offsets[fname] = *off
 			def.fkinds[fname] = fkind
 			sz, _ := saFieldWidth(fkind)
+			*off += sz
+			continue
+		}
+		// (par_notexp) 函数类型参数属性落指针句柄槽（与类字段门同形）。
+		if pd.Type.Kind == ast.KindFunctionType {
+			*off = saAlignOff(*off, "arr")
+			def.fields = append(def.fields, saClassField{name: fname, offset: *off})
+			def.offsets[fname] = *off
+			def.fkinds[fname] = "arr"
+			sz, _ := saFieldWidth("arr")
 			*off += sz
 			continue
 		}
@@ -4944,6 +4988,15 @@ type saTopObj struct {
 	// 为该域诸元解析，布局为该域元合成布局；标量形此二域为空。
 	arrObjs    map[string][]saTopObjElem
 	arrLayouts map[string]string
+	// arrStrFields/objFieldClaims (par_notexp, JEV idfield_snapshot
+	// 0.96): top-level identifier fields resolved at defining-file
+	// prescan time: string-array field value copies (arr slots) and
+	// nested object claims (inst slots). They travel with the claim
+	// struct through seeding, so importer materialization never looks
+	// the defining-file name up (same-named importer locals cannot
+	// silently supply wrong values); empty means no identifier fields.
+	arrStrFields   map[string][]string
+	objFieldClaims map[string]saTopObj
 }
 
 // saTopObjLitLayout 为不可解析注解的顶层对象字面量合成布局（JEV
@@ -5010,7 +5063,7 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 				return "", false
 			}
 			for _, f := range sdef.fields {
-				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" {
+				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" && fk != "f64" && fk != "arr" {
 					return "", false
 				}
 				if _, seen := fkinds[f.name]; !seen {
@@ -5057,7 +5110,7 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 // identifiers, nulls, methods, shorthand, computed keys, spread from a
 // layout with non-i32/str fields, and empty literals all return false,
 // so the statement keeps refusing kind-244 loudly. Depth-guarded.
-func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string]*saClassDef, prev map[string]saTopObj, depth int) (string, bool) {
+func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr, depth int, arrStr map[string][]string, objClaims map[string]saTopObj) (string, bool) {
 	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 || depth > 8 {
 		return "", false
 	}
@@ -5083,7 +5136,7 @@ func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string
 				return "", false
 			}
 			for _, f := range sdef.fields {
-				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" {
+				if fk := sdef.fkinds[f.name]; fk != "i32" && fk != "str" && fk != "f64" && fk != "arr" {
 					return "", false
 				}
 				if _, seen := fkinds[f.name]; !seen {
@@ -5112,9 +5165,34 @@ func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string
 			fkinds[fname] = "i32"
 		} else if _, sok := saTopArrStrText(finit); sok {
 			fkinds[fname] = "str"
+		} else if _, fok := saTopFloatText(finit); fok {
+			// (par_notexp, JEV float_f64) 浮点字面量域 f64 化；抽取值
+			// 已由 saTopObjElemParse 进 numFields，物化按 fkind 发 f64 存。
+			fkinds[fname] = "f64"
+		} else if finit.Kind == ast.KindIdentifier && depth == 0 && arrStr != nil && objClaims != nil {
+			// (par_notexp, JEV idfield_snapshot) 顶层标识符域：解
+			// 同文件已认领快照——对象快照落 inst+子布局，串数组
+			// 快照落 arr 槽并值拷贝进收集表（供跨文件物化）；嵌套
+			// 字面量内标识符域（depth>0）仍沿旧门；未解出大声拒。
+			nm := finit.Text()
+			if prevTo, ok := prev[nm]; ok {
+				if sdef, ok2 := classes[prevTo.layout]; ok2 && sdef != nil {
+					fkinds[fname] = "inst"
+					subs[fname] = prevTo.layout
+					objClaims[fname] = prevTo
+				} else {
+					return "", false
+				}
+			} else if arr, ok := topArrs[nm]; ok && arr.str {
+				fkinds[fname] = "arr"
+				cp := append([]string(nil), arr.elems...)
+				arrStr[fname] = cp
+			} else {
+				return "", false
+			}
 		} else if finit.Kind == ast.KindObjectLiteralExpression {
 			subOl := finit.AsObjectLiteralExpression()
-			subLay, ok := saTopObjUnannotLayoutOf(subOl, classes, prev, depth+1)
+			subLay, ok := saTopObjUnannotLayoutOf(subOl, classes, prev, topArrs, depth+1, nil, nil)
 			if !ok {
 				return "", false
 			}
@@ -5142,19 +5220,31 @@ func saTopObjUnannotLayoutOf(ol *ast.ObjectLiteralExpression, classes map[string
 // (vd.Type == nil) by synthesizing its layout from literal field kinds.
 // Annotated declarations never reach it: the prescan tries it only when
 // vd.Type == nil, so annotated behavior is byte-identical.
-func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj) (string, bool) {
+func saTopObjUnannotLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, prev map[string]saTopObj, topArrs map[string]saTopArr) (string, map[string][]string, map[string]saTopObj, bool) {
 	if vd == nil || vd.Type != nil || vd.Initializer == nil {
-		return "", false
+		return "", nil, nil, false
 	}
 	init := saUnwrapTransparent(vd.Initializer)
 	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
-		return "", false
+		return "", nil, nil, false
 	}
 	ol := init.AsObjectLiteralExpression()
 	if ol == nil {
-		return "", false
+		return "", nil, nil, false
 	}
-	return saTopObjUnannotLayoutOf(ol, classes, prev, 0)
+	arrStr := map[string][]string{}
+	objClaims := map[string]saTopObj{}
+	lay, ok := saTopObjUnannotLayoutOf(ol, classes, prev, topArrs, 0, arrStr, objClaims)
+	if !ok {
+		return "", nil, nil, false
+	}
+	if len(arrStr) == 0 {
+		arrStr = nil
+	}
+	if len(objClaims) == 0 {
+		objClaims = nil
+	}
+	return lay, arrStr, objClaims, true
 }
 
 // saNullFieldTypeNode resolves one field's annotation TypeNode by walking an
@@ -5467,7 +5557,7 @@ func saTopObjAnnotPropOK(finit *ast.Node, fk, fname string, def *saClassDef, cla
 	return false
 }
 
-func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode) (map[string]saTopObj, map[*ast.Node]bool) {
+func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode, topArrs map[string]saTopArr) (map[string]saTopObj, map[*ast.Node]bool) {
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -5521,9 +5611,9 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			// 无注解径（JEV unannot_flat）：注解缺省时试字面量合成布局；
 			// 成则本声明直接认领，败则沿旧门。
 			if vd.Type == nil {
-				if lay, okU := saTopObjUnannotLayout(vd, classes, out); okU {
+				if lay, arrStr, objClaims, okU := saTopObjUnannotLayout(vd, classes, out, topArrs); okU {
 					initU := saUnwrapTransparent(vd.Initializer)
-					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: initU}})
+					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: initU, arrStrFields: arrStr, objFieldClaims: objClaims}})
 					continue
 				}
 				okAll = false
@@ -5555,8 +5645,17 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: init4}})
 					continue
 				}
-				okAll = false
-				break
+				// (par_notexp) 别名-字面量注解：经 aliasOf 解出合成布局后
+				// 落入下方的接口域检查（域须全为字面量且键集匹配）。
+				if lay, ok5 := saAliasLiteralLayout(vd.Type, classes, aliasOf); ok5 {
+					if d2, ok6 := classes[lay]; ok6 && d2 != nil && d2.isIface {
+						layout, def = lay, d2
+					}
+				}
+				if def == nil || !def.isIface {
+					okAll = false
+					break
+				}
 			}
 			init := saUnwrapTransparent(vd.Initializer)
 			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
@@ -5570,6 +5669,7 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			seen := map[string]bool{}
 			propOk := true
+			floatMismatch := false
 			for _, p := range ol.Properties.Nodes {
 				if p == nil || p.Kind != ast.KindPropertyAssignment {
 					propOk = false
@@ -5581,12 +5681,41 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 					break
 				}
 				finit := p.AsPropertyAssignment().Initializer
+				litKind := ""
+				if _, iok := saTopArrElemText(finit); iok {
+					litKind = "i32"
+				} else if _, sok := saTopArrStrText(finit); sok {
+					litKind = "str"
+				} else if _, fok := saTopFloatText(finit); fok {
+					litKind = "f64"
+				}
 				fk, ok := def.fkinds[fname]
 				if !ok {
 					propOk = false
 					break
 				}
-				if !saTopObjAnnotPropOK(finit, fk, fname, def, classes, aliasOf, 0) {
+				if litKind != "" {
+					if litKind == "i32" {
+						if fk != "i32" && fk != "bool" {
+							propOk = false
+							break
+						}
+					} else if litKind == "f64" {
+						// (par_notexp, JEV float_f64) 注解 number 落 i32
+						// 但字面量为浮点：不截断，记失配走下文字面量合成
+						// 径（共享布局不动）；注解已为 f64 则直认。
+						if fk == "f64" {
+						} else if fk == "i32" {
+							floatMismatch = true
+						} else {
+							propOk = false
+							break
+						}
+					} else if fk != "str" {
+						propOk = false
+						break
+					}
+				} else if !saTopObjAnnotPropOK(finit, fk, fname, def, classes, aliasOf, 0) {
 					propOk = false
 					break
 				}
@@ -5599,6 +5728,24 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			// 缺省域与 saWantKeyMatch 同口径：必备域缺省沿旧门，
 			// 可选域缺省由物化零填（JEV topobj_partial_synth）。
 			if !propOk || !saWantKeyMatch(def, wantKeys) {
+				okAll = false
+				break
+			}
+			if floatMismatch {
+				// (par_notexp, JEV float_f64) 注解布局不动：字面量合
+				// 成布局认领本声明；合成败则沿旧门。
+				arrStrF := map[string][]string{}
+				objClaimsF := map[string]saTopObj{}
+				if synthLay, okS := saTopObjUnannotLayoutOf(ol, classes, out, topArrs, 0, arrStrF, objClaimsF); okS {
+					if len(arrStrF) == 0 {
+						arrStrF = nil
+					}
+					if len(objClaimsF) == 0 {
+						objClaimsF = nil
+					}
+					pends = append(pends, pend{name: name, obj: saTopObj{layout: synthLay, init: init, arrStrFields: arrStrF, objFieldClaims: objClaimsF}})
+					continue
+				}
 				okAll = false
 				break
 			}
@@ -6638,6 +6785,19 @@ func saEmitFromEntriesSpread(w printer.EmitTextWriter, h string, def *saClassDef
 	return ""
 }
 
+// saLowerTopObjClaim lowers a top-object claim's init with the claim
+// pointer set (par_notexp, JEV idfield_snapshot): identifier fields
+// resolved at prescan time lower from claim data, never from importer
+// scope names. Save/restored, so nested claim recursions nest safely.
+func saLowerTopObjClaim(w printer.EmitTextWriter, to saTopObj, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	claim := to
+	prev := scope.topObjClaim
+	scope.topObjClaim = &claim
+	h, lname, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+	scope.topObjClaim = prev
+	return h, lname, msg
+}
+
 func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
 	ol := n.AsObjectLiteralExpression()
 	type spreadSrc struct {
@@ -6668,7 +6828,7 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 					if !ok || sd == nil {
 						return "", "", "spread source has no recorded interface layout (spread an interface-typed object)"
 					}
-					sh2, _, msg2 := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+					sh2, _, msg2 := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
 					if msg2 != "" {
 						return "", "", msg2
 					}
@@ -6975,6 +7135,20 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 		}
 		if fk := def.fkinds[o.fname]; fk == "arr" {
+			// (par_notexp, JEV idfield_snapshot) 认领内标识符数组域：
+			// prescan 值拷贝直供句柄数组，禁 importer 名查找。
+			if o.init != nil && o.init.Kind == ast.KindIdentifier && scope.topObjClaim != nil {
+				if vals, ok := scope.topObjClaim.arrStrFields[o.fname]; ok {
+					var hs []string
+					for _, v := range vals {
+						hs = append(hs, saLowerStringLiteral(w, v, scope, nextTemp))
+					}
+					h2 := saAssembleHandles(w, hs, scope, nextTemp)
+					saMarkArrStr(scope, h2)
+					w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], h2))
+					continue
+				}
+			}
 			// arr 域存句柄（字面量递归/绑定直传经句柄总线；泛型形参域等标量初值
 			// 按 i32 求值存入 ptr 槽；封存 lowerObjectLiteral:9105-9109 按域种无区分落字）。
 			// 字面量直供记元种（逐元 `saLitFieldKind`，全同才记，供实例深相等分流）。
@@ -7038,7 +7212,12 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 				continue
 			}
 			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
+				// 嵌套字面量自有域：清认领指针（外层认领数据仅属
+				// 顶层域，禁同名嵌套域误取外层值）。
+				prevClaim := scope.topObjClaim
+				scope.topObjClaim = nil
 				v, _, msg := saLowerObjectLiteral(w, o.init, sub, scope, pos, refusals, nextTemp)
+				scope.topObjClaim = prevClaim
 				if msg != "" {
 					return "", "", msg
 				}
@@ -7047,6 +7226,18 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 			// 实例直存（已绑定实例句柄值；种门：须为同布局实例）。
 			if o.init != nil && o.init.Kind == ast.KindIdentifier {
+				// (par_notexp, JEV idfield_snapshot) 认领内标识符
+				// 对象域：嵌套认领递归物化（指针切至嵌套认领）。
+				if scope.topObjClaim != nil {
+					if nested, ok := scope.topObjClaim.objFieldClaims[o.fname]; ok {
+						v, _, msg := saLowerTopObjClaim(w, nested, scope, pos, refusals, nextTemp)
+						if msg != "" {
+							return "", "", msg
+						}
+						w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
+						continue
+					}
+				}
 				k, ok := scope.types[o.init.Text()]
 				if !ok || k != "inst:"+sub {
 					return "", "", "nested field " + o.fname + " needs an object literal or matching instance"
@@ -7511,8 +7702,22 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		return h, ""
 	}
 	params := def.ctor.Parameters()
-	if len(argNodes) != len(params) {
+	// (par_notexp, JEV paramprop_wire 0.99) 缺省实参：仅参数属性且
+	// 字面量初值者以初值补齐（TS 缺省语义）；余形沿旧 arity 门。
+	if len(argNodes) > len(params) {
 		return "", fmt.Sprintf("new %s takes %d arguments (%d given)", name, len(params), len(argNodes))
+	}
+	if len(argNodes) < len(params) {
+		for i := len(argNodes); i < len(params); i++ {
+			pd := params[i].AsParameterDeclaration()
+			if pd == nil || !ast.IsParameterPropertyDeclaration(params[i], def.ctor) || pd.Initializer == nil {
+				return "", fmt.Sprintf("new %s takes %d arguments (%d given)", name, len(params), len(argNodes))
+			}
+			if !saIsPureLiteral(saUnwrapTransparent(pd.Initializer)) {
+				return "", "constructor parameter shape is not lowerable"
+			}
+			argNodes = append(argNodes, pd.Initializer)
+		}
 	}
 	owner := name
 	if def.ctorOwner != "" {
@@ -7529,6 +7734,9 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		if pd == nil {
 			return "", "destructured constructor parameters are not lowerable"
 		}
+		// (par_notexp, JEV paramprop_wire) 初值门放宽：实参已给
+		// 时初值被忽略（TS 语义）；缺省位已在上由参数属性字面
+		// 量初值补齐，余缺省形在 arity 门已拒；仅余 rest/? 拒。
 		if pd.DotDotDotToken != nil || pd.QuestionToken != nil {
 			return "", "constructor parameter shape is not lowerable"
 		}
@@ -7641,6 +7849,10 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 		}
 		paramVal[nm.Text()] = v
 	}
+	// (par_notexp, JEV paramprop_wire 0.99) 参数属性槽写回由
+	// saWireCtorBody 的 inject() 承接（已按记录槽存 paramVal）；
+	// 此处不另存，禁重复写；缺省位已在上由字面量初值补齐进
+	// paramVal，故 inject() 对缺省参数属性亦能写回。
 	body := def.ctor.Body()
 	if body == nil {
 		return h, ""
@@ -9709,7 +9921,7 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 			if _, ok := scope.classes[d.fsub[leaf]]; !ok {
 				return "", nil, "nested field " + leaf + " has no recorded sub layout"
 			}
-			h2, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+			h2, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", nil, msg
 			}

@@ -648,11 +648,17 @@ func saMaterializeTypeForwards(sf *ast.SourceFile, link *saFileLink, classes map
 			continue
 		}
 		ed := st.AsExportDeclaration()
-		if ed == nil || ed.IsTypeOnly {
+		if ed == nil {
 			continue
 		}
+		// (par_notexp) type-only lists still materialize type forwards;
+		// the value edge below is guarded by !ed.IsTypeOnly, so a
+		// type-only export can never flip a function harvest to exported.
 		if ed.ModuleSpecifier != nil {
 			spec, edges, star := saProgReexpEdges(st)
+			if ed.IsTypeOnly {
+				spec, edges, star = saProgReexpEdgesType(st)
+			}
 			if spec == "" || star || len(edges) == 0 {
 				continue
 			}
@@ -686,6 +692,9 @@ func saMaterializeTypeForwards(sf *ast.SourceFile, link *saFileLink, classes map
 			continue
 		}
 		edges, star := saProgLocalEdges(st)
+		if ed.IsTypeOnly {
+			edges, star = saProgLocalEdgesType(st)
+		}
 		if star || len(edges) == 0 {
 			continue
 		}
@@ -710,13 +719,16 @@ func saMaterializeTypeForwards(sf *ast.SourceFile, link *saFileLink, classes map
 			}
 			// 值边认领：同件 harvest 翻 export 旗（函数/箭头 defLocal/isArrow 透传；d1/d3 实证；
 			// default 名缺 defLocal 时补本地名，否则 chase 拒绝）。
-			if hv, ok := link.harvest[local]; ok {
-				hv.exported = true
-				if hv.defLocal == "" {
-					hv.defLocal = local
+			// (par_notexp) type-only 名单不走值边：纯类型转发不得导出值。
+			if !ed.IsTypeOnly {
+				if hv, ok := link.harvest[local]; ok {
+					hv.exported = true
+					if hv.defLocal == "" {
+						hv.defLocal = local
+					}
+					link.harvest[exported] = hv
+					continue
 				}
-				link.harvest[exported] = hv
-				continue
 			}
 		}
 	}
@@ -988,6 +1000,58 @@ func saProgReexpEdges(st *ast.Node) (string, map[string]string, bool) {
 	return spec, edges, false
 }
 
+// saProgReexpEdgesType is the type-forwarding variant of saProgReexpEdges,
+// used ONLY by saMaterializeTypeForwards: `export type {...} from "spec"`
+// lists are invisible to the value-edge parser (IsTypeOnly early return),
+// so without this variant no type-only from-list ever materializes.
+// Specifier-level IsTypeOnly members are included (they are type members
+// by construction); star forms still report star=true and are skipped by
+// the caller, exactly like the value parser.
+func saProgReexpEdgesType(st *ast.Node) (string, map[string]string, bool) {
+	ed := st.AsExportDeclaration()
+	if ed == nil {
+		return "", nil, false
+	}
+	ms := ed.ModuleSpecifier
+	if ms == nil || ms.Kind != ast.KindStringLiteral {
+		return "", nil, false
+	}
+	spec := ms.Text()
+	if ed.ExportClause == nil {
+		return spec, nil, true
+	}
+	if ed.ExportClause.Kind == ast.KindNamespaceExport {
+		return spec, nil, true
+	}
+	if ed.ExportClause.Kind != ast.KindNamedExports {
+		return spec, nil, true
+	}
+	ne := ed.ExportClause.AsNamedExports()
+	if ne == nil || ne.Elements == nil {
+		return spec, nil, false
+	}
+	edges := map[string]string{}
+	for _, n := range ne.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindExportSpecifier {
+			continue
+		}
+		sp := n.AsExportSpecifier()
+		if sp == nil {
+			continue
+		}
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		remote := nm.Text()
+		if pn := sp.PropertyNameOrName(); pn != nil && pn.Kind == ast.KindIdentifier {
+			remote = pn.Text()
+		}
+		edges[nm.Text()] = remote
+	}
+	return spec, edges, false
+}
+
 // saProgLocalEdges parses `export {a [, b as c]}` (no from) into
 // exported->local edges (star/empty/absent yield nil, true).
 func saProgLocalEdges(st *ast.Node) (map[string]string, bool) {
@@ -1009,6 +1073,50 @@ func saProgLocalEdges(st *ast.Node) (map[string]string, bool) {
 		}
 		sp := n.AsExportSpecifier()
 		if sp == nil || sp.IsTypeOnly {
+			continue
+		}
+		nm := n.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		local := nm.Text()
+		if pn := sp.PropertyNameOrName(); pn != nil && pn.Kind == ast.KindIdentifier {
+			local = pn.Text()
+		}
+		edges[nm.Text()] = local
+	}
+	if len(edges) == 0 {
+		return nil, true
+	}
+	return edges, false
+}
+
+// saProgLocalEdgesType is the type-forwarding variant of saProgLocalEdges,
+// used ONLY by saMaterializeTypeForwards: `export type {...}` local lists
+// are invisible to the value-edge parser (IsTypeOnly rejection), so without
+// this variant no type-only local list ever materializes. Specifier-level
+// IsTypeOnly members are included; the value edge in the materializer stays
+// guarded by !ed.IsTypeOnly, so a type-only list can never flip a value
+// harvest to exported.
+func saProgLocalEdgesType(st *ast.Node) (map[string]string, bool) {
+	ed := st.AsExportDeclaration()
+	if ed == nil || ed.ModuleSpecifier != nil {
+		return nil, true
+	}
+	if ed.ExportClause == nil || ed.ExportClause.Kind != ast.KindNamedExports {
+		return nil, true
+	}
+	ne := ed.ExportClause.AsNamedExports()
+	if ne == nil || ne.Elements == nil {
+		return nil, true
+	}
+	edges := map[string]string{}
+	for _, n := range ne.Elements.Nodes {
+		if n == nil || n.Kind != ast.KindExportSpecifier {
+			continue
+		}
+		sp := n.AsExportSpecifier()
+		if sp == nil {
 			continue
 		}
 		nm := n.Name()
@@ -2322,6 +2430,21 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					link.topArrSeed[local] = claim
 					continue
 				}
+			} else if starTgt, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+				_, ok := link.topArrHarvests[t][r]
+				return ok
+			}); ok {
+				// (par_notexp) star 转发顶层数组快照：直接认领缺席时才走星边
+				// （直接认领存在但播种失败仍大声拒，不静默取星边同名值）。
+				if claim, ok := link.topArrHarvests[starTgt][remote]; ok {
+					if saSeedTopLayouts(link, starTgt, claim.layout) {
+						if link.topArrSeed == nil {
+							link.topArrSeed = map[string]saTopArr{}
+						}
+						link.topArrSeed[local] = claim
+						continue
+					}
+				}
 			}
 			if claim, ok := link.topObjHarvests[tgt][remote]; ok {
 				roots := []string{claim.layout}
@@ -2335,6 +2458,24 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					link.topObjSeed[local] = claim
 					continue
 				}
+			} else if starTgt, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+				_, ok := link.topObjHarvests[t][r]
+				return ok
+			}); ok {
+				// (par_notexp) star 转发顶层对象快照（同上：仅直接认领缺席时）。
+				if claim, ok := link.topObjHarvests[starTgt][remote]; ok {
+					roots := []string{claim.layout}
+					for _, l := range claim.arrLayouts {
+						roots = append(roots, l)
+					}
+					if saSeedTopLayouts(link, starTgt, roots...) {
+						if link.topObjSeed == nil {
+							link.topObjSeed = map[string]saTopObj{}
+						}
+						link.topObjSeed[local] = claim
+						continue
+					}
+				}
 			}
 			if claim, ok := link.topRegexHarvests[tgt][remote]; ok {
 				if link.topRegexSeed == nil {
@@ -2342,6 +2483,18 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				}
 				link.topRegexSeed[local] = claim
 				continue
+			} else if starTgt, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+				_, ok := link.topRegexHarvests[t][r]
+				return ok
+			}); ok {
+				// (par_notexp) star 转发顶层正则快照（同上）。
+				if claim, ok := link.topRegexHarvests[starTgt][remote]; ok {
+					if link.topRegexSeed == nil {
+						link.topRegexSeed = map[string]saTopRegex{}
+					}
+					link.topRegexSeed[local] = claim
+					continue
+				}
 			}
 			if claim, ok := link.topMapHarvests[tgt][remote]; ok {
 				if link.topMapSeed == nil {
@@ -2349,6 +2502,18 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 				}
 				link.topMapSeed[local] = claim
 				continue
+			} else if starTgt, ok := saProgStarTarget(link, tgt, remote, map[string]bool{}, func(t, r string) bool {
+				_, ok := link.topMapHarvests[t][r]
+				return ok
+			}); ok {
+				// (par_notexp) star 转发顶层 Map 快照（同上）。
+				if claim, ok := link.topMapHarvests[starTgt][remote]; ok {
+					if link.topMapSeed == nil {
+						link.topMapSeed = map[string]saTopMap{}
+					}
+					link.topMapSeed[local] = claim
+					continue
+				}
 			}
 			// Bare-star shim fallback (JEV type_harvest_only, both_packages):
 			// a name missing from its target's harvests may still resolve
@@ -2787,6 +2952,55 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		defs, dexprs := saFuncDefaultTables(nodes)
 		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
 	}
+	// 预扫二c：memo/forwardRef 包装 `const M = memo(fn|Impl)` 按 const 名记调用
+	// 签名（JEV memo_lower：包装透明，内层签名即 const 签名；函数表达式/箭头
+	// 参沿箭头预扫同规则算签，标识符参复用本件函数签名；未记名函数参不入表，
+	// 发射位沿旧拒）。重名同门大声拒。
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		name, inner, ok := saIsMemoConst(st)
+		if !ok {
+			continue
+		}
+		if _, dup := funcs[name]; dup {
+			ln, col := pos(st.Pos())
+			refusals = append(refusals, SARefusal{Line: ln, Col: col, Msg: "duplicate function " + name})
+			continue
+		}
+		if inner.Kind == ast.KindIdentifier {
+			if sig, ok := funcs[inner.Text()]; ok {
+				funcs[name] = sig
+			}
+			continue
+		}
+		var nodes []*ast.Node
+		if pl := inner.ParameterList(); pl != nil {
+			nodes = pl.Nodes
+		}
+		nparams := len(nodes)
+		isVoid := false
+		retKind := ""
+		if saArrowReturnNode(inner) == nil {
+			if ab := inner.Body(); ab != nil && (ab.Kind != ast.KindBlock || nparams > 0) {
+				retKind, isVoid = "i32", false
+			} else if k, v, ok := saPrescanRet(nil, inner, tcx, classes, aliasOf); ok {
+				retKind = k
+				isVoid = v
+			}
+		} else if k, v, ok := saPrescanRet(saArrowReturnNode(inner), inner, tcx, classes, aliasOf); ok {
+			retKind = k
+			isVoid = v
+		}
+		var pk []string
+		if _, kinds, _, ok := saSynthArrowParams(inner, classes, aliasOf, enums); ok {
+			if names, ok := saArrowParamNames(inner); ok {
+				for _, n := range names {
+					pk = append(pk, kinds[n])
+				}
+			}
+		}
+		defs, dexprs := saFuncDefaultTables(nodes)
+		funcs[name] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs}
+	}
 	// Program hook A: harvest own top-level functions (+export flags) for
 	// dependents; seed qualified signatures from defining files. Leaves
 	// lower first (dependency order) so harvests exist when needed.
@@ -2831,6 +3045,13 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					link.harvest[name] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), isArrow: true}
 				}
 			}
+			// (par_notexp) memo 包装收割：const 名即调用名，签名来自预扫二c；
+			// 未入签名表者（非函数参）不收，导入方沿未导出门拒。
+			if name, _, ok := saIsMemoConst(st); ok {
+				if sig, ok := funcs[name]; ok {
+					link.harvest[name] = saProgFunc{sig: sig, exported: ast.HasModifier(st, ast.ModifierFlagsExport), isArrow: true}
+				}
+			}
 			// CommonJS 导出形状收割（`module.exports = {a}` / `exports.a = a`）：
 			// 导出名即本地名（改名形不收——发射名是本地名，导入方的限定被调
 			// 解析不到，禁静默错码）；值函数经函数表取签名。
@@ -2858,6 +3079,21 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if st.Kind == ast.KindClassDeclaration || st.Kind == ast.KindInterfaceDeclaration {
 				if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 					if def, ok := classes[nm.Text()]; ok && def != nil {
+						if link.classHarvest == nil {
+							link.classHarvest = map[string]saProgClass{}
+						}
+						link.classHarvest[nm.Text()] = saProgClass{def: def, exported: ast.HasModifier(st, ast.ModifierFlagsExport)}
+					}
+				}
+			}
+			// (par_notexp) 对象字面量别名布局收割：saRecordTypeAlias 已将
+			// `type P = {...}` 记为 isIface 布局；未入 classHarvest 时，跨文件
+			// 顶层对象快照播种 (saSeedTopLayouts) 查不到布局而落空，导入方
+			// 沿未导出门拒。仅 isIface 别名入表（标量/联合别名无布局，不收），
+			// export 旗与类/接口同律；类型侧仍走 aliasHarvest，不改。
+			if st.Kind == ast.KindTypeAliasDeclaration {
+				if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+					if def, ok := classes[nm.Text()]; ok && def != nil && def.isIface {
 						if link.classHarvest == nil {
 							link.classHarvest = map[string]saProgClass{}
 						}
@@ -2906,7 +3142,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	assigned := saAssignedNames(sf.AsSourceFile().Statements.Nodes)
 	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
 	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
-	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned, aliasOf)
+	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned, aliasOf, topArrs)
 	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned, topArrs)
 	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned, link)
@@ -3493,6 +3729,45 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 				emitted[name] = true
 				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
+			}
+			// (par_notexp) memo 包装发射：内层函数体按 const 名发射（JEV
+			// memo_lower）。函数表达式/箭头参直发；标识符参查本件定义句：
+			// 函数声明句直发其体（原声明句另按本名正常发射，纯定义复发
+			// 语义惰性），箭头 const 句发其内层；查无定义句时不认领，
+			// 落下沿 kind244 大声拒。
+			if name, inner, ok := saIsMemoConst(st); ok {
+				emitNode := inner
+				if inner.Kind == ast.KindIdentifier {
+					if _, ok2 := funcs[name]; !ok2 {
+						emitNode = nil
+					} else {
+						emitNode = nil
+						for _, dst := range sf.AsSourceFile().Statements.Nodes {
+							if dst == nil {
+								continue
+							}
+							if dst.Kind == ast.KindFunctionDeclaration {
+								if fn := dst.AsFunctionDeclaration(); fn != nil && fn.Body != nil {
+									if nm := dst.Name(); nm != nil && nm.Kind == ast.KindIdentifier && nm.Text() == inner.Text() {
+										emitNode = dst
+										break
+									}
+								}
+							} else if an, arrowNode, ok3 := saIsTopLevelArrowConst(dst); ok3 && an == inner.Text() {
+								emitNode = arrowNode
+								break
+							}
+						}
+					}
+				}
+				if emitNode != nil {
+					if emitted[name] {
+						continue
+					}
+					emitted[name] = true
+					saLowerArrowConst(w, name, emitNode, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+					continue
+				}
 			}
 			// 顶层纯量已在预扫折叠（无码；部分纯洁落下拒）。
 			if handledTop[st] {
@@ -5270,19 +5545,24 @@ type saLoop struct {
 // 绑定时落子，语句终结随语句消亡；串行复用合法，同名嵌套拒；形状证据：封存
 // labels.go:1-58）。
 type saScope struct {
-	types       map[string]string
-	loops       []saLoop
-	labels      map[string]saLoop
-	pending     []string
-	mathAlias   map[string]string
-	funcs       map[string]saFuncSig
-	enums       map[string]map[string]int64
-	enumNonInt  map[string]map[string]bool
-	classes     map[string]*saClassDef
-	topConsts   map[string]string
-	topStr      map[string]bool
-	topArrs     map[string]saTopArr   // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
-	topObjs     map[string]saTopObj   // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
+	types      map[string]string
+	loops      []saLoop
+	labels     map[string]saLoop
+	pending    []string
+	mathAlias  map[string]string
+	funcs      map[string]saFuncSig
+	enums      map[string]map[string]int64
+	enumNonInt map[string]map[string]bool
+	classes    map[string]*saClassDef
+	topConsts  map[string]string
+	topStr     map[string]bool
+	topArrs    map[string]saTopArr // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
+	topObjs    map[string]saTopObj // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
+	// topObjClaim is the claim whose init is currently being lowered
+	// (par_notexp, JEV idfield_snapshot): saLowerObjectLiteral consults
+	// it for identifier fields resolved at prescan time; nil outside a
+	// claim lowering, save/restored around every claim recursion.
+	topObjClaim *saTopObj
 	topRegex    map[string]saTopRegex // 顶层 const 正则快照（名→原始模式/旗标；用点编译）
 	topSets     map[string]saTopSet   // 顶层 const Set 快照（名→ new 表达式；.has 用点物化；变异/导出形不收）
 	topMaps     map[string]saTopMap   // 顶层 const Record 快照（名→字面量 + 值种；下标用点物化）
@@ -7050,6 +7330,15 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			if st.Kind == ast.KindExportDeclaration {
 				spec, edges, star := saProgReexpEdges(st)
 				if spec == "" {
+					// (par_notexp) 类型重导出 `export type {...} from` 在值
+					// 解析器下 spec 为空而整句丢边：改走类型变体取边，
+					// 仍走类型解析器（typeOnly=true，不链运行时文件），
+					// 供物化查表；值边 reexpOf 仍不记（见下）。
+					if ed := st.AsExportDeclaration(); ed != nil && ed.IsTypeOnly {
+						spec, edges, star = saProgReexpEdgesType(st)
+					}
+				}
+				if spec == "" {
 					continue
 				}
 				// 纯类型重导出（`export type *` / 无值成员）走类型解析器，
@@ -7075,11 +7364,17 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 				if len(edges) == 0 {
 					continue
 				}
-				if reexpOf[p] == nil {
-					reexpOf[p] = map[string]string{}
-				}
-				for exported, remote := range edges {
-					reexpOf[p][exported] = tgt + "\x00" + remote
+				// (par_notexp) 类型重导出不记值边：`export type` 不重导出值，
+				// 值 chase (saProgChase) 须对其失明，否则同名类型+值并存时
+				// 值导入会经类型边静默链到定义文件。既有无值成员形
+				// (edges 为空) 下此循环本就是空操作，守恒。
+				if !typeOnly {
+					if reexpOf[p] == nil {
+						reexpOf[p] = map[string]string{}
+					}
+					for exported, remote := range edges {
+						reexpOf[p][exported] = tgt + "\x00" + remote
+					}
 				}
 				continue
 			}

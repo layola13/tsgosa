@@ -2099,6 +2099,11 @@ func saTopArrElemText(el *ast.Node) (string, bool) {
 	if el == nil {
 		return "", false
 	}
+	// (par_notexp) `as const`/括号等透明包装不改字面量种：先解包再分类。
+	el = saUnwrapTransparent(el)
+	if el == nil {
+		return "", false
+	}
 	switch el.Kind {
 	case ast.KindOmittedExpression:
 		return "0", true
@@ -2132,7 +2137,34 @@ func saTopArrElemText(el *ast.Node) (string, bool) {
 }
 
 // saTopArrStrText 取顶层数组串元源文本（串字面量/无替换模板原样；余形 false）。
+// saTopFloatText 抽取浮点字面量文本（透明解包；整数恒拒，由 ElemText
+// 认；负号经前缀一元；JEV float_f64 0.93：顶对象浮点域 f64 化）。
+func saTopFloatText(el *ast.Node) (string, bool) {
+	u := saUnwrapTransparent(el)
+	if u == nil {
+		return "", false
+	}
+	if u.Kind == ast.KindNumericLiteral && saIsFloatLit(u.Text()) {
+		return u.Text(), true
+	}
+	if u.Kind == ast.KindPrefixUnaryExpression {
+		if un := u.AsPrefixUnaryExpression(); un != nil && un.Operand != nil && un.Operand.Kind == ast.KindNumericLiteral && saIsFloatLit(un.Operand.Text()) && (un.Operator == ast.KindMinusToken || un.Operator == ast.KindPlusToken) {
+			sign := "+"
+			if un.Operator == ast.KindMinusToken {
+				sign = "-"
+			}
+			return sign + un.Operand.Text(), true
+		}
+	}
+	return "", false
+}
+
 func saTopArrStrText(el *ast.Node) (string, bool) {
+	if el == nil {
+		return "", false
+	}
+	// (par_notexp) 同上：透明包装不改串字面量种。
+	el = saUnwrapTransparent(el)
 	if el == nil {
 		return "", false
 	}
@@ -7290,6 +7322,24 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 					t := fmt.Sprintf("t_%d", *nextTemp)
 					*nextTemp++
 					w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+					return t, ""
+				}
+			}
+		}
+		// 顶层对象标识符数组域基（`shadows.light`：外层认领物
+		// 化后读 arr 域；par_notexp, JEV idfield_snapshot；外层柄
+		// 归属沿域外释放口径，域柄为借用读，与上门同形）。
+		if pa.Name() != nil && pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if to, ok := saTopObjLookup(scope, pa.Expression); ok {
+				if def, ok2 := scope.classes[to.layout]; ok2 && def != nil && def.fkinds[pa.Name().Text()] == "arr" {
+					h, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
 					return t, ""
 				}
 			}
