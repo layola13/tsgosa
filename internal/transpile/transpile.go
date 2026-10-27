@@ -5753,6 +5753,14 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 			cands = append(cands, strings.TrimSuffix(base, ".js")+".ts")
 		}
 		for _, cand := range cands {
+			// 逐字候选（spec 原文）只收代码文件（.ts/.tsx/.js 系）；资源
+			// 导入（.json/.css 等）不得以 TS 源码纳入——否则 JSON 文本
+			// 被当 TS 降，徒增顶层语句拒收，且 JSON 导入的默认绑定
+			// 永远链不上（JEV nested_json_maps 的 jsonOf 路径读表，
+			// 不走程序文件）。其余候选自带代码扩展，无需再滤。
+			if cand == base && !saIsTSPath(cand) && !saIsJSPath(cand) && !strings.HasSuffix(cand, ".tsx") {
+				continue
+			}
 			kind := core.ScriptKindTS
 			if strings.HasSuffix(cand, ".tsx") {
 				kind = core.ScriptKindTSX
