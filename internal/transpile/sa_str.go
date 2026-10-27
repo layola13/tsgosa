@@ -399,6 +399,13 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 				}
 			}
 		}
+		// i32 `toString()` 即串返回（与 saIsStrExpr 的 toString 门同律；
+		// JEV widen_call_base：调用位经 saEvalStr 时亦须认串，否则
+		// 模板/拼接位在已求值后仍以 non-string 拒）。
+		if pa.Name() != nil && pa.Name().Text() == "toString" && pa.QuestionDotToken == nil &&
+			saIsToStringableI32(pa.Expression, scope) {
+			return true
+		}
 		return false
 	}
 	// i32 `toString()` 即串返回（`String(x)` interp 同形；可证 i32 门内聚）。
@@ -1783,6 +1790,12 @@ func saIsToStringableI32(e *ast.Node, scope *saScope) bool {
 			return saIsToStringableI32(ue.Operand, scope)
 		}
 		return false
+	case ast.KindCallExpression:
+		// Call-result receivers (JEV widen_call_base, 2026-10-27, conf
+		// 0.98): Math.round(3.7).toString(), seven().toString(). The
+		// saLowerStrCall toString arm already evaluates its receiver
+		// through generic saEvalI32, so only this gate blocked it.
+		return saCallIsI32(e.AsCallExpression(), scope)
 	case ast.KindBinaryExpression:
 		be := e.AsBinaryExpression()
 		if be.OperatorToken == nil {
@@ -1797,6 +1810,46 @@ func saIsToStringableI32(e *ast.Node, scope *saScope) bool {
 			return saIsToStringableI32(be.Left, scope) && saIsToStringableI32(be.Right, scope)
 		}
 		return false
+	}
+	return false
+}
+
+// saCallIsI32 reports whether a call provably returns i32, using only
+// existing return-kind gates (pure lookup, no evaluation, no emission).
+// Math min/max are excluded: either float side forces the f64 branch.
+// Instance methods use the same lookup the method-call path uses.
+func saCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil {
+		return false
+	}
+	if k, ok := saCallRetKind(ce, scope); ok && k == "i32" {
+		return true
+	}
+	if k, ok := saArrCallRet(ce, scope); ok && k == "i32" {
+		return true
+	}
+	if saStrCallIsI32(ce, scope) {
+		return true
+	}
+	if ce.Expression.Kind == ast.KindIdentifier && ce.Expression.Text() == "parseInt" {
+		return true
+	}
+	if ce.Expression.Kind == ast.KindPropertyAccessExpression {
+		pa := ce.Expression.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil {
+			return false
+		}
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && pa.Expression.Text() == "Math" {
+			switch pa.Name().Text() {
+			case "abs", "floor", "ceil", "round", "trunc":
+				return true
+			}
+		}
+		if mn, ok := saLookupMethod(pa.Expression, pa.Name().Text(), scope); ok {
+			if k, ok := saMethodReturnKind(mn); ok && k == "i32" {
+				return true
+			}
+		}
 	}
 	return false
 }
