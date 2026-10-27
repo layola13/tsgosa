@@ -485,21 +485,36 @@ func saJsGroupMapping(pat string) []int {
 			continue
 		}
 		if c == '[' {
-			i++
-			if i < len(pat) && pat[i] == '^' {
+			inner, neg, end, ok := saRegexClassInner(pat, i)
+			if !ok {
 				i++
-			}
-			if i < len(pat) && pat[i] == ']' {
-				i++
-			}
-			for i < len(pat) && pat[i] != ']' {
-				if pat[i] == '\\' {
+				if i < len(pat) && pat[i] == '^' {
 					i++
 				}
-				i++
+				if i < len(pat) && pat[i] == ']' {
+					i++
+				}
+				for i < len(pat) && pat[i] != ']' {
+					if pat[i] == '\\' {
+						i++
+					}
+					i++
+				}
+				continue
 			}
+			if !neg {
+				act, _, ok2 := saRegexClassAction(inner, false)
+				if !ok2 {
+					return nil
+				}
+				if act == 2 {
+					posix++
+				}
+			}
+			i = end
 			continue
 		}
+
 		if c != '(' {
 			continue
 		}
@@ -532,6 +547,249 @@ func saPatternTextForMatch(e *ast.Node, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saRegexClassInner extracts one bracket expression starting at pat[open] == '['.
+// Returns the inner text (without brackets and without a leading ^), whether
+// the class is negated, the index of the closing ']', and ok=false when the
+// class is unterminated. A ']' immediately after '[' or '[^' is a literal
+// member, not the close (POSIX/JS rule).
+func saRegexClassInner(pat string, open int) (string, bool, int, bool) {
+	i := open + 1
+	neg := false
+	if i < len(pat) && pat[i] == '^' {
+		neg = true
+		i++
+	}
+	start := i
+	if i < len(pat) && pat[i] == ']' {
+		i++
+	}
+	for i < len(pat) {
+		if pat[i] == '\\' {
+			i += 2
+			continue
+		}
+		if pat[i] == ']' {
+			return pat[start:i], neg, i, true
+		}
+		i++
+	}
+	return "", false, 0, false
+}
+
+// saByteSet is a set of pattern bytes (ASCII domain).
+type saByteSet [256]bool
+
+func saRegexBaseSet(k byte) saByteSet {
+	var s saByteSet
+	switch k {
+	case 'd', 'D':
+		for c := byte('0'); c <= '9'; c++ {
+			s[c] = true
+		}
+	case 's', 'S':
+		for _, c := range []byte{9, 10, 11, 12, 13, 32} {
+			s[c] = true
+		}
+	case 'w', 'W':
+		for c := byte('0'); c <= '9'; c++ {
+			s[c] = true
+		}
+		for c := byte('A'); c <= 'Z'; c++ {
+			s[c] = true
+		}
+		for c := byte('a'); c <= 'z'; c++ {
+			s[c] = true
+		}
+		s['_'] = true
+	}
+	return s
+}
+
+type saClassItem struct {
+	isSet bool
+	set   byte
+	ch    byte
+}
+
+// saRegexClassAction analyzes one positive class inner text.
+// Returns action 0 = keep the old per-char mapping (no negated escapes),
+// 1 = emit out (a complement bracket), 2 = emit the anychar alternation.
+// ok=false means refuse (non-ASCII bytes with negated escapes, a [: sequence
+// that POSIX would reinterpret as a named class, or NUL in the result).
+// Rule: class value = complement(N \ P) where N is the intersection of the
+// negated bases and P is the union of positive sets and literal members.
+// N \ P empty means the class matches every character.
+func saRegexClassAction(inner string, negated bool) (int, string, bool) {
+	if negated {
+		return 0, "", false
+	}
+	if strings.Contains(inner, "[:") {
+		return 0, "", false
+	}
+	var items []saClassItem
+	nonASCII := false
+	for i := 0; i < len(inner); {
+		c := inner[i]
+		if c >= 0x80 {
+			nonASCII = true
+		}
+		if c == '\\' && i+1 < len(inner) {
+			n := inner[i+1]
+			switch n {
+			case 'd', 's', 'w', 'D', 'S', 'W':
+				items = append(items, saClassItem{isSet: true, set: n})
+			default:
+				items = append(items, saClassItem{ch: n})
+			}
+			i += 2
+			continue
+		}
+		items = append(items, saClassItem{ch: c})
+		i++
+	}
+	var neg []byte
+	var pos saByteSet
+	var lit saByteSet
+	for idx := 0; idx < len(items); {
+		it := items[idx]
+		if it.isSet {
+			if it.set == 'd' || it.set == 's' || it.set == 'w' {
+				b := saRegexBaseSet(it.set)
+				for c := 0; c < 256; c++ {
+					pos[c] = pos[c] || b[c]
+				}
+			} else {
+				neg = append(neg, it.set)
+			}
+			idx++
+			continue
+		}
+		if idx+2 < len(items) && !items[idx+1].isSet && items[idx+1].ch == '-' && !items[idx+2].isSet {
+			lo, hi := it.ch, items[idx+2].ch
+			if lo <= hi {
+				for c := lo; ; c++ {
+					lit[c] = true
+					if c == hi {
+						break
+					}
+				}
+				idx += 3
+				continue
+			}
+		}
+		lit[it.ch] = true
+		idx++
+	}
+	if len(neg) == 0 {
+		return 0, "", true
+	}
+	if nonASCII {
+		return 0, "", false
+	}
+	nset := saRegexBaseSet(neg[0])
+	for _, k := range neg[1:] {
+		b := saRegexBaseSet(k)
+		for c := 0; c < 256; c++ {
+			nset[c] = nset[c] && b[c]
+		}
+	}
+	var r saByteSet
+	empty := true
+	for c := 0; c < 256; c++ {
+		if nset[c] && !pos[c] && !lit[c] {
+			r[c] = true
+			empty = false
+		}
+	}
+	if empty {
+		return 2, "", true
+	}
+	if r[0] {
+		return 0, "", false
+	}
+	if r == saRegexBaseSet('d') {
+		return 1, "[^[:digit:]]", true
+	}
+	if r == saRegexBaseSet('s') {
+		return 1, "[^[:space:]]", true
+	}
+	if r == saRegexBaseSet('w') {
+		return 1, "[^[:alnum:]_]", true
+	}
+	return 1, saRegexBuildBracket(r), true
+}
+
+// saRegexBuildBracket emits a complement bracket for r. ']' goes first
+// (literal there), '^' not first (literal), backslash is a literal byte in
+// POSIX brackets, '-' goes last (literal). Ranges cover only bytes outside
+// that special set, so no range endpoint can be misread.
+func saRegexBuildBracket(r saByteSet) string {
+	var b strings.Builder
+	b.WriteString("[^")
+	if r[']'] {
+		b.WriteByte(']')
+	}
+	isSpecial := func(c byte) bool {
+		return c == ']' || c == '-' || c == '\\' || c == '^'
+	}
+	c := 1
+	for c < 256 {
+		if r[byte(c)] && !isSpecial(byte(c)) {
+			lo := c
+			for c < 256 && r[byte(c)] && !isSpecial(byte(c)) {
+				c++
+			}
+			hi := c - 1
+			if lo == hi {
+				b.WriteByte(byte(lo))
+			} else {
+				b.WriteByte(byte(lo))
+				b.WriteByte('-')
+				b.WriteByte(byte(hi))
+			}
+		} else {
+			c++
+		}
+	}
+	if r['^'] {
+		b.WriteByte('^')
+	}
+	if r['\\'] {
+		b.WriteByte('\\')
+	}
+	if r['-'] {
+		b.WriteByte('-')
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// saRegexMapClassInner applies the old per-char mapping to one class inner
+// text: positive d/s/w escapes become POSIX class expressions, everything
+// else passes through unchanged.
+func saRegexMapClassInner(b *strings.Builder, inner string) {
+	for j := 0; j < len(inner); {
+		if inner[j] == '\\' && j+1 < len(inner) {
+			n := inner[j+1]
+			switch n {
+			case 'd':
+				b.WriteString("[:digit:]")
+			case 's':
+				b.WriteString("[:space:]")
+			case 'w':
+				b.WriteString("[:alnum:]_")
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(n)
+			}
+			j += 2
+			continue
+		}
+		b.WriteByte(inner[j])
+		j++
+	}
+}
+
 // saRegexPosixRewrite projects JS regex to POSIX ERE, ASCII only (JEV project_ascii_only):
 // (?: -> ( outside classes, \d/\s/\w to POSIX character classes outside
 // classes ([[:digit:]] / [[:space:]] / [[:alnum:]_] and negations), and to
@@ -539,107 +797,303 @@ func saPatternTextForMatch(e *ast.Node, scope *saScope) (string, bool) {
 // Negated escapes inside a class have no simple projection and are refused
 // by saRegexGatePattern before this runs, so they cannot occur here.
 // Other escapes (\., \[, \\, etc.) pass through unchanged.
-func saRegexPosixRewrite(pat string) string {
+// saRegexPosixRewrite projects JS regex to POSIX ERE, ASCII only (JEV project_ascii_only):
+// (?: -> ( outside classes, \d/\s/\w to POSIX character classes outside
+// classes ([[:digit:]] / [[:space:]] / [[:alnum:]_] and negations), and to
+// class expressions inside classes ([:digit:] / [:space:] / [:alnum:]_).
+// Word boundaries \b \B outside classes pass through unchanged: glibc
+// regcomp (used by both SA runtimes) accepts them with JS semantics; the
+// gate still refuses them inside classes. Negated escapes inside a positive
+// class are analyzed by saRegexClassAction: complement pairs and
+// complement-minus-literals become complement brackets, and a class whose
+// value is every character becomes the anychar alternation (.|LF) with one
+// literal newline byte (verified: glibc accepts it and it matches LF and
+// ordinary chars under both REG_NEWLINE and non-NEWLINE modes). The
+// anychar alternation adds one POSIX group; saJsGroupMapping counts it.
+// Returns ("", msg) when a class has no projection.
+func saRegexPosixRewrite(pat string) (string, string) {
 	var b strings.Builder
-	inClass := false
-	for i := 0; i < len(pat); i++ {
+	for i := 0; i < len(pat); {
 		c := pat[i]
 		if c == '\\' && i+1 < len(pat) {
 			n := pat[i+1]
-			if inClass {
-				switch n {
-				case 'd':
-					b.WriteString("[:digit:]")
-				case 's':
-					b.WriteString("[:space:]")
-				case 'w':
-					b.WriteString("[:alnum:]_")
-				default:
-					b.WriteByte(c)
-					b.WriteByte(n)
-				}
-			} else {
-				switch n {
-				case 'd':
-					b.WriteString("[[:digit:]]")
-				case 'D':
-					b.WriteString("[^[:digit:]]")
-				case 's':
-					b.WriteString("[[:space:]]")
-				case 'S':
-					b.WriteString("[^[:space:]]")
-				case 'w':
-					b.WriteString("[[:alnum:]_]")
-				case 'W':
-					b.WriteString("[^[:alnum:]_]")
-				default:
-					b.WriteByte(c)
-					b.WriteByte(n)
-				}
+			switch n {
+			case 'd':
+				b.WriteString("[[:digit:]]")
+			case 'D':
+				b.WriteString("[^[:digit:]]")
+			case 's':
+				b.WriteString("[[:space:]]")
+			case 'S':
+				b.WriteString("[^[:space:]]")
+			case 'w':
+				b.WriteString("[[:alnum:]_]")
+			case 'W':
+				b.WriteString("[^[:alnum:]_]")
+			default:
+				b.WriteByte(c)
+				b.WriteByte(n)
 			}
-			i++
-			continue
-		}
-		if c == '[' && !inClass {
-			inClass = true
-			b.WriteByte(c)
-			continue
-		}
-		if c == ']' && inClass {
-			inClass = false
-			b.WriteByte(c)
-			continue
-		}
-		if c == '(' && !inClass && i+2 < len(pat) && pat[i+1] == '?' && pat[i+2] == ':' {
-			b.WriteByte('(')
 			i += 2
 			continue
 		}
+		if c == '[' {
+			inner, neg, end, ok := saRegexClassInner(pat, i)
+			if !ok {
+				b.WriteByte(c)
+				i++
+				continue
+			}
+			if neg {
+				b.WriteByte('[')
+				b.WriteByte('^')
+				saRegexMapClassInner(&b, inner)
+				b.WriteByte(']')
+				i = end + 1
+				continue
+			}
+			act, out, ok2 := saRegexClassAction(inner, false)
+			if !ok2 {
+				return "", "RegExp character class has no POSIX projection"
+			}
+			switch act {
+			case 0:
+				b.WriteByte('[')
+				saRegexMapClassInner(&b, inner)
+				b.WriteByte(']')
+			case 1:
+				b.WriteString(out)
+			case 2:
+				b.WriteString("(.|\n)")
+			}
+			i = end + 1
+			continue
+		}
+		if c == '(' && i+2 < len(pat) && pat[i+1] == '?' && pat[i+2] == ':' {
+			b.WriteByte('(')
+			i += 3
+			continue
+		}
 		b.WriteByte(c)
+		i++
 	}
-	return b.String()
+	return b.String(), ""
 }
 
-// saRegexGatePattern 查 JS 特有写法（超 POSIX-ERE 即拒因；"" 为过）。
-// (?: 允许（见 saRegexPosixRewrite）；(?= (? ! (?< (?P< 等前瞻/命名组仍拒。
+// saRegexGatePattern checks JS-only constructs (over POSIX-ERE => refuse; "" passes).
+// (?: is allowed (see saRegexPosixRewrite); (?= (?! (?< (?P< lookahead/named groups still refuse.
+// Word boundaries outside classes are allowed (glibc regcomp passthrough; see
+// saRegexPosixRewrite notes); inside a class they still refuse (JS backspace meaning).
+// Negated escapes inside a positive class are allowed (rewrite handles them);
+// inside a negated class [^...] they still refuse.
 func saRegexGatePattern(pat string) string {
 	inClass := false
-	for i := 0; i < len(pat); i++ {
+	classNeg := false
+	for i := 0; i < len(pat); {
 		if pat[i] == 0 {
 			return "RegExp NUL byte has no sa_std/text/regex projection"
 		}
 		if pat[i] == '\\' && i+1 < len(pat) {
 			n := pat[i+1]
-			if inClass && (n == 'D' || n == 'S' || n == 'W') {
-				return "RegExp \\" + string([]byte{n}) + " inside a character class has no POSIX projection"
+			if inClass && (n == 'b' || n == 'B') {
+				return "RegExp backslash-" + string([]byte{n}) + " inside a character class has no POSIX projection (JS backspace meaning)"
+			}
+			if inClass && classNeg && (n == 'D' || n == 'S' || n == 'W') {
+				return "RegExp backslash-" + string([]byte{n}) + " inside a negated character class has no POSIX projection"
 			}
 			switch n {
-			case 'b', 'B', 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			case 'p', 'P', 'u', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 				return string("RegExp \\") + string([]byte{n}) + " needs POSIX ERE (no JS escape classes/backrefs)"
 			}
-			i++
+			i += 2
 			continue
 		}
 		if pat[i] == '[' && !inClass {
 			inClass = true
+			classNeg = false
+			i++
+			if i < len(pat) && pat[i] == '^' {
+				classNeg = true
+				i++
+			}
+			if i < len(pat) && pat[i] == ']' {
+				i++
+			}
 			continue
 		}
 		if pat[i] == ']' && inClass {
 			inClass = false
+			classNeg = false
+			i++
 			continue
 		}
 		if pat[i] == '(' && !inClass && i+1 < len(pat) && pat[i+1] == '?' {
 			if i+2 < len(pat) && pat[i+2] == ':' {
+				i += 3
 				continue
 			}
 			return "RegExp (? groups need POSIX ERE (no lookahead/named groups; (?: is rewritten to ()"
 		}
+		i++
 	}
 	return ""
 }
 
+// saRegexDecodeEscapes decodes JS \uXXXX, \u{...}, \xHH, \n, \t, \r, \f, \v
+// escapes to bytes (UTF-8 for non-ASCII). Returns ("", msg) on refusal:
+// NUL (\u0000 / \x00), malformed escapes, lone surrogates, code points
+// over U+10FFFF. Escapes decoding to a regex metacharacter are left
+// untouched so the gate still refuses them: decoding one would change
+// pattern structure (a decoded backslash would re-tokenize, a decoded
+// paren would open a group). Boundary/class escapes are not decoded
+// (gate/rewrite own them). Decoding is idempotent.
+func saRegexDecodeEscapes(pat string) (string, string) {
+	isMeta := func(r rune) bool {
+		switch r {
+		case '\\', '(', ')', '[', ']', '{', '}', '*', '+', '?', '.', '^', '$', '|', '-':
+			return true
+		}
+		return false
+	}
+	hexVal := func(c byte) (int, bool) {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0'), true
+		case c >= 'a' && c <= 'f':
+			return int(c-'a') + 10, true
+		case c >= 'A' && c <= 'F':
+			return int(c-'A') + 10, true
+		}
+		return 0, false
+	}
+	var b strings.Builder
+	b.Grow(len(pat))
+	for i := 0; i < len(pat); {
+		c := pat[i]
+		if c != '\\' || i+1 >= len(pat) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		n := pat[i+1]
+		switch n {
+		case 'n':
+			b.WriteByte('\n')
+			i += 2
+		case 't':
+			b.WriteByte('\t')
+			i += 2
+		case 'r':
+			b.WriteByte('\r')
+			i += 2
+		case 'f':
+			b.WriteByte('\f')
+			i += 2
+		case 'v':
+			b.WriteByte('\v')
+			i += 2
+		case 'x':
+			if i+3 >= len(pat) {
+				return "", "malformed RegExp \\x escape"
+			}
+			hi, ok1 := hexVal(pat[i+2])
+			lo, ok2 := hexVal(pat[i+3])
+			if !ok1 || !ok2 {
+				return "", "malformed RegExp \\x escape"
+			}
+			v := hi*16 + lo
+			if v == 0 {
+				return "", "RegExp \\x00 has no sa_std/text/regex projection (NUL byte)"
+			}
+			if isMeta(rune(v)) {
+				b.WriteString(pat[i : i+4])
+			} else {
+				b.WriteByte(byte(v))
+			}
+			i += 4
+		case 'u':
+			var cp int
+			var adv int
+			if i+2 < len(pat) && pat[i+2] == '{' {
+				j := i + 3
+				cp = 0
+				digits := 0
+				for j < len(pat) && pat[j] != '}' {
+					hv, ok := hexVal(pat[j])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					cp = cp*16 + hv
+					digits++
+					j++
+					if digits > 6 {
+						return "", "malformed RegExp \\u escape"
+					}
+				}
+				if j >= len(pat) || digits == 0 || cp > 0x10FFFF {
+					return "", "malformed RegExp \\u escape"
+				}
+				adv = j - i + 1
+			} else {
+				if i+5 >= len(pat) {
+					return "", "malformed RegExp \\u escape"
+				}
+				cp = 0
+				for k := 0; k < 4; k++ {
+					hv, ok := hexVal(pat[i+2+k])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					cp = cp*16 + hv
+				}
+				adv = 6
+			}
+			if cp >= 0xD800 && cp <= 0xDBFF {
+				rest := pat[i+adv:]
+				if len(rest) < 6 || rest[0] != '\\' || rest[1] != 'u' {
+					return "", "lone RegExp \\u surrogate has no POSIX projection"
+				}
+				lo := 0
+				for k := 0; k < 4; k++ {
+					hv, ok := hexVal(rest[2+k])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					lo = lo*16 + hv
+				}
+				if lo < 0xDC00 || lo > 0xDFFF {
+					return "", "lone RegExp \\u surrogate has no POSIX projection"
+				}
+				cp = 0x10000 + (cp-0xD800)*0x400 + (lo - 0xDC00)
+				adv += 6
+			} else if cp >= 0xDC00 && cp <= 0xDFFF {
+				return "", "lone RegExp \\u surrogate has no POSIX projection"
+			}
+			if cp == 0 {
+				return "", "RegExp \\u0000 has no sa_std/text/regex projection (NUL byte)"
+			}
+			if isMeta(rune(cp)) {
+				b.WriteString(pat[i : i+adv])
+			} else {
+				b.WriteRune(rune(cp))
+			}
+			i += adv
+		default:
+			b.WriteByte(c)
+			b.WriteByte(n)
+			i += 2
+		}
+	}
+	return b.String(), ""
+}
+
 // saLowerRegexCompile 编译柄（常量池 + `sa_regex_compile`；归属 temp）。
 func saLowerRegexCompile(w printer.EmitTextWriter, pat, flags string, scope *saScope, nextTemp *int) (string, string) {
+	decoded, derr := saRegexDecodeEscapes(pat)
+	if derr != "" {
+		return "", derr
+	}
+	pat = decoded
 	if msg := saRegexGatePattern(pat); msg != "" {
 		return "", msg
 	}
@@ -648,7 +1102,10 @@ func saLowerRegexCompile(w printer.EmitTextWriter, pat, flags string, scope *saS
 		return "", msg
 	}
 	scope.addImport("sa_std/text/regex.sa")
-	posix := saRegexPosixRewrite(pat)
+	posix, rwmsg := saRegexPosixRewrite(pat)
+	if rwmsg != "" {
+		return "", rwmsg
+	}
 	cname := saStrIntern(scope.strPool, posix)
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -985,7 +1442,11 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 // cannot leave a truncated function body.
 func saLowerTopObjArrFindStr(w printer.EmitTextWriter, arr saTopArr, field string, arg *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	for _, o := range arr.objs {
-		if msg := saRegexGatePattern(o.regexPat); msg != "" {
+		gpat := o.regexPat
+		if dec, derr := saRegexDecodeEscapes(gpat); derr == "" {
+			gpat = dec
+		}
+		if msg := saRegexGatePattern(gpat); msg != "" {
 			return "", msg
 		}
 		if _, msg := saRegexCflags(o.regexFlags); msg != "" {

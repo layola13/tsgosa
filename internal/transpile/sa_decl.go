@@ -349,6 +349,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				scope.regexPat = map[string]string{}
 			}
 			scope.regexPat[name] = pat
+			if scope.regexFlags == nil {
+				scope.regexFlags = map[string]string{}
+			}
+			scope.regexFlags[name] = flags
 			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
 			continue
@@ -553,6 +557,10 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					scope.regexPat = map[string]string{}
 				}
 				scope.regexPat[name] = saRegexNewPatText(ne)
+				if scope.regexFlags == nil {
+					scope.regexFlags = map[string]string{}
+				}
+				scope.regexFlags[name] = saRegexNewFlagsText(ne)
 				saConsumeOwn(scope, h)
 				saDeclareOwned(scope, name)
 				continue
@@ -3879,8 +3887,12 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	if scope.regexPat == nil {
 		scope.regexPat = map[string]string{}
 	}
+	if scope.regexFlags == nil {
+		scope.regexFlags = map[string]string{}
+	}
 	for k, v := range topRegex {
 		scope.regexPat[k] = v.Pattern
+		scope.regexFlags[k] = v.Flags
 	}
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve

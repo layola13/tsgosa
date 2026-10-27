@@ -3876,8 +3876,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		if escope.regexPat == nil {
 			escope.regexPat = map[string]string{}
 		}
+		if escope.regexFlags == nil {
+			escope.regexFlags = map[string]string{}
+		}
 		for k, v := range topRegex {
 			escope.regexPat[k] = v.Pattern
+			escope.regexFlags[k] = v.Flags
 		}
 		saSeedTopMaths(escope, topMaths)
 		terminated := false
@@ -5693,6 +5697,9 @@ type saScope struct {
 	// 正则绑定模式表（`const re = /pat/flags` 记模式文本，`new RegExp` 记串元文本；
 	// 捕获组判定消解绑定（字面量门同形）；未知/重绑沿旧门保守（缺表即不可见）；#14a）。
 	regexPat map[string]string
+	// 正则绑定 flags 表（与 regexPat 同位记；/g 路由消解绑定名，
+	// 运行时 flags 拒 /g 依赖用不在此——运行时模式本已拒；#2b_regex patch D）。
+	regexFlags map[string]string
 	// stdOpaque maps a variable bound by an opaque std ctor (patch 2) to its
 	// class name, so .signal reads and the small method table resolve without
 	// a layout. Aliasing a handle refuses elsewhere already (explicit clone
@@ -5950,8 +5957,12 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if scope.regexPat == nil {
 		scope.regexPat = map[string]string{}
 	}
+	if scope.regexFlags == nil {
+		scope.regexFlags = map[string]string{}
+	}
 	for k, v := range topRegex {
 		scope.regexPat[k] = v.Pattern
+		scope.regexFlags[k] = v.Flags
 	}
 	for _, p := range params {
 		scope.types[p] = paramKinds[p]
