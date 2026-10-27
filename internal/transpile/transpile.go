@@ -7309,6 +7309,13 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	starOf := map[string][]string{}
 	impOf := map[string]map[string]string{}
 	unresolved := map[string]bool{}
+	// (2b_reexport) Bare-spec value re-export chain: chase tsconfig-path /
+	// file: specs to their defining files and adopt only those files, so
+	// hook C2 and importer binding resolve them like relative re-exports.
+	// Unresolvable chains record nothing and keep refusing loudly.
+	if dirAbs, err := filepath.Abs(dir); err == nil {
+		saBareReexpLink(dirAbs, files, parsed, rs, graph, reexpOf, starOf)
+	}
 	// addEdge links importer→target for spec. typeOnly keeps the type
 	// resolver (纯类型导入/重导出只取类型侧，不链运行时文件，禁静默扩面).
 	addEdge := func(p, spec string, typeOnly bool) string {
