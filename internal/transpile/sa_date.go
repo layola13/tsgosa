@@ -659,8 +659,161 @@ func saRegexGatePattern(pat string) string {
 	return ""
 }
 
+// saRegexDecodeEscapes decodes JS \uXXXX, \u{...}, \xHH, \n, \t, \r, \f, \v
+// escapes to bytes (UTF-8 for non-ASCII). Returns ("", msg) on refusal:
+// NUL (\u0000 / \x00), malformed escapes, lone surrogates, code points
+// over U+10FFFF. Escapes decoding to a regex metacharacter are left
+// untouched so the gate still refuses them: decoding one would change
+// pattern structure (a decoded backslash would re-tokenize, a decoded
+// paren would open a group). Boundary/class escapes are not decoded
+// (gate/rewrite own them). Decoding is idempotent.
+func saRegexDecodeEscapes(pat string) (string, string) {
+	isMeta := func(r rune) bool {
+		switch r {
+		case '\\', '(', ')', '[', ']', '{', '}', '*', '+', '?', '.', '^', '$', '|', '-':
+			return true
+		}
+		return false
+	}
+	hexVal := func(c byte) (int, bool) {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0'), true
+		case c >= 'a' && c <= 'f':
+			return int(c-'a') + 10, true
+		case c >= 'A' && c <= 'F':
+			return int(c-'A') + 10, true
+		}
+		return 0, false
+	}
+	var b strings.Builder
+	b.Grow(len(pat))
+	for i := 0; i < len(pat); {
+		c := pat[i]
+		if c != '\\' || i+1 >= len(pat) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		n := pat[i+1]
+		switch n {
+		case 'n':
+			b.WriteByte('\n')
+			i += 2
+		case 't':
+			b.WriteByte('\t')
+			i += 2
+		case 'r':
+			b.WriteByte('\r')
+			i += 2
+		case 'f':
+			b.WriteByte('\f')
+			i += 2
+		case 'v':
+			b.WriteByte('\v')
+			i += 2
+		case 'x':
+			if i+3 >= len(pat) {
+				return "", "malformed RegExp \\x escape"
+			}
+			hi, ok1 := hexVal(pat[i+2])
+			lo, ok2 := hexVal(pat[i+3])
+			if !ok1 || !ok2 {
+				return "", "malformed RegExp \\x escape"
+			}
+			v := hi*16 + lo
+			if v == 0 {
+				return "", "RegExp \\x00 has no sa_std/text/regex projection (NUL byte)"
+			}
+			if isMeta(rune(v)) {
+				b.WriteString(pat[i : i+4])
+			} else {
+				b.WriteByte(byte(v))
+			}
+			i += 4
+		case 'u':
+			var cp int
+			var adv int
+			if i+2 < len(pat) && pat[i+2] == '{' {
+				j := i + 3
+				cp = 0
+				digits := 0
+				for j < len(pat) && pat[j] != '}' {
+					hv, ok := hexVal(pat[j])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					cp = cp*16 + hv
+					digits++
+					j++
+					if digits > 6 {
+						return "", "malformed RegExp \\u escape"
+					}
+				}
+				if j >= len(pat) || digits == 0 || cp > 0x10FFFF {
+					return "", "malformed RegExp \\u escape"
+				}
+				adv = j - i + 1
+			} else {
+				if i+5 >= len(pat) {
+					return "", "malformed RegExp \\u escape"
+				}
+				cp = 0
+				for k := 0; k < 4; k++ {
+					hv, ok := hexVal(pat[i+2+k])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					cp = cp*16 + hv
+				}
+				adv = 6
+			}
+			if cp >= 0xD800 && cp <= 0xDBFF {
+				rest := pat[i+adv:]
+				if len(rest) < 6 || rest[0] != '\\' || rest[1] != 'u' {
+					return "", "lone RegExp \\u surrogate has no POSIX projection"
+				}
+				lo := 0
+				for k := 0; k < 4; k++ {
+					hv, ok := hexVal(rest[2+k])
+					if !ok {
+						return "", "malformed RegExp \\u escape"
+					}
+					lo = lo*16 + hv
+				}
+				if lo < 0xDC00 || lo > 0xDFFF {
+					return "", "lone RegExp \\u surrogate has no POSIX projection"
+				}
+				cp = 0x10000 + (cp-0xD800)*0x400 + (lo - 0xDC00)
+				adv += 6
+			} else if cp >= 0xDC00 && cp <= 0xDFFF {
+				return "", "lone RegExp \\u surrogate has no POSIX projection"
+			}
+			if cp == 0 {
+				return "", "RegExp \\u0000 has no sa_std/text/regex projection (NUL byte)"
+			}
+			if isMeta(rune(cp)) {
+				b.WriteString(pat[i : i+adv])
+			} else {
+				b.WriteRune(rune(cp))
+			}
+			i += adv
+		default:
+			b.WriteByte(c)
+			b.WriteByte(n)
+			i += 2
+		}
+	}
+	return b.String(), ""
+}
+
 // saLowerRegexCompile 编译柄（常量池 + `sa_regex_compile`；归属 temp）。
 func saLowerRegexCompile(w printer.EmitTextWriter, pat, flags string, scope *saScope, nextTemp *int) (string, string) {
+	decoded, derr := saRegexDecodeEscapes(pat)
+	if derr != "" {
+		return "", derr
+	}
+	pat = decoded
 	if msg := saRegexGatePattern(pat); msg != "" {
 		return "", msg
 	}
@@ -1006,7 +1159,11 @@ func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *
 // cannot leave a truncated function body.
 func saLowerTopObjArrFindStr(w printer.EmitTextWriter, arr saTopArr, field string, arg *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	for _, o := range arr.objs {
-		if msg := saRegexGatePattern(o.regexPat); msg != "" {
+		gpat := o.regexPat
+		if dec, derr := saRegexDecodeEscapes(gpat); derr == "" {
+			gpat = dec
+		}
+		if msg := saRegexGatePattern(gpat); msg != "" {
 			return "", msg
 		}
 		if _, msg := saRegexCflags(o.regexFlags); msg != "" {
