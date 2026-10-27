@@ -6816,8 +6816,128 @@ func saArgIsInstField(a *ast.Node, scope *saScope) bool {
 	return ok && fk == "inst"
 }
 
+// saJsValMaskedMsg builds the enriched refusal for the jsval ladder's
+// final fallback (JEV 3_jvmask enrich_first_inner 1.0, inner_plus_shape
+// 0.98, shared_ladder 0.84): generic head + first inner cause + failing
+// expression shape (node kind, short source snippet, identifier kind).
+// Called ONLY on paths that already refuse, so acceptance is unchanged;
+// the inner message is verbatim, the shape suffix only identifies the value.
+func saJsValMaskedMsg(a *ast.Node, scope *saScope, inner string) string {
+	const head = "jsval argument needs a lowerable value"
+	if inner == "" {
+		inner = "no lowerable arm accepted the value"
+	}
+	if inner == head {
+		return head + saJsValShapeSuffix(a, scope)
+	}
+	return head + ": " + inner + saJsValShapeSuffix(a, scope)
+}
+
+// saJsValSnippet returns a short source name for a failing jsval value.
+// Node.Text() is defined ONLY for leaf kinds (identifiers, literals,
+// templates, regex) and panics on composite nodes, so Text() is called
+// only under those Kind guards; property/call/element nodes get a
+// structural description built from Kind-guarded children instead.
+func saJsValSnippet(a *ast.Node) string {
+	if a == nil {
+		return ""
+	}
+	if u := saUnwrapTransparent(a); u != nil && u != a {
+		return saJsValSnippet(u)
+	}
+	if a.Kind == ast.KindAwaitExpression {
+		aw := a.AsAwaitExpression()
+		if aw == nil || aw.Expression == nil {
+			return ""
+		}
+		inner := saJsValSnippet(aw.Expression)
+		if inner == "" {
+			return ""
+		}
+		return "await " + inner
+	}
+	switch a.Kind {
+	case ast.KindIdentifier, ast.KindPrivateIdentifier,
+		ast.KindStringLiteral, ast.KindNumericLiteral, ast.KindBigIntLiteral,
+		ast.KindNoSubstitutionTemplateLiteral, ast.KindTemplateHead,
+		ast.KindTemplateMiddle, ast.KindTemplateTail,
+		ast.KindRegularExpressionLiteral:
+		return a.Text()
+	case ast.KindPropertyAccessExpression:
+		pa := a.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil {
+			return ""
+		}
+		base := saJsValSnippet(pa.Expression)
+		name := ""
+		if pa.Name().Kind == ast.KindIdentifier {
+			name = pa.Name().Text()
+		}
+		if base != "" && name != "" {
+			return base + "." + name
+		}
+		return name
+	case ast.KindCallExpression:
+		ce := a.AsCallExpression()
+		if ce == nil || ce.Expression == nil {
+			return ""
+		}
+		callee := saJsValSnippet(ce.Expression)
+		if callee == "" {
+			return ""
+		}
+		return callee + "(…)"
+	case ast.KindElementAccessExpression:
+		ea := a.AsElementAccessExpression()
+		if ea == nil || ea.Expression == nil {
+			return ""
+		}
+		base := saJsValSnippet(ea.Expression)
+		if base == "" {
+			return ""
+		}
+		return base + "[…]"
+	}
+	return ""
+}
+
+func saJsValShapeSuffix(a *ast.Node, scope *saScope) string {
+	if a == nil {
+		return " (expr <nil>)"
+	}
+	kind := a.Kind.String()
+	extra := ""
+	if a.Kind == ast.KindIdentifier {
+		if k, ok := scope.types[a.Text()]; ok {
+			extra = " kind=" + k
+		} else {
+			extra = " kind=unbound"
+		}
+	}
+	txt := ""
+	if t := saJsValSnippet(a); t != "" {
+		txt = strings.Join(strings.Fields(t), " ")
+		if len(txt) > 80 {
+			txt = txt[:80] + "…"
+		}
+	}
+	if txt == "" {
+		return " (" + kind + extra + ")"
+	}
+	return " (" + kind + " " + fmt.Sprintf("%q", txt) + extra + ")"
+}
+
 func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, total int, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if len(sig.paramKinds) == total && sig.paramKinds[i] == "jsval" {
+		// Diagnostic hardening: remember the first inner failure while
+		// the ladder runs; only the final already-refusing fallback
+		// reports it, so no succeeding arm changes behavior.
+		firstInner := ""
+		noteInner := func(msg string) {
+			if firstInner == "" && msg != "" {
+				firstInner = msg
+			}
+		}
 		// JSX elements are jsval values only (sa_jsx.go): intrinsic /
 		// component tags as name strings, props as a jsval-valued map,
 		// children as a jsval array, via @ts_jsx_element. Other
@@ -6863,6 +6983,8 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				h := saBoxJsValStd(w, scope, "ptr", 1, sv, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
+			} else {
+				noteInner(msg)
 			}
 		}
 		if saIsArrValue(a, scope) {
@@ -6870,6 +6992,8 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				h := saBoxJsValStd(w, scope, "ptr", 5, av, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
+			} else {
+				noteInner(msg)
 			}
 		}
 		// Object literal into jsval (return sites delegate here, as do
@@ -6911,6 +7035,8 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		if saIsJsValEqOperand(a, scope) {
 			if h, msg := saEvalJsValHandle(w, a, scope, pos, refusals, nextTemp); msg == "" {
 				return h, ""
+			} else {
+				noteInner(msg)
 			}
 		}
 		// Instance field as jsval argument (JEV sa_std_branch_box 0.96):
@@ -6981,15 +7107,20 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				h := saBoxJsValStd(w, scope, "i32", 2, op, nextTemp)
 				saOwnTemp(scope, h)
 				return h, ""
+			} else {
+				noteInner(msg2)
 			}
+		} else {
+			noteInner(msg)
 		}
-		// 3_ifdisp (JEV diag_iface_only): an interface no-body failure is
-		// named, not masked by the generic message; all other inner
-		// failures keep the generic message.
+		// 3_ifdisp + 3_jvmask (merged): the interface no-body failure
+		// is named, not masked; all inner failures are enriched with
+		// their cause. The interface case passes its own message so it
+		// cannot be displaced by an earlier ladder arm recorded cause.
 		if msg != "" && strings.Contains(msg, "is an interface method with no body") {
-			return "", msg
+			return "", saJsValMaskedMsg(a, scope, msg)
 		}
-		return "", "jsval argument needs a lowerable value"
+		return "", saJsValMaskedMsg(a, scope, firstInner)
 	}
 
 	// 形参种导向求值：str 形参走串求值（字面量/调用/拼接皆可），
