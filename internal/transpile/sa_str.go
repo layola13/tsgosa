@@ -118,6 +118,21 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 				}
 			}
 		}
+		// keyof 实例读即串值（动态键 str 门/字面量键 str 域；`?.` 沿旧门；
+		// 门与 saLowerKeyofIndex 的 str 门同核，禁判定与求值分叉）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
+			if _, def, ok := saKeyofBase(ea.Expression, scope); ok && def != nil {
+				if key := ea.ArgumentExpression; key != nil && (key.Kind == ast.KindStringLiteral || key.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					if s, ok := saKeyofLitText(key); ok {
+						if _, present := def.offsets[s]; present && def.fkinds[s] == "str" {
+							return true
+						}
+					}
+				} else if _, ok := saKeyofStrFields(ea, def, scope); ok {
+					return true
+				}
+			}
+		}
 		// 串下标读即串值（`s[i]` 与 charAt 同串位；`?.` 沿旧门）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
 			saIsStrExpr(ea.Expression, scope) {
@@ -534,6 +549,24 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					return t, ""
 				}
 				return "", "map value is not a string"
+			}
+		}
+		// keyof 实例串读（动态键 str 门/字面量键 str 域经下标读位；`?.` 沿旧门）。
+		if ea.QuestionDotToken == nil {
+			if _, def, ok := saKeyofBase(ea.Expression, scope); ok && def != nil {
+				isStrKey := false
+				if key := ea.ArgumentExpression; key != nil && (key.Kind == ast.KindStringLiteral || key.Kind == ast.KindNoSubstitutionTemplateLiteral) {
+					if s, ok := saKeyofLitText(key); ok {
+						if _, present := def.offsets[s]; present && def.fkinds[s] == "str" {
+							isStrKey = true
+						}
+					}
+				} else if _, ok := saKeyofStrFields(ea, def, scope); ok {
+					isStrKey = true
+				}
+				if isStrKey {
+					return saLowerIndexLoadExpr(w, ea, scope, pos, refusals, nextTemp)
+				}
 			}
 		}
 		// 串值 map 链式下标读 `M[l][k]`：内层须静态可知为 map 链（顶层

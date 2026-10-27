@@ -3044,9 +3044,83 @@ func saTypeNamesLayout(tnode *ast.TypeNode, layout string, scope *saScope) bool 
 	return false
 }
 
-// saLowerKeyofIndex lowering `p[k]` 动态键读（布局须全 i32；字面量键静态
-// 折叠直读；动态键 strcmp 链命中直读、未知键归零（缺键同律）；`?.` 另步；
-// 非 i32 布局大声拒；上游句柄当下标错译，本仓 correct）。
+// saKeyofKeyDomain resolves the keyof domain of a dynamic key expression:
+// a property read meta.key whose base layout records the field's TypeNode
+// (fdefs) through a keyof alias to a TypeLiteral. Bare identifiers carry
+// no annotation in scope, so they yield no domain and callers fall back
+// to the strict all-fields gate.
+func saKeyofKeyDomain(key *ast.Node, scope *saScope) (map[string]bool, bool) {
+	if key == nil {
+		return nil, false
+	}
+	for key.Kind == ast.KindParenthesizedExpression || key.Kind == ast.KindNonNullExpression {
+		if key.Kind == ast.KindParenthesizedExpression {
+			key = key.AsParenthesizedExpression().Expression
+		} else {
+			key = key.AsNonNullExpression().Expression
+		}
+		if key == nil {
+			return nil, false
+		}
+	}
+	if key.Kind != ast.KindPropertyAccessExpression {
+		return nil, false
+	}
+	pa := key.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
+		return nil, false
+	}
+	k, ok := scope.types[pa.Expression.Text()]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return nil, false
+	}
+	def, ok := scope.classes[k[5:]]
+	if !ok || def == nil || def.fdefs == nil {
+		return nil, false
+	}
+	tn, ok := def.fdefs[pa.Name().Text()]
+	if !ok || tn == nil {
+		return nil, false
+	}
+	return saKeyofDomainNames(tn, scope.aliasOf, 0)
+}
+
+// saKeyofStrFields returns the strcmp-chain fields for a str keyof read:
+// with a resolved domain, exactly the domain fields in layout order, each
+// required present and str; without a domain, every layout field, each
+// required str. A missing or non-str gated field refuses the whole read
+// loudly (ok=false) instead of silently skipping a reachable field.
+func saKeyofStrFields(ea *ast.ElementAccessExpression, def *saClassDef, scope *saScope) ([]saClassField, bool) {
+	if def == nil || len(def.fields) == 0 {
+		return nil, false
+	}
+	if domain, ok := saKeyofKeyDomain(ea.ArgumentExpression, scope); ok {
+		var out []saClassField
+		for _, f := range def.fields {
+			if domain[f.name] {
+				if def.fkinds[f.name] != "str" {
+					return nil, false
+				}
+				out = append(out, f)
+			}
+		}
+		if len(out) != len(domain) {
+			return nil, false
+		}
+		return out, true
+	}
+	for _, f := range def.fields {
+		if def.fkinds[f.name] != "str" {
+			return nil, false
+		}
+	}
+	return def.fields, true
+}
+
+// saLowerKeyofIndex lowering `p[k]` 动态键读（布局须全 i32，或 str 门：
+// 域内全 str 时走 ptr 链；字面量键静态折叠直读（i32 域读 i32、str 域读
+// ptr，缺键归零）；动态键 strcmp 链命中直读、未知键归零（缺键同律）；
+// `?.` 另步；双门皆失大声拒；上游句柄当下标错译，本仓 correct）。
 func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression, layout string, def *saClassDef, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if ea.QuestionDotToken != nil {
 		return "", "optional keyof index reads are not lowerable yet"
@@ -3062,7 +3136,7 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 		if !ok {
 			return "0", ""
 		}
-		if def.fkinds[s] != "i32" {
+		if def.fkinds[s] != "i32" && def.fkinds[s] != "str" {
 			return "", "keyof field is not i32"
 		}
 		base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
@@ -3077,13 +3151,69 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 		}
 		t := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, base, off))
+		if def.fkinds[s] == "str" {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, base, off))
+		} else {
+			w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", t, base, off))
+		}
 		return t, ""
 	}
+	isI32 := true
 	for _, f := range def.fields {
 		if def.fkinds[f.name] != "i32" {
+			isI32 = false
+			break
+		}
+	}
+	if !isI32 {
+		// str 变体（JEV str_ptr_chain 1.0，domain_filtered 门 1.0）：与 i32
+		// 链同形，槽与载入皆为 ptr，缺键归 0 句柄（即 null）；双门皆失
+		// 沿旧消息大声拒，以保该族在扫描中的身份稳定。
+		strFields, ok := saKeyofStrFields(ea, def, scope)
+		if !ok {
 			return "", "keyof index needs all-i32 layout"
 		}
+		kh, msg := saEvalStr(w, key, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		base, msg := saArrValueOf(w, ea.Expression, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			if h, _, msg2 := saInstBase(saKeyofUnwrap(ea.Expression, scope), scope); msg2 == "" && h != "" {
+				base = h
+			} else {
+				return "", "keyof base must be a bound instance"
+			}
+		}
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		endL := fmt.Sprintf("L_ki_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		for _, f := range strFields {
+			fh := saLowerStringLiteral(w, f.name, scope, nextTemp)
+			eq := saStringContentEq(w, kh, fh, false, scope, nextTemp)
+			saReleaseOwnedTemp(w, scope, fh)
+			hitL := fmt.Sprintf("L_ki_hit_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nextL := fmt.Sprintf("L_ki_next_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eq, hitL, nextL))
+			w.Write(fmt.Sprintf("%s:\n", hitL))
+			v := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", v, base, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", nextL))
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", out, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		return out, ""
 	}
 	kh, msg := saEvalStr(w, key, scope, pos, refusals, nextTemp)
 	if msg != "" {

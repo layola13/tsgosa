@@ -922,6 +922,71 @@ func saKeyofMembersAreStr(t *ast.TypeNode, aliases map[string]*ast.TypeNode, dep
 	}
 }
 
+// saKeyofDomainNames resolves the field-name domain of a keyof type node
+// through same-file aliases (depth-guarded, mirroring saKeyofMembersAreStr):
+// a keyof operator unwraps to its operand, a reference/identifier follows
+// the alias table, and a TypeLiteral contributes its identifier-named
+// property/method members. Anything else (interfaces, unions, index
+// signatures, computed names) refuses loudly via ok=false, so callers fall
+// back to the strict all-fields gate instead of guessing a domain.
+func saKeyofDomainNames(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int) (map[string]bool, bool) {
+	if t == nil || depth > 8 {
+		return nil, false
+	}
+	switch t.Kind {
+	case ast.KindParenthesizedType:
+		pt := t.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return nil, false
+		}
+		return saKeyofDomainNames(pt.Type, aliases, depth+1)
+	case ast.KindTypeOperator:
+		op := t.AsTypeOperatorNode()
+		if op == nil || op.Operator != ast.KindKeyOfKeyword || op.Type == nil {
+			return nil, false
+		}
+		return saKeyofDomainNames(op.Type, aliases, depth+1)
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return nil, false
+		}
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return nil, false
+		}
+		aliased, ok := aliases[ref.TypeName.Text()]
+		if !ok {
+			return nil, false
+		}
+		return saKeyofDomainNames(aliased, aliases, depth+1)
+	case ast.KindIdentifier:
+		aliased, ok := aliases[t.Text()]
+		if !ok {
+			return nil, false
+		}
+		return saKeyofDomainNames(aliased, aliases, depth+1)
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil || len(lit.Members.Nodes) == 0 {
+			return nil, false
+		}
+		out := map[string]bool{}
+		for _, m := range lit.Members.Nodes {
+			if m == nil || (m.Kind != ast.KindPropertySignature && m.Kind != ast.KindMethodSignature) {
+				return nil, false
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				return nil, false
+			}
+			out[fn.Text()] = true
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // saTopMapLitOK 校验字面量与值种一致：str 须串字面量，i32 须整/布尔
 // 直接量，map 须内嵌字面量（递归）或已认领同值种快照标识符；简写
 // 仅 map 值可用（即 {enPack} 形）；方法/spread/计算键一律不收。
