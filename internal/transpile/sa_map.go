@@ -848,6 +848,12 @@ func saTopMapKeyOK(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int)
 		return true
 	case ast.KindIndexedAccessType:
 		return true
+	case ast.KindTypeOperator:
+		op := t.AsTypeOperatorNode()
+		if op == nil || op.Operator != ast.KindKeyOfKeyword || op.Type == nil {
+			return false
+		}
+		return saKeyofMembersAreStr(op.Type, aliases, depth+1)
 	case ast.KindUnionType:
 		ut := t.AsUnionTypeNode()
 		if ut == nil || ut.Types == nil {
@@ -863,6 +869,54 @@ func saTopMapKeyOK(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int)
 			}
 		}
 		return true
+	default:
+		return false
+	}
+}
+
+// saKeyofMembersAreStr：keyof 操作数经同文件别名解析（深度守卫）后
+// 须为 TypeLiteral，且全部成员为标识符名属性/方法签名（keyof 域方为
+// 纯串键；索引/调用/构造签名、计算名、未知目标、空字面量、接口目标
+// 一律沿旧门大声拒）。
+func saKeyofMembersAreStr(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int) bool {
+	if t == nil || depth > 4 {
+		return false
+	}
+	switch t.Kind {
+	case ast.KindTypeLiteral:
+		lit := t.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil || len(lit.Members.Nodes) == 0 {
+			return false
+		}
+		for _, m := range lit.Members.Nodes {
+			if m == nil || (m.Kind != ast.KindPropertySignature && m.Kind != ast.KindMethodSignature) {
+				return false
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				return false
+			}
+		}
+		return true
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return false
+		}
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return false
+		}
+		aliased, ok := aliases[ref.TypeName.Text()]
+		if !ok {
+			return false
+		}
+		return saKeyofMembersAreStr(aliased, aliases, depth+1)
+	case ast.KindIdentifier:
+		aliased, ok := aliases[t.Text()]
+		if !ok {
+			return false
+		}
+		return saKeyofMembersAreStr(aliased, aliases, depth+1)
 	default:
 		return false
 	}
