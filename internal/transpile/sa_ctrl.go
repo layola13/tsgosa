@@ -3194,6 +3194,31 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 				return true
 			}
 		}
+		// 标识符句柄槽赋值（3_mnull：`cur = f`，f 为形参/同函数局部 inst 绑定；
+		// JEV slot_store_alias / param_and_local：槽存截断句柄，源不消费——
+		// 函数尾仍释源寄存器，与字面量/调用臂同律；槽与源共指同一对象，
+		// 即 TS 引用复制语义。槽变量自身（槽对槽复制）与种不符沿旧门拒。）
+		if ms, ok := scope.modVars[name]; ok && ms.w == "handle" && be.Right != nil && be.Right.Kind == ast.KindIdentifier {
+			src := be.Right.Text()
+			if _, isSlot := scope.modVars[src]; !isSlot {
+				if ksrc, ok := scope.types[src]; ok && strings.HasPrefix(ksrc, "inst:") {
+					if ksrc != "inst:"+ms.iface {
+						ln, col := pos(s.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: fmt.Sprintf("module handle %s expects %s but got %s", ms.qual, ms.iface, strings.TrimPrefix(ksrc, "inst:"))})
+						return false
+					}
+					saRebindRelease(w, scope, name)
+					u := saSlotStoreHandle(w, ms, src, scope, nextTemp)
+					w.Write(fmt.Sprintf("  %s = %s\n", name, u))
+					if b := saOwnOf(scope, name); b != nil {
+						b.heap = true
+					}
+					saMarkRebound(scope, name)
+					saClearNullConst(scope, name)
+					return true
+				}
+			}
+		}
 		if be.Right == nil || be.Right.Kind != ast.KindObjectLiteralExpression {
 			ln, col := pos(s.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct reassignment needs an object literal"})
