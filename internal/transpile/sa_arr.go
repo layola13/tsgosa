@@ -2388,12 +2388,33 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				break
 			}
 			strAnnot := false
+			unresAnnot := false
 			if vd.Type != nil {
-				if k, ok := saAnnotKind(vd.Type); !ok || k != "arr" {
+				if k, ok := saAnnotKind(vd.Type); ok {
+					if k != "arr" {
+						okAll = false
+						break
+					}
+					strAnnot = saIsStringArrayAnnot(vd.Type)
+				} else if vd.Type.Kind == ast.KindTypeReference {
+					// (2b_unannot2, JEV unresolvable_annot_str_array)
+					// The annotation resolves to nothing recorded, so it
+					// contributes no constraint; allow through only if
+					// the elements turn out all strings (checked below).
+					if ref := vd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil &&
+						ref.TypeName.Kind == ast.KindIdentifier && (ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0) {
+						if _, inClasses := classes[ref.TypeName.Text()]; !inClasses {
+							unresAnnot = true
+						}
+					}
+					if !unresAnnot {
+						okAll = false
+						break
+					}
+				} else {
 					okAll = false
 					break
 				}
-				strAnnot = saIsStringArrayAnnot(vd.Type)
 			}
 			al := init.AsArrayLiteralExpression()
 			if al == nil {
@@ -2442,6 +2463,12 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				nKinds++
 			}
 			if !eleOk || nKinds > 1 {
+				okAll = false
+				break
+			}
+			// (2b_unannot2) unresolvable-annotation bypass claims str
+			// arrays only: empty, i32, nested and object shapes refuse.
+			if unresAnnot && len(strs) == 0 {
 				okAll = false
 				break
 			}
