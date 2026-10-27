@@ -2706,7 +2706,10 @@ func saMethodInstReturn(mn *ast.Node, className string, scope *saScope) string {
 	if typ.Kind == ast.KindTypeReference {
 		ref := typ.AsTypeReferenceNode()
 		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
-			if d, ok := scope.classes[ref.TypeName.Text()]; ok && !d.isIface {
+			if d, ok := scope.classes[ref.TypeName.Text()]; ok {
+				// Interface return types count as instance returns too
+				// (JEV iface_objectliteral 1.0): a recorded interface
+				// layout is a valid instance layout, same as a class.
 				return d.name
 			}
 		}
@@ -2784,11 +2787,25 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 		if ol == nil {
 			return "method instance return must be an instance"
 		}
-		th, msg := saLowerMapObjLit(w, ol, want, scope, pos, refusals, nextTemp)
-		if msg != "" {
-			return msg
+		if def, ok := scope.classes[want]; ok && def != nil && def.isIface {
+			// Interface method returns lower the literal via
+			// saLowerObjectLiteral, the free-function return path
+			// (JEV iface_objectliteral 1.0, scope iface_all 0.98):
+			// topMap fields, empty-Record fields and optional-field
+			// zero-fill all already work there. Class returns keep
+			// saLowerMapObjLit below.
+			th, _, msg := saLowerObjectLiteral(w, e, want, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			h, have = th, want
+		} else {
+			th, msg := saLowerMapObjLit(w, ol, want, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return msg
+			}
+			h, have = th, want
 		}
-		h, have = th, want
 	case e != nil && e.Kind == ast.KindObjectLiteralExpression:
 		ol := e.AsObjectLiteralExpression()
 		if ol == nil {
