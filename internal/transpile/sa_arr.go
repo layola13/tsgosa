@@ -9838,7 +9838,13 @@ func saHigherOrderMapString(w printer.EmitTextWriter, recv string, scope *saScop
 	el := saArrElemAt(w, data, i, nextTemp)
 	var v string
 	if elemKind == "i32" {
+		ownBase := len(scope.ownOrder)
 		v = saRenderInterp(w, el, scope, nextTemp, "10")
+		// Per-iteration render temps (numbuf/numlen/vslice) must not reach
+		// the function-end drain: they are loop-body-scoped registers and
+		// the drain would emit `!t` for an undeclared register (generic map
+		// avoids this via saCallbackValue's inLoop truncate; same discipline).
+		saTruncateBodyOwned(scope, ownBase)
 	} else {
 		v = el
 	}
@@ -9911,11 +9917,11 @@ func saHigherOrderNamedFn(w printer.EmitTextWriter, recv, method, name string, p
 	switch method {
 	case "forEach":
 	case "some", "every", "filter":
-		if sig.isVoid || (sig.retKind != "i32" && sig.retKind != "bool") {
+		if sig.isVoid || (sig.retKind != "boolean" && sig.retKind != "bool") {
 			return "", "", true, "named callback " + name + " must return a boolean for " + method
 		}
 	case "map":
-		if sig.isVoid || (sig.retKind != "i32" && sig.retKind != "bool" && sig.retKind != "string") {
+		if sig.isVoid || (sig.retKind != "number" && sig.retKind != "i32" && sig.retKind != "boolean" && sig.retKind != "bool" && sig.retKind != "string") {
 			return "", "", true, "named callback " + name + " must return i32, boolean or string for map"
 		}
 	}

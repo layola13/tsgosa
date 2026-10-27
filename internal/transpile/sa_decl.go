@@ -1203,7 +1203,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// Array .join calls are string-valued in decl position too
 		// (saIsArrJoinCall: saArrCallRet == "str"); without this the decl
 		// fell to the i32 fallback and refused with "array value in i32".
-		if (saCallIsStr(init.AsCallExpression(), scope) && !saStrCallIsI32(init.AsCallExpression(), scope)) || saIsArrJoinCall(init.AsCallExpression(), scope) {
+		if (saCallIsStr(init.AsCallExpression(), scope) && !saStrCallIsI32(init.AsCallExpression(), scope)) || saIsArrJoinCall(init.AsCallExpression(), scope) || saIsDateStrCall(init.AsCallExpression(), scope) {
 			h, msg := saEvalStr(w, init, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				ln, col := pos(init.Pos())

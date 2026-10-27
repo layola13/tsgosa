@@ -1822,7 +1822,7 @@ func saCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
 	if ce == nil || ce.Expression == nil {
 		return false
 	}
-	if k, ok := saCallRetKind(ce, scope); ok && k == "i32" {
+	if k, ok := saCallRetKind(ce, scope); ok && (k == "i32" || k == "number") {
 		return true
 	}
 	if k, ok := saArrCallRet(ce, scope); ok && k == "i32" {
@@ -1848,6 +1848,19 @@ func saCallIsI32(ce *ast.CallExpression, scope *saScope) bool {
 		if mn, ok := saLookupMethod(pa.Expression, pa.Name().Text(), scope); ok {
 			if k, ok := saMethodReturnKind(mn); ok && k == "i32" {
 				return true
+			}
+		}
+		// `new C(...).m()` base: resolve the method from the class table
+		// (saLookupMethod covers identifier/this/super bases only).
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindNewExpression {
+			if ne := pa.Expression.AsNewExpression(); ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+				if def, ok := scope.classes[ne.Expression.Text()]; ok {
+					if mn, ok := def.methods[pa.Name().Text()]; ok && mn != nil {
+						if k, ok := saMethodReturnKind(mn); ok && k == "i32" {
+							return true
+						}
+					}
+				}
 			}
 		}
 	}
