@@ -550,6 +550,23 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 			}
 			if _, ok := scope.classes[cname]; !ok {
+				if saIsStdOpaqueClass(cname) {
+					h, msg := saLowerStdOpaqueNew(w, cname, ne, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						ln, col := pos(d.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
+					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+					scope.types[name] = "jsval"
+					if scope.stdOpaque == nil {
+						scope.stdOpaque = map[string]string{}
+					}
+					scope.stdOpaque[name] = cname
+					saConsumeOwn(scope, h)
+					saDeclareOwned(scope, name)
+					continue
+				}
 				ln, col := pos(vd.Initializer.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unknown class " + cname})
 				return false

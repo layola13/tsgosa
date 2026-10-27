@@ -3144,6 +3144,22 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// Opaque std instance methods (AbortController.abort, FormData.append/
+		// set/delete, TextEncoder.encode): receiver must be an identifier bound
+		// by an opaque ctor; unhandled methods fall through to the existing
+		// refusal arms, handled methods with bad args refuse with their own
+		// message (no fall-through to a second, confusing refusal).
+		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			if cls, ok := scope.stdOpaque[pa.Expression.Text()]; ok {
+				if op, voidCall, msg, handled := saLowerStdOpaqueMethod(w, cls, pa.Name().Text(), ce, scope, pos, refusals, nextTemp); handled {
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, voidCall, ""
+				}
+			}
+		}
 		if pa.Name() != nil && saCouldBeInst(pa.Expression, scope) {
 			// const 空实例直调必崩（`c.m()` this 零址；t29c SIGSEGV 实证；`?.` 守卫径不受影响；493）。
 			if pa.QuestionDotToken == nil && ce.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier && saIsNullConst(scope, pa.Expression.Text()) {

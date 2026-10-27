@@ -199,6 +199,258 @@ func saSeedStdBase(classes map[string]*saClassDef, base string) bool {
 	return true
 }
 
+// saIsStdOpaqueClass reports whether name is a web std class lowered as an
+// opaque jsval box (JEV par_std jsval_opaque): the value is never observed
+// field-by-field by tsgosa, only passed along (fetch options/bodies) or
+// touched through the small method table below. Promise is NOT in this set
+// (JEV keep_refusing); Response is NOT either (fetch slice: synthetic inst).
+func saIsStdOpaqueClass(name string) bool {
+	switch name {
+	case "AbortController", "Headers", "FormData", "Blob", "DataView",
+		"CompressionStream", "DecompressionStream", "TextEncoder", "URL":
+		return true
+	}
+	return false
+}
+
+// saStdOpaqueMethod maps (class, method) to a result kind: "void" for
+// fire-and-forget mutators, "jsval" for opaque value results. Anything else
+// keeps refusing loudly (URL protocol/hostname/pathname reads, Headers.get,
+// URLSearchParams-style accessors, stream readable/writable chains).
+func saStdOpaqueMethod(class, method string) (string, bool) {
+	switch class {
+	case "AbortController":
+		if method == "abort" {
+			return "void", true
+		}
+	case "FormData":
+		if method == "append" || method == "set" || method == "delete" {
+			return "void", true
+		}
+	case "TextEncoder":
+		if method == "encode" {
+			return "jsval", true
+		}
+	}
+	return "", false
+}
+
+// saStdOpaquePure reports whether a ctor/method argument node is side-effect
+// free (scalar literals, bound identifiers, literals composed of pure nodes).
+// Pure args are discarded unevaluated: the opaque value never observes them.
+// Impure args go through saStdOpaqueEvalArg instead.
+func saStdOpaquePure(a *ast.Node, scope *saScope) bool {
+	if a == nil {
+		return true
+	}
+	switch a.Kind {
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword,
+		ast.KindNullKeyword, ast.KindUndefinedKeyword:
+		return true
+	case ast.KindIdentifier:
+		if _, ok := scope.types[a.Text()]; ok {
+			return true
+		}
+		if _, ok := scope.topConsts[a.Text()]; ok {
+			return true
+		}
+		if scope.topStr[a.Text()] {
+			return true
+		}
+		return false
+	case ast.KindArrayLiteralExpression:
+		al := a.AsArrayLiteralExpression()
+		if al == nil {
+			return false
+		}
+		for _, el := range al.Elements.Nodes {
+			if !saStdOpaquePure(el, scope) {
+				return false
+			}
+		}
+		return true
+	case ast.KindObjectLiteralExpression:
+		ol := a.AsObjectLiteralExpression()
+		if ol == nil {
+			return false
+		}
+		for _, m := range ol.Properties.Nodes {
+			if m == nil || m.Kind != ast.KindPropertyAssignment {
+				return false
+			}
+			if pa := m.AsPropertyAssignment(); pa == nil || !saStdOpaquePure(pa.Initializer, scope) {
+				return false
+			}
+		}
+		return true
+	case ast.KindParenthesizedExpression:
+		if pe := a.AsParenthesizedExpression(); pe != nil {
+			return saStdOpaquePure(pe.Expression, scope)
+		}
+		return false
+	}
+	return false
+}
+
+// saStdOpaqueEvalArg evaluates one opaque ctor/method argument for its side
+// effects, discarding the value. Pure args need no emission. Call args are
+// evaluated (a refused call refuses the site); templates are evaluated only
+// when they contain calls (saEvalStr + release-if-temp). Anything else that
+// is not already lowerable refuses loudly (JEV: evaluate where lowerable,
+// else refuse) instead of silently dropping an effect.
+func saStdOpaqueEvalArg(w printer.EmitTextWriter, a *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) string {
+	if a == nil || saStdOpaquePure(a, scope) {
+		return ""
+	}
+	// Transparent wrappers peel to the inner node (parens/as/satisfies/non-null).
+	inner := a
+	for inner != nil {
+		switch inner.Kind {
+		case ast.KindParenthesizedExpression:
+			if pe := inner.AsParenthesizedExpression(); pe != nil {
+				inner = pe.Expression
+				continue
+			}
+		case ast.KindAsExpression:
+			if ae := inner.AsAsExpression(); ae != nil {
+				inner = ae.Expression
+				continue
+			}
+		case ast.KindSatisfiesExpression:
+			if se := inner.AsSatisfiesExpression(); se != nil {
+				inner = se.Expression
+				continue
+			}
+		case ast.KindNonNullExpression:
+			if nn := inner.AsNonNullExpression(); nn != nil {
+				inner = nn.Expression
+				continue
+			}
+		case ast.KindAwaitExpression:
+			if aw := inner.AsAwaitExpression(); aw != nil {
+				inner = aw.Expression
+				continue
+			}
+		}
+		break
+	}
+	if inner == nil {
+		return ""
+	}
+	if saStdOpaquePure(inner, scope) {
+		return ""
+	}
+	switch inner.Kind {
+	case ast.KindCallExpression:
+		op, _, msg := saEvalCall(w, inner.AsCallExpression(), scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		if saIsTempOp(op) {
+			saReleaseStmtTemp(w, scope, op)
+		}
+		return ""
+	case ast.KindTemplateExpression:
+		h, msg := saEvalStr(w, inner, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		if saIsTempOp(h) {
+			saReleaseStmtTemp(w, scope, h)
+		}
+		return ""
+	case ast.KindPropertyAccessExpression, ast.KindElementAccessExpression:
+		// A field/index read on a bound base is a pure read (no emission
+		// needed); on an unbound base it is not lowerable, so refuse.
+		var base *ast.Node
+		if inner.Kind == ast.KindPropertyAccessExpression {
+			if pa := inner.AsPropertyAccessExpression(); pa != nil {
+				base = pa.Expression
+			}
+		} else if ea := inner.AsElementAccessExpression(); ea != nil {
+			base = ea.Expression
+		}
+		if base != nil && base.Kind == ast.KindIdentifier {
+			if _, ok := scope.types[base.Text()]; ok {
+				return ""
+			}
+		}
+		return "std opaque constructor argument is not lowerable"
+	}
+	return "std opaque constructor argument is not lowerable"
+}
+
+// saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
+// jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
+// helper (no new inline helper). Constructor args are side-effect evaluated
+// per saStdOpaqueEvalArg; the box itself carries no observable state.
+func saLowerStdOpaqueNew(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	for _, a := range argNodes {
+		if msg := saStdOpaqueEvalArg(w, a, scope, pos, refusals, nextTemp); msg != "" {
+			return "", msg
+		}
+	}
+	h := saBoxJsValStd(w, scope, "ptr", 4, "0", nextTemp)
+	saOwnTemp(scope, h)
+	scope.types[h] = "jsval"
+	return h, ""
+}
+
+// saLowerStdOpaqueMethod lowers a method call on an identifier bound by an
+// opaque ctor. Returns (op, voidCall, msg, handled): unhandled methods fall
+// through to the existing refusal arms; handled methods with bad args refuse
+// with their own message (no fall-through to a confusing second refusal).
+func saLowerStdOpaqueMethod(w printer.EmitTextWriter, class, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string, bool) {
+	res, ok := saStdOpaqueMethod(class, method)
+	if !ok {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	want := -1
+	switch method {
+	case "abort":
+		want = 0
+	case "delete":
+		want = 1
+	case "append", "set":
+		want = 2
+	case "encode":
+		want = 1
+	}
+	if want >= 0 && len(argNodes) != want {
+		return "", false, class + "." + method + " takes " + fmt.Sprintf("%d", want) + " arguments", true
+	}
+	if res == "jsval" {
+		// TextEncoder.encode(str): evaluate the string arg, discard it, and
+		// return a fresh opaque jsval box (the bytes are unobserved here).
+		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg, true
+		}
+		if saIsTempOp(h) {
+			saReleaseStmtTemp(w, scope, h)
+		}
+		box := saBoxJsValStd(w, scope, "ptr", 4, "0", nextTemp)
+		saOwnTemp(scope, box)
+		scope.types[box] = "jsval"
+		return box, false, "", true
+	}
+	for _, a := range argNodes {
+		if msg := saStdOpaqueEvalArg(w, a, scope, pos, refusals, nextTemp); msg != "" {
+			return "", false, msg, true
+		}
+	}
+	return "", true, "", true
+}
+
 // saRecordClass 记录类定义（布局 + 构造 + 方法；无码。重复类名/非法成员拒）。
 func saRecordClass(st *ast.Node, classes map[string]*saClassDef, pos func(int) (int, int), refusals *[]SARefusal) bool {
 	return saRecordClassNamed(st, "", false, "", classes, pos, refusals)
@@ -6128,6 +6380,9 @@ func saLowerNewStmt(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	def, ok := scope.classes[name]
 	if !ok {
+		if saIsStdOpaqueClass(name) {
+			return saLowerStdOpaqueNew(w, name, ce, scope, pos, refusals, nextTemp)
+		}
 		return "", "unknown class " + name
 	}
 	if def.isIface {

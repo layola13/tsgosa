@@ -5197,6 +5197,11 @@ type saScope struct {
 	// 正则绑定模式表（`const re = /pat/flags` 记模式文本，`new RegExp` 记串元文本；
 	// 捕获组判定消解绑定（字面量门同形）；未知/重绑沿旧门保守（缺表即不可见）；#14a）。
 	regexPat map[string]string
+	// stdOpaque maps a variable bound by an opaque std ctor (patch 2) to its
+	// class name, so .signal reads and the small method table resolve without
+	// a layout. Aliasing a handle refuses elsewhere already (explicit clone
+	// rule), so no propagation is needed.
+	stdOpaque map[string]string
 	// 回调域内标记（`saInlineTestUnit` 进置 true；顶层/普通函数内调
 	// assertions 无尾声点，大声拒，禁静默无检查）。
 	expectInTest bool
