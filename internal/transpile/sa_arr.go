@@ -5810,6 +5810,51 @@ func saLowerObjDestructuringDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.
 		}
 		src = h
 	}
+	// Method-call source (JEV route_via_method_layout 1.0): resolve the
+	// return layout from the receiver class def's MethodDeclaration
+	// before emitting anything, then evaluate the call once and let the
+	// existing per-field lowering run on the temp handle. Annotated
+	// declarations require the method layout to match the annotation.
+	if src == "" && vd.Initializer != nil && vd.Initializer.Kind == ast.KindCallExpression {
+		ce := vd.Initializer.AsCallExpression()
+		if ce != nil && ce.QuestionDotToken == nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.QuestionDotToken == nil && pa.Name() != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+				if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+					if cdef, ok := scope.classes[k[5:]]; ok && cdef != nil {
+						if mn := cdef.methods[pa.Name().Text()]; mn != nil && mn.Kind == ast.KindMethodDeclaration {
+							md := mn.AsMethodDeclaration()
+							if md != nil && md.Type != nil && md.Type.Kind == ast.KindTypeReference {
+								ref := md.Type.AsTypeReferenceNode()
+								if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+									if d2, ok := scope.classes[ref.TypeName.Text()]; ok && d2 != nil && (def == nil || d2.name == def.name) {
+										op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											ln, col := pos(d.Pos())
+											*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+											return false
+										}
+										if voidCall || op == "" {
+											ln, col := pos(d.Pos())
+											*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "void call cannot be destructured"})
+											return false
+										}
+										if ek, ok := scope.types[op]; !ok || ek == "inst:"+ref.TypeName.Text() {
+											scope.types[op] = "inst:" + ref.TypeName.Text()
+											if def == nil {
+												def = d2
+											}
+											src = op
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	if def == nil {
 		// 命名空间别名源（`const {f} = N` / `const {add} = u`）：成员直绑
 		// 限定被调；布局源另走上门。形状证据：封存 link_nsobject.go
