@@ -4177,7 +4177,15 @@ func saLowerTernaryInstArmHandle(w printer.EmitTextWriter, e *ast.Node, want str
 // jsval ternary arms only, so nested ternaries in other jsval operand
 // positions keep refusing loudly.
 func saJsValTernaryArm(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextLabel, nextTemp *int) (string, string) {
-	if e != nil && e.Kind == ast.KindConditionalExpression {
+	// 透明包装解包（JEV par_retann sub unwrap 1.0）：括号/as/satisfies/
+	// 非空断言包装的 JSX 臂此前在求值门按包装种拒。
+	if e != nil {
+		e = saUnwrapTransparent(e)
+	}
+	if e == nil {
+		return "", "bad jsval ternary arm"
+	}
+	if e.Kind == ast.KindConditionalExpression {
 		ce := e.AsConditionalExpression()
 		if ce == nil {
 			return "", "bad nested jsval ternary"

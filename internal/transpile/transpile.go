@@ -5734,6 +5734,22 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 		w.Write("  ret\n")
 		return true, false
 	}
+	if scope.retKind == "jsval" && rs.Expression != nil {
+		// 括号/断言包装的三元返回（JEV par_retann sub unwrap 1.0）：
+		// 裸三元沿既有分发；包装三元此前落入求值门而拒。
+		if ue := saUnwrapTransparent(rs.Expression); ue != nil && ue != rs.Expression && ue.Kind == ast.KindConditionalExpression {
+			ce := ue.AsConditionalExpression()
+			t, msg := saLowerTernaryJsVal(w, ce, s, scope, pos, refusals, nextLabel, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+				return false, true
+			}
+			saReleaseExceptOp(w, scope, t)
+			w.Write(fmt.Sprintf("  ret %s\n", t))
+			return true, false
+		}
+	}
 	if rs.Expression != nil && rs.Expression.Kind == ast.KindConditionalExpression {
 		ce := rs.Expression.AsConditionalExpression()
 		if scope.retKind == "jsval" {
