@@ -8279,6 +8279,22 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 			// segs 收集中缀 + layoutOfNode 解析基布局 + lowerExpr 基回裸名:2819
 			// `return n.Text()` + `load base + off as saname` + ftypes 下沉嵌套）。
 			h, def = pa.Expression.Text(), d
+		} else if to, ok := saTopObjLookup(scope, pa.Expression); ok {
+			// 顶层 const 对象根（JEV chain materialize_sub）：快照按需物化，
+			// 既有尾部续读嵌套域句柄；深链经 PropertyAccess 递归自达。
+			// 无初值种子沿旧门大声拒，禁空初值入物化。
+			d, ok := scope.classes[to.layout]
+			if !ok || d == nil {
+				return "", nil, "unknown class " + to.layout
+			}
+			if to.init == nil {
+				return "", nil, "top object has no recorded initializer"
+			}
+			h2, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", nil, msg
+			}
+			h, def = h2, d
 		} else {
 			return "", nil, "chained base is not a bound instance"
 		}

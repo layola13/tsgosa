@@ -6452,15 +6452,23 @@ func saChainSubDef(pa *ast.PropertyAccessExpression, scope *saScope) (*saClassDe
 		}
 		hdef = d
 	case pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier:
-		k, ok := scope.types[pa.Expression.Text()]
-		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+			d, ok := scope.classes[k[5:]]
+			if !ok {
+				return nil, false
+			}
+			hdef = d
+		} else if to, ok := saTopObjLookup(scope, pa.Expression); ok {
+			// 顶层 const 对象根（JEV chain materialize_sub 判定门）：
+			// 纯查布局，不落字；求值侧 saChainBase 物化臂同律。
+			d, ok := scope.classes[to.layout]
+			if !ok {
+				return nil, false
+			}
+			hdef = d
+		} else {
 			return nil, false
 		}
-		d, ok := scope.classes[k[5:]]
-		if !ok {
-			return nil, false
-		}
-		hdef = d
 	case pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression:
 		inner := pa.Expression.AsPropertyAccessExpression()
 		sub, ok := saChainSubDef(inner, scope)
