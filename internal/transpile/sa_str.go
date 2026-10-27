@@ -144,6 +144,13 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			scope.arrStr != nil && scope.arrStr[ea.Expression.Text()] {
 			return true
 		}
+		// 字段串元数组元素读即串值（实例字段 string[]，经布局 fdefs/别名
+		// 消解元种；`?.` 沿旧门；JEV unmask fdef_elem_kind 1.0）。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
+			ea.Expression != nil && ea.Expression.Kind == ast.KindPropertyAccessExpression &&
+			saFieldIsStrArray(ea.Expression, scope) {
+			return true
+		}
 		// Object.entries pair 位 0 即串值（按静态位次；`?.` 沿旧门）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil {
 			if lit, ok := saPairSlot(ea.AsNode(), scope); ok && lit == 0 {
@@ -640,6 +647,14 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return "", msg
 			}
 			return saLowerCheckedIndex(w, ea.Expression.Text(), idx, scope.nextLabel, nextTemp), ""
+		}
+		// 字段串元数组元素读（实例字段 string[]；基柄经数组求值，元读走
+		// 下标读位（4 字节 i32 槽，与具名串元数组同形）；`?.` 沿旧门；
+		// JEV unmask fdef_elem_kind 1.0）。
+		if ea.QuestionDotToken == nil && ea.Expression != nil &&
+			ea.Expression.Kind == ast.KindPropertyAccessExpression &&
+			saFieldIsStrArray(ea.Expression, scope) {
+			return saLowerIndexLoadExpr(w, ea, scope, pos, refusals, nextTemp)
 		}
 		// Object.entries pair 位 0（串键）：先取外层 pair 句柄，再读位 0。
 		if lit, ok := saPairSlot(ea.AsNode(), scope); ok {

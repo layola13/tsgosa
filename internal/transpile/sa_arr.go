@@ -1888,6 +1888,107 @@ func saArrayElemAnnot(tn *ast.TypeNode) *ast.TypeNode {
 	}
 }
 
+// saFieldTypeNode resolves an instance object's field TypeNode (JEV unmask
+// fdef_elem_kind): the per-binding element type (keyElems, for top-array
+// for-of bindings) first, then the recorded layout's fdefs, then the
+// layout-named alias's TypeLiteral members. Anything else yields false;
+// callers keep refusing loudly, never guessing a kind.
+func saFieldTypeNode(objName, field string, scope *saScope) (*ast.TypeNode, bool) {
+	if ke, ok := scope.keyElems[objName]; ok && ke.elem != nil {
+		if tn, ok := saKeyElemFieldType(ke.elem, field, scope, 0); ok {
+			return tn, true
+		}
+	}
+	k, ok := scope.types[objName]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return nil, false
+	}
+	layout := k[5:]
+	if def, ok := scope.classes[layout]; ok && def != nil && def.fdefs != nil {
+		if tn, ok := def.fdefs[field]; ok && tn != nil {
+			return tn, true
+		}
+	}
+	if aliased, ok := scope.aliasOf[layout]; ok {
+		if tn, ok := saKeyElemFieldType(aliased, field, scope, 0); ok {
+			return tn, true
+		}
+	}
+	return nil, false
+}
+
+// saFieldIsStrArray reports whether a property-access expression reads a
+// string[] field of an instance object: the object is inst-typed
+// (identifier binding or this) and the field's resolved TypeNode is a
+// string array (string[] / Array<string> / readonly forms / ReadonlyArray,
+// following same-file aliases for the field type itself). Unresolvable
+// fields yield false so callers keep refusing loudly.
+func saFieldIsStrArray(base *ast.Node, scope *saScope) bool {
+	if base == nil || base.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := base.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return false
+	}
+	field := pa.Name().Text()
+	var tn *ast.TypeNode
+	var ok bool
+	if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+		tn, ok = saFieldTypeNode(pa.Expression.Text(), field, scope)
+	} else if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword {
+		if def, ok2 := scope.classes[scope.thisClass]; ok2 && def != nil && def.fdefs != nil {
+			tn, ok = def.fdefs[field]
+		}
+		if !ok {
+			if aliased, ok2 := scope.aliasOf[scope.thisClass]; ok2 {
+				tn, ok = saKeyElemFieldType(aliased, field, scope, 0)
+			}
+		}
+	} else {
+		return false
+	}
+	if !ok || tn == nil {
+		return false
+	}
+	for depth := 0; depth < 8 && tn != nil; depth++ {
+		if tn.Kind == ast.KindParenthesizedType {
+			if pt := tn.AsParenthesizedTypeNode(); pt != nil {
+				tn = pt.Type
+				continue
+			}
+			return false
+		}
+		if saIsStringArrayAnnot(tn) {
+			return true
+		}
+		if tn.Kind == ast.KindTypeReference {
+			ref := tn.AsTypeReferenceNode()
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "ReadonlyArray" &&
+				ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil {
+				el := ref.TypeArguments.Nodes[0]
+				for el != nil && el.Kind == ast.KindParenthesizedType {
+					if pt := el.AsParenthesizedTypeNode(); pt != nil {
+						el = pt.Type
+					} else {
+						break
+					}
+				}
+				return el != nil && el.Kind == ast.KindStringKeyword
+			}
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier &&
+				(ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0) {
+				if next, ok := scope.aliasOf[ref.TypeName.Text()]; ok {
+					tn = next
+					continue
+				}
+			}
+		}
+		return false
+	}
+	return false
+}
+
 func saTopArrElemText(el *ast.Node) (string, bool) {
 	if el == nil {
 		return "", false
@@ -5827,6 +5928,11 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 					}
 					scope.keyElems[binding] = saKeyElem{layout: arr.layout, elem: arr.elemAnnot}
 				}
+			} else if fo.Expression != nil && fo.Expression.Kind == ast.KindPropertyAccessExpression && saFieldIsStrArray(fo.Expression, scope) {
+				// 实例字段串元数组巡回：元为串柄，行绑 str（具名串元数组
+				// 同形：元读本就是 4 字节 i32 槽；JEV unmask fdef_elem_kind
+				// 1.0，scope forof_and_index 0.99）。
+				bindKind = "str"
 			}
 		}
 		scope.types[binding] = bindKind
