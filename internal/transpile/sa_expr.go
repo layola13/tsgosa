@@ -6959,7 +6959,8 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				}
 			}
 		}
-		if op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp); msg == "" {
+		op, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
+		if msg == "" {
 			// JEV passthrough_evaluated 1.0: an evaluated jsval handle
 			// (e.g. a Record<string, unknown> field read) passes through
 			// unchanged; boxing it as a number would corrupt the handle.
@@ -6981,6 +6982,12 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				saOwnTemp(scope, h)
 				return h, ""
 			}
+		}
+		// 3_ifdisp (JEV diag_iface_only): an interface no-body failure is
+		// named, not masked by the generic message; all other inner
+		// failures keep the generic message.
+		if msg != "" && strings.Contains(msg, "is an interface method with no body") {
+			return "", msg
 		}
 		return "", "jsval argument needs a lowerable value"
 	}
