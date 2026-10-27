@@ -3680,11 +3680,116 @@ func saTopObjLitLayout(vd *ast.VariableDeclaration, classes map[string]*saClassD
 	return saSynthTopObjLayout(fields, fkinds, map[string]bool{}, map[string]string{}, classes), true
 }
 
+// saTopObjNullLayout claims top-level const objects whose annotation is an
+// unrecorded alias resolving (through aliasOf) to an intersection or type
+// literal, and whose literal fields are nulls (kind from the merged
+// annotation layout), i32/str literals (cross-checked like the interface
+// path), or empty object literals for Record-typed fields (materialized as
+// empty maps by the object-literal map arm). JEV kind244_empty:
+// null_annotated_str 0.91, scope lit_intersection_only 0.83. Anything else
+// returns false and the statement keeps refusing kind-244 loudly.
+func saTopObjNullLayout(vd *ast.VariableDeclaration, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+	if vd == nil || vd.Type == nil || vd.Initializer == nil {
+		return "", false
+	}
+	if vd.Type.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := vd.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil {
+		return "", false
+	}
+	if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+		return "", false
+	}
+	if ref.TypeName.Kind != ast.KindIdentifier {
+		return "", false
+	}
+	if _, ok := classes[ref.TypeName.Text()]; ok {
+		return "", false
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	if init == nil || init.Kind != ast.KindObjectLiteralExpression {
+		return "", false
+	}
+	ol := init.AsObjectLiteralExpression()
+	if ol == nil || ol.Properties == nil || len(ol.Properties.Nodes) == 0 {
+		return "", false
+	}
+	lay, ok := saSynthMergedLayout(vd.Type, aliasOf, classes)
+	if !ok {
+		return "", false
+	}
+	def, ok := classes[lay]
+	if !ok || def == nil || !def.isIface {
+		return "", false
+	}
+	var keys []string
+	seen := map[string]bool{}
+	for _, p := range ol.Properties.Nodes {
+		if p == nil || p.Kind != ast.KindPropertyAssignment {
+			return "", false
+		}
+		fname, ok := saObjPropName(p)
+		if !ok || fname == "" || seen[fname] {
+			return "", false
+		}
+		seen[fname] = true
+		keys = append(keys, fname)
+		fk, ok := def.fkinds[fname]
+		if !ok {
+			return "", false
+		}
+		finit := p.AsPropertyAssignment().Initializer
+		switch {
+		case finit != nil && (finit.Kind == ast.KindNullKeyword || finit.Kind == ast.KindUndefinedKeyword):
+			if fk != "str" && fk != "i32" && fk != "bool" {
+				return "", false
+			}
+		case finit != nil && finit.Kind == ast.KindObjectLiteralExpression:
+			sub := finit.AsObjectLiteralExpression()
+			if sub == nil || sub.Properties == nil || len(sub.Properties.Nodes) != 0 {
+				return "", false
+			}
+			if fk != "arr" {
+				return "", false
+			}
+			fdef, ok := def.fdefs[fname]
+			if !ok || fdef == nil {
+				return "", false
+			}
+			if _, ok := saRecordValueKind(fdef, classes, aliasOf); !ok {
+				return "", false
+			}
+		default:
+			litKind := ""
+			if _, iok := saTopArrElemText(finit); iok {
+				litKind = "i32"
+			} else if _, sok := saTopArrStrText(finit); sok {
+				litKind = "str"
+			} else {
+				return "", false
+			}
+			if litKind == "i32" {
+				if fk != "i32" && fk != "bool" {
+					return "", false
+				}
+			} else if fk != "str" {
+				return "", false
+			}
+		}
+	}
+	if !saWantKeyMatch(def, keys) {
+		return "", false
+	}
+	return lay, true
+}
+
 // saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：// saTopObjPrescan 收顶层 `const O: P = {...}` 对象快照（名→快照；接口先行：
 // 注解须为已记录接口；键集须与布局偏移键集精确相等；字段初值须全为 i32/串
 // 直接量且与布局种交叉一致（注错种 TS 本错，此处亦拒）；简写/计算键/spread/
 // 方法余形整句不收，沿旧 kind244 门；788）。
-func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool) (map[string]saTopObj, map[*ast.Node]bool) {
+func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[string]*saClassDef, assigned map[string]bool, aliasOf map[string]*ast.TypeNode) (map[string]saTopObj, map[*ast.Node]bool) {
 	out := map[string]saTopObj{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -3754,6 +3859,11 @@ func saTopObjPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				if lay, ok3 := saTopObjLitLayout(vd, classes, out); ok3 {
 					init3 := saUnwrapTransparent(vd.Initializer)
 					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: init3}})
+					continue
+				}
+				if lay, ok4 := saTopObjNullLayout(vd, classes, aliasOf); ok4 {
+					init4 := saUnwrapTransparent(vd.Initializer)
+					pends = append(pends, pend{name: name, obj: saTopObj{layout: lay, init: init4}})
 					continue
 				}
 				okAll = false
@@ -5045,6 +5155,27 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 			}
 			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], v))
 			continue
+		}
+		if fk := def.fkinds[o.fname]; fk == "arr" {
+			// Record-typed field with an empty object literal (JEV
+			// kind244_empty null_annotated_str): the field is a map and
+			// {} is the empty map. Non-Record arr fields and non-empty
+			// literals fall through to the old arr arm below, so this
+			// arm only flips previously-refusing shapes.
+			if o.init != nil && o.init.Kind == ast.KindObjectLiteralExpression {
+				if sub := o.init.AsObjectLiteralExpression(); sub != nil && sub.Properties != nil && len(sub.Properties.Nodes) == 0 {
+					if fdef, ok := def.fdefs[o.fname]; ok && fdef != nil {
+						if _, ok := saRecordValueKind(fdef, scope.classes, scope.aliasOf); ok {
+							mh, msg := saLowerMapNew(w, "Map", nil, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", "", msg
+							}
+							w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", h, def.offsets[o.fname], mh))
+							continue
+						}
+					}
+				}
+			}
 		}
 		if fk := def.fkinds[o.fname]; fk == "arr" {
 			// arr 域存句柄（字面量递归/绑定直传经句柄总线；泛型形参域等标量初值

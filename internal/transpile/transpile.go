@@ -2135,7 +2135,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	assigned := saAssignedNames(sf.AsSourceFile().Statements.Nodes)
 	modVars := saRecordModStates(sf.AsSourceFile().Statements.Nodes, assigned, funcs, classes, pos, &refusals)
 	topArrs, topArrStmts := saTopArrPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
-	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned)
+	topObjs, topObjStmts := saTopObjPrescan(sf.AsSourceFile().Statements.Nodes, funcs, classes, assigned, aliasOf)
 	topRegex, topRegexStmts := saTopRegexPrescan(sf.AsSourceFile().Statements.Nodes, assigned)
 	topSets, topSetStmts := saTopSetPrescan(sf.AsSourceFile().Statements.Nodes, funcs, assigned, topArrs)
 	topMaps, topMapStmts := saTopMapPrescan(sf.AsSourceFile().Statements.Nodes, assigned, link)
