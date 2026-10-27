@@ -1149,6 +1149,13 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 			}
 			// 外层须为 Record/Map<键, 值> 本身（值种取自第二类型实参；
 			// saTopMapValueKind 才是值种解析器，整注解传入会误作嵌套）。
+			// 注解须先验为 TypeReference（内联对象注解如 shared
+			// SA_VM_BUN_PROFILE_GROUPS 曾致 AsTypeReferenceNode 崩溃；
+			// 旧导出跳过曾偶然遮住它；非 Record/Map 注解沿旧门拒）。
+			if vd.Type.Kind != ast.KindTypeReference {
+				okAll = false
+				break
+			}
 			ref := vd.Type.AsTypeReferenceNode()
 			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || (ref.TypeName.Text() != "Record" && ref.TypeName.Text() != "Map") {
 				okAll = false
