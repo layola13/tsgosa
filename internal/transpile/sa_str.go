@@ -103,6 +103,23 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 				return scope.mapVals[ea.Expression.Text()] == "str"
 			}
 		}
+		// 顶层对象常量串域下标读即串值（3_unannot3, JEV
+		// grey_num_index / grey_str_index / topobj_str_index）：
+		// 字面量键按键文本映射到点读域，与求值侧 saEvalStr
+		// 顶层对象臂同核，禁判定与求值分叉；`?.`/非字面量
+		// 键/未知域/非串域沿旧门。
+		if ea := e.AsElementAccessExpression(); ea != nil && ea.Expression != nil &&
+			ea.Expression.Kind == ast.KindIdentifier && ea.QuestionDotToken == nil {
+			if to, ok := saTopObjLookup(scope, ea.Expression); ok {
+				if key, keyOK := saTopObjIndexKey(ea); keyOK {
+					if def, ok := scope.classes[to.layout]; ok {
+						if _, present := def.offsets[key]; present && def.fkinds[key] == "str" {
+							return true
+						}
+					}
+				}
+			}
+		}
 		// 点读串 Map 再下标即串值（T.k[i]：顶层 Record 嵌套点读，
 		// 或具名 map 点读值种 map:str；点读柄种由求值侧点读臂同律记）。
 		if ea := e.AsElementAccessExpression(); ea != nil && ea.QuestionDotToken == nil &&
@@ -589,6 +606,29 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					return t, ""
 				}
 				return "", "map value is not a string"
+			}
+		}
+		// 顶层对象常量串域下标读（快照物化后走既有字段读位，
+		// 与点读臂同形；`?.`/非字面量键/未知域/非串域沿旧门）。
+		if ea.QuestionDotToken == nil && ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
+			if to, ok := saTopObjLookup(scope, ea.Expression); ok {
+				if key, keyOK := saTopObjIndexKey(ea); keyOK {
+					if def, ok := scope.classes[to.layout]; ok {
+						if fk, present := def.fkinds[key]; present && fk == "str" {
+							if _, ok := def.offsets[key]; ok {
+								h, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								t, msg := saLowerClassFieldLoad(w, h, def, key, scope, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								return t, ""
+							}
+						}
+					}
+				}
 			}
 		}
 		// keyof 实例串读（动态键 str 门/字面量键 str 域经下标读位；`?.` 沿旧门）。
