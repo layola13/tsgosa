@@ -7002,7 +7002,12 @@ func saLowerObjectLiteral(w printer.EmitTextWriter, n *ast.Node, want string, sc
 	// literal value for a string-literal-typed field must equal the
 	// literal type; other values (identifiers, templates, calls)
 	// keep erasure semantics and are checked by kind only.
-	if def.fdefs != nil {
+	// Merged layouts are exempt: union/intersection synthesis keeps
+	// only the first variant's literal (first-wins fdefs), so a
+	// value matching a later variant (shared CodexSandboxPolicy
+	// "workspaceWrite", server CodexRetryParsedLine "ignored") would
+	// falsely refuse against the first variant's literal.
+	if def.fdefs != nil && !strings.HasPrefix(def.name, "Union_") && !strings.HasPrefix(def.name, "Inter_") {
 		for _, o := range ops {
 			if o.fname == "" || o.init == nil {
 				continue
