@@ -1216,6 +1216,20 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && k == "arr" {
 			return saLowerArrDecl(w, d, vd, name, isConst, scope, pos, refusals, nextTemp)
 		}
+		if saIsStatsCall(init.AsCallExpression(), scope) {
+			h, _, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(init.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+			scope.types[name] = "inst:Stats"
+			saConsumeOwn(scope, h)
+			saDeclareOwned(scope, name)
+			saCopyInstFn(scope, h, name)
+			return true
+		}
 		if k, ok := saArrCallRet(init.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
 			// Standalone equality find (e.g. `const preset = PRESETS.find(...)`):
 			// the scan types its result temp inst:<layout>; bind it owned

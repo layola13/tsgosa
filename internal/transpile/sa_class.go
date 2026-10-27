@@ -461,6 +461,71 @@ func saLowerURLSearchParamsMethod(w printer.EmitTextWriter, recv, method string,
 	return "", true, "", true
 }
 
+// saSeedStatsLayout records the synthetic emitter Stats layout (patch 4)
+// if absent; a user-declared class of the same name wins (lookup hits
+// first). Fields are named exactly like the TS Stats surface so generic
+// inst field loads serve .mode/.size/.mtimeMs (and .isFile/.isDirectory as
+// fields); .isFile()/.isDirectory() calls go through saLowerStatsMethod.
+func saSeedStatsLayout(classes map[string]*saClassDef) {
+	if _, ok := classes["Stats"]; ok {
+		return
+	}
+	classes["Stats"] = &saClassDef{
+		name: "Stats",
+		fields: []saClassField{
+			{name: "isFile", offset: 0},
+			{name: "isDirectory", offset: 4},
+			{name: "mode", offset: 8},
+			{name: "size", offset: 12},
+			{name: "mtimeMs", offset: 16},
+		},
+		offsets: map[string]int{"isFile": 0, "isDirectory": 4, "mode": 8, "size": 12, "mtimeMs": 16},
+		fkinds:  map[string]string{"isFile": "i32", "isDirectory": "i32", "mode": "i32", "size": "i32", "mtimeMs": "i32"},
+		fsub:    map[string]string{},
+		fopt:    map[string]bool{},
+		fpos:    map[string]int{},
+		methods: map[string]*ast.Node{},
+		getters: map[string]*ast.Node{},
+		setters: map[string]*ast.Node{},
+		statics: map[string]saStaticVal{},
+		size:    20,
+	}
+}
+
+// saIsStatsCall reports whether ce is a projected `statSync(...)` call
+// (named import from node:fs, recorded as mod "fs").
+func saIsStatsCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	if ce.Expression.Text() != "statSync" {
+		return false
+	}
+	mod, ok := scope.imports["statSync"]
+	return ok && mod == "fs"
+}
+
+// saLowerStatsMethod lowers isFile()/isDirectory() on a Stats handle value
+// (an identifier name or a temp holding the struct). Anything else is
+// unhandled and falls through to the existing refusal arms.
+func saLowerStatsMethod(w printer.EmitTextWriter, recv, method string, ce *ast.CallExpression, scope *saScope, nextTemp *int) (string, bool, string, bool) {
+	off, ok := map[string]int{"isFile": 0, "isDirectory": 4}[method]
+	if !ok {
+		return "", false, "", false
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 0 {
+		return "", false, "Stats." + method + " takes no arguments", true
+	}
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", v, recv, off))
+	return v, false, "", true
+}
+
 // saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh
 // jsval box (kind 4 object, null payload) via the existing @ts_jsval_box_ptr
 // helper (no new inline helper). Constructor args are side-effect evaluated

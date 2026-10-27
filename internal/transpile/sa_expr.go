@@ -3144,6 +3144,37 @@ func saEvalCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope
 			}
 			return op, false, ""
 		}
+		// Stats methods on identifier receivers (isFile()/isDirectory() load
+		// the eagerly extracted i32 field; other methods fall through).
+		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			scope.types[pa.Expression.Text()] == "inst:Stats" {
+			if op, voidCall, msg, handled := saLowerStatsMethod(w, pa.Expression.Text(), pa.Name().Text(), ce, scope, nextTemp); handled {
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, voidCall, ""
+			}
+		}
+		// Stats methods on a statSync call result (removeEmptyDirsSync shape:
+		// `statSync(p).isDirectory()`); the temp struct is released after
+		// the field load (its fields are plain i32 values).
+		if pa.Name() != nil && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindCallExpression &&
+			saIsStatsCall(pa.Expression.AsCallExpression(), scope) {
+			recv, _, msg := saEvalCall(w, pa.Expression.AsCallExpression(), scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			if op, voidCall, msg, handled := saLowerStatsMethod(w, recv, pa.Name().Text(), ce, scope, nextTemp); handled {
+				saReleaseStmtTemp(w, scope, recv)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, voidCall, ""
+			}
+			saReleaseStmtTemp(w, scope, recv)
+		}
 		// URLSearchParams accumulator methods (.set/.append rewrite the str
 		// binding, .toString() reads it; .get/.has/.delete fall through to
 		// the existing refusal arms).
@@ -5013,6 +5044,102 @@ func saLowerProjCall(w printer.EmitTextWriter, mod, remote string, ce *ast.CallE
 	}
 	if mod != "fs" && mod != "net" {
 		return "", false, mod + "." + remote + " is not a projected surface"
+	}
+	if mod == "fs" && remote == "statSync" {
+		// fs.statSync(path): metadata call, eager field extraction, metadata
+		// freed immediately; error -> zero Stats (JEV zero_stats_on_error).
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		if len(argNodes) != 1 {
+			return "", false, "fs.statSync takes 1 argument"
+		}
+		h, msg := saEvalStr(w, argNodes[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, msg
+		}
+		scope.addImport("sa_std/fs.sai")
+		saSeedStatsLayout(scope.classes)
+		bp, bl := saExpandStr(w, h, nextTemp)
+		outSlot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", outSlot))
+		err := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_std_fs_metadata(&%s, %s, &%s)\n", err, bp, bl, outSlot))
+		nz := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = ne %s, 0\n", nz, err))
+		errL := fmt.Sprintf("L_stats_err_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		okL := fmt.Sprintf("L_stats_ok_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL := fmt.Sprintf("L_stats_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", nz, errL, okL))
+		w.Write(fmt.Sprintf("%s:\n", errL))
+		zero := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 20\n", zero))
+		for _, off := range []int{0, 4, 8, 12, 16} {
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as i32\n", zero, off))
+		}
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, zero))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", okL))
+		h64 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", h64, outSlot))
+		isF := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_metadata_is_file(%s)\n", isF, h64))
+		isD := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_metadata_is_directory(%s)\n", isD, h64))
+		mode := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_metadata_mode(%s)\n", mode, h64))
+		ln64 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_metadata_len(%s)\n", ln64, h64))
+		ms64 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fs_metadata_modified_ms(%s)\n", ms64, h64))
+		st := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 20\n", st))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as i32\n", st, isF))
+		w.Write(fmt.Sprintf("  store %s + 4, %s as i32\n", st, isD))
+		mode32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", mode32, mode))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as i32\n", st, mode32))
+		len32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", len32, ln64))
+		w.Write(fmt.Sprintf("  store %s + 12, %s as i32\n", st, len32))
+		ms32 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", ms32, ms64))
+		w.Write(fmt.Sprintf("  store %s + 16, %s as i32\n", st, ms32))
+		fr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_std_fs_metadata_free(%s)\n", fr, h64))
+		saReleaseStmtTemp(w, scope, fr)
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, st))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+		res := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", res, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		w.Write(fmt.Sprintf("  !%s\n", outSlot))
+		saOwnTemp(scope, res)
+		return res, false, ""
 	}
 	if mod == "fs" && remote == "existsSync" {
 		// existsSync(path) 即状态判零（SA_FS_OK=0；任错皆 false 与 Node 同义；
