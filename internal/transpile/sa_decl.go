@@ -397,6 +397,15 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 					return false
 				}
+				// Loop-seeded kinds recorded on the temp handle propagate
+				// to the binding (literal seeds record nothing, so this is
+				// a no-op for them).
+				if mv, ok := scope.mapVals[h]; ok {
+					saSetMapVal(scope, name, mv)
+				}
+				if sv, ok := scope.setVals[h]; ok {
+					saSeedSetVal(scope, name, sv)
+				}
 				kind := "map"
 				if ne.Expression.Text() == "Set" {
 					kind = "set"
