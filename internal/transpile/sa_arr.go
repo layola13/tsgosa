@@ -8541,7 +8541,16 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 			done()
 			return "", "callback parameter shape is not lowerable"
 		}
-		if pd.DotDotDotToken != nil || pd.QuestionToken != nil || pd.Initializer != nil {
+		// Optional params bind when a value is supplied (2b_jsvalargs:
+		// method signatures commonly declare an optional params
+		// argument, and the inline-method core requires exact arity,
+		// so an optional method param always has a supplied value;
+		// the upfront params-vs-argVals arity check above already
+		// refuses the missing-value case, so the old QuestionToken
+		// gate only mis-refused inlined methods, jsval params
+		// included. Rest params and initializers still refuse here;
+		// default values belong to the 2b_defaults stream, not this one.
+		if pd.DotDotDotToken != nil || pd.Initializer != nil {
 			done()
 			return "", "callback parameter shape is not lowerable"
 		}
@@ -8644,11 +8653,16 @@ func saCallbackValue(w printer.EmitTextWriter, cb *ast.Node, argVals []string, w
 		// g1 test: number callback on a jsval receiver lowers as i32; an
 		// unknown/no annotation stays jsval).
 		if i < len(kinds) && kinds[i] == "jsval" && !(pd.Type != nil && (pd.Type.Kind == ast.KindNumberKeyword || (pd.Type.Kind == ast.KindTypeReference && pd.Type.AsTypeReferenceNode() != nil && pd.Type.AsTypeReferenceNode().TypeName != nil && pd.Type.AsTypeReferenceNode().TypeName.Text() == "i32"))) {
-			if saIsTempOp(argVals[i]) {
-				w.Write(fmt.Sprintf("  %s = %s\n", name, argVals[i]))
-			} else {
-				w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
-			}
+			// Copy-bind in both branches (2b_jsvalargs): a direct move
+			// of a fresh jsval box temp into the param name orphans
+			// ownership there (caller drain skips the moved temp, the
+			// param name is never released) and sa check fails, first
+			// UseAfterMove on the drain release, then MemoryLeak on the
+			// param name when the release is suppressed. Copying (add 0,
+			// as the str arm and the named branch already do) keeps the
+			// caller temp as the single owner, released once by the
+			// caller drain; the param alias dies with the inlined body.
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", name, argVals[i]))
 			bind(name, "jsval")
 			saDeclarePlain(scope, name)
 			continue
