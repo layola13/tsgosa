@@ -774,6 +774,12 @@ type saTopMap struct {
 // saTopMapValueKind 解析 Record/Map 注解的值种：串/数/布尔直值，或
 // 嵌套 Record/Map 的 map:<内值种>；其余（接口值、jsval 值等）不收。
 func saTopMapValueKind(t *ast.TypeNode) (string, bool) {
+	return saTopMapValueKindA(t, nil)
+}
+
+// saTopMapValueKindA：同 saTopMapValueKind，另以同文件别名表消解键别名
+// （Record<Locale, ...> 的 Locale 须经别名表展为索引访问方认；nil 表沿旧门）。
+func saTopMapValueKindA(t *ast.TypeNode, aliases map[string]*ast.TypeNode) (string, bool) {
 	if t == nil {
 		return "", false
 	}
@@ -795,10 +801,10 @@ func saTopMapValueKind(t *ast.TypeNode) (string, bool) {
 		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 2 {
 			return "", false
 		}
-		if !saTopMapKeyOK(ref.TypeArguments.Nodes[0]) {
+		if !saTopMapKeyOK(ref.TypeArguments.Nodes[0], aliases, 0) {
 			return "", false
 		}
-		inner, ok := saTopMapValueKind(ref.TypeArguments.Nodes[1])
+		inner, ok := saTopMapValueKindA(ref.TypeArguments.Nodes[1], aliases)
 		if !ok {
 			return "", false
 		}
@@ -811,11 +817,28 @@ func saTopMapValueKind(t *ast.TypeNode) (string, bool) {
 // saTopMapKeyOK：map 键恒为串。StringKeyword 直认；串字面量并集直认；
 // 索引访问（Locale 形 (typeof X)[...]["value"]）认——其运行时值恒为
 // 串字面量并集；数字属性名由字面量校验另行拒（见 saTopMapLitOK）。
-func saTopMapKeyOK(t *ast.TypeNode) bool {
-	if t == nil {
+func saTopMapKeyOK(t *ast.TypeNode, aliases map[string]*ast.TypeNode, depth int) bool {
+	if t == nil || depth > 4 {
 		return false
 	}
 	switch t.Kind {
+	case ast.KindTypeReference:
+		ref := t.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return false
+		}
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return false
+		}
+		if aliased, ok := aliases[ref.TypeName.Text()]; ok {
+			return saTopMapKeyOK(aliased, aliases, depth+1)
+		}
+		return false
+	case ast.KindIdentifier:
+		if aliased, ok := aliases[t.Text()]; ok {
+			return saTopMapKeyOK(aliased, aliases, depth+1)
+		}
+		return false
 	case ast.KindStringKeyword:
 		return true
 	case ast.KindIndexedAccessType:
@@ -959,6 +982,21 @@ func saTopMapMutated(stmts []*ast.Node, name string) bool {
 // saTopMapPrescan 收顶层 const Record/Map 字面量快照（名→快照；
 // 导出形不收；同语句内先声明者可作后声明者的嵌套值）。
 func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]saTopMap, map[*ast.Node]bool) {
+	aliases := map[string]*ast.TypeNode{}
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindTypeAliasDeclaration {
+			continue
+		}
+		ta := st.AsTypeAliasDeclaration()
+		if ta == nil || ta.Type == nil {
+			continue
+		}
+		nm := st.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		aliases[nm.Text()] = ta.Type
+	}
 	out := map[string]saTopMap{}
 	claimed := map[*ast.Node]bool{}
 	for _, st := range stmts {
@@ -1019,11 +1057,11 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool) (map[string]sa
 				okAll = false
 				break
 			}
-			if !saTopMapKeyOK(ref.TypeArguments.Nodes[0]) {
+			if !saTopMapKeyOK(ref.TypeArguments.Nodes[0], aliases, 0) {
 				okAll = false
 				break
 			}
-			vk, ok := saTopMapValueKind(ref.TypeArguments.Nodes[1])
+			vk, ok := saTopMapValueKindA(ref.TypeArguments.Nodes[1], aliases)
 			if !ok {
 				okAll = false
 				break
