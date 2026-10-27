@@ -6982,6 +6982,58 @@ func saProgAdoptFile(files map[string]string, parsed map[string]*ast.SourceFile,
 	return true
 }
 
+// saProgKeyForOutside maps an absolute-disk target that escapes the build
+// dir to a dir-relative key such as "../backends/.../saVmPolicy.ts" (2b_xfn,
+// JEV adopt_outside_relative 0.79). saProgKeyFor deliberately refuses ".."
+// keys, which is what kept outside-dir relative imports out of the graph;
+// this narrow variant is used ONLY by the relative-adoption path below,
+// never by the bare/node_modules path, so bare resolution behavior is
+// unchanged. The key is injective for a fixed dir, and saProgResolveRelative
+// already computes the same Rel string, so importer edges resolve to it.
+func saProgKeyForOutside(dir, name string) (string, bool) {
+	rel, err := filepath.Rel(dir, name)
+	if err != nil {
+		return "", false
+	}
+	c := path.Clean(filepath.ToSlash(rel))
+	if c == "" || c == ".." || !strings.HasPrefix(c, "../") {
+		return "", false
+	}
+	return c, true
+}
+
+// saProgAdoptFileOutside reads an absolute-disk file into the set under its
+// outside-dir key (see saProgKeyForOutside).
+func saProgAdoptFileOutside(files map[string]string, parsed map[string]*ast.SourceFile, dir, name string, kind core.ScriptKind) bool {
+	c, ok := saProgKeyForOutside(dir, name)
+	if !ok {
+		return false
+	}
+	if _, ok := files[c]; ok {
+		return false
+	}
+	text, err := os.ReadFile(name)
+	if err != nil {
+		return false
+	}
+	files[c] = string(text)
+	// Display name for the parser: strip leading "../" segments. The raw
+	// "/../..." name panics inside parser.ParseSourceFile (verified with a
+	// debug build: files[c] was set, then the parse panicked, and the
+	// saLowerProgram recover aborted the whole adoption loop, leaving
+	// exactly one map-order-random outside file adopted per run). The map
+	// key stays the full "../..." key; only the parser display name is
+	// sanitized, and lowering reads source text from files[c], not from
+	// this name.
+	disp := c
+	for strings.HasPrefix(disp, "../") {
+		disp = disp[3:]
+	}
+	abs := "/" + disp
+	parsed[path.Clean(c)] = parser.ParseSourceFile(ast.SourceFileParseOptions{FileName: abs, Path: tspath.ToPath(abs, "/", true)}, string(text), kind)
+	return true
+}
+
 // saProgKeyForBare maps an outside-project bare resolution back into the
 // shared `node_modules/<pkg>/<rest>` key space so symlinked (`file:`),
 // external, and pnpm-forest installs share keys with real installs (cf
@@ -7077,8 +7129,70 @@ func saProgIncludeBare(files map[string]string, dir string, rs *saProgResolvers,
 			if saProgAdoptFile(files, parsed, dir, cand, kind) {
 				return true
 			}
+			if saProgAdoptFileOutside(files, parsed, dir, cand, kind) {
+				return true
+			}
 		}
 		return false
+	}
+	// Relative-outside adoption (2b_xfn): reachable relative imports that
+	// escape the build dir are adopted here, NOT gated by the total file
+	// count -- the capped loop below never runs for packages already above
+	// 64 walked files (apps/server has 92), which is why the outside file
+	// stayed out of the graph even where adoptRel could have found it.
+	// Only relative specs are followed here; bare/node_modules adoption
+	// keeps the existing capped loop untouched. The loop runs to fixpoint
+	// over SORTED keys: a cap-truncated fixpoint over Go map order adopted
+	// a random subset per run (server: 84 vs 82 outside files, different
+	// reports), so determinism needs sorted iteration even under the cap.
+	// The cap counts adopted files only (1024, a runaway bound, not the
+	// 64-file node_modules calibration -- repo-relative closures are
+	// genuinely larger than one package).
+	const maxOutsideAdopted = 1024
+	for adopted := 0; adopted < maxOutsideAdopted; {
+		progress := false
+		keys := make([]string, 0, len(parsed))
+		for p := range parsed {
+			keys = append(keys, p)
+		}
+		sort.Strings(keys)
+		for _, p := range keys {
+			sf := parsed[p]
+			if sf == nil {
+				continue
+			}
+			for _, st := range sf.AsSourceFile().Statements.Nodes {
+				if st == nil {
+					continue
+				}
+				var spec string
+				switch st.Kind {
+				case ast.KindImportDeclaration:
+					if cl := st.AsImportDeclaration().ImportClause; cl != nil && cl.IsTypeOnly() {
+						continue
+					}
+					spec = saProgModuleSpec(st)
+				case ast.KindExportDeclaration:
+					s, _, _ := saProgReexpEdges(st)
+					spec = s
+				default:
+					continue
+				}
+				if spec == "" || !strings.HasPrefix(spec, ".") {
+					continue
+				}
+				if _, ok := files[saProgResolveRelative(p, spec, files, dir, rs, false)]; ok {
+					continue
+				}
+				if adoptRel(p, spec) {
+					progress = true
+					adopted++
+				}
+			}
+		}
+		if !progress {
+			break
+		}
 	}
 	for len(files) < maxFiles {
 		progress := false
@@ -7778,6 +7892,13 @@ func saWriteWorkspace(outDir, mod, entry string, files map[string]string, res *s
 		return err
 	}
 	for p, text := range files {
+		// Outside-dir units (2b_xfn "../..." keys) are not copied: Join
+		// would walk out of the member src dir (and for deeper escapes, out
+		// of the output dir entirely). Their .sa units still emit below
+		// under prefix-sanitized names.
+		if p == ".." || strings.HasPrefix(p, "../") {
+			continue
+		}
 		rel := strings.TrimPrefix(filepath.FromSlash(p), "src"+string(filepath.Separator))
 		dst := filepath.Join(srcDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
