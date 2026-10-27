@@ -3122,6 +3122,111 @@ func saFoldConstInt(e *ast.Node, consts map[string]string, strs map[string]bool)
 	return nil, false
 }
 
+// saIsDecimalInt: strict decimal-int text (optional sign, digits only).
+// Rejects floats, hex, exponents, separators, whitespace, and empty.
+func saIsDecimalInt(t string) bool {
+	if t == "" {
+		return false
+	}
+	i := 0
+	if t[0] == '+' || t[0] == '-' {
+		i = 1
+		if len(t) == 1 {
+			return false
+		}
+	}
+	for ; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// saFoldNumArg folds a Number/parseInt argument to a decimal int string:
+// numeric literals, string literals (inner text after defensive
+// quote-trim; escape-processed digits refuse via the decimal check),
+// folded consts (str or int), parenthesized/prefix forms, and int
+// exprs via saFoldConstInt. Calls, member reads, env reads, floats,
+// hex, whitespace-padded strings, and parseInt prefixes refuse: JS
+// coerces those loosely, and folding a loose coercion would invent
+// semantics. A folded result is never a str (no strs entry).
+func saFoldNumArg(n *ast.Node, consts map[string]string, strs map[string]bool) (string, bool) {
+	if n == nil {
+		return "", false
+	}
+	n = saUnwrapTransparent(n)
+	if n == nil {
+		return "", false
+	}
+	switch n.Kind {
+	case ast.KindNumericLiteral:
+		if saIsDecimalInt(n.Text()) {
+			return n.Text(), true
+		}
+		return "", false
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		t := n.Text()
+		if len(t) >= 2 {
+			if (t[0] == '"' && t[len(t)-1] == '"') || (t[0] == '\'' && t[len(t)-1] == '\'') || (t[0] == '`' && t[len(t)-1] == '`') {
+				t = t[1 : len(t)-1]
+			}
+		}
+		if saIsDecimalInt(t) {
+			return t, true
+		}
+		return "", false
+	case ast.KindIdentifier:
+		if t, ok := consts[n.Text()]; ok {
+			if strs[n.Text()] {
+				if saIsDecimalInt(t) {
+					return t, true
+				}
+				return "", false
+			}
+			if saIsDecimalInt(t) {
+				return t, true
+			}
+		}
+		return "", false
+	case ast.KindParenthesizedExpression:
+		if pe := n.AsParenthesizedExpression(); pe != nil {
+			return saFoldNumArg(pe.Expression, consts, strs)
+		}
+		return "", false
+	case ast.KindPrefixUnaryExpression:
+		un := n.AsPrefixUnaryExpression()
+		if un == nil || un.Operand == nil {
+			return "", false
+		}
+		v, ok := saFoldNumArg(un.Operand, consts, strs)
+		if !ok {
+			return "", false
+		}
+		if un.Operator == ast.KindMinusToken {
+			if len(v) > 0 && v[0] == '-' {
+				return v[1:], true
+			}
+			if len(v) > 0 && v[0] == '+' {
+				return "-" + v[1:], true
+			}
+			return "-" + v, true
+		}
+		if un.Operator == ast.KindPlusToken {
+			if len(v) > 0 && (v[0] == '-' || v[0] == '+') {
+				return v, true
+			}
+			return v, true
+		}
+		return "", false
+	default:
+		if v, ok := saFoldConstInt(n, consts, strs); ok {
+			return v.String(), true
+		}
+		return "", false
+	}
+}
+
 func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
@@ -3266,6 +3371,39 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 				continue
 			}
 			return false
+		case ast.KindCallExpression:
+			// 2b_k244handles patch3: Number()/parseInt() over literals and
+			// folded consts (pure core of JEV i32_pure_only). Env reads,
+			// random/impure calls, call-result members, and loose
+			// coercions (hex, floats, prefixes, non-10 radix) refuse.
+			ce := init.AsCallExpression()
+			if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+				return false
+			}
+			callee := ce.Expression.Text()
+			if callee != "Number" && callee != "parseInt" {
+				return false
+			}
+			if ce.Arguments == nil || len(ce.Arguments.Nodes) == 0 {
+				return false
+			}
+			if callee == "Number" && len(ce.Arguments.Nodes) != 1 {
+				return false
+			}
+			if callee == "parseInt" && len(ce.Arguments.Nodes) > 2 {
+				return false
+			}
+			v, ok := saFoldNumArg(ce.Arguments.Nodes[0], consts, strs)
+			if !ok {
+				return false
+			}
+			if callee == "parseInt" && len(ce.Arguments.Nodes) == 2 {
+				radix, ok := saFoldNumArg(ce.Arguments.Nodes[1], consts, strs)
+				if !ok || radix != "10" {
+					return false
+				}
+			}
+			consts[nm.Text()] = v
 		default:
 			return false
 		}
