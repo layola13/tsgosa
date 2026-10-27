@@ -2211,7 +2211,11 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 							break
 						}
 						for k := range o.boolFields {
-							if prev, dup := kindOf[k]; dup && prev != "bool" {
+							// Bool fields are stored as i32 slots (see kindOf[k] = "i32" below and
+							// saTopObjElemKinds bool -> "i32"); the consistency check must compare
+							// against the stored kind "i32", not "bool", or the second element
+							// of any bool-bearing top object array fails the prescan (kind-244).
+							if prev, dup := kindOf[k]; dup && prev != "i32" {
 								eleOk = false
 								break
 							}
