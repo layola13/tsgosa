@@ -865,7 +865,7 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 					if def, ok := scope.classes[to.layout]; ok {
 						if fk, ok := def.fkinds[pa.Name().Text()]; ok && fk == "str" {
 							if _, ok := def.offsets[pa.Name().Text()]; ok {
-								h, _, msg := saLowerObjectLiteral(w, to.init, to.layout, scope, pos, refusals, nextTemp)
+								h, _, msg := saLowerTopObjClaim(w, to, scope, pos, refusals, nextTemp)
 								if msg != "" {
 									return "", msg
 								}
