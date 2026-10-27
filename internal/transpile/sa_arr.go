@@ -4730,7 +4730,7 @@ func saUseStateTypeKind(t *ast.TypeNode, scope *saScope, depth int, inUnion bool
 			}
 		}
 		if el.Kind == ast.KindUnionType {
-			k, s, l, ok := saUseStateTypeKind(el, scope, depth+1, true)
+			k, _, _, ok := saUseStateTypeKind(el, scope, depth+1, true)
 			if !ok {
 				return "", false, "", false
 			}
@@ -4769,7 +4769,7 @@ func saUseStateTypeKind(t *ast.TypeNode, scope *saScope, depth int, inUnion bool
 			// Wrap the element kind into arr (mirror of the ArrayType
 			// arm); returning the element kind directly would bind
 			// useState<Array<string>> as str instead of arr.
-			ek, es, el, ok := saUseStateTypeKind(ref.TypeArguments.Nodes[0], scope, depth+1, inUnion)
+			ek, _, _, ok := saUseStateTypeKind(ref.TypeArguments.Nodes[0], scope, depth+1, inUnion)
 			if !ok {
 				return "", false, "", false
 			}
@@ -4782,8 +4782,6 @@ func saUseStateTypeKind(t *ast.TypeNode, scope *saScope, depth int, inUnion bool
 				return "arr", false, ek[5:], true
 			case ek == "arr":
 				return "arr", false, "", true
-			case es:
-				return "arr", true, "", true
 			}
 			return "", false, "", false
 		case "NoInfer":
@@ -4974,7 +4972,20 @@ func saUseStateInitialKind(initial *ast.Node, scope *saScope) (string, bool, str
 		pa := initial.AsPropertyAccessExpression()
 		if pa != nil && pa.Name() != nil && pa.QuestionDotToken == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
 			if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-				return saFieldValueKind(k[5:], pa.Name().Text(), scope)
+				if fv, ok := saFieldValueKind(k[5:], pa.Name().Text(), scope); ok {
+					if fv == "arrStr" {
+						return "arr", true, "", true
+					}
+					if fv == "arr" {
+						if def, ok2 := scope.classes[k[5:]]; ok2 {
+							if ek, ok3 := saArrFieldElemKind(def, pa.Name().Text(), scope); ok3 && len(ek) > 5 && ek[:5] == "inst:" {
+								return "arr", false, ek[5:], true
+							}
+						}
+						return "arr", false, "", true
+					}
+					return fv, false, "", true
+				}
 			}
 		}
 		return "", false, "", false
@@ -4984,7 +4995,12 @@ func saUseStateInitialKind(initial *ast.Node, scope *saScope) (string, bool, str
 		}
 		ea := initial.AsElementAccessExpression()
 		if ea != nil && ea.QuestionDotToken == nil {
-			return saReceiverElemKind(ea.Expression, scope)
+			if ek, ok := saReceiverElemKind(ea.Expression, scope); ok {
+				if ek == "arrStr" {
+					return "arr", true, "", true
+				}
+				return ek, false, "", true
+			}
 		}
 		return "", false, "", false
 	}
