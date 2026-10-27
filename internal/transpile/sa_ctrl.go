@@ -5355,6 +5355,7 @@ type saScopeSaved struct {
 	types    map[string]string
 	owned    int
 	forOfStr map[string]bool
+	keyElems map[string]saKeyElem
 }
 
 func saScopeEnter(scope *saScope) saScopeSaved {
@@ -5366,7 +5367,11 @@ func saScopeEnter(scope *saScope) saScopeSaved {
 	for k, v := range scope.forOfStr {
 		savedStr[k] = v
 	}
-	return saScopeSaved{types: saved, owned: len(scope.ownOrder), forOfStr: savedStr}
+	savedKe := make(map[string]saKeyElem, len(scope.keyElems))
+	for k, v := range scope.keyElems {
+		savedKe[k] = v
+	}
+	return saScopeSaved{types: saved, owned: len(scope.ownOrder), forOfStr: savedStr, keyElems: savedKe}
 }
 
 // saScopeExit 闭块域：丢弃块内新登记的名字，还原被遮蔽名的外层种（封存
@@ -5393,6 +5398,17 @@ func saScopeExit(scope *saScope, saved saScopeSaved) {
 	}
 	for k, v := range saved.forOfStr {
 		scope.forOfStr[k] = v
+	}
+	if scope.keyElems == nil && len(saved.keyElems) > 0 {
+		scope.keyElems = map[string]saKeyElem{}
+	}
+	for k := range scope.keyElems {
+		if _, ok := saved.keyElems[k]; !ok {
+			delete(scope.keyElems, k)
+		}
+	}
+	for k, v := range saved.keyElems {
+		scope.keyElems[k] = v
 	}
 	// 归属表截断：块内新登记名出块即除名（种表同命；旗标不回滚）。
 	for _, name := range scope.ownOrder[saved.owned:] {

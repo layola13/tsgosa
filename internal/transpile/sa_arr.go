@@ -1824,6 +1824,47 @@ func saTplHoleText(e *ast.Node, consts map[string]string, strs map[string]bool) 
 // saTopArrElemText 取顶层数组元直接量文本（整字面直通、`-`/`+` 号折叠、
 // true/false 化 1/0、空穴归 0；与 saEvalI32 字面量臂 + saLowerPrefixUnary
 // 正负折叠 + saArrayLiteralElem 空穴口径同律；浮/串/余形 false 交旧门）。
+// saArrayElemAnnot extracts the element TypeNode from an array annotation:
+// Array<Elem>, Elem[], and readonly/parenthesized wrappers thereof.
+// Anything else yields nil (unannotated or exotic annotations keep the
+// old loud-refusal behaviour at the use site).
+func saArrayElemAnnot(tn *ast.TypeNode) *ast.TypeNode {
+	if tn == nil {
+		return nil
+	}
+	switch tn.Kind {
+	case ast.KindParenthesizedType:
+		pt := tn.AsParenthesizedTypeNode()
+		if pt == nil {
+			return nil
+		}
+		return saArrayElemAnnot(pt.Type)
+	case ast.KindTypeOperator:
+		to := tn.AsTypeOperatorNode()
+		if to != nil && to.Operator == ast.KindReadonlyKeyword {
+			return saArrayElemAnnot(to.Type)
+		}
+		return nil
+	case ast.KindArrayType:
+		el := tn.AsArrayTypeNode()
+		if el == nil {
+			return nil
+		}
+		return el.ElementType
+	case ast.KindTypeReference:
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Array" {
+			return nil
+		}
+		if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+			return nil
+		}
+		return ref.TypeArguments.Nodes[0]
+	default:
+		return nil
+	}
+}
+
 func saTopArrElemText(el *ast.Node) (string, bool) {
 	if el == nil {
 		return "", false
@@ -1874,11 +1915,23 @@ func saTopArrStrText(el *ast.Node) (string, bool) {
 // saTopArr 快照（i32 直接量文本或串字面量源文本；str 为真即全串元；
 // nested 非空即嵌套快照（每元须同为 i32 子树，深度一致；串内层/异构不收）。
 // 三者互斥；深度 = 1 + 子树深（平为 1）。
+// saKeyElem records a for-of binding's element annotation for keyof-domain
+// resolution: the layout the binding was bound as, plus the element
+// TypeNode from the iterated top array's annotation (nil when unannotated).
+// It is per-binding, never per-layout: two key/label arrays can share one
+// TopObj layout with different key types, and a layout-stored domain could
+// silently miss the second array's keys.
+type saKeyElem struct {
+	layout string
+	elem   *ast.TypeNode
+}
+
 type saTopArr struct {
-	elems  []string
-	str    bool
-	nested []saTopArr
-	objs   []saTopObjElem
+	elemAnnot *ast.TypeNode // declaration annotation's element type, if any
+	elems     []string
+	str       bool
+	nested    []saTopArr
+	objs      []saTopObjElem
 	// layout is the synthesized instance layout for numeric-shape object
 	// elements (saSynthTopObjLayout); empty for the regex snapshot shape,
 	// which is never materialized.
@@ -2322,7 +2375,7 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 							fopt[f] = true
 						}
 					}
-					arr = saTopArr{objs: objs, layout: saSynthTopObjLayout(fields, kindOf, fopt, instSub, classes)}
+					arr = saTopArr{objs: objs, layout: saSynthTopObjLayout(fields, kindOf, fopt, instSub, classes), elemAnnot: saArrayElemAnnot(vd.Type)}
 				}
 			}
 			pends = append(pends, pend{name: name, arr: arr})
@@ -3044,6 +3097,68 @@ func saTypeNamesLayout(tnode *ast.TypeNode, layout string, scope *saScope) bool 
 	return false
 }
 
+// saKeyElemFieldType resolves the TypeNode of one field of an element type:
+// TypeLiteral members directly; references/identifiers through aliasOf
+// (to a TypeLiteral or to a recorded interface/class layout's fdefs).
+// Anything else refuses loudly via ok=false.
+func saKeyElemFieldType(elem *ast.TypeNode, field string, scope *saScope, depth int) (*ast.TypeNode, bool) {
+	if elem == nil || depth > 8 {
+		return nil, false
+	}
+	switch elem.Kind {
+	case ast.KindParenthesizedType:
+		pt := elem.AsParenthesizedTypeNode()
+		if pt == nil || pt.Type == nil {
+			return nil, false
+		}
+		return saKeyElemFieldType(pt.Type, field, scope, depth+1)
+	case ast.KindTypeLiteral:
+		lit := elem.AsTypeLiteralNode()
+		if lit == nil || lit.Members == nil {
+			return nil, false
+		}
+		for _, m := range lit.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier || fn.Text() != field {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				return nil, false
+			}
+			return pd.Type, true
+		}
+		return nil, false
+	case ast.KindTypeReference:
+		ref := elem.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return nil, false
+		}
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			return nil, false
+		}
+		if aliased, ok := scope.aliasOf[ref.TypeName.Text()]; ok {
+			return saKeyElemFieldType(aliased, field, scope, depth+1)
+		}
+		if def, ok := scope.classes[ref.TypeName.Text()]; ok && def != nil && def.fdefs != nil {
+			if tn, ok := def.fdefs[field]; ok && tn != nil {
+				return tn, true
+			}
+		}
+		return nil, false
+	case ast.KindIdentifier:
+		if aliased, ok := scope.aliasOf[elem.Text()]; ok {
+			return saKeyElemFieldType(aliased, field, scope, depth+1)
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
 // saKeyofKeyDomain resolves the keyof domain of a dynamic key expression:
 // a property read meta.key whose base layout records the field's TypeNode
 // (fdefs) through a keyof alias to a TypeLiteral. Bare identifiers carry
@@ -3069,6 +3184,15 @@ func saKeyofKeyDomain(key *ast.Node, scope *saScope) (map[string]bool, bool) {
 	pa := key.AsPropertyAccessExpression()
 	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Name() == nil {
 		return nil, false
+	}
+	// Per-binding element annotation first (for-of over an annotated top
+	// array): only when the binding still has exactly the recorded layout,
+	// so a stale entry can never apply to a rebound name. An unresolvable
+	// element field falls through to the layout-fdefs path below.
+	if ke, ok := scope.keyElems[pa.Expression.Text()]; ok && ke.elem != nil && scope.types[pa.Expression.Text()] == "inst:"+ke.layout {
+		if tn, ok := saKeyElemFieldType(ke.elem, pa.Name().Text(), scope, 0); ok {
+			return saKeyofDomainNames(tn, scope.aliasOf, 0)
+		}
 	}
 	k, ok := scope.types[pa.Expression.Text()]
 	if !ok || len(k) <= 5 || k[:5] != "inst:" {
@@ -3187,6 +3311,7 @@ func saLowerKeyofIndex(w printer.EmitTextWriter, ea *ast.ElementAccessExpression
 		}
 		slot := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
 		endL := fmt.Sprintf("L_ki_end_%d", *scope.nextLabel)
 		*scope.nextLabel++
 		for _, f := range strFields {
@@ -5659,6 +5784,12 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				// 同形：顶层对象数组下标读亦绑 inst:<layout>；JEV
 				// inst_layout_bind 1.0）。正则形（layout 为空）沿旧 i32 门。
 				bindKind = "inst:" + arr.layout
+				if arr.elemAnnot != nil {
+					if scope.keyElems == nil {
+						scope.keyElems = map[string]saKeyElem{}
+					}
+					scope.keyElems[binding] = saKeyElem{layout: arr.layout, elem: arr.elemAnnot}
+				}
 			}
 		}
 		scope.types[binding] = bindKind

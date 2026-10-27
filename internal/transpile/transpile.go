@@ -4547,6 +4547,7 @@ type saScope struct {
 	addImport   func(string)
 	inlineRet   *saInlineRet
 	tcx         *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
+	keyElems    map[string]saKeyElem            // for-of element annotations per binding (keyof-domain source; scope save/restored)
 	aliasOf     map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
 	ownOrder    []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
 	ownState    map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
