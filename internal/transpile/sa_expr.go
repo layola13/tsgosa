@@ -5152,11 +5152,6 @@ func saIsReplayableDefault(n *ast.Node, sig saFuncSig, i int, scope *saScope) bo
 		if _, ok := scope.topConsts[name]; ok {
 			return true
 		}
-		if i < len(sig.paramKinds) && sig.paramKinds[i] == "arr" {
-			if _, ok := scope.topArrs[name]; ok {
-				return true
-			}
-		}
 		return false
 	case ast.KindCallExpression:
 		ce := n.AsCallExpression()
