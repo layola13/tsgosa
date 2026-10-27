@@ -4,6 +4,7 @@ package transpile
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -9654,6 +9655,16 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 		v, msg := saCallbackValue(w, cb, []string{el, i}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, saNestedElemKinds(scope, recv, 0, 2))
 		if msg != "" {
 			return "", "", msg
+		}
+		// (2b_tail, JEV filter_pred_imm 0.83): a literal predicate
+		// evaluates to a bare immediate (true -> 1), which br rejects
+		// with UnknownRegister; lift integer immediates into a temp so
+		// br always sees a register. Register results pass untouched.
+		if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+			t := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = %s\n", t, v))
+			v = t
 		}
 		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", v, takeL, skipL))
 		w.Write(fmt.Sprintf("%s:\n", takeL))
