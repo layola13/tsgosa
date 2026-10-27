@@ -9409,6 +9409,9 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 		return "", "unknown method " + method
 	}
 	if mn.Body() == nil {
+		if mn.Kind == ast.KindMethodSignature {
+			return "", def.name + "." + method + " is an interface method with no body (interface dispatch is not lowerable)"
+		}
 		return "", method + " has no body (overload signatures do not inline)"
 	}
 	return saInlineMethodCore(w, recv, def.name, def, mn, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
