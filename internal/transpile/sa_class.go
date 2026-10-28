@@ -2908,7 +2908,7 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 	default:
 		return "method instance return must be this, a bound instance, new or an instance call"
 	}
-	if !saIsDerivedFrom(scope.classes, have, want) {
+	if !saIsDerivedFrom(scope.classes, have, want) && !(saIfaceMethodOnly(scope.classes, want) && (saClassSatisfies(scope.classes, have, want) || saClassStructurallySatisfies(scope.classes, have, want))) {
 		return "method instance return class mismatch (want " + want + ")"
 	}
 	mode := 2
