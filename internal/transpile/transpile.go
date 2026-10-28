@@ -5941,19 +5941,24 @@ type saScope struct {
 	mainRenamed bool
 	nextLabel   *int
 	retKind     string
-	strPool     *saStrPool
-	src         string
-	addImport   func(string)
-	inlineRet   *saInlineRet
-	tcx         *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
-	keyElems    map[string]saKeyElem            // for-of element annotations per binding (keyof-domain source; scope save/restored)
-	aliasOf     map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
-	ownOrder    []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
-	ownState    map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
-	pendingFns  *[]string                       // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
-	arrowSeq    *int                            // 文件级局部箭头序号（封存 e.arrowSeq）
-	instFn      map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
-	arrNest     map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
+	// voidCause is the first jsval-scan failure of an unannotated function
+	// lowered as void (JEV voidmask enrich_only); "" when the function is
+	// annotated, inferred non-void, or the scan passes. Surfaced only by
+	// saLowerReturn's void branch; never changes acceptance or signatures.
+	voidCause  string
+	strPool    *saStrPool
+	src        string
+	addImport  func(string)
+	inlineRet  *saInlineRet
+	tcx        *saTypeCtx                      // checker 推断上下文（局部箭头返回种；封存 e.tcx 同形）
+	keyElems   map[string]saKeyElem            // for-of element annotations per binding (keyof-domain source; scope save/restored)
+	aliasOf    map[string]*ast.TypeNode        // 顶层 `type X` 表（注解别名消解；无码）
+	ownOrder   []string                        // 具名绑定声明序（封存 e.owned；return/块出口逆序释放）
+	ownState   map[string]*saOwn               // 名→归属记录（堆/已消费/已释放）
+	pendingFns *[]string                       // 文件级 out-of-line 箭头缓冲（封存 pendingFuncs:336 + :576-579 末尾排空）
+	arrowSeq   *int                            // 文件级局部箭头序号（封存 e.arrowSeq）
+	instFn     map[string]map[string]*ast.Node // 实例函数字段捕获（handle/绑定名→字段→箭头节点；`new C(arrow)` 经构造 wiring 落位，`this.f(e)` 去虚化回放；封存 instFnFields:355-388）
+	arrNest    map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr         map[string]bool
@@ -6260,10 +6265,16 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	if !ok {
 		ln, col := pos(st.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported body"})
+		saWriteFailedTerminator(w, isVoid)
 		return
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
+	if fn.Type == nil && isVoid {
+		// Void-fallback scan cause (JEV voidmask enrich_only): only for
+		// unannotated functions lowered as void; surfaced by saLowerReturn.
+		scope.voidCause = saJsValReturnCause(st)
+	}
 	scope.defPrefix = defPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = linkHarvests
@@ -6295,6 +6306,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	// 空体亦展开，与上游空体 drain 同形）。
 	if _, _, pendings, ok := saSynthParams(fn, scope.classes, scope.aliasOf, scope.enums); ok && len(pendings) > 0 {
 		if !saDrainDestructuredParams(w, pendings, scope, pos, refusals, nextLabel, nextTemp) {
+			saWriteFailedTerminator(w, isVoid)
 			return
 		}
 	}
@@ -6313,6 +6325,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	// 2b_k244handles patch1：句柄槽序幕载入（同名 inst: 绑定 + 归属；
 	// 排除已绑名（形参/解构）与直接声明；嵌套体另有自己的序幕）。
 	if !saEmitSlotPrologue(w, saSlotPrologueNames(stmts, scope, scope.modVars), scope, scope.modVars, nextTemp, pos, refusals) {
+		saWriteFailedTerminator(w, isVoid)
 		return
 	}
 	for _, s := range stmts {
@@ -6325,6 +6338,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 			continue
 		}
 		if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+			saWriteFailedTerminator(w, isVoid)
 			return
 		} else if done {
 			terminated = true
@@ -6499,6 +6513,23 @@ func saLowerStmt(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saSc
 	}
 }
 
+// saWriteFailedTerminator emits the signature-matching terminator for a
+// failed function/arrow body (JEV ft both_shapes): ret for void, ret 0
+// otherwise — the same convention as the existing fallthrough code.
+// No ownership releases are emitted on the failed path: ownership state
+// may be partial there, and a release could misfire (UnknownRegister);
+// the terminator only satisfies the checker's block-termination rule on
+// an already-refused program (refused=true, tsgo exit 1, build blocked).
+// Callers must only use it where no terminator was just written: a
+// second ret after a terminator is itself FallthroughForbidden.
+func saWriteFailedTerminator(w printer.EmitTextWriter, isVoid bool) {
+	if isVoid {
+		w.Write("  ret\n")
+	} else {
+		w.Write("  ret 0\n")
+	}
+}
+
 // saLowerReturn lowering return（含 void 裸 return、三元 SELECT、i32 操作数）。
 func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (bool, bool) {
 	rs := s.AsReturnStatement()
@@ -6561,7 +6592,11 @@ func saLowerReturn(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *sa
 	if isVoid {
 		if rs.Expression != nil {
 			ln, col := pos(s.Pos())
-			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "return value in void function refused"})
+			msg := "return value in void function refused"
+			if scope.voidCause != "" {
+				msg += ": " + scope.voidCause
+			}
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
 			return false, true
 		}
 		saReleaseAllOwnedExcept(w, scope, "")

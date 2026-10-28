@@ -4168,6 +4168,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	if body == nil {
 		ln, col := pos(arrow.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "function value " + name + " has no body"})
+		saWriteFailedTerminator(w, isVoid)
 		return
 	}
 	linkPrefix, linkResolve := saLinkDefPrefix(link), saLinkResolveMap(link)
@@ -4185,6 +4186,11 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = saLinkHarvestsMap(link)
+	if saArrowReturnNode(arrow) == nil && isVoid {
+		// Void-fallback scan cause (JEV voidmask enrich_only): only for
+		// unannotated arrows lowered as void; surfaced by saLowerReturn.
+		scope.voidCause = saJsValReturnCause(arrow)
+	}
 	saSeedTopMaths(scope, topMaths)
 	for _, p := range params {
 		scope.types[p] = kinds[p]
@@ -4199,6 +4205,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	}
 	if len(arrowPendings) > 0 {
 		if !saDrainDestructuredParams(w, arrowPendings, scope, pos, refusals, nextLabel, nextTemp) {
+			saWriteFailedTerminator(w, isVoid)
 			return
 		}
 	}
@@ -4213,6 +4220,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		arrowRoots = []*ast.Node{body}
 	}
 	if !saEmitSlotPrologue(w, saSlotPrologueNames(arrowRoots, scope, scope.modVars), scope, scope.modVars, nextTemp, pos, refusals) {
+		saWriteFailedTerminator(w, isVoid)
 		return
 	}
 	if !saLowerArrowBody(w, arrow, body, isVoid, retKind, scope, pos, refusals, needImport, nextLabel, nextTemp) {
@@ -4225,9 +4233,15 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 // 形状证据：封存 lowerArrowBinding 体内 lowering（:1174-1253 体作用域 save/restore
 // 后逐语句）与表达式体 `ret <expr>`（:1224-1232）。
 func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node, isVoid bool, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) bool {
+	// refuse records a refusal and terminates the (partial) body, so sa
+	// check does not add FallthroughForbidden on top of the real refusal
+	// (JEV ft both_shapes). The unreachable-after-terminator path below
+	// must NOT use refuse: a second ret after a terminator is itself
+	// FallthroughForbidden (verified against sa check).
 	refuse := func(n *ast.Node, msg string) bool {
 		ln, col := pos(n.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+		saWriteFailedTerminator(w, isVoid)
 		return false
 	}
 	if body.Kind == ast.KindBlock {
@@ -4248,9 +4262,13 @@ func saLowerArrowBody(w printer.EmitTextWriter, arrow *ast.Node, body *ast.Node,
 		terminated := false
 		for _, s := range stmts {
 			if terminated {
-				return refuse(s, "unreachable code after terminating statement")
+				// Already terminated: no terminator here (see refuse note).
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unreachable code after terminating statement"})
+				return false
 			}
 			if done, failed := saLowerStmt(w, s, isVoid, scope, pos, refusals, needImport, nextLabel, nextTemp); failed {
+				saWriteFailedTerminator(w, isVoid)
 				return false
 			} else if done {
 				terminated = true
@@ -4629,6 +4647,9 @@ func saLowerLocalArrow(w printer.EmitTextWriter, name string, arrow *ast.Node, s
 			return false
 		}
 	}
+	if saArrowReturnNode(arrow) == nil && isVoid {
+		inner.voidCause = saJsValReturnCause(arrow)
+	}
 	if !saLowerArrowBody(buf, arrow, body, isVoid, retKind, inner, pos, refusals, needImport, nextLabel, nextTemp) {
 		return false
 	}
@@ -4971,6 +4992,144 @@ func saJsValReturnScan(fnNode *ast.Node) bool {
 		}
 	}
 	return found && good
+}
+
+// saJsValReturnFailCause reports why one return expression is not
+// jsval-boxable ("" when it is). Transparent wrappers are unwrapped exactly
+// as in saJsValReturnExpr; a ternary reports its first failing arm.
+// Snippets use Node.Text() only for leaf kinds (identifier / numeric /
+// string literals) — Text() on composite nodes panics (3_jvmask lesson).
+func saJsValReturnFailCause(e *ast.Node) string {
+	for e != nil {
+		switch e.Kind {
+		case ast.KindParenthesizedExpression:
+			pe := e.AsParenthesizedExpression()
+			if pe == nil || pe.Expression == nil {
+				return "parenthesized expression with no inner expression is not jsval-boxable"
+			}
+			e = pe.Expression
+		case ast.KindAsExpression:
+			ae := e.AsAsExpression()
+			if ae == nil || ae.Expression == nil {
+				return "as expression with no inner expression is not jsval-boxable"
+			}
+			e = ae.Expression
+		case ast.KindSatisfiesExpression:
+			se := e.AsSatisfiesExpression()
+			if se == nil || se.Expression == nil {
+				return "satisfies expression with no inner expression is not jsval-boxable"
+			}
+			e = se.Expression
+		case ast.KindNonNullExpression:
+			ne := e.AsNonNullExpression()
+			if ne == nil || ne.Expression == nil {
+				return "non-null expression with no inner expression is not jsval-boxable"
+			}
+			e = ne.Expression
+		case ast.KindTypeAssertionExpression:
+			te := e.AsTypeAssertion()
+			if te == nil || te.Expression == nil {
+				return "type assertion with no inner expression is not jsval-boxable"
+			}
+			e = te.Expression
+		default:
+			goto classified
+		}
+	}
+classified:
+	if e == nil {
+		return "empty return expression is not jsval-boxable"
+	}
+	switch e.Kind {
+	case ast.KindJsxElement, ast.KindJsxSelfClosingElement, ast.KindJsxFragment,
+		ast.KindObjectLiteralExpression, ast.KindNullKeyword:
+		return ""
+	case ast.KindIdentifier:
+		if e.Text() == "undefined" {
+			return ""
+		}
+		return "identifier \"" + e.Text() + "\" is not jsval-boxable"
+	case ast.KindConditionalExpression:
+		ce := e.AsConditionalExpression()
+		if ce == nil || ce.WhenTrue == nil || ce.WhenFalse == nil {
+			return "conditional with a missing arm is not jsval-boxable"
+		}
+		if c := saJsValReturnFailCause(ce.WhenTrue); c != "" {
+			return "ternary arm: " + c
+		}
+		if c := saJsValReturnFailCause(ce.WhenFalse); c != "" {
+			return "ternary arm: " + c
+		}
+		return ""
+	}
+	snip := ""
+	switch e.Kind {
+	case ast.KindNumericLiteral, ast.KindStringLiteral:
+		snip = " \"" + e.Text() + "\""
+	}
+	return e.Kind.String() + snip + " is not jsval-boxable"
+}
+
+// saJsValReturnCause reports the first return, in source order, that fails
+// the jsval-boxability scan (JEV voidmask scan_first_failure 0.99), or ""
+// when the scan passes or no return fails it. The walk mirrors
+// saJsValReturnScan exactly: nested function/class/accessor nodes stop the
+// descent (their returns belong to the nested function), all other nodes
+// are visited depth-first in source order. A bare return counts as a scan
+// failure (it makes the scan fail when mixed with value returns); a
+// function with only bare returns yields a cause that is never surfaced,
+// because saLowerReturn only refuses value returns.
+func saJsValReturnCause(fnNode *ast.Node) string {
+	if fnNode == nil {
+		return ""
+	}
+	var body *ast.Node
+	switch fnNode.Kind {
+	case ast.KindFunctionDeclaration, ast.KindArrowFunction, ast.KindFunctionExpression:
+		body = fnNode.Body()
+	default:
+		return ""
+	}
+	stmts, ok := saBlockStmts(body)
+	if !ok {
+		return ""
+	}
+	cause := ""
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil || cause != "" {
+			return
+		}
+		switch n.Kind {
+		case ast.KindFunctionDeclaration, ast.KindFunctionExpression,
+			ast.KindArrowFunction, ast.KindMethodDeclaration,
+			ast.KindClassDeclaration, ast.KindClassExpression,
+			ast.KindGetAccessor, ast.KindSetAccessor:
+			return
+		case ast.KindReturnStatement:
+			rs := n.AsReturnStatement()
+			if rs == nil {
+				return
+			}
+			if rs.Expression == nil {
+				cause = "bare return mixed with value returns"
+				return
+			}
+			cause = saJsValReturnFailCause(rs.Expression)
+			return
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	for _, st := range stmts {
+		walk(st)
+		if cause != "" {
+			return cause
+		}
+	}
+	return ""
 }
 
 // saPrescanRet 定单个函数/箭头的 SA 返回签名（显式注解 > checker 推断 > void；
