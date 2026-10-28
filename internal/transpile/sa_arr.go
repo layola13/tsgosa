@@ -9693,6 +9693,28 @@ func saFindTypeofGuard(cb *ast.Node) (string, string, bool, bool) {
 	return paramName, litNode.Text(), neg, true
 }
 
+// saNodeMentionsIdent reports whether the subtree rooted at n contains
+// an identifier with the given text (4_prescan_filter filter-eq guard:
+// an other-operand mentioning the callback parameter must not take the
+// inline loop, whose body never binds the parameter).
+func saNodeMentionsIdent(n *ast.Node, name string) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == ast.KindIdentifier && n.Text() == name {
+		return true
+	}
+	found := false
+	n.ForEachChild(func(c *ast.Node) bool {
+		if saNodeMentionsIdent(c, name) {
+			found = true
+			return true
+		}
+		return false
+	})
+	return found
+}
+
 func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, elemLayout string) (string, string, string) {
 	ln := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -9789,6 +9811,163 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			saOwnTemp(scope, bh)
 			saReleaseOwnedTemp(w, scope, recv)
 			return bh, "arr", ""
+		}
+		if eqParam, eqField, eqNeg, eqOther, eqFallback, eqOk := saFindEqGuard(cb); eqOk && eqFallback == nil && !saNodeMentionsIdent(eqOther, eqParam) {
+			// Equality-predicate filter (4_prescan_filter, JEV
+			// reuse_find_eq_inline 0.98): mirror the find equality
+			// inline loop, but push every matching handle instead of
+			// returning the first hit. The generic callback path binds
+			// the parameter as i32, so field reads refuse there; this
+			// branch never routes through saCallbackValue.
+			if elemLayout == "" {
+				return "", "", "filter equality needs a known instance element layout"
+			}
+			edef, ok := scope.classes[elemLayout]
+			if !ok || edef == nil {
+				return "", "", "filter equality element layout not recorded"
+			}
+			fkind, ok := edef.fkinds[eqField]
+			if !ok {
+				return "", "", "filter equality field not in element layout"
+			}
+			if fkind != "str" && fkind != "i32" && fkind != "bool" {
+				return "", "", "filter equality field kind not supported: " + fkind
+			}
+			off, ok := edef.offsets[eqField]
+			if !ok {
+				return "", "", "filter equality field has no layout offset"
+			}
+			// Hoisted string operand (find discipline: evaluated once
+			// before the loop when loop-invariant, released once after).
+			var rhsHoisted string
+			rhsHoistedOk := false
+			if fkind == "str" && saFindEqRhsHoistable(eqOther, eqParam) {
+				h, msg := saEvalStr(w, eqOther, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				rhsHoisted, rhsHoistedOk = h, true
+			}
+			eh := saNewEmptyArray(w, nextTemp)
+			ei := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", ei))
+			etopL := fmt.Sprintf("L_feq_top_%d", *nextLabel)
+			*nextLabel++
+			etbodyL := fmt.Sprintf("L_feq_body_%d", *nextLabel)
+			*nextLabel++
+			etendL := fmt.Sprintf("L_feq_end_%d", *nextLabel)
+			*nextLabel++
+			ettakeL := fmt.Sprintf("L_feq_take_%d", *nextLabel)
+			*nextLabel++
+			etskipL := fmt.Sprintf("L_feq_skip_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", etopL))
+			ec := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", ec, ei, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ec, etbodyL, etendL))
+			w.Write(fmt.Sprintf("%s:\n", etbodyL))
+			eel := emitElem(ei)
+			if fkind == "str" {
+				var rhs string
+				rhsPerIter := false
+				if rhsHoistedOk {
+					rhs = rhsHoisted
+				} else {
+					h, msg := saEvalStr(w, eqOther, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", "", msg
+					}
+					rhs, rhsPerIter = h, true
+				}
+				// Per-iteration owned temporaries must be released on
+				// BOTH arms (find discipline: saReleaseOwnedTemp would
+				// suppress the second arm statically while only one arm
+				// runs dynamically, which the verifier reports as
+				// PhiStateConflict at the join). Hoisted handles are
+				// released once after the loop instead.
+				rhsOwned := false
+				if rhsPerIter {
+					if b := saOwnOf(scope, rhs); b != nil && b.heap && !b.consumed && !b.released {
+						rhsOwned = true
+					}
+				}
+				releaseRhs := func() {
+					if rhsOwned {
+						w.Write(fmt.Sprintf("  !%s\n", rhs))
+					}
+				}
+				fh := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", fh, eel, off))
+				fz := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", fz, fh))
+				fzL := fmt.Sprintf("L_feq_fz_%d", *nextLabel)
+				*nextLabel++
+				fnzL := fmt.Sprintf("L_feq_fnz_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", fz, fzL, fnzL))
+				// Missing (zero-filled) field handle: it equals only a
+				// zero right-hand side, never a live string (find
+				// discipline; keeps ts_str_equals off a null handle).
+				w.Write(fmt.Sprintf("%s:\n", fzL))
+				eqv := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", eqv, rhs))
+				if eqNeg {
+					pz := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = eq %s, 0\n", pz, eqv))
+					releaseRhs()
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pz, ettakeL, etskipL))
+				} else {
+					releaseRhs()
+					w.Write(fmt.Sprintf("  br %s -> %s, %s\n", eqv, ettakeL, etskipL))
+				}
+				w.Write(fmt.Sprintf("%s:\n", fnzL))
+				pred := saStringContentEq(w, fh, rhs, eqNeg, scope, nextTemp)
+				releaseRhs()
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, ettakeL, etskipL))
+				if rhsOwned {
+					if b := saOwnOf(scope, rhs); b != nil {
+						b.released = true
+					}
+				}
+			} else {
+				fv := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as i32\n", fv, eel, off))
+				rv, msg := saEvalI32(w, eqOther, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", "", msg
+				}
+				op := "eq"
+				if eqNeg {
+					op = "ne"
+				}
+				pred := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, %s\n", pred, op, fv, rv))
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", pred, ettakeL, etskipL))
+			}
+			w.Write(fmt.Sprintf("%s:\n", ettakeL))
+			saLowerArrayPush(w, eh, eel, scope, nextTemp)
+			w.Write(fmt.Sprintf("  jmp %s\n", etskipL))
+			w.Write(fmt.Sprintf("%s:\n", etskipL))
+			einext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", einext, ei))
+			w.Write(fmt.Sprintf("  %s = %s\n", ei, einext))
+			w.Write(fmt.Sprintf("  jmp %s\n", etopL))
+			w.Write(fmt.Sprintf("%s:\n", etendL))
+			if rhsHoistedOk {
+				saReleaseOwnedTemp(w, scope, rhsHoisted)
+			}
+			saOwnTemp(scope, eh)
+			saReleaseOwnedTemp(w, scope, recv)
+			return eh, "arr", ""
 		}
 		h := saNewEmptyArray(w, nextTemp)
 		i := fmt.Sprintf("t_%d", *nextTemp)
