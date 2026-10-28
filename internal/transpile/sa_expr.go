@@ -4214,6 +4214,51 @@ func saDeclaredAt(tcx *saTypeCtx, n *ast.Node) bool {
 	return found
 }
 
+// saIsTSLibFile 报告源文件是否为 TypeScript 内置库声明文件（lib.*.d.ts）。
+// ambient globalThis 即声明于此；用户 .d.ts（哪怕也声明 globalThis）不算库文件。
+func saIsTSLibFile(sf *ast.SourceFile) bool {
+	if sf == nil || !sf.IsDeclarationFile {
+		return false
+	}
+	base := sf.FileName()
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.HasPrefix(base, "lib.") && strings.HasSuffix(base, ".d.ts")
+}
+
+// saGlobalThisUserShadowed 报告 `globalThis` 标识符经 checker 解出的符号是否
+// 带有库文件之外的声明（r4 shadow gate，JEV implement_shadow_check 1.0）：
+// 用户值绑定（同文件 const、模块作用域 const、跨文件全局脚本声明）或
+// `declare global` 增补合并进符号时，typeof-globalThis 折叠不再合理——
+// 用户对象的成员探针会被误折为“不存在”——故调用方必须大声拒收而非折叠。
+// 全程 fail-closed：无 ctx/无符号/符号无声明一律不算遮蔽（此时没有任何
+// 用户声明可解出，折叠仍沿 JEV target rationale 成立）；但声明一旦缺失
+// 文件溯源则算遮蔽（宁拒勿误折）。
+func saGlobalThisUserShadowed(tcx *saTypeCtx, n *ast.Node) bool {
+	if tcx == nil || tcx.check == nil || n == nil {
+		return false
+	}
+	var sym *ast.Symbol
+	func() {
+		defer func() { _ = recover() }()
+		sym = tcx.check.GetSymbolAtLocation(n)
+	}()
+	if sym == nil {
+		return false
+	}
+	for _, d := range sym.Declarations {
+		if d == nil {
+			continue
+		}
+		sf := ast.GetSourceFileOfNode(d)
+		if sf == nil || !saIsTSLibFile(sf) {
+			return true
+		}
+	}
+	return false
+}
+
 // saIsUnresolvedTypeParam 报告 checker 下该节点是否为未消解裸类型形参
 // （与 saIsAnyOrUnknown 同 nil 安全口径；调用方回退既有 scope 种逻辑）。
 func saIsUnresolvedTypeParam(tcx *saTypeCtx, n *ast.Node) bool {

@@ -3366,8 +3366,10 @@ func saLazyMemberInt(pa *ast.Node, consts map[string]string, strs map[string]boo
 // saEnvProbeArm already treats binder-invisible typeof probes in ternaries.
 // Narrow on purpose: the base must be a cast (As/Satisfies) of the
 // identifier globalThis, the member an identifier, the other side the
-// string literal "undefined"; tcx-nil or a binder-visible globalThis
-// refuses (fail closed). Any other typeof shape returns false.
+// string literal "undefined"; tcx-nil refuses, and a user-shadowed
+// globalThis refuses via the r4 shadow gate below (lib-vs-user
+// declaration distinction, JEV implement_shadow_check 1.0). Any other
+// typeof shape returns false.
 func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
 	if tcx == nil || init == nil {
 		return "", false
@@ -3439,6 +3441,13 @@ func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
 	if inner == nil || inner.Kind != ast.KindIdentifier || inner.Text() != "globalThis" {
 		return "", false
 	}
+	// (r4 shadow gate, JEV implement_shadow_check 1.0): a user-shadowed
+	// globalThis must refuse loudly here (the caller turns a false fold
+	// into a kind-244 refusal, as on baseline), never fold: folding a
+	// user object's member probe would map it to "absent".
+	if saGlobalThisUserShadowed(tcx, inner) {
+		return "", false
+	}
 	// (local fix2 reconstruction: NO binder gate here. The patch1
 	// fail-closed gate `saDeclaredAt(tcx, inner)` made this fold dead
 	// code: the tsgo build path's checker resolves `globalThis` (the
@@ -3451,7 +3460,9 @@ func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
 	// be a cast of the identifier globalThis, member an identifier,
 	// other side exactly "undefined", operator ===/!==. A non-cast
 	// globalThis probe, a non-globalThis typeof, and a wrong literal
-	// all still refuse below/above.)
+	// all still refuse below/above. The r4 shadow gate above is the narrow
+	// exception to "no binder gate": it refuses only when the resolved
+	// symbol carries a non-lib declaration.)
 	if isEq {
 		return "1", true
 	}
