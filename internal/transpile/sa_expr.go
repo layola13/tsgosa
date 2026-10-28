@@ -1295,6 +1295,18 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	// 返回位字面量具化（`return {...}` 配注解接口布局；封存 checker_layout l1）。
 	if e != nil && e.Kind == ast.KindObjectLiteralExpression && strings.HasPrefix(retKind, "inst:") {
 		if def, ok := scope.classes[retKind[5:]]; ok && def.isIface {
+			// Phase R1 partition (JEV r1_partition synth_target 0.18
+			// WEAK): the return-operand arm — and ONLY this arm —
+			// opens the literal partition with a synthetic target.
+			// "\x00ret" cannot collide with any binding (NUL is
+			// impossible in TS identifiers), and saLowerObjectLiteral
+			// consumes it at entry, so nested literals still see ""
+			// and keep refusing method props, and no other caller
+			// (call args, const decls) is touched. The table recorded
+			// under the synth key is dead state: dispatch and copy
+			// arms look up by binding name, never by this key (see
+			// the R1b unobservability check in the gate notes).
+			scope.ifaceLitTarget = "\x00ret"
 			h, _, msg := saLowerObjectLiteral(w, e, retKind[5:], scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg

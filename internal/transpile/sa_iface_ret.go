@@ -387,12 +387,21 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 	// Arrow expression bodies are a single synthetic return path with no
 	// bindings: classify the expression directly.
 	if body.Kind != ast.KindBlock {
-		p := saRetClassifyReturn(body, nil, nil, retKind, retIface, funcs, classes)
-		if p.unknown || p.isLit {
-			// A literal-method expression body has no binding for the
-			// call-site arms to attach to; v1 records class prov only
-			// from expression bodies (litFn needs a const binding).
+		litSeq := 0
+		p := saRetClassifyReturn(body, nil, nil, retKind, retIface, funcs, classes, &litSeq, paramNameSet(paramNames))
+		if p.unknown {
 			return "", nil, false
+		}
+		if p.isLit {
+			// Phase R1: only fresh-literal expression bodies record
+			// litFn; a call-carried litFn keeps R0's conservative
+			// rejection (it needs a const binding in v1's original
+			// reasoning). The classifier already ran the closure
+			// check for the literal arm.
+			if pe := saRetPeelParenNonNull(body); pe == nil || pe.Kind != ast.KindObjectLiteralExpression {
+				return "", nil, false
+			}
+			return "", p.litFn, true
 		}
 		return p.class, nil, true
 	}
@@ -413,6 +422,14 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 		return "", nil, false
 	}
 	// Pass 2: ordered walk, depth-0 const bindings + all return paths.
+	// Phase R1: forbidden = defining-function params + declared names
+	// (taint keys) for the fresh-literal closure check. Taint keys are
+	// a superset of the names actually in scope at any given literal
+	// (any depth, any branch) — over-refusal, fail-closed, sound.
+	forbidden := map[string]bool{}
+	for name := range t.counts {
+		forbidden[name] = true
+	}
 	w := &saRetWalker{
 		taint:      t,
 		entries:    map[string]saIfaceRetEntry{},
@@ -424,6 +441,7 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 		retIface:   retIface,
 		litSeq:     0,
 		paramKinds: paramKinds,
+		forbidden:  forbidden,
 	}
 	// Phase P1: seed block-body entries with param-origin prov.
 	// Tainted names (assigned, or shared with a same-name const) are
@@ -706,6 +724,10 @@ type saRetWalker struct {
 	retIface   string
 	litSeq     int
 	paramKinds map[string]string // name -> declared kind, for field-read receivers
+	// forbidden is Phase R1 only: defining-function params + declared
+	// names (taint keys) for the fresh-literal closure check. The
+	// classifier consults it only for its ObjectLiteral arm.
+	forbidden map[string]bool
 	// methodMode is Phase M only: the walker classifies with the
 	// restricted method classifier (free-function call results only,
 	// class only) instead of R0's classifier. False for all R0/P0/P1/
@@ -749,7 +771,7 @@ func (w *saRetWalker) walkList(stmts []*ast.Node, depth int, shadowed map[string
 				if w.methodMode {
 					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
 				} else {
-					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
+					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, &w.litSeq, w.forbidden))
 				}
 			} else {
 				w.paths = append(w.paths, saIfaceRetPath{unknown: true})
@@ -979,6 +1001,445 @@ func saRetBuildLitFn(lit *ast.Node, iface string, classes map[string]*saClassDef
 	return table, true
 }
 
+// Phase R1: closure safety for fresh-literal method tables.
+//
+// A recorded litFn table inlines its method bodies into the CALLER's
+// lowering scope (saInlineMethodCore swaps only thisSelf/thisClass).
+// A method body referencing a defining-function param/local, `this`,
+// `super`, or bare `arguments` would therefore resolve in caller scope
+// — loudly refusing when absent, SILENTLY resolving to a different
+// caller binding when present (r_closure_shadow: make's n = 5 vs
+// main2's n = 99). The analysis must yield unknown for any literal
+// whose method bodies reference them (JEV r1_closure,
+// exclude_defining_locals, UNANIMOUS 1.00). `this`/`super`/
+// `arguments` are receiver/frame-relative references in the same hole
+// class and are flagged conservatively (fail-closed; no probe minimal
+// uses them, so this cannot change any gate outcome).
+//
+// The walk is scoped and fail-closed: identifiers bound within the
+// method body itself (method params, method-body locals, nested
+// function params/locals) are safe, and the walk descends through
+// nested functions subtracting each nested function's own params +
+// locals (a nested arrow closing over a defining local is the same
+// capture). Over-refusal (shadowing, property/type names reached via
+// the generic fallback, pattern identifiers) is the fail-closed
+// direction and is accepted. Declarations bind only the scope they
+// are added to, and are processed in statement order (use-before-decl
+// is treated as free, also fail-closed); a use that would resolve to
+// a sibling block's declaration is therefore never treated as bound.
+//
+// saRetLitFnClosureOK reports whether a literal-method table is safe
+// to record. forbidden is the set of defining-function param + declared
+// names; a free identifier matching one, or any `this`/`super`/bare
+// `arguments`, makes the table unsafe.
+func saRetLitFnClosureOK(table map[string]*ast.Node, forbidden map[string]bool) bool {
+	if len(table) == 0 {
+		return true
+	}
+	w := &saRetClosureWalk{forbidden: forbidden}
+	for _, m := range table {
+		if m == nil {
+			return false
+		}
+		var params []*ast.Node
+		switch m.Kind {
+		case ast.KindMethodDeclaration:
+			if md := m.AsMethodDeclaration(); md != nil && md.Parameters != nil {
+				params = md.Parameters.Nodes
+			}
+		case ast.KindArrowFunction:
+			if af := m.AsArrowFunction(); af != nil && af.Parameters != nil {
+				params = af.Parameters.Nodes
+			}
+		case ast.KindFunctionExpression:
+			if fe := m.AsFunctionExpression(); fe != nil && fe.Parameters != nil {
+				params = fe.Parameters.Nodes
+			}
+		default:
+			return false
+		}
+		body := m.Body()
+		if body == nil {
+			return false
+		}
+		w.push()
+		w.bindFuncParams(params)
+		w.walk(body)
+		w.pop()
+		if w.bad {
+			return false
+		}
+	}
+	return true
+}
+
+type saRetClosureWalk struct {
+	forbidden map[string]bool
+	bad       bool
+	scopes    []map[string]bool
+}
+
+func (w *saRetClosureWalk) bound(name string) bool {
+	for i := len(w.scopes) - 1; i >= 0; i-- {
+		if w.scopes[i][name] {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *saRetClosureWalk) push() {
+	w.scopes = append(w.scopes, map[string]bool{})
+}
+
+func (w *saRetClosureWalk) pop() {
+	w.scopes = w.scopes[:len(w.scopes)-1]
+}
+
+func (w *saRetClosureWalk) bind(name string) {
+	if len(w.scopes) == 0 {
+		w.push()
+	}
+	w.scopes[len(w.scopes)-1][name] = true
+}
+
+func (w *saRetClosureWalk) checkIdent(name string) {
+	if w.bad {
+		return
+	}
+	if name == "arguments" && !w.bound(name) {
+		// Bare `arguments` resolves to the caller frame's arguments
+		// after inlining, not the method's own.
+		w.bad = true
+		return
+	}
+	if !w.bound(name) && w.forbidden[name] {
+		w.bad = true
+	}
+}
+
+// bindDecl walks a declaration's reference positions (initializer,
+// computed pattern keys) BEFORE binding its names, so no reference can
+// hide behind a same-name binding. Pattern identifiers walked before
+// binding over-refuse on shadowing (fail-closed, accepted).
+func (w *saRetClosureWalk) bindDecl(name *ast.Node, init *ast.Node) {
+	if init != nil {
+		w.walk(init)
+	}
+	if name != nil && name.Kind != ast.KindIdentifier {
+		w.walk(name)
+	}
+	if name != nil {
+		if names, ok := saRetPatternNames(name); ok {
+			for _, n := range names {
+				w.bind(n)
+			}
+		}
+	}
+}
+
+// bindFuncParams binds a function node's parameters into the current
+// (already pushed) function scope, walking defaults and non-identifier
+// patterns for references first (same order discipline as bindDecl).
+func (w *saRetClosureWalk) bindFuncParams(paramNodes []*ast.Node) {
+	for _, p := range paramNodes {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		if pd.Initializer != nil {
+			w.walk(pd.Initializer)
+		}
+		if nm := pd.Name(); nm != nil && nm.Kind != ast.KindIdentifier {
+			w.walk(nm)
+		}
+	}
+	for _, p := range paramNodes {
+		pd := p.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		if nm := pd.Name(); nm != nil {
+			if names, ok := saRetPatternNames(nm); ok {
+				for _, n := range names {
+					w.bind(n)
+				}
+			}
+		}
+	}
+}
+
+// walkFuncLike walks a function-like node body in a fresh function
+// scope (params bound, name NOT bound — method/function names are not
+// bindings, except a named function expression, whose name binds
+// inside its own scope).
+func (w *saRetClosureWalk) walkFuncLike(n *ast.Node) {
+	var params []*ast.Node
+	var body *ast.Node
+	var selfName string
+	switch n.Kind {
+	case ast.KindMethodDeclaration:
+		if md := n.AsMethodDeclaration(); md != nil && md.Parameters != nil {
+			params = md.Parameters.Nodes
+		}
+	case ast.KindArrowFunction:
+		if af := n.AsArrowFunction(); af != nil && af.Parameters != nil {
+			params = af.Parameters.Nodes
+		}
+	case ast.KindFunctionExpression:
+		if fe := n.AsFunctionExpression(); fe != nil && fe.Parameters != nil {
+			params = fe.Parameters.Nodes
+		}
+		if nm := n.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			selfName = nm.Text()
+		}
+	case ast.KindFunctionDeclaration:
+		if fn := n.AsFunctionDeclaration(); fn != nil && fn.Parameters != nil {
+			params = fn.Parameters.Nodes
+		}
+	case ast.KindConstructor:
+		if cd := n.AsConstructorDeclaration(); cd != nil && cd.Parameters != nil {
+			params = cd.Parameters.Nodes
+		}
+	case ast.KindGetAccessor:
+		if ga := n.AsGetAccessorDeclaration(); ga != nil && ga.Parameters != nil {
+			params = ga.Parameters.Nodes
+		}
+	case ast.KindSetAccessor:
+		if sa := n.AsSetAccessorDeclaration(); sa != nil && sa.Parameters != nil {
+			params = sa.Parameters.Nodes
+		}
+	default:
+		return
+	}
+	body = n.Body()
+	if body == nil {
+		return
+	}
+	w.push()
+	if selfName != "" {
+		w.bind(selfName)
+	}
+	w.bindFuncParams(params)
+	w.walk(body)
+	w.pop()
+}
+
+func (w *saRetClosureWalk) walk(n *ast.Node) {
+	if n == nil || w.bad {
+		return
+	}
+	switch n.Kind {
+	case ast.KindIdentifier:
+		w.checkIdent(n.Text())
+	case ast.KindThisKeyword, ast.KindSuperKeyword:
+		w.bad = true
+	case ast.KindBlock:
+		if bd := n.AsBlock(); bd != nil && bd.Statements != nil {
+			w.push()
+			for _, st := range bd.Statements.Nodes {
+				w.walk(st)
+			}
+			w.pop()
+		}
+	case ast.KindVariableStatement:
+		if vs := n.AsVariableStatement(); vs != nil && vs.DeclarationList != nil {
+			w.walk(vs.DeclarationList.AsNode())
+		}
+	case ast.KindVariableDeclarationList:
+		if dl := n.AsVariableDeclarationList(); dl != nil {
+			for _, d := range dl.Declarations.Nodes {
+				w.walk(d)
+			}
+		}
+	case ast.KindVariableDeclaration:
+		if vd := n.AsVariableDeclaration(); vd != nil {
+			w.bindDecl(vd.Name(), vd.Initializer)
+		}
+	case ast.KindFunctionDeclaration:
+		// The declaration name binds in the enclosing scope; the body
+		// walks in its own function scope.
+		if fn := n.AsFunctionDeclaration(); fn != nil {
+			if nm := fn.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				w.bind(nm.Text())
+			}
+			w.walkFuncLike(n)
+		}
+	case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindMethodDeclaration,
+		ast.KindConstructor, ast.KindGetAccessor, ast.KindSetAccessor:
+		w.walkFuncLike(n)
+	case ast.KindClassDeclaration, ast.KindClassExpression:
+		if cd := n.AsClassDeclaration(); cd != nil {
+			if nm := cd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				w.bind(nm.Text())
+			}
+		}
+		// Heritage expressions are references; members walk via their
+		// own cases (methods as function scopes, properties below).
+		n.ForEachChild(func(c *ast.Node) bool {
+			if c.Kind == ast.KindIdentifier {
+				// Class name already bound above; skip re-walking it.
+				return !w.bad
+			}
+			w.walk(c)
+			return !w.bad
+		})
+	case ast.KindPropertyDeclaration:
+		if pd := n.AsPropertyDeclaration(); pd != nil {
+			if nm := pd.Name(); nm != nil && nm.Kind == ast.KindComputedPropertyName {
+				w.walk(nm)
+			}
+			if pd.Initializer != nil {
+				w.walk(pd.Initializer)
+			}
+		}
+	case ast.KindPropertyAccessExpression:
+		// The property name is not a reference; only the object is.
+		if pa := n.AsPropertyAccessExpression(); pa != nil {
+			w.walk(pa.Expression)
+		}
+	case ast.KindElementAccessExpression:
+		if ea := n.AsElementAccessExpression(); ea != nil {
+			w.walk(ea.Expression)
+			w.walk(ea.ArgumentExpression)
+		}
+	case ast.KindObjectLiteralExpression:
+		if ol := n.AsObjectLiteralExpression(); ol != nil && ol.Properties != nil {
+			for _, p := range ol.Properties.Nodes {
+				switch p.Kind {
+				case ast.KindPropertyAssignment:
+					if pa := p.AsPropertyAssignment(); pa != nil {
+						if nm := pa.Name(); nm != nil && nm.Kind == ast.KindComputedPropertyName {
+							w.walk(nm)
+						}
+						w.walk(pa.Initializer)
+					}
+				case ast.KindShorthandPropertyAssignment:
+					// Shorthand IS a reference to the same-named value.
+					if sa := p.AsShorthandPropertyAssignment(); sa != nil {
+						if nm := sa.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+							w.checkIdent(nm.Text())
+						}
+					}
+				case ast.KindSpreadAssignment:
+					if sp := p.AsSpreadAssignment(); sp != nil {
+						w.walk(sp.Expression)
+					}
+				default:
+					// Methods/getters/setters walk as function scopes.
+					w.walk(p)
+				}
+			}
+		}
+	case ast.KindPropertyAssignment:
+		if pa := n.AsPropertyAssignment(); pa != nil {
+			if nm := pa.Name(); nm != nil && nm.Kind == ast.KindComputedPropertyName {
+				w.walk(nm)
+			}
+			w.walk(pa.Initializer)
+		}
+	case ast.KindShorthandPropertyAssignment:
+		if sa := n.AsShorthandPropertyAssignment(); sa != nil {
+			if nm := sa.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				w.checkIdent(nm.Text())
+			}
+		}
+	case ast.KindSpreadAssignment:
+		if sp := n.AsSpreadAssignment(); sp != nil {
+			w.walk(sp.Expression)
+		}
+	case ast.KindForStatement:
+		if fs := n.AsForStatement(); fs != nil {
+			w.push()
+			w.walk(fs.Initializer)
+			w.walk(fs.Condition)
+			w.walk(fs.Incrementor)
+			w.walk(fs.Statement)
+			w.pop()
+		}
+	case ast.KindForInStatement, ast.KindForOfStatement:
+		if fs := n.AsForInOrOfStatement(); fs != nil {
+			w.push()
+			w.walk(fs.Initializer)
+			w.walk(fs.Expression)
+			w.walk(fs.Statement)
+			w.pop()
+		}
+	case ast.KindTryStatement:
+		if ts := n.AsTryStatement(); ts != nil {
+			if ts.TryBlock != nil {
+				w.walk(ts.TryBlock)
+			}
+			if ts.CatchClause != nil {
+				w.walk(ts.CatchClause)
+			}
+			if ts.FinallyBlock != nil {
+				w.walk(ts.FinallyBlock)
+			}
+		}
+	case ast.KindCatchClause:
+		if cc := n.AsCatchClause(); cc != nil {
+			w.push()
+			if cc.VariableDeclaration != nil {
+				if vd := cc.VariableDeclaration.AsVariableDeclaration(); vd != nil {
+					w.bindDecl(vd.Name(), vd.Initializer)
+				}
+			}
+			if cc.Block != nil {
+				w.walk(cc.Block)
+			}
+			w.pop()
+		}
+	case ast.KindSwitchStatement:
+		if ss := n.AsSwitchStatement(); ss != nil {
+			// Switch cases share one block scope in JS.
+			w.push()
+			w.walk(ss.Expression)
+			if ss.CaseBlock != nil {
+				w.walk(ss.CaseBlock)
+			}
+			w.pop()
+		}
+	case ast.KindCaseBlock:
+		if cb := n.AsCaseBlock(); cb != nil && cb.Clauses != nil {
+			for _, cl := range cb.Clauses.Nodes {
+				w.walk(cl)
+			}
+		}
+	case ast.KindCaseClause, ast.KindDefaultClause:
+		if cc := n.AsCaseOrDefaultClause(); cc != nil {
+			w.walk(cc.Expression)
+			if cc.Statements != nil {
+				for _, st := range cc.Statements.Nodes {
+					w.walk(st)
+				}
+			}
+		}
+	default:
+		// Generic fallback: walk all children. Identifiers reached
+		// here are treated as references (over-refusal, fail-closed);
+		// bindings inside unhandled containers are never added, so no
+		// reference can hide behind a missed scope.
+		n.ForEachChild(func(c *ast.Node) bool {
+			w.walk(c)
+			return !w.bad
+		})
+	}
+}
+
+// paramNameSet builds a forbidden set from a defining function's
+// parameter names (expression-body closure checks have no declared
+// names to add).
+func paramNameSet(paramNames []string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range paramNames {
+		if p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
 // saRetClassifyInit classifies a depth-0 const binding initializer into
 // an entry, or reports no entry (unknown provenance, never an error).
 // Identifier copies are NOT handled here: they need the walker's live
@@ -1141,7 +1602,10 @@ func saRetCallLitID(callee string) int {
 
 // saRetClassifyReturn classifies one return expression into a path.
 // entries/shadowed are nil for arrow expression bodies (no bindings).
-func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef) saIfaceRetPath {
+// forbidden is consulted only by the Phase R1 ObjectLiteral arm.
+// litSeq is Phase R1 only: fresh id per literal (nil for callers that
+// never classify a literal). All other arms ignore both.
+func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, litSeq *int, forbidden map[string]bool) saIfaceRetPath {
 	unknown := saIfaceRetPath{unknown: true}
 	if expr == nil {
 		return unknown
@@ -1193,6 +1657,33 @@ func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, sha
 			return saIfaceRetPath{class: e.class}
 		}
 		return unknown
+	case ast.KindObjectLiteralExpression:
+		// Phase R1: fresh method-bearing literal in return position.
+		// The table is built by the same builder as const-local
+		// literals; the ONLY new gate is the closure check (a method
+		// body referencing a defining-function param/local/this would
+		// inline into caller scope). Methods-only in v1: a literal
+		// with data properties builds no table (builder fails) and
+		// yields unknown, so mixed shapes gain no prov — the
+		// lowering/analysis asymmetry is intentional (a mixed
+		// literal passes lowering but refuses at dispatch).
+		// Data-only literals (no methods at all) also yield unknown
+		// here: no litFn, nothing to record, and the return itself
+		// lowers by the existing data path. litSeq gives each literal
+		// a fresh id (mirroring the const-local binding name).
+		table, litOK := saRetBuildLitFn(expr, retIface, classes)
+		if !litOK || len(table) == 0 {
+			return unknown
+		}
+		if !saRetLitFnClosureOK(table, forbidden) {
+			return unknown
+		}
+		id := 0
+		if litSeq != nil {
+			id = *litSeq
+			*litSeq++
+		}
+		return saIfaceRetPath{isLit: true, litID: id, litFn: table}
 	case ast.KindCallExpression:
 		ce := expr.AsCallExpression()
 		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
