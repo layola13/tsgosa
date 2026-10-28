@@ -7553,6 +7553,13 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				if saClassSatisfies(scope.classes, k[5:], sig.paramKinds[i][5:]) {
 					return a.Text(), ""
 				}
+				// Phase R0: structural interface match (method-set match,
+				// no implements clause) passes verbatim like explicit
+				// satisfaction; params carry no provenance in v1, so the
+				// callee body's method calls still refuse (fail-closed).
+				if saClassStructurallySatisfies(scope.classes, k[5:], sig.paramKinds[i][5:]) {
+					return a.Text(), ""
+				}
 			}
 		}
 		// 空字面量即 0 句柄（与 `Box|null` 空吸收同形；封存上游实发
@@ -7583,7 +7590,7 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		// 工厂新柄同律，随调用后 drain 释放。
 		if na := saUnwrapTransparent(a); na != nil && na.Kind == ast.KindNewExpression {
 			if cname, msg := saNewStmtClassName(na.AsNewExpression()); msg == "" {
-				if saClassSatisfies(scope.classes, cname, sig.paramKinds[i][5:]) {
+				if saClassSatisfies(scope.classes, cname, sig.paramKinds[i][5:]) || saClassStructurallySatisfies(scope.classes, cname, sig.paramKinds[i][5:]) {
 					h, msg := saLowerNewStmt(w, na, scope, pos, refusals, nextTemp)
 					if msg != "" {
 						return "", msg
@@ -7598,7 +7605,7 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		if a != nil && a.Kind == ast.KindCallExpression {
 			if k, ok := saCallRetKind(a.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
 				want := sig.paramKinds[i][5:]
-				if saClassSatisfies(scope.classes, k[5:], want) {
+				if saClassSatisfies(scope.classes, k[5:], want) || saClassStructurallySatisfies(scope.classes, k[5:], want) {
 					op, voidCall, msg := saEvalCall(w, a.AsCallExpression(), scope, pos, refusals, nextTemp)
 					if msg != "" || voidCall {
 						return "", msg

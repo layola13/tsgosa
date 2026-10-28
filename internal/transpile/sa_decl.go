@@ -1173,6 +1173,9 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 			scope.types[name] = vkind
+			// Phase R0: attach the callee's recorded return provenance
+			// (const bindings only; the dispatch site handles the call).
+			saAttachIfaceRetProv(scope, init.AsCallExpression(), name, vkind, isConst)
 			if saIsTempOp(op) {
 				saConsumeOwn(scope, op)
 			}
@@ -1983,6 +1986,13 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		}
 		w.Write(fmt.Sprintf("  %s = %s\n", name, op))
 		scope.types[name] = k
+		// Phase R0: attach the callee's recorded return provenance for
+		// interface-typed call results (const bindings only).
+		if len(k) > 5 && k[:5] == "inst:" {
+			if ceInit := saRetPeelParenNonNull(init); ceInit != nil && ceInit.Kind == ast.KindCallExpression {
+				saAttachIfaceRetProv(scope, ceInit.AsCallExpression(), name, k, isConst)
+			}
+		}
 		saConsumeOwn(scope, op)
 		saDeclareOwned(scope, name)
 		saCopyInstFn(scope, op, name)

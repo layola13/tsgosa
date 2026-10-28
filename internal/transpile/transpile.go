@@ -4261,6 +4261,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 	}
 	mainRenamed := hasUserMain && len(entryStmts) > 0
+	// Phase R0 interface-return provenance (sa_iface_ret.go): analyze
+	// return paths before lowering; adds no refusals (fail-closed).
+	saAnalyzeReturnIfaceProv(sf, funcs, classes, aliasOf)
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`
@@ -6212,18 +6215,20 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 // defaults 与 defaultExprs 与形参同长：有 Initializer 即 true（字面量短调回放，
 // 非字面量短调大声拒；形状证据：封存 funcDefaults/funcDefaultExpr + padDefaultArgs）。
 type saFuncSig struct {
-	params       int
-	isVoid       bool
-	retKind      string
-	retIsPromise bool // 声明返回注解为 Promise<T>（future-kind 标记；预扫时记，await 门凭此认 future 种；零值 false，余构造点不受影响）
-	paramKinds   []string
-	defaults     []bool
-	defaultExprs []*ast.Node
-	arrowCaps    []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
-	arrowThis    bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
-	hasRest      bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
-	retFn        string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
-	retMapVal    string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
+	params        int
+	isVoid        bool
+	retKind       string
+	retIsPromise  bool                 // 声明返回注解为 Promise<T>（future-kind 标记；预扫时记，await 门凭此认 future 种；零值 false，余构造点不受影响）
+	retIfaceProv  string               // Phase R0: agreed concrete class for an interface return kind (same-file, sync; "" = none)
+	retIfaceLitFn map[string]*ast.Node // Phase R0: agreed literal-method table for an interface return kind (nil = none; mutually exclusive with retIfaceProv)
+	paramKinds    []string
+	defaults      []bool
+	defaultExprs  []*ast.Node
+	arrowCaps     []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
+	arrowThis     bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
+	hasRest       bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
+	retFn         string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
+	retMapVal     string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
 	// 3_deffile sig-carried defining-file default resolutions (JEV def_scope
 	// sig_full): per-param, parallel to defaults/defaultExprs, "" = none.
 	// Recorded at defining-file harvest time from defining-file state only

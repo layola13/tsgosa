@@ -8246,10 +8246,35 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 						paramVal[nm.Text()] = v
 						continue
 					}
+					// Phase R0: new-expression args against interface-typed
+					// ctor params lower verbatim when the class satisfies
+					// the interface (explicitly or structurally).
+					if na := saUnwrapTransparent(a); na != nil && na.Kind == ast.KindNewExpression && sub.isIface {
+						if cname, msg := saNewStmtClassName(na.AsNewExpression()); msg == "" {
+							if saClassSatisfies(scope.classes, cname, sub.name) || saClassStructurallySatisfies(scope.classes, cname, sub.name) {
+								h, msg := saLowerNewStmt(w, na, scope, pos, refusals, nextTemp)
+								if msg != "" {
+									return "", msg
+								}
+								paramVal[nm.Text()] = h
+								continue
+							}
+						}
+					}
 					if a != nil && a.Kind == ast.KindIdentifier {
 						if k, ok := scope.types[a.Text()]; ok && k == "inst:"+sub.name {
 							paramVal[nm.Text()] = a.Text()
 							continue
+						}
+						// Phase R0: interface-typed ctor params accept
+						// explicitly satisfying or structurally matching
+						// concrete instances verbatim (field stores are
+						// pointer stores; params carry no provenance in v1).
+						if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+							if sub.isIface && (saClassSatisfies(scope.classes, k[5:], sub.name) || saClassStructurallySatisfies(scope.classes, k[5:], sub.name)) {
+								paramVal[nm.Text()] = a.Text()
+								continue
+							}
 						}
 					}
 				}
@@ -8272,6 +8297,14 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 					if k, ok := scope.types[a.Text()]; ok && k == "inst:"+lname {
 						paramVal[nm.Text()] = a.Text()
 						continue
+					}
+					// Phase R0: interface union members accept satisfying
+					// instances verbatim (same rule as the nested-layout arm).
+					if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+						if udef, ok := scope.classes[lname]; ok && udef != nil && udef.isIface && (saClassSatisfies(scope.classes, k[5:], lname) || saClassStructurallySatisfies(scope.classes, k[5:], lname)) {
+							paramVal[nm.Text()] = a.Text()
+							continue
+						}
 					}
 				}
 				if saIsNullLit(a, scope) {
