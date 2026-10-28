@@ -4728,6 +4728,13 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 		scope.types[p] = kinds[p]
 		saDeclareOwned(scope, p)
 	}
+	// Phase P0 interface-parameter provenance: install recorded param
+	// prov on the parameter bindings (top-level arrows look up by const
+	// name; local out-of-line arrows have synth names absent from funcs
+	// and install nothing).
+	if sig, ok := funcs[name]; ok {
+		saInstallParamIfaceProv(scope, sig, params)
+	}
 	// Record 形参值种播种（读侧按表记种；无表恒 i32；与函数序同形）。
 	if pl := arrow.ParameterList(); pl != nil {
 		saSeedParamMapVals(pl.Nodes, kinds, classes, scope)

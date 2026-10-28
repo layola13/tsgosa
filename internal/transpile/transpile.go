@@ -432,56 +432,57 @@ func saPos(offs []int, p int) (int, int) {
 // lowering, all behavior unchanged). Shape evidence: upstream LowerProgram
 // prefixOf + links[p].resolved + seeded funcSigs + PerFile harvest.
 type saFileLink struct {
-	defPrefix        string                            // definition prefix ("" entry; "util__" libs)
-	isEntry          bool                              // entry synthesizes @main; libs refuse top-level execution
-	self             string                            // this file key (for own re-export edges)
-	progDir          string                            // program dir (abs) for bare-type resolution
-	bareTypeCache    map[string]*saBareTypeFile        // abs path -> parsed defining file (shared per build)
-	specOf           map[string]string                 // this file: import spec -> target file
-	jsonOf           map[string]string                 // this file: json import spec -> absolute file path (prescan only; not a program edge, never in specOf/graph)
-	prefixOf         map[string]string                 // all files: target -> prefix
-	harvests         map[string]map[string]saProgFunc  // all files: target -> name -> harvested (driver fills)
-	reexps           map[string]map[string]string      // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
-	stars            map[string][]string               // all files: target -> star-from targets in order (upstream starFrom 同形）
-	resolve          map[string]string                 // out/in: imported local name -> qualified callee
-	seed             map[string]saFuncSig              // out/in: qualified callee -> defining file signature
-	harvest          map[string]saProgFunc             // out: own top-level functions for dependents
-	classHarvest     map[string]saProgClass            // out: own top-level classes for dependents
-	classHarvests    map[string]map[string]saProgClass // all files: target -> name -> harvested class (driver fills)
-	classSeed        map[string]*saClassDef            // out/in: imported local class name -> defining layout
-	enumHarvest      map[string]saProgEnum             // out: own top-level enums for dependents
-	enumHarvests     map[string]map[string]saProgEnum  // all files: target -> name -> harvested enum (driver fills)
-	enumSeed         map[string]saProgEnum             // out/in: imported local enum name -> member maps
-	aliasHarvest     map[string]saProgAlias            // out: own top-level type aliases for dependents
-	aliasHarvests    map[string]map[string]saProgAlias // all files: target -> name -> harvested alias (driver fills)
-	aliasSeed        map[string]saProgAlias            // out/in: imported local alias name -> aliased node
-	aliasClosureSeed map[string]saProgAlias            // out/in: transitive alias-chain names from defining files (merged at hook C after explicit seeds)
-	ambHarvest       map[string]bool                   // out: own exported ambient names for dependents
-	ambHarvests      map[string]map[string]bool        // all files: target -> name -> ambient-erased (driver fills)
-	constHarvest     map[string]saProgConst            // out: own folded consts for dependents
-	constHarvests    map[string]map[string]saProgConst // all files: target -> name -> harvested const (driver fills)
-	topConstHarvest  map[string]bool                   // out: own top const array/object/regex names claimed by this file's lowering, value = export modifier (re-export claim use)
-	topConstHarvests map[string]map[string]bool        // all files: target -> name -> harvested top const (driver fills)
-	topArrHarvest    map[string]saTopArr               // out: own exported top array claims for dependents (snapshot seeding)
-	topArrHarvests   map[string]map[string]saTopArr    // all files: target -> name -> harvested top array (driver fills)
-	topObjHarvest    map[string]saTopObj               // out: own exported top object claims for dependents
-	topObjHarvests   map[string]map[string]saTopObj    // all files: target -> name -> harvested top object (driver fills)
-	topRegexHarvest  map[string]saTopRegex             // out: own exported top regex claims for dependents
-	topRegexHarvests map[string]map[string]saTopRegex  // all files: target -> name -> harvested top regex (driver fills)
-	topMapHarvest    map[string]saTopMap               // out: own exported top Record claims for dependents
-	topMapHarvests   map[string]map[string]saTopMap    // all files: target -> name -> harvested top Record (driver fills)
-	topArrSeed       map[string]saTopArr               // out/in: imported local name -> defining array claim
-	topObjSeed       map[string]saTopObj               // out/in: imported local name -> defining object claim
-	topRegexSeed     map[string]saTopRegex             // out/in: imported local name -> defining regex claim
-	topMapSeed       map[string]saTopMap               // out/in: imported local name -> defining Record claim
-	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
-	constSeedSrc     map[string]string                 // 4_link_mask: imported local const name -> defining-file prefix (origin of the constSeed entry; same set/overwrite semantics as constSeed)            // out/in: imported local const name -> folded value
-	xfileConstSeed   map[string]saXfileConst           // out/in: cross-file delayed-fold slot seeds (Phase B): imported local const name -> harvested defining value + defining file/name. Populated ONLY by the mixed-chain fallthrough in saBindProgImports when every existing chain failed; consumed ONLY by saClaimCrossFileConstSlots. NEVER flows into topConsts (unlike constSeed): these names stay runtime slots, not folds, so string/ambiguous/unharvested imports keep refusing exactly as today.
-	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
-	slotHarvests     map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
-	slotSeed         map[string]*saModState            // out/in: imported local slot name -> defining slot
-	declSigs         map[string]saFuncSig              // in: .d.ts 声明签名（JS 运行时借种；声明契约即类型来源）
-	declHarvest      map[string]saFuncSig              // out: own 无体声明签名（仅类型单元产出；不入 harvest——无实现不可链）
+	defPrefix        string                                // definition prefix ("" entry; "util__" libs)
+	isEntry          bool                                  // entry synthesizes @main; libs refuse top-level execution
+	self             string                                // this file key (for own re-export edges)
+	progDir          string                                // program dir (abs) for bare-type resolution
+	bareTypeCache    map[string]*saBareTypeFile            // abs path -> parsed defining file (shared per build)
+	specOf           map[string]string                     // this file: import spec -> target file
+	jsonOf           map[string]string                     // this file: json import spec -> absolute file path (prescan only; not a program edge, never in specOf/graph)
+	prefixOf         map[string]string                     // all files: target -> prefix
+	harvests         map[string]map[string]saProgFunc      // all files: target -> name -> harvested (driver fills)
+	reexps           map[string]map[string]string          // all files: target -> exported -> "tgt\x00remote" (driver fills; upstream reexp edge 同形）
+	stars            map[string][]string                   // all files: target -> star-from targets in order (upstream starFrom 同形）
+	importedBy       map[string]map[string]map[string]bool // Phase P0: all files: target -> export name ("*" = star import) -> importing files (driver fills)
+	resolve          map[string]string                     // out/in: imported local name -> qualified callee
+	seed             map[string]saFuncSig                  // out/in: qualified callee -> defining file signature
+	harvest          map[string]saProgFunc                 // out: own top-level functions for dependents
+	classHarvest     map[string]saProgClass                // out: own top-level classes for dependents
+	classHarvests    map[string]map[string]saProgClass     // all files: target -> name -> harvested class (driver fills)
+	classSeed        map[string]*saClassDef                // out/in: imported local class name -> defining layout
+	enumHarvest      map[string]saProgEnum                 // out: own top-level enums for dependents
+	enumHarvests     map[string]map[string]saProgEnum      // all files: target -> name -> harvested enum (driver fills)
+	enumSeed         map[string]saProgEnum                 // out/in: imported local enum name -> member maps
+	aliasHarvest     map[string]saProgAlias                // out: own top-level type aliases for dependents
+	aliasHarvests    map[string]map[string]saProgAlias     // all files: target -> name -> harvested alias (driver fills)
+	aliasSeed        map[string]saProgAlias                // out/in: imported local alias name -> aliased node
+	aliasClosureSeed map[string]saProgAlias                // out/in: transitive alias-chain names from defining files (merged at hook C after explicit seeds)
+	ambHarvest       map[string]bool                       // out: own exported ambient names for dependents
+	ambHarvests      map[string]map[string]bool            // all files: target -> name -> ambient-erased (driver fills)
+	constHarvest     map[string]saProgConst                // out: own folded consts for dependents
+	constHarvests    map[string]map[string]saProgConst     // all files: target -> name -> harvested const (driver fills)
+	topConstHarvest  map[string]bool                       // out: own top const array/object/regex names claimed by this file's lowering, value = export modifier (re-export claim use)
+	topConstHarvests map[string]map[string]bool            // all files: target -> name -> harvested top const (driver fills)
+	topArrHarvest    map[string]saTopArr                   // out: own exported top array claims for dependents (snapshot seeding)
+	topArrHarvests   map[string]map[string]saTopArr        // all files: target -> name -> harvested top array (driver fills)
+	topObjHarvest    map[string]saTopObj                   // out: own exported top object claims for dependents
+	topObjHarvests   map[string]map[string]saTopObj        // all files: target -> name -> harvested top object (driver fills)
+	topRegexHarvest  map[string]saTopRegex                 // out: own exported top regex claims for dependents
+	topRegexHarvests map[string]map[string]saTopRegex      // all files: target -> name -> harvested top regex (driver fills)
+	topMapHarvest    map[string]saTopMap                   // out: own exported top Record claims for dependents
+	topMapHarvests   map[string]map[string]saTopMap        // all files: target -> name -> harvested top Record (driver fills)
+	topArrSeed       map[string]saTopArr                   // out/in: imported local name -> defining array claim
+	topObjSeed       map[string]saTopObj                   // out/in: imported local name -> defining object claim
+	topRegexSeed     map[string]saTopRegex                 // out/in: imported local name -> defining regex claim
+	topMapSeed       map[string]saTopMap                   // out/in: imported local name -> defining Record claim
+	constSeed        map[string]saProgConst                // out/in: imported local const name -> folded value
+	constSeedSrc     map[string]string                     // 4_link_mask: imported local const name -> defining-file prefix (origin of the constSeed entry; same set/overwrite semantics as constSeed)            // out/in: imported local const name -> folded value
+	xfileConstSeed   map[string]saXfileConst               // out/in: cross-file delayed-fold slot seeds (Phase B): imported local const name -> harvested defining value + defining file/name. Populated ONLY by the mixed-chain fallthrough in saBindProgImports when every existing chain failed; consumed ONLY by saClaimCrossFileConstSlots. NEVER flows into topConsts (unlike constSeed): these names stay runtime slots, not folds, so string/ambiguous/unharvested imports keep refusing exactly as today.
+	slotHarvest      map[string]*saModState                // out: own ns slots for dependents (pointer shared read-only)
+	slotHarvests     map[string]map[string]*saModState     // all files: target -> name -> harvested slot (driver fills)
+	slotSeed         map[string]*saModState                // out/in: imported local slot name -> defining slot
+	declSigs         map[string]saFuncSig                  // in: .d.ts 声明签名（JS 运行时借种；声明契约即类型来源）
+	declHarvest      map[string]saFuncSig                  // out: own 无体声明签名（仅类型单元产出；不入 harvest——无实现不可链）
 }
 
 // saProgFunc is one harvested top-level function for cross-file linking.
@@ -4264,6 +4265,10 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// Phase R0 interface-return provenance (sa_iface_ret.go): analyze
 	// return paths before lowering; adds no refusals (fail-closed).
 	saAnalyzeReturnIfaceProv(sf, funcs, classes, aliasOf)
+	// Phase P0 interface-parameter provenance (sa_iface_params.go):
+	// call-graph edges + import-graph eligibility; after R0 (call-result
+	// args need retIfaceProv first); adds no refusals (fail-closed).
+	saAnalyzeParamsIfaceProv(sf, funcs, classes, aliasOf, link)
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`
@@ -6215,20 +6220,23 @@ func saReturnKind(t *ast.TypeNode) (string, bool) {
 // defaults 与 defaultExprs 与形参同长：有 Initializer 即 true（字面量短调回放，
 // 非字面量短调大声拒；形状证据：封存 funcDefaults/funcDefaultExpr + padDefaultArgs）。
 type saFuncSig struct {
-	params        int
-	isVoid        bool
-	retKind       string
-	retIsPromise  bool                 // 声明返回注解为 Promise<T>（future-kind 标记；预扫时记，await 门凭此认 future 种；零值 false，余构造点不受影响）
-	retIfaceProv  string               // Phase R0: agreed concrete class for an interface return kind (same-file, sync; "" = none)
-	retIfaceLitFn map[string]*ast.Node // Phase R0: agreed literal-method table for an interface return kind (nil = none; mutually exclusive with retIfaceProv)
-	paramKinds    []string
-	defaults      []bool
-	defaultExprs  []*ast.Node
-	arrowCaps     []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
-	arrowThis     bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
-	hasRest       bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
-	retFn         string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
-	retMapVal     string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
+	params          int
+	isVoid          bool
+	retKind         string
+	retIsPromise    bool                 // 声明返回注解为 Promise<T>（future-kind 标记；预扫时记，await 门凭此认 future 种；零值 false，余构造点不受影响）
+	retIfaceProv    string               // Phase R0: agreed concrete class for an interface return kind (same-file, sync; "" = none)
+	retIfaceLitFn   map[string]*ast.Node // Phase R0: agreed literal-method table for an interface return kind (nil = none; mutually exclusive with retIfaceProv)
+	paramKinds      []string
+	paramIfaceProv  []string               // Phase P0: agreed concrete class per interface parameter position ("" = none), parallel to paramKinds
+	paramIfaceLitFn []map[string]*ast.Node // Phase P0: agreed literal-method table per interface parameter position (nil = none), parallel to paramKinds
+	paramIfaceLitID []int                  // Phase P0: agreement id per literal-method parameter position, parallel to paramKinds
+	defaults        []bool
+	defaultExprs    []*ast.Node
+	arrowCaps       []string // 局部箭头尾随捕获名（有序；调用点原样追加实参）
+	arrowThis       bool     // 局部箭头捕获方法接收者（`this` 穿透；调用点追传 thisSelf）
+	hasRest         bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
+	retFn           string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
+	retMapVal       string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
 	// 3_deffile sig-carried defining-file default resolutions (JEV def_scope
 	// sig_full): per-param, parallel to defaults/defaultExprs, "" = none.
 	// Recorded at defining-file harvest time from defining-file state only
@@ -6653,6 +6661,16 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		scope.types[p] = paramKinds[p]
 		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
 		saDeclareOwned(scope, p)
+	}
+	// Phase P0 interface-parameter provenance: install recorded param
+	// prov on the parameter bindings (ns members look up by forceName,
+	// top-level functions by name; methods never pass through here).
+	installKey := forceName
+	if installKey == "" {
+		installKey = name
+	}
+	if sig, ok := funcs[installKey]; ok {
+		saInstallParamIfaceProv(scope, sig, params)
 	}
 	// Record 形参值种播种（读侧按表记种；无表恒 i32）+ 串元数组形参标记。
 	if fn.Parameters != nil {
@@ -8206,6 +8224,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	reexpOf := map[string]map[string]string{}
 	starOf := map[string][]string{}
 	impOf := map[string]map[string]string{}
+	starImpOf := map[string]map[string]bool{} // Phase P0: file -> namespace-import targets (for importedBy wildcards)
 	unresolved := map[string]bool{}
 	// (2b_reexport) Bare-spec value re-export chain: chase tsconfig-path /
 	// file: specs to their defining files and adopt only those files, so
@@ -8366,6 +8385,15 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 								}
 							}
 						}
+						// Phase P0: namespace imports carry no single value
+						// (skipped by impOf) but import every export for
+						// eligibility: record the wildcard target.
+						if nb := cl.NamedBindings; nb != nil && nb.Kind == ast.KindNamespaceImport {
+							if starImpOf[p] == nil {
+								starImpOf[p] = map[string]bool{}
+							}
+							starImpOf[p][tgt] = true
+						}
 					}
 				}
 			}
@@ -8395,6 +8423,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			}
 		}
 	}
+	// Phase P0 import-graph eligibility (sa_iface_params.go): computed
+	// after every graph mutation (edge loop, local-edges loop, bare
+	// re-export link, relative-outside adoption) and before lowering.
+	importedBy := saProgComputeImportedBy(impOf, starImpOf, reexpOf, starOf)
 	reachable := []string{}
 	visited := map[string]bool{}
 	onStack := map[string]bool{}
@@ -8484,6 +8516,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			prefixOf:         prefixOf,
 			reexps:           reexpOf,
 			stars:            starOf,
+			importedBy:       importedBy,
 			resolve:          map[string]string{},
 			seed:             map[string]saFuncSig{},
 			harvest:          map[string]saProgFunc{},
