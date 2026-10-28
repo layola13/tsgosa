@@ -69,15 +69,26 @@ type saClassDef struct {
 	statics       map[string]saStaticVal
 	ctor          *ast.Node
 	ctorOwner     string
-	finits        map[string]*ast.Node
-	finitOrder    []string
-	parent        string
-	implements    []string
-	isIface       bool
-	isAbstract    bool
-	isMono        bool
-	isSynth       bool
-	isStdBase     bool
+	// fieldProv is the Phase F (fields slice) interface-field provenance
+	// table: field name -> agreed concrete class for an interface-typed
+	// field, recorded ONLY for classes defined in the file being lowered
+	// (same_file_only; never for preseeded imports). A static
+	// per-(class, field) fact: every wiring site in the file wires the
+	// same satisfying concrete (complete-or-poison, mirroring P0's
+	// exactly_one). Class only, never litFn. Written by the field pass
+	// (sa_iface_fields.go) inside the joint loop, read by the shared
+	// field-read entry helper and the lowering-time bind install. Nil =
+	// no field prov recorded.
+	fieldProv  map[string]string
+	finits     map[string]*ast.Node
+	finitOrder []string
+	parent     string
+	implements []string
+	isIface    bool
+	isAbstract bool
+	isMono     bool
+	isSynth    bool
+	isStdBase  bool
 }
 
 // saIsBareTypeParamField 报告字段声明类型是否为裸类型参引用（未决泛型擦除

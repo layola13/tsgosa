@@ -209,7 +209,19 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			// changes in P0 passes, which run between R0 calls, so the
 			// seed is stable across this call's internal rounds.
 			seed := saRetParamSeedEntries(sig, bi.paramNodes, classes)
-			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, seed, sig.retKind, funcs, classes, aliasOf)
+			// Phase F: param kinds for field-read receivers (exact
+			// index alignment with bi.params; length mismatch means
+			// no paramKinds, mirroring the seed rule).
+			var paramKinds map[string]string
+			if len(bi.params) == len(sig.paramKinds) {
+				paramKinds = map[string]string{}
+				for i, name := range bi.params {
+					if name != "" {
+						paramKinds[name] = sig.paramKinds[i]
+					}
+				}
+			}
+			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, seed, sig.retKind, funcs, classes, aliasOf, paramKinds)
 			if !has {
 				continue
 			}
@@ -367,7 +379,7 @@ func saRetParamSeedEntries(sig saFuncSig, paramNodes []*ast.Node, classes map[st
 // param-origin entries (class only, block bodies only); expression bodies
 // classify with nil entries as before (block_only). Returns the agreed
 // concrete class (prov) or literal-method table (litFn), or has=false.
-func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]saIfaceRetEntry, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, map[string]*ast.Node, bool) {
+func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]saIfaceRetEntry, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, paramKinds map[string]string) (string, map[string]*ast.Node, bool) {
 	retIface := retKind[5:]
 	if body == nil {
 		return "", nil, false
@@ -402,15 +414,16 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 	}
 	// Pass 2: ordered walk, depth-0 const bindings + all return paths.
 	w := &saRetWalker{
-		taint:    t,
-		entries:  map[string]saIfaceRetEntry{},
-		ok:       true,
-		funcs:    funcs,
-		classes:  classes,
-		aliasOf:  aliasOf,
-		retKind:  retKind,
-		retIface: retIface,
-		litSeq:   0,
+		taint:      t,
+		entries:    map[string]saIfaceRetEntry{},
+		ok:         true,
+		funcs:      funcs,
+		classes:    classes,
+		aliasOf:    aliasOf,
+		retKind:    retKind,
+		retIface:   retIface,
+		litSeq:     0,
+		paramKinds: paramKinds,
 	}
 	// Phase P1: seed block-body entries with param-origin prov.
 	// Tainted names (assigned, or shared with a same-name const) are
@@ -682,16 +695,17 @@ func saRetDirectDeclNames(stmts []*ast.Node) map[string]bool {
 // saRetWalker is pass 2: ordered depth-0 const bindings + return paths,
 // with shadowing tracked per subtree.
 type saRetWalker struct {
-	taint    *saRetTaint
-	entries  map[string]saIfaceRetEntry
-	paths    []saIfaceRetPath
-	ok       bool
-	funcs    map[string]saFuncSig
-	classes  map[string]*saClassDef
-	aliasOf  map[string]*ast.TypeNode
-	retKind  string
-	retIface string
-	litSeq   int
+	taint      *saRetTaint
+	entries    map[string]saIfaceRetEntry
+	paths      []saIfaceRetPath
+	ok         bool
+	funcs      map[string]saFuncSig
+	classes    map[string]*saClassDef
+	aliasOf    map[string]*ast.TypeNode
+	retKind    string
+	retIface   string
+	litSeq     int
+	paramKinds map[string]string // name -> declared kind, for field-read receivers
 }
 
 func saRetCopyShadow(in map[string]bool) map[string]bool {
@@ -844,7 +858,7 @@ func (w *saRetWalker) bindVarDecl(st *ast.Node) {
 		if w.taint.tainted(name) {
 			continue
 		}
-		if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq); ok {
+		if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {
 			w.entries[name] = e
 		}
 	}
@@ -1029,7 +1043,7 @@ func annotKindOrEmpty(annotName string) string {
 // (the annotation, else the source entry's kind interface), with a fresh
 // agreement id whenever the filter interface differs from the source
 // entry's kind interface (a filtered table is not the same table).
-func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, shadowed map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, litSeq *int) (saIfaceRetEntry, bool) {
+func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, shadowed map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, litSeq *int, paramKinds map[string]string) (saIfaceRetEntry, bool) {
 	if init == nil {
 		return saIfaceRetEntry{}, false
 	}
@@ -1085,6 +1099,15 @@ func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries m
 			out.kind = "inst:" + annotName
 		}
 		return out, true
+	}
+	// Phase F: field-read initializers classify through the shared
+	// field-read helper (current tables, i.e. prior joint rounds).
+	// paramKinds resolves parameter receivers (walks never seed
+	// params into entries); nil where the caller has no params.
+	if init.Kind == ast.KindPropertyAccessExpression {
+		if e, ok := saFieldReadEntry(init, annotName, entries, shadowed, classes, paramKinds); ok {
+			return e, true
+		}
 	}
 	return saRetClassifyInit(init, annot, funcs, classes, aliasOf, litSeq)
 }

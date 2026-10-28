@@ -71,11 +71,12 @@ func saIfaceJointSnapshot(funcs map[string]saFuncSig) string {
 	return b.String()
 }
 
-// saAnalyzeIfaceJointProv runs R0's return analysis and P0's parameter
-// analysis to a joint fixpoint, in the same position (before the main
-// lowering loop) where the two sequential hooks ran. Each round runs
-// R0's analysis to its own fixpoint, then P0's pass, in the same order
-// as before. It mutates only the funcs map (prov fields) and adds no
+// saAnalyzeIfaceJointProv runs R0's return analysis, P0's parameter
+// analysis, and the Phase F field analysis to a joint fixpoint, in the
+// same position (before the main lowering loop) where the sequential
+// hooks ran. Each round runs R0's analysis to its own fixpoint, then
+// P0's pass, then the field pass, in that order. It mutates only the
+// funcs map (prov fields) and saClassDef.fieldProv, and adds no
 // refusals (fail-closed).
 func saAnalyzeIfaceJointProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) {
 	if sf == nil || funcs == nil {
@@ -86,11 +87,18 @@ func saAnalyzeIfaceJointProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cla
 		bound++ // one return-prov field slot per function (conservative)
 		bound += len(sig.paramKinds)
 	}
+	for _, def := range classes {
+		if def != nil {
+			bound += len(def.fields) // one field-prov slot per field (conservative)
+		}
+	}
 	for round := 0; round <= bound; round++ {
 		before := saIfaceJointSnapshot(funcs)
+		beforeFields := saIfaceFieldSnapshot(classes)
 		saAnalyzeReturnIfaceProv(sf, funcs, classes, aliasOf)
 		saAnalyzeParamsIfaceProv(sf, funcs, classes, aliasOf, link)
-		if saIfaceJointSnapshot(funcs) == before {
+		saAnalyzeFieldIfaceProv(sf, funcs, classes, aliasOf, link)
+		if saIfaceJointSnapshot(funcs) == before && saIfaceFieldSnapshot(classes) == beforeFields {
 			break
 		}
 	}
