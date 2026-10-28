@@ -192,7 +192,10 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			if sig.retIfaceProv != "" || len(sig.retIfaceLitFn) > 0 {
 				continue
 			}
-			if sig.isVoid || sig.retIsPromise || len(sig.retKind) <= 5 || sig.retKind[:5] != "inst:" {
+			// Phase A (async v1): retIsPromise no longer excludes
+			// same-file fn decls from analysis (JEV include_async,
+			// narrowed to returns); the isVoid and inst: gates stand.
+			if sig.isVoid || len(sig.retKind) <= 5 || sig.retKind[:5] != "inst:" {
 				continue
 			}
 			iface := sig.retKind[5:]
@@ -227,8 +230,15 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			}
 			if prov != "" {
 				sig.retIfaceProv = prov
-			} else {
+			} else if !sig.retIsPromise {
+				// Phase A (async v1) JEV guard (fixpoint_loop_skip,
+				// Q6 defer_async_litfn): async functions never record
+				// litFn tables; a_async_litfn must keep refusing.
 				sig.retIfaceLitFn = litFn
+			} else {
+				// Async litFn result discarded: no table recorded,
+				// and no change signalled (the sig is unchanged).
+				continue
 			}
 			funcs[key] = sig
 			changed = true
@@ -1477,7 +1487,10 @@ func saRetClassifyInit(init *ast.Node, annot *ast.TypeNode, funcs map[string]saF
 			return saIfaceRetEntry{}, false
 		}
 		sig, ok := funcs[ce.Expression.Text()]
-		if !ok || sig.isVoid || sig.retIsPromise {
+		// Phase A (async v1): retIsPromise lift, coordinated with
+		// the analysis lift (recorded prov that cannot be read is
+		// worse than unrecorded prov).
+		if !ok || sig.isVoid {
 			return saIfaceRetEntry{}, false
 		}
 		if sig.retIfaceProv != "" {
@@ -1614,6 +1627,17 @@ func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, sha
 	if expr == nil {
 		return unknown
 	}
+	// Phase A (async v1): return-site await peel (JEV peel_await).
+	// In the sync-erasure subset, `return await X` classifies as
+	// `return X`; this is what lets async wraps carrying a sync or
+	// async call result record prov. Awaited shapes with no arm below
+	// still yield unknown.
+	if inner, saw := saPeelAwait(expr); saw && inner != nil {
+		expr = saRetPeelParenNonNull(inner)
+		if expr == nil {
+			return unknown
+		}
+	}
 	switch expr.Kind {
 	case ast.KindNewExpression:
 		ne := expr.AsNewExpression()
@@ -1690,7 +1714,9 @@ func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, sha
 			return unknown
 		}
 		sig, ok := funcs[ce.Expression.Text()]
-		if !ok || sig.isVoid || sig.retIsPromise {
+		// Phase A (async v1): retIsPromise lift, coordinated with
+		// the analysis lift.
+		if !ok || sig.isVoid {
 			return unknown
 		}
 		// The call-return arm passes the handle directly only on layout
@@ -1933,14 +1959,15 @@ func saRetAssignTarget(t *ast.Node, out map[string]bool) {
 // saAttachIfaceRetProv attaches a callee's recorded return provenance to
 // a const call-result binding. It is a no-op unless every gate holds:
 // const binding, bare-identifier callee, same-file signature, same return
-// kind as the bound kind, sync, non-promise. The existing dispatch site
-// then handles method calls on the binding unchanged.
+// kind as the bound kind. Phase A (async v1): async fn decls are included
+// via retKind erasure (their recorded prov attaches like sync prov); the
+// future machinery's own retIsPromise uses are untouched.
 func saAttachIfaceRetProv(scope *saScope, ce *ast.CallExpression, name, vkind string, isConst bool) {
 	if !isConst || ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		return
 	}
 	sig, ok := scope.funcs[ce.Expression.Text()]
-	if !ok || sig.isVoid || sig.retIsPromise || sig.retKind != vkind {
+	if !ok || sig.isVoid || sig.retKind != vkind {
 		return
 	}
 	if sig.retIfaceProv != "" {

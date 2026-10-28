@@ -1342,8 +1342,15 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	// i.e. miss/undefined, stays 0 instead of becoming a zero-filled
 	// instance, because callers test !result), and refuse loudly on any
 	// other kind or widening mismatch.
-	if strings.HasPrefix(retKind, "inst:") && e != nil && e.Kind == ast.KindCallExpression {
-		ce := e.AsCallExpression()
+	// Phase A (async v1): an awaited call in instance return position
+	// peels to this arm (sync-erasure subset only); awaited non-call
+	// operands keep the existing fallback behavior.
+	retCall := e
+	if inner, saw := saPeelAwait(e); saw && inner != nil {
+		retCall = inner
+	}
+	if strings.HasPrefix(retKind, "inst:") && retCall != nil && retCall.Kind == ast.KindCallExpression {
+		ce := retCall.AsCallExpression()
 		op, _, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return "", msg
@@ -7614,11 +7621,18 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 		// 工厂调用实参（`use(mk())`；返回种 `inst:` 即新柄直传，布局须
 		// 匹配 want（含派生 step396 同规）；新柄归属经内层调用核自动登记，
 		// 与 `new` 实参臂（step419）同物；上游 `t_4 = call @mk()` 实证）。
-		if a != nil && a.Kind == ast.KindCallExpression {
-			if k, ok := saCallRetKind(a.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
+		// Phase A (async v1): awaited call-result args peel to this
+		// arm (sync-erasure subset only); awaited non-call args keep
+		// the existing fallthrough refusal.
+		argNode := a
+		if inner, saw := saPeelAwait(a); saw && inner != nil {
+			argNode = inner
+		}
+		if argNode != nil && argNode.Kind == ast.KindCallExpression {
+			if k, ok := saCallRetKind(argNode.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
 				want := sig.paramKinds[i][5:]
 				if saClassSatisfies(scope.classes, k[5:], want) || saClassStructurallySatisfies(scope.classes, k[5:], want) {
-					op, voidCall, msg := saEvalCall(w, a.AsCallExpression(), scope, pos, refusals, nextTemp)
+					op, voidCall, msg := saEvalCall(w, argNode.AsCallExpression(), scope, pos, refusals, nextTemp)
 					if msg != "" || voidCall {
 						return "", msg
 					}

@@ -1149,23 +1149,33 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				}
 
 			}
-			if init == nil || init.Kind != ast.KindCallExpression {
+			// Phase A (async v1): peel await before the
+			// CallExpression gate; the peeled call flows through
+			// the kind check, eval, and attach below (sync-erasure
+			// subset: await of a synchronously-lowering call result
+			// is transparent, same as saEvalI32's blanket peel for
+			// inferred binds). Non-awaited inits are untouched.
+			callInit := init
+			if inner, saw := saPeelAwait(init); saw && inner != nil {
+				callInit = inner
+			}
+			if callInit == nil || callInit.Kind != ast.KindCallExpression {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct annotation needs a struct call result"})
 				return false
 			}
 			// `const p: P = JSON.parse(s)` 进布局具化（平 i32 接口；
 			// 与 stringify 同域，见 sa_expr.go；余形另步）。
-			if _, ok := saIsJSONParseCall(init.AsCallExpression()); ok {
+			if _, ok := saIsJSONParseCall(callInit.AsCallExpression()); ok {
 				return saLowerJSONParseDecl(w, vd, name, vkind, scope, pos, refusals, nextTemp)
 			}
-			got, ok := saCallRetKind(init.AsCallExpression(), scope)
+			got, ok := saCallRetKind(callInit.AsCallExpression(), scope)
 			if !ok || got != vkind {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct call return mismatch for " + name})
 				return false
 			}
-			op, voidCall, msg := saEvalCall(w, init.AsCallExpression(), scope, pos, refusals, nextTemp)
+			op, voidCall, msg := saEvalCall(w, callInit.AsCallExpression(), scope, pos, refusals, nextTemp)
 			if msg != "" || voidCall {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported struct call: " + msg})
@@ -1175,7 +1185,7 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			scope.types[name] = vkind
 			// Phase R0: attach the callee's recorded return provenance
 			// (const bindings only; the dispatch site handles the call).
-			saAttachIfaceRetProv(scope, init.AsCallExpression(), name, vkind, isConst)
+			saAttachIfaceRetProv(scope, callInit.AsCallExpression(), name, vkind, isConst)
 			if saIsTempOp(op) {
 				saConsumeOwn(scope, op)
 			}
@@ -1989,7 +1999,14 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		// Phase R0: attach the callee's recorded return provenance for
 		// interface-typed call results (const bindings only).
 		if len(k) > 5 && k[:5] == "inst:" {
-			if ceInit := saRetPeelParenNonNull(init); ceInit != nil && ceInit.Kind == ast.KindCallExpression {
+			// Phase A (async v1): dedicated await-peel at this
+			// attach call site only. saRetPeelParenNonNull itself
+			// is untouched: it is shared with fields and methodret.
+			attachInit := init
+			if inner, saw := saPeelAwait(init); saw && inner != nil {
+				attachInit = inner
+			}
+			if ceInit := saRetPeelParenNonNull(attachInit); ceInit != nil && ceInit.Kind == ast.KindCallExpression {
 				saAttachIfaceRetProv(scope, ceInit.AsCallExpression(), name, k, isConst)
 				// Phase M: attach recorded method provenance for
 				// const binds from method-call results (prov only,
