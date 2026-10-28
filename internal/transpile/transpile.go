@@ -4085,6 +4085,14 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 		}
 	}
+	// Lazy const-slot v1 (Phase A): delayed claim for same-file
+	// member-read consts that the single-pass fold loop could not fold
+	// (forward-declared field consts), seeded from the completed fold
+	// maps. Runs after all prescan/seeding so topConsts/modVars are
+	// final, and before entry planning/lowering so function scopes see
+	// the slots via the shared modVars map. See
+	// saClaimDelayedConstSlots.
+	saClaimDelayedConstSlots(sf.AsSourceFile().Statements.Nodes, assigned, topConsts, topStr, topObjs, topConstNames, modVars, funcs, classes, handledTop)
 	strPool := &saStrPool{seen: map[string]string{}, prefix: saLinkDefPrefix(link)}
 	emitted := map[string]bool{}
 	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；

@@ -6114,6 +6114,145 @@ func saRecordModStates(stmts []*ast.Node, assigned map[string]bool, funcs map[st
 
 // saTryModState 消费槽绑定声明（无码；任一 declarator 被认领即整句消费；
 // 封存 tryModState:618-635 子集）。
+// saClaimDelayedConstSlots claims i32 modstate slots for same-file top-level
+// consts whose member-read initializer failed to fold in the single-pass fold
+// loop but resolves once the loop is complete (lazy const-slot v1, Phase A).
+//
+// WHY NOT IN feedVS: saRecordModStates runs BEFORE the fold loop (prescan
+// 2c in saLowerSourceFile), when topConsts does not exist yet, so the
+// "absent from topConsts after the fold loop" gate cannot be evaluated
+// there. This pass runs after ALL prescan/seeding (just before entry
+// planning in saLowerSourceFile), when topConsts and modVars are final,
+// and mutates the same modVars map that function scopes receive, so
+// first-use loads go through the existing saModLoadI32 call sites
+// verbatim -- no load-path change.
+//
+// CLAIM GATE (all must hold; otherwise fail closed: no claim, and the
+// existing loud refusal is unchanged):
+//   - top-level const declarator with an identifier name;
+//   - never assigned (assigned[nm]);
+//   - absent from topConsts (folding already failed or never applied);
+//   - not already in modVars, and not colliding with a func/class name;
+//   - initializer is a member read (PropertyAccess) or Number(member),
+//     resolving via saLazyMemberInt to a decimal i32 text against the
+//     COMPLETED consts/strs maps. This is the delayed-fold case: the
+//     field's const is declared AFTER the member-read const, e.g.
+//     `const O = { port: P }; const PORT = O.port; const P = 43110;`
+//     (PORT fails in the loop because P is not folded yet; after the
+//     loop P = "43110", so saLazyMemberInt resolves O.port).
+//   - string fields, floats, nested objects, spreads, computed names,
+//     duplicate fields, mutated bases/fields, and unharvested
+//     (non-snapshot) bases all fail saLazyMemberInt and are never
+//     claimed.
+//
+// KEY NAMESPACING (probe section 3.5 decision, recorded): const slots derive
+// their keys from qual "const\x00"+name through the same saModKeyOf
+// (which already prefixes "satsgo modstate v1\x00\x00" and splits
+// val\x00/flag\x00 domains). A NUL byte cannot appear in a TS
+// identifier, so a const-slot qual can never equal a bare var qual
+// (name) or a namespace qual (dotted "N.K"), and it can never equal a
+// map/set "name\x00collinit" flag qual (different suffix, and those
+// are flagKeys on separate states). The map itself is keyed by the bare
+// name, so existing scope.modVars[name] lookups find the slot and
+// saModLoadI32/saEmitModEnsure use the state's distinct key verbatim.
+//
+// STATEMENT HANDLING: a statement is marked handledTop only when at
+// least one declarator was newly slot-claimed AND every declarator in
+// it is accounted for (already in topConsts, or newly slot-claimed). A
+// mixed statement (one claimed, one unaccounted) stays unhandled and
+// refuses loudly as today -- no silent partial skip. If nothing was
+// claimed, handledTop is untouched: zero behavior change.
+// Slot init mirrors feedVS's i32 construction verbatim: key/flag from
+// saModKeyOf, flag unset + empty init for the zero value (registry
+// zero-fill fast path), flag + literal init otherwise.
+func saClaimDelayedConstSlots(stmts []*ast.Node, assigned map[string]bool, topConsts map[string]string, topStr map[string]bool, topObjs map[string]saTopObj, topConstNames map[string]bool, modVars map[string]*saModState, funcs map[string]saFuncSig, classes map[string]*saClassDef, handledTop map[*ast.Node]bool) {
+	for _, st := range stmts {
+		if st == nil || st.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := st.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		if vs.DeclarationList.AsNode().Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		vdl := vs.DeclarationList.AsVariableDeclarationList()
+		if vdl == nil {
+			continue
+		}
+		claimedAny := false
+		allAccounted := true
+		for _, d := range vdl.Declarations.Nodes {
+			vd := d.AsVariableDeclaration()
+			if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+				allAccounted = false
+				continue
+			}
+			nm := vd.Name().Text()
+			if _, ok := topConsts[nm]; ok {
+				continue
+			}
+			if assigned[nm] {
+				allAccounted = false
+				continue
+			}
+			if _, ok := modVars[nm]; ok {
+				allAccounted = false
+				continue
+			}
+			if _, ok := funcs[nm]; ok {
+				allAccounted = false
+				continue
+			}
+			if _, ok := classes[nm]; ok {
+				allAccounted = false
+				continue
+			}
+			init := vd.Initializer
+			if init == nil {
+				allAccounted = false
+				continue
+			}
+			init = saUnwrapTransparent(init)
+			if init == nil {
+				allAccounted = false
+				continue
+			}
+			// Unwrap Number(<member>) exactly like the fold loop's
+			// Number arm; parseInt and other calls keep refusing.
+			if init.Kind == ast.KindCallExpression {
+				ce := init.AsCallExpression()
+				if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier || ce.Expression.Text() != "Number" || ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+					allAccounted = false
+					continue
+				}
+				init = saUnwrapTransparent(ce.Arguments.Nodes[0])
+				if init == nil {
+					allAccounted = false
+					continue
+				}
+			}
+			v, ok := saLazyMemberInt(init, topConsts, topStr, topObjs, assigned, topConstNames)
+			if !ok {
+				allAccounted = false
+				continue
+			}
+			key, flag := saModKeyOf("const\x00" + nm)
+			ms := &saModState{qual: "const\x00" + nm, w: "i32", key: key}
+			if v != "0" {
+				ms.flag = flag
+				ms.init = v
+			}
+			modVars[nm] = ms
+			claimedAny = true
+		}
+		if claimedAny && allAccounted {
+			handledTop[st] = true
+		}
+	}
+}
+
 func saTryModState(st *ast.Node, assigned map[string]bool, classes map[string]*saClassDef) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
