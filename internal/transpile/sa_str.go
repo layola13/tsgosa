@@ -432,6 +432,19 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 				if k, ok := saMethodReturnKind(mn); ok && k == "str" {
 					return true
 				}
+				// 4_ifc_lower: interface signatures carry the declared return
+				// type too, but saMethodReturnKind ignores MethodSignature
+				// nodes; read via Node.Type() (FunctionLikeData fallback).
+				// Predicate-only: evaluation still refuses loudly for
+				// unknown-origin interface calls, and guarded ?. calls keep
+				// their existing path (this branch is not that path).
+				if mn.Kind == ast.KindMethodSignature {
+					if typ := mn.Type(); typ != nil {
+						if k, ok := saAnnotKind(typ); ok && k == "str" {
+							return true
+						}
+					}
+				}
 			}
 		}
 		// i32 `toString()` 即串返回（与 saIsStrExpr 的 toString 门同律；

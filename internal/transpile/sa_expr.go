@@ -3493,6 +3493,48 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 					}
 				}
 			}
+			if def.isIface && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil {
+				recvExpr := pa.Expression
+				for recvExpr != nil && recvExpr.Kind == ast.KindParenthesizedExpression {
+					pe := recvExpr.AsParenthesizedExpression()
+					if pe == nil || pe.Expression == nil {
+						break
+					}
+					recvExpr = pe.Expression.AsNode()
+				}
+				if recvExpr != nil && recvExpr.Kind == ast.KindIdentifier {
+					recvName := recvExpr.Text()
+					methodName := pa.Name().Text()
+					if _, isSig := def.methods[methodName]; isSig {
+						if prov, ok := scope.ifaceProv[recvName]; ok {
+							if cdef, ok2 := scope.classes[prov]; ok2 && !cdef.isIface && !cdef.isAbstract {
+								if mn, ok3 := cdef.methods[methodName]; ok3 && mn.Body() != nil {
+									op, msg := saInlineMethod(w, h, cdef, methodName, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+									if msg != "" {
+										return "", false, msg
+									}
+									return op, false, ""
+								}
+							}
+						} else if litTbl, ok := scope.ifaceLitFn[recvName]; ok {
+							if anode, ok2 := litTbl[methodName]; ok2 && anode != nil {
+								if anode.Kind == ast.KindMethodDeclaration {
+									op, msg := saInlineMethodCore(w, h, def.name, def, anode, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+									if msg != "" {
+										return "", false, msg
+									}
+									return op, false, ""
+								}
+								op, msg := saInlineLiteralArrow(w, anode, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+								if msg != "" {
+									return "", false, msg
+								}
+								return op, false, ""
+							}
+						}
+					}
+				}
+			}
 			op, msg := saInlineMethod(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {
 				return "", false, msg
