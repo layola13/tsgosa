@@ -562,6 +562,7 @@ func saScopeLinkFill(scope *saScope, link *saFileLink) {
 	scope.defPrefix = link.defPrefix
 	scope.linkResolve = link.resolve
 	scope.linkHarvests = link.harvests
+	scope.link = link
 }
 
 func saScopeLinkCopy(dst, src *saScope) {
@@ -572,6 +573,7 @@ func saScopeLinkCopy(dst, src *saScope) {
 	dst.linkResolve = src.linkResolve
 	dst.linkHarvests = src.linkHarvests
 	dst.topConstSeed = src.topConstSeed
+	dst.link = src.link
 }
 
 // saLinkResolveMap returns the link resolve map for link mode (nil when nil).
@@ -4313,7 +4315,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
 					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
-					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under, link)
 					restore()
 				}
 				continue
@@ -4499,7 +4501,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "", link)
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
@@ -6405,6 +6407,11 @@ type saScope struct {
 	// links[p].resolved + seeded funcSigs).
 	defPrefix   string            // definition prefix for this file ("", entry; "util__", libs)
 	linkResolve map[string]string // imported local name -> qualified callee
+	// link is the current file's program link (nil in single-file lowering).
+	// Inline-scope swap (iface_inline) reads it for origin determination
+	// (classHarvests pointer-search) and the defining namespace install
+	// (harvests/prefixOf); it is never written by lowering-time code.
+	link *saFileLink
 	// linkHarvests carries all harvested program functions for import-first
 	// advisories (read-only; driver fills progressively in dependency order,
 	// so reverse-order uses keep the old message — both still refuse).
@@ -6551,7 +6558,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topConstSeed map[string]string, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topConstSeed map[string]string, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string, link *saFileLink) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -6641,6 +6648,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 	}
 	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topConstSeed: topConstSeed, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
+	scope.link = link
 	if fn.Type == nil && isVoid {
 		// Void-fallback scan cause (JEV voidmask enrich_only): only for
 		// unannotated functions lowered as void; surfaced by saLowerReturn.

@@ -9876,7 +9876,7 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 		}
 		return "", method + " has no body (overload signatures do not inline)"
 	}
-	return saInlineMethodCore(w, recv, def.name, def, mn, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return saInlineMethodCore(w, recv, def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
 }
 
 // saInlineStaticMethod 内联 `C.m(args)`（无实例，this 置空使实例态诚实拒，
@@ -9889,19 +9889,30 @@ func saInlineStaticMethod(w printer.EmitTextWriter, className string, def *saCla
 	if mn.Body() == nil {
 		return "", method + " has no body (overload signatures do not inline)"
 	}
-	return saInlineMethodCore(w, "", def.name, def, mn, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return saInlineMethodCore(w, "", def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
 }
 
 // saInlineMethodCore 是实例/静态共享内联核：形参绑定（通法同例），
 // thisSelf 别接收者（静态置空），体经值槽汇合；形状证据：封存
 // inlineClassMethod:10188-10280。
-func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
+func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
 	argVals, kinds, msg := saMethodCallArgVals(w, mn, ce, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		return "", msg
 	}
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = thisSelf, className
+	// Inline-scope swap (iface_inline): defining namespace install
+	// after args (args are caller expressions), before body. wantKind
+	// consults scope.classes, so it is computed under the swap when
+	// installed (the method's declared return type resolves in the
+	// defining namespace, as it does during the defining file's own
+	// lowering).
+	origin, swap, _ := saInlineOrigin(scope, def, mn, method)
+	var saved *saInlineScopeSaved
+	if swap {
+		saved = saInlineInstallDefiningScope(scope, origin)
+	}
 	// 返回种按声明注解（str 走串槽，f64 走双精度槽；余下走 i32 槽）。
 	wantKind := "i32"
 	if k, ok := saMethodReturnKind(mn); ok && k == "str" {
@@ -9912,6 +9923,9 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 		wantKind = "inst:" + ic
 	}
 	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
+	if saved != nil {
+		saved.restore(scope)
+	}
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
 	if msg != "" {
 		return "", msg

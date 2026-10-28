@@ -4744,6 +4744,7 @@ func saLowerArrowConst(w printer.EmitTextWriter, name string, arrow *ast.Node, f
 	scope.defPrefix = linkPrefix
 	scope.linkResolve = linkResolve
 	scope.linkHarvests = saLinkHarvestsMap(link)
+	scope.link = link
 	if saArrowReturnNode(arrow) == nil && isVoid {
 		// Void-fallback scan cause (JEV voidmask enrich_only): only for
 		// unannotated arrows lowered as void; surfaced by saLowerReturn.
