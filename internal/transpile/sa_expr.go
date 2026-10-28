@@ -3505,7 +3505,23 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			}
 			h, def, msg := saInstBase(pa.Expression, scope)
 			if msg != "" {
-				return "", false, msg
+				// Dispatch-defs fallback (dd): on saInstBase failure
+				// for an UNGUARDED bare-Identifier receiver with a
+				// prov entry (the bound), resolve the interface def
+				// via harvests instead of refusing unknown class.
+				// Guarded `?.` dispatch keeps its existing gates
+				// (separate remains item); without a prov entry, or
+				// when the interface def does not resolve, the
+				// original refusal stands unchanged.
+				if pa.QuestionDotToken == nil && ce.QuestionDotToken == nil {
+					if fbH, fbDef, ok := saDispatchIfaceFallback(scope, pa.Expression, msg); ok {
+						h, def = fbH, fbDef
+					} else {
+						return "", false, msg
+					}
+				} else {
+					return "", false, msg
+				}
 			}
 			// map 索引实例基（`m[k].m()`；saInstBase 只认标识符/this；
 			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
@@ -3558,7 +3574,15 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 					methodName := pa.Name().Text()
 					if _, isSig := def.methods[methodName]; isSig {
 						if prov, ok := scope.ifaceProv[recvName]; ok {
-							if cdef, ok2 := scope.classes[prov]; ok2 && !cdef.isIface && !cdef.isAbstract {
+							// Dispatch-defs fallback (dd): prov def
+							// resolves caller-scope-first (exactly as
+							// before when present), harvest-fallback
+							// anchored on the interface def (its defining
+							// file, then program-wide unique,
+							// exported-only) when missing. The branch's
+							// concrete + bodied-method checks below
+							// apply unchanged to either provenance.
+							if cdef := saScopeOrHarvestClassDef(scope, prov, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
 								if mn, ok3 := cdef.methods[methodName]; ok3 && mn.Body() != nil {
 									op, msg := saInlineMethod(w, h, cdef, methodName, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 									if msg != "" {

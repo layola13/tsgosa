@@ -1,6 +1,7 @@
 package transpile
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -76,6 +77,145 @@ import (
 // parent and child entries always agree (same node, same analysis).
 // The attach walk finds the first def in the receiver's parent chain
 // holding the method node, which is exactly the effective method.
+
+// saHarvestClassDef resolves a class name through link.classHarvests:
+// first the anchor def's defining file (pointer-search, exactly-one-file
+// rule, mirroring saInlineFindDefFile), then program-wide exactly-one
+// file defining the name (mirroring saInlineResolveParentDef's by-name
+// search). Both steps require exported=true on the harvest entry.
+// Plain names only: a name containing "." never resolves, so
+// namespace-member defs (dotted harvest keys) stay out of v1.
+// Returns nil when ambiguous, absent, non-exported, or dotted.
+// (dispatch-defs slice, JEV defining_first_unique_fallback +
+// exported_only; the shared harvest-lookup helper for the attach and
+// dispatch fallback sites — it changes no existing call site.)
+func saHarvestClassDef(scope *saScope, name string, anchor *saClassDef) *saClassDef {
+	if scope == nil || scope.link == nil || name == "" || strings.Contains(name, ".") {
+		return nil
+	}
+	harvests := scope.link.classHarvests
+	if len(harvests) == 0 {
+		return nil
+	}
+	// Step 1: the anchor def's defining file.
+	if anchor != nil {
+		if file, ok := saInlineFindDefFile(scope.link, anchor); ok {
+			if pc, ok := harvests[file][name]; ok && pc.def != nil && pc.exported {
+				return pc.def
+			}
+		}
+	}
+	// Step 2: program-wide exactly-one file defining the name.
+	files := make([]string, 0, len(harvests))
+	for f := range harvests {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	var found *saClassDef
+	for _, f := range files {
+		if pc, ok := harvests[f][name]; ok && pc.def != nil && pc.exported {
+			if found != nil {
+				return nil
+			}
+			found = pc.def
+		}
+	}
+	return found
+}
+
+// saScopeOrHarvestClassDef resolves a class name caller-scope-first,
+// then via saHarvestClassDef (anchor file, then program-wide unique,
+// exported-only). Caller-scope defs are returned as-is (imported or
+// same-file defs already passed their own visibility gates); only a
+// missing caller-scope def consults harvests.
+func saScopeOrHarvestClassDef(scope *saScope, name string, anchor *saClassDef) *saClassDef {
+	if scope == nil {
+		return nil
+	}
+	if d, ok := scope.classes[name]; ok && d != nil {
+		return d
+	}
+	return saHarvestClassDef(scope, name, anchor)
+}
+
+// saAttachIfaceDeclaredHarvest checks a method node's declared
+// interface return against link.classHarvests: the walk-def's defining
+// file first, then program-wide exactly-one file, both requiring
+// exported=true. It mirrors saMethodDeclaredIface's extraction (plain
+// TypeReference identifier, no type arguments) and kind comparison,
+// and is consulted ONLY after the caller-scope check fails.
+func saAttachIfaceDeclaredHarvest(scope *saScope, walkDef *saClassDef, mn *ast.Node, vkind string) bool {
+	if mn == nil || mn.Kind != ast.KindMethodDeclaration {
+		return false
+	}
+	md := mn.AsMethodDeclaration()
+	if md == nil || md.Type == nil || md.Type.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := md.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return false
+	}
+	d := saHarvestClassDef(scope, ref.TypeName.Text(), walkDef)
+	if d == nil || !d.isIface {
+		return false
+	}
+	return "inst:"+d.name == vkind
+}
+
+// saDispatchIfaceFallback resolves the interface def for a dispatch
+// whose saInstBase call failed with "unknown class <Iface>". It fires
+// ONLY when the (paren-peeled) receiver is a bare identifier, the
+// binding's kind is inst:<Iface> matching the failure message, and a
+// prov entry exists for the receiver (the prov_required bound —
+// without prov, harvestability alone never dispatches). The interface
+// def resolves caller-scope-first (vacuous here, since saInstBase
+// already failed, kept for symmetry), then via saHarvestClassDef
+// anchored on the caller-scope prov def when visible, else
+// program-wide unique; harvest entries must be exported. The returned
+// handle is the receiver binding name, exactly what saInstBase's
+// identifier arm returns on success. The def must be an interface;
+// the branch's own signature-presence check still applies downstream.
+// Otherwise the original refusal stands unchanged.
+func saDispatchIfaceFallback(scope *saScope, recv *ast.Node, msg string) (string, *saClassDef, bool) {
+	if scope == nil || recv == nil {
+		return "", nil, false
+	}
+	// Peel parens exactly like saInstBase.
+	for recv != nil && recv.Kind == ast.KindParenthesizedExpression {
+		pe := recv.AsParenthesizedExpression()
+		if pe == nil || pe.Expression == nil {
+			break
+		}
+		recv = pe.Expression.AsNode()
+	}
+	if recv == nil || recv.Kind != ast.KindIdentifier {
+		return "", nil, false
+	}
+	recvName := recv.Text()
+	prov, ok := scope.ifaceProv[recvName]
+	if !ok || prov == "" {
+		return "", nil, false
+	}
+	k, ok := scope.types[recvName]
+	if !ok || len(k) <= 5 || k[:5] != "inst:" {
+		return "", nil, false
+	}
+	ifaceName := k[5:]
+	if msg != "unknown class "+ifaceName {
+		return "", nil, false
+	}
+	// Anchor: the caller-scope prov def's defining file when visible.
+	var anchor *saClassDef
+	if pd, ok := scope.classes[prov]; ok && pd != nil {
+		anchor = pd
+	}
+	d := saScopeOrHarvestClassDef(scope, ifaceName, anchor)
+	if d == nil || !d.isIface {
+		return "", nil, false
+	}
+	return recvName, d, true
+}
 
 // saMethodDeclaredIface returns the declared interface return kind of a
 // method node ("inst:"+name), or "" when the method does not declare a
@@ -525,7 +665,14 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 				return
 			}
 			if saMethodDeclaredIface(mn, scope.classes) != vkind {
-				return
+				// Dispatch-defs fallback (dd): caller-scope check
+				// failed — consult the walk-def's defining-file
+				// harvest, then program-wide unique, exported-only.
+				// No prov is installed unless the declared name
+				// resolves to an interface there.
+				if !saAttachIfaceDeclaredHarvest(scope, def, mn, vkind) {
+					return
+				}
 			}
 			saSetIfaceProv(scope, name, prov)
 			return
