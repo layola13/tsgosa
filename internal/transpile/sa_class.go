@@ -79,7 +79,24 @@ type saClassDef struct {
 	// (sa_iface_fields.go) inside the joint loop, read by the shared
 	// field-read entry helper and the lowering-time bind install. Nil =
 	// no field prov recorded.
-	fieldProv  map[string]string
+	fieldProv map[string]string
+	// methodProv is the Phase M (method return) interface-method
+	// provenance table: method name -> agreed concrete class for an
+	// interface-typed method return, recorded ONLY for classes defined
+	// in the file being lowered (same_file_only; never for preseeded
+	// imports). A static per-(class, method) fact: every return path
+	// of the method body yields the same concrete class via
+	// free-function call results (direct or local-mediated), class
+	// only, never litFn. Instance and static methods share this one
+	// table: a static/instance name collision with different prov
+	// records nothing for that name (fail-closed). Written by the
+	// method pass (sa_iface_methodret.go) one-shot AFTER the joint
+	// loop, read by the inferred-decl method attach. Nil = no method
+	// prov recorded. Inherited methods are copied into child defs by
+	// class recording, so a child def's table entry for an inherited
+	// method comes from analyzing the same shared node and always
+	// agrees with the defining class's entry.
+	methodProv map[string]string
 	finits     map[string]*ast.Node
 	finitOrder []string
 	parent     string

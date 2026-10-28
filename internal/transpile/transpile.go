@@ -4267,6 +4267,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// prov feeds back into return analysis; adds no refusals
 	// (fail-closed).
 	saAnalyzeIfaceJointProv(sf, funcs, classes, aliasOf, link)
+	// Phase M interface method return analysis
+	// (sa_iface_methodret.go): one-shot pass AFTER the joint loop,
+	// consuming final joint-loop retProv; writes ONLY methodProv,
+	// adds no refusals (fail-closed).
+	saAnalyzeMethodIfaceProv(sf, funcs, classes, aliasOf)
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`

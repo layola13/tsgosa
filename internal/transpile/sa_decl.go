@@ -1991,6 +1991,10 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if len(k) > 5 && k[:5] == "inst:" {
 			if ceInit := saRetPeelParenNonNull(init); ceInit != nil && ceInit.Kind == ast.KindCallExpression {
 				saAttachIfaceRetProv(scope, ceInit.AsCallExpression(), name, k, isConst)
+				// Phase M: attach recorded method provenance for
+				// const binds from method-call results (prov only,
+				// no ownership change).
+				saAttachIfaceMethodProv(scope, ceInit.AsCallExpression(), name, k, isConst)
 			}
 			// Phase F: attach recorded field provenance for const
 			// binds from field reads (prov only, no ownership change).

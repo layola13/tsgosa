@@ -706,6 +706,11 @@ type saRetWalker struct {
 	retIface   string
 	litSeq     int
 	paramKinds map[string]string // name -> declared kind, for field-read receivers
+	// methodMode is Phase M only: the walker classifies with the
+	// restricted method classifier (free-function call results only,
+	// class only) instead of R0's classifier. False for all R0/P0/P1/
+	// fields calls, so their behavior is unchanged by construction.
+	methodMode bool
 }
 
 func saRetCopyShadow(in map[string]bool) map[string]bool {
@@ -741,7 +746,11 @@ func (w *saRetWalker) walkList(stmts []*ast.Node, depth int, shadowed map[string
 			}
 		case ast.KindReturnStatement:
 			if rs := st.AsReturnStatement(); rs != nil {
-				w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
+				if w.methodMode {
+					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
+				} else {
+					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
+				}
 			} else {
 				w.paths = append(w.paths, saIfaceRetPath{unknown: true})
 			}
@@ -858,7 +867,11 @@ func (w *saRetWalker) bindVarDecl(st *ast.Node) {
 		if w.taint.tainted(name) {
 			continue
 		}
-		if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {
+		if w.methodMode {
+			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf); ok {
+				w.entries[name] = e
+			}
+		} else if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {
 			w.entries[name] = e
 		}
 	}
