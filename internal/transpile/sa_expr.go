@@ -3202,6 +3202,12 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 				}
 			}
 		}
+		if pa.Name() != nil && pa.Name().Text() == "matchAll" && pa.QuestionDotToken == nil &&
+			ce.QuestionDotToken == nil && saIsStrExpr(pa.Expression, scope) {
+			// 串 `matchAll` 不在 saIsStrMethod 集（回数组非串；沿旧门会落未知拒；
+			// split 同形专臂）。直通 saLowerStrCall → saLowerStrMethod 的 matchAll case。
+			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
+		}
 		if pa.Name() != nil && pa.Name().Text() == "split" && pa.QuestionDotToken == nil &&
 			saIsStrExpr(pa.Expression, scope) {
 			// 串 `split(sep)` 回串元数组（`saLowerStringSplit`；封存 lowerStringSplit

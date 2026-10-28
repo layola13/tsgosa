@@ -1738,6 +1738,7 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 	if hasSpread {
 		h := saNewEmptyArray(w, nextTemp)
 		isStr := false
+		isNest := false
 		for _, el := range al.Elements.Nodes {
 			if el.Kind == ast.KindSpreadElement {
 				// `[...new Set(src)]` dedup loop (JEV dedup_loop): no Set is
@@ -1766,9 +1767,14 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 					if arr.str {
 						isStr = true
 					}
+					if arr.nested != nil {
+						isNest = true
+					}
 					sv = saMaterializeTopArr(w, arr, scope, nextTemp)
 				} else if scope.arrStr != nil && scope.arrStr[sv] {
 					isStr = true
+				} else if scope.arrNest != nil && scope.arrNest[sv] {
+					isNest = true
 				}
 				saAppendSlice(w, h, sv, scope, nextTemp)
 				continue
@@ -1785,6 +1791,12 @@ func saLowerArrayLiteral(w printer.EmitTextWriter, n *ast.Node, scope *saScope, 
 		saOwnTemp(scope, h)
 		if isStr {
 			saMarkArrStr(scope, h)
+		}
+		if isNest {
+			if scope.arrNest == nil {
+				scope.arrNest = map[string]bool{}
+			}
+			scope.arrNest[h] = true
 		}
 		return h, ""
 	}
@@ -6835,6 +6847,15 @@ func saLowerForOf(w printer.EmitTextWriter, s *ast.Node, isVoid bool, scope *saS
 				// 同形：元读本就是 4 字节 i32 槽；JEV unmask fdef_elem_kind
 				// 1.0，scope forof_and_index 0.99）。
 				bindKind = "str"
+			} else if scope.arrStr != nil && scope.arrStr[arrVal] {
+				// 调用形串元基柄巡回：求值基 temp 自带 arrStr 标记
+				// （.match/.split 直巡；具名串元数组臂同形；此前沿旧
+				// i32 门致串元静默误印）。
+				bindKind = "str"
+			} else if scope.arrNest != nil && scope.arrNest[arrVal] {
+				// 调用形嵌套基柄巡回：元为内层句柄，行绑 arr
+				// （具名嵌套数组臂同形；matchAll 直巡即此形）。
+				bindKind = "arr"
 			}
 		}
 		scope.types[binding] = bindKind
@@ -7394,6 +7415,11 @@ func saArrCallRet(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	}
 	if m == "match" && saIsStrExpr(pa.Expression, scope) {
 		// 串 `match`（无 g）回串元数组/miss 即 null（`saLowerStrMatch`；种记 arr）。
+		return "arr", true
+	}
+	if m == "matchAll" && saIsStrExpr(pa.Expression, scope) {
+		// 串 `matchAll` 回匹配数组的数组（`saLowerRegexMatchAll`；种记 arr；
+		// /g 门在发射臂，谓词只认名，误认只致大声拒）。
 		return "arr", true
 	}
 	// Map.keys/values/entries 回 arr 句柄（移植封存 lowerMapMethod:4785-4798；

@@ -3282,6 +3282,41 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 			return "", false, saMatchArgMsg(msg, args[0], scope)
 		}
 		return saLowerRegexMatchArray(w, rh, bp, bl, scope, nextTemp), false, ""
+	case "matchAll":
+		// `str.matchAll(/re/g)` 即匹配数组的数组（saLowerRegexMatchAll）。
+		// /g 必备（JS 无 g 抛 TypeError，本仓大声拒为等价）；运行时模式
+		// 沿 saLowerRegexInlineBase 门大声拒（与 .test/.exec/.match 同门，
+		// 运行时正则近 tie JEV conf 0.06 未放宽）；组映射与 .match 非 g
+		// 臂同律（(?: 校正、未参与组为空串）。
+		if len(args) != 1 {
+			return "", false, "matchAll takes 1 argument"
+		}
+		if !saRegexHasGlobalFlag(args[0], scope) {
+			return "", false, "String.matchAll requires a global (g) regular expression"
+		}
+		if pat, ok := saPatternTextForMatch(args[0], scope); ok {
+			if dec, derr := saRegexDecodeEscapes(pat); derr == "" {
+				pat = dec
+			}
+			if mapping := saJsGroupMapping(pat); mapping != nil {
+				groups := []int{0}
+				groups = append(groups, mapping...)
+				rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", false, saMatchArgMsg(msg, args[0], scope)
+				}
+				return saLowerRegexMatchAll(w, rh, bp, bl, groups, scope, nextTemp), false, ""
+			}
+			return "", false, "String.matchAll with lookahead/named groups is not lowerable yet"
+		}
+		if saRegexHasCaptureGroup(args[0], scope) {
+			return "", false, "String.matchAll with capture groups is not lowerable yet"
+		}
+		rh, msg := saLowerRegexInlineBase(w, args[0], scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return "", false, saMatchArgMsg(msg, args[0], scope)
+		}
+		return saLowerRegexMatchAll(w, rh, bp, bl, []int{0}, scope, nextTemp), false, ""
 	case "charAt", "at":
 		if len(args) != 1 {
 			return "", false, method + " needs 1 argument"

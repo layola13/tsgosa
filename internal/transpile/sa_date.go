@@ -476,7 +476,11 @@ func saRegexCflags(flags string) (string, string) {
 // POSIX group numbers are counted for every '(' including converted non-captures.
 // Returns nil if the pattern uses unsupported constructs (lookahead, named groups).
 func saJsGroupMapping(pat string) []int {
-	var mapping []int
+	// Empty-but-non-nil for mappable patterns with zero JS groups (nil is
+	// reserved for truly unmappable patterns: lookahead/named/bad class).
+	// Previously `var mapping []int` stayed nil for no-group patterns, so
+	// callers misrefused them as lookahead/named (matchAll no-group probe).
+	mapping := []int{}
 	posix := 0
 	for i := 0; i < len(pat); i++ {
 		c := pat[i]
@@ -1432,6 +1436,110 @@ func saLowerRegexMatchArrayGroups(w printer.EmitTextWriter, rh, tp, tl string, g
 
 func saLowerRegexMatchArray(w printer.EmitTextWriter, rh, tp, tl string, scope *saScope, nextTemp *int) string {
 	return saLowerRegexMatchArrayGroups(w, rh, tp, tl, []int{0}, scope, nextTemp)
+}
+
+// saLowerRegexMatchAll lowering `str.matchAll(/re/g)` 为匹配数组的数组
+// （外层 arrNest；每元为 saLowerRegexMatchArrayGroups 同形串元数组：
+// 组 0 + JS 映射组，未参与组为空串）。运行时为现货
+// sa_regex_match_all 列表 API（无新辅助）：一次全局执行，取数，逐下标
+// 取 match 柄、拷组（组指针指向 match 文本，故拷组在 match_free 前，
+// 与 .exec 同律）、释 match 柄；循环毕释列表柄。正则柄由调用方经
+// saLowerRegexInlineBase 具化并记归属，域出释（与 .match/.exec 同律）。
+// .index/.input 逐元不具化（v1 局限；cxu 用点为 m[0]/m[1]）。
+func saLowerRegexMatchAll(w printer.EmitTextWriter, rh, tp, tl string, groups []int, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/text/regex.sa")
+	scope.addImport("sa_std/string.sai")
+	scope.addImport("sa_std/fmt.sai")
+	list := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_all(%s, &%s, %s)\n", list, rh, tp, tl))
+	n := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_list_count(%s)\n", n, list))
+	outer := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, outer)
+	if scope.arrNest == nil {
+		scope.arrNest = map[string]bool{}
+	}
+	scope.arrNest[outer] = true
+	i := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add 0, 0\n", i))
+	topL := fmt.Sprintf("L_ma_top_%d", *nextTemp)
+	*nextTemp++
+	bodyL := fmt.Sprintf("L_ma_body_%d", *nextTemp)
+	*nextTemp++
+	endL := fmt.Sprintf("L_ma_end_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("%s:\n", topL))
+	iu := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = sext %s as u64\n", iu, i))
+	c := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = slt %s, %s\n", c, iu, n))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", c, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	mh := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_list_at(%s, %s)\n", mh, list, iu))
+	inner := saNewEmptyArray(w, nextTemp)
+	saOwnTemp(scope, inner)
+	saMarkArrStr(scope, inner)
+	for _, gidx := range groups {
+		gp := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_ptr(%s, %d)\n", gp, mh, gidx))
+		gl := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_regex_group_len(%s, %d)\n", gl, mh, gidx))
+		eb := saLowerStringLiteral(w, "", scope, nextTemp)
+		ebp, ebl := saExpandStr(w, eb, nextTemp)
+		cb := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_string_concat(%s, %s, %s, %s)\n", cb, gp, gl, ebp, ebl))
+		saReleaseOwnedTemp(w, scope, eb)
+		cptr := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_data(%s)\n", cptr, cb))
+		clen := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_fmt_buffer_len(%s)\n", clen, cb))
+		saOwnTemp(scope, cptr)
+		saOwnTemp(scope, clen)
+		saOwnTemp(scope, cb)
+		gh := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", gh))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gh, cptr))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", gh, clen))
+		saReleaseOwnedTemp(w, scope, cptr)
+		saReleaseOwnedTemp(w, scope, clen)
+		saReleaseOwnedTemp(w, scope, cb)
+		saOwnTemp(scope, gh)
+		saLowerArrayPush(w, inner, gh, scope, nextTemp)
+		saConsumeOwn(scope, gh)
+		w.Write(fmt.Sprintf("  !%s\n", gp))
+		w.Write(fmt.Sprintf("  !%s\n", gl))
+	}
+	saLowerArrayPush(w, outer, inner, scope, nextTemp)
+	saConsumeOwn(scope, inner)
+	fr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_free(^%s)\n", fr, mh))
+	w.Write(fmt.Sprintf("  !%s\n", fr))
+	inext := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", inext, i))
+	w.Write(fmt.Sprintf("  %s = %s\n", i, inext))
+	w.Write(fmt.Sprintf("  jmp %s\n", topL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  !%s\n", n))
+	lfr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_regex_match_list_free(^%s)\n", lfr, list))
+	w.Write(fmt.Sprintf("  !%s\n", lfr))
+	return outer
 }
 
 // saLowerTopObjArrFindStr lowers `TOP.find(entry => entry.<regex>.test(arg))?.field`
