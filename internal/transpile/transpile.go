@@ -4262,13 +4262,11 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 	}
 	mainRenamed := hasUserMain && len(entryStmts) > 0
-	// Phase R0 interface-return provenance (sa_iface_ret.go): analyze
-	// return paths before lowering; adds no refusals (fail-closed).
-	saAnalyzeReturnIfaceProv(sf, funcs, classes, aliasOf)
-	// Phase P0 interface-parameter provenance (sa_iface_params.go):
-	// call-graph edges + import-graph eligibility; after R0 (call-result
-	// args need retIfaceProv first); adds no refusals (fail-closed).
-	saAnalyzeParamsIfaceProv(sf, funcs, classes, aliasOf, link)
+	// Phase P1 interface joint fixpoint (sa_iface_joint.go): R0 return
+	// analysis + P0 parameter analysis iterated until quiet, so param
+	// prov feeds back into return analysis; adds no refusals
+	// (fail-closed).
+	saAnalyzeIfaceJointProv(sf, funcs, classes, aliasOf, link)
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`

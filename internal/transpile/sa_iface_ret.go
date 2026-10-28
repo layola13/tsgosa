@@ -112,11 +112,16 @@ type saIfaceRetPath struct {
 // concrete class or literal-method table for an interface return kind.
 // It mutates only the funcs map (struct copies, same discipline as the
 // prescan declSigs override) and adds no refusals.
+// Phase P1: block-body walks seed entries with the function's CURRENT
+// recorded P0 param prov (class only, via saRetParamSeedEntries); the
+// joint wrapper (sa_iface_joint.go) re-runs this analysis after each P0
+// pass so param prov feeds back into return analysis.
 func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) {
 	type bodyInfo struct {
-		body     *ast.Node
-		params   []string
-		paramsOK bool
+		body       *ast.Node
+		params     []string
+		paramsOK   bool
+		paramNodes []*ast.Node
 	}
 	bodies := map[string]bodyInfo{}
 	note := func(key string, body *ast.Node, paramNodes []*ast.Node) {
@@ -124,7 +129,7 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			return
 		}
 		params, ok := saRetParamNames(paramNodes)
-		bodies[key] = bodyInfo{body: body, params: params, paramsOK: ok}
+		bodies[key] = bodyInfo{body: body, params: params, paramsOK: ok, paramNodes: paramNodes}
 	}
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		switch st.Kind {
@@ -199,7 +204,12 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			if !ok || !bi.paramsOK {
 				continue
 			}
-			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, sig.retKind, funcs, classes, aliasOf)
+			// Phase P1: seed the walk with this function's CURRENT
+			// recorded P0 param prov (class only). Param prov only
+			// changes in P0 passes, which run between R0 calls, so the
+			// seed is stable across this call's internal rounds.
+			seed := saRetParamSeedEntries(sig, bi.paramNodes, classes)
+			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, seed, sig.retKind, funcs, classes, aliasOf)
 			if !has {
 				continue
 			}
@@ -303,11 +313,61 @@ func saRetPatternNames(nm *ast.Node) ([]string, bool) {
 	return nil, false
 }
 
+// saRetParamSeedEntries builds param-origin return entries for one function
+// from its CURRENT recorded P0 param prov (Phase P1). Class prov only:
+// litFn params are never seeded (class_only). Alignment is exact:
+// paramNodes[i] pairs with paramKinds[i]/paramIfaceProv[i]; any length
+// mismatch skips seeding for the whole function (fail-closed).
+// Non-identifier params never seed (P0 records no prov for them; their
+// prov, if any, is unreachable by name). The seeded entry kind is the
+// param's declared kind, so the classifier's passthrough arm (kind ==
+// retKind) admits same-interface param→return flows and refuses
+// cross-interface ones (not isNew, so the widened-handle arm cannot
+// admit them either).
+func saRetParamSeedEntries(sig saFuncSig, paramNodes []*ast.Node, classes map[string]*saClassDef) map[string]saIfaceRetEntry {
+	if len(paramNodes) != len(sig.paramKinds) || len(sig.paramIfaceProv) != len(sig.paramKinds) {
+		return nil
+	}
+	var out map[string]saIfaceRetEntry
+	for i, n := range paramNodes {
+		prov := sig.paramIfaceProv[i]
+		if prov == "" {
+			continue
+		}
+		kind := sig.paramKinds[i]
+		if len(kind) <= 5 || kind[:5] != "inst:" {
+			continue
+		}
+		idef, ok := classes[kind[5:]]
+		if !ok || idef == nil || !idef.isIface {
+			continue
+		}
+		if n == nil {
+			continue
+		}
+		pd := n.AsParameterDeclaration()
+		if pd == nil {
+			continue
+		}
+		nm := pd.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier {
+			continue
+		}
+		if out == nil {
+			out = map[string]saIfaceRetEntry{}
+		}
+		out[nm.Text()] = saIfaceRetEntry{class: prov, kind: kind}
+	}
+	return out
+}
+
 // saAnalyzeFuncReturns classifies every return path of one function body.
 // body is a Block node (declarations) or an arrow body (Block or a single
-// expression, which is one synthetic return path). Returns the agreed
+// expression, which is one synthetic return path). seed carries Phase P1
+// param-origin entries (class only, block bodies only); expression bodies
+// classify with nil entries as before (block_only). Returns the agreed
 // concrete class (prov) or literal-method table (litFn), or has=false.
-func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, map[string]*ast.Node, bool) {
+func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]saIfaceRetEntry, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, map[string]*ast.Node, bool) {
 	retIface := retKind[5:]
 	if body == nil {
 		return "", nil, false
@@ -351,6 +411,18 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, retKind string, f
 		retKind:  retKind,
 		retIface: retIface,
 		litSeq:   0,
+	}
+	// Phase P1: seed block-body entries with param-origin prov.
+	// Tainted names (assigned, or shared with a same-name const) are
+	// never seeded — the same rule bindVarDecl applies to const
+	// entries — so a seeded entry can never be overwritten by a
+	// same-name const or observed after a reassignment. Shadowed
+	// names still yield unknown: the classifier checks shadowed
+	// before entries lookup.
+	for name, e := range seed {
+		if !t.tainted(name) {
+			w.entries[name] = e
+		}
 	}
 	w.walkList(stmts, 0, nil)
 	if !w.ok || len(w.paths) == 0 {
