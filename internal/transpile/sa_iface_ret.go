@@ -743,6 +743,12 @@ type saRetWalker struct {
 	// class only) instead of R0's classifier. False for all R0/P0/P1/
 	// fields calls, so their behavior is unchanged by construction.
 	methodMode bool
+	// methodClass/methodStatic are Phase C only: the analyzing class
+	// and static-ness for the method-mode this arm (return this
+	// yields the analyzing class, instance methods only). Empty/false
+	// for all R0/P0/P1/fields calls.
+	methodClass  string
+	methodStatic bool
 }
 
 func saRetCopyShadow(in map[string]bool) map[string]bool {
@@ -779,7 +785,7 @@ func (w *saRetWalker) walkList(stmts []*ast.Node, depth int, shadowed map[string
 		case ast.KindReturnStatement:
 			if rs := st.AsReturnStatement(); rs != nil {
 				if w.methodMode {
-					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes))
+					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, w.methodClass, w.methodStatic))
 				} else {
 					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, &w.litSeq, w.forbidden))
 				}

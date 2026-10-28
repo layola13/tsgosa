@@ -30,10 +30,24 @@ import (
 // bindings, and the existing dispatch site handles the call unchanged.
 //
 // Fail-closed throughout: this analysis ADDS NO REFUSALS. Anything it
-// cannot prove (new/this/param/field/method-call/litFn origins, mixed
-// paths, async methods, generic methods, cross-file classes, getters,
+// cannot prove (param/field/method-call/litFn origins, mixed paths,
+// async methods, generic methods, cross-file classes, getters,
 // shadowed or reassigned bindings, unwhitelisted statements) leaves the
 // table untouched, so the program refuses exactly as before.
+//
+// Phase C (branch tsgosa/parallel/iface_classifier) extends the
+// classifier with new/this/identifier origins: a NewExpression init
+// yields a new entry (verbatim R0's new arm); a NewExpression return
+// yields the class on concrete + (declared-or-structural) satisfies +
+// methodOnly guard; a ThisKeyword return yields the ANALYZING class
+// (JEV clf_this analyzing_class, moderate — see the discriminator
+// minimal m_this_inherit_override) for instance methods only, with the
+// same guard; and an identifier return through a new entry lifts the
+// deliberate isNew rejection under the same guard (R0's widened-handle
+// rule shape with alias soundness: the ladder passes the true handle,
+// M0 probe §2.3a). The isLit rejection stays. Placement stays
+// one-shot after the joint loop; agreement stays R0's rule
+// (all paths same class, mixed → nothing).
 //
 // v1 cuts, binding on the build (JEV weak adoptions flagged, not
 // hidden): annotated method-call binds are REQUIRED NEGATIVES (M1
@@ -128,8 +142,11 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			}
 			prov[mname] = class
 		}
-		for _, src := range []map[string]*ast.Node{def.methods, def.staticMethods} {
-			for mname, mn := range src {
+		for _, src := range []struct {
+			methods  map[string]*ast.Node
+			isStatic bool
+		}{{def.methods, false}, {def.staticMethods, true}} {
+			for mname, mn := range src.methods {
 				if mn == nil || strings.HasPrefix(mname, "#") {
 					continue
 				}
@@ -166,7 +183,7 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 				if body == nil || body.Kind != ast.KindBlock {
 					continue
 				}
-				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, classes, aliasOf)
+				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, classes, aliasOf, name, src.isStatic)
 				if !ok {
 					continue
 				}
@@ -186,13 +203,18 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 
 // saAnalyzeMethodReturns classifies every return path of one method
 // body with the restricted classifier (free-function call results
-// only, class only). It mirrors saAnalyzeFuncReturns' discipline —
-// Pass 1 taint, Pass 2 ordered walk (depth-0 const bindings + return
-// paths), all-paths agreement, trailing-return rule — but with the
-// method-mode walker, no param seeding (param_origin deferred), no
-// field-read classification (field_returns deferred), and no litFn
-// (class_only). Returns the agreed concrete class, or ok=false.
-func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (string, bool) {
+// plus, in Phase C, new/this/identifier origins, class only). It
+// mirrors saAnalyzeFuncReturns' discipline — Pass 1 taint, Pass 2
+// ordered walk (depth-0 const bindings + return paths), all-paths
+// agreement, trailing-return rule — but with the method-mode walker,
+// no param seeding (param_origin deferred), no field-read
+// classification (field_returns deferred), and no litFn
+// (class_only). className/isStatic are the ANALYZING class (the class
+// whose map the entry is recorded on — per-class re-analysis, so an
+// inherited node's entry for a child class is the child class) and
+// whether the method is static (the this arm is instance-only).
+// Returns the agreed concrete class, or ok=false.
+func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, className string, isStatic bool) (string, bool) {
 	retIface := retKind[5:]
 	if body == nil || body.Kind != ast.KindBlock {
 		return "", false
@@ -215,15 +237,17 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 	// Pass 2: ordered walk, depth-0 const bindings + all return paths,
 	// with the restricted method classifier.
 	w := &saRetWalker{
-		taint:      t,
-		entries:    map[string]saIfaceRetEntry{},
-		ok:         true,
-		funcs:      funcs,
-		classes:    classes,
-		aliasOf:    aliasOf,
-		retKind:    retKind,
-		retIface:   retIface,
-		methodMode: true,
+		taint:        t,
+		entries:      map[string]saIfaceRetEntry{},
+		ok:           true,
+		funcs:        funcs,
+		classes:      classes,
+		aliasOf:      aliasOf,
+		retKind:      retKind,
+		retIface:     retIface,
+		methodMode:   true,
+		methodClass:  className,
+		methodStatic: isStatic,
 	}
 	w.walkList(stmts, 0, nil)
 	if !w.ok || len(w.paths) == 0 {
@@ -254,11 +278,13 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 
 // saMethodClassifyInit classifies a depth-0 const binding initializer
 // into an entry, or reports no entry (unknown provenance, never an
-// error). ONLY free-function call results (bare-identifier callee with
-// recorded class prov) and identifier copies of such entries classify:
-// new expressions, field reads, method calls, object literals, and
-// everything else yield no entry (new/field/method-call/litFn origins
-// are all deferred in v1).
+// error). Free-function call results (bare-identifier callee with
+// recorded class prov) and identifier copies of entries classify; in
+// Phase C a NewExpression init also classifies (verbatim R0's new
+// arm: annotation discarded, kind concrete, ctor args ignored — prov
+// is about the class, not the construction). Field reads, method
+// calls, object literals, and everything else yield no entry
+// (field/method-call/litFn origins are all deferred in v1).
 func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) (saIfaceRetEntry, bool) {
 	if init == nil {
 		return saIfaceRetEntry{}, false
@@ -282,6 +308,20 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 		}
 		return out, true
 	}
+	if init.Kind == ast.KindNewExpression {
+		ne := init.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+			return saIfaceRetEntry{}, false
+		}
+		cname := ne.Expression.Text()
+		def, ok := classes[cname]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return saIfaceRetEntry{}, false
+		}
+		// The new arm discards the annotation (binding follows the
+		// initial value kind), so the entry kind is always concrete.
+		return saIfaceRetEntry{class: cname, kind: "inst:" + cname, isNew: true}, true
+	}
 	if init.Kind == ast.KindCallExpression {
 		ce := init.AsCallExpression()
 		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
@@ -300,14 +340,16 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 }
 
 // saMethodClassifyReturn classifies one return expression into a path.
-// ONLY free-function call results (bare-identifier callee with recorded
+// Free-function call results (bare-identifier callee with recorded
 // class prov and matching return kind) and identifier returns through
-// call-derived entries (kind == return kind) classify. New, this,
-// param, field, method-call, and litFn origins all yield unknown
-// (each deferred in v1); the widened-handle arm of R0's classifier is
-// deliberately absent (new origins are unknown here, so no isNew
-// entry can ever pass).
-func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef) saIfaceRetPath {
+// entries (kind == return kind) classify; in Phase C, NewExpression
+// returns (concrete + satisfies + methodOnly guard), ThisKeyword
+// returns (analyzing class, instance methods only, same guard), and
+// identifier returns through new entries (guarded isNew lift — R0's
+// widened-handle rule shape with alias soundness, M0 probe §2.3a)
+// also classify. Param, field, method-call, and litFn origins all
+// yield unknown (each deferred in v1); the isLit rejection stays.
+func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, analyzingClass string, isStatic bool) saIfaceRetPath {
 	unknown := saIfaceRetPath{unknown: true}
 	if expr == nil {
 		return unknown
@@ -326,16 +368,58 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		if !ok {
 			return unknown
 		}
-		// Defense in depth: the method binder never creates isNew or
-		// isLit entries, but a widened-handle or literal path must
-		// never slip through even if one did.
-		if e.isLit || e.isNew {
+		// The isLit rejection stays: a literal path must never slip
+		// through even if one did (class_only).
+		if e.isLit {
 			return unknown
 		}
 		if e.kind == retKind && e.class != "" {
 			return saIfaceRetPath{class: e.class}
 		}
+		// Guarded isNew lift (Phase C): a direct new binding of a
+		// concrete class into a method-only satisfied interface.
+		// Alias soundness: the ladder passes the true handle, and
+		// method-only wants have no interface fields to misread.
+		if e.isNew && e.kind == "inst:"+e.class && e.class != "" &&
+			saIfaceMethodOnly(classes, retIface) &&
+			(saClassSatisfies(classes, e.class, retIface) || saClassStructurallySatisfies(classes, e.class, retIface)) {
+			return saIfaceRetPath{class: e.class}
+		}
 		return unknown
+	case ast.KindNewExpression:
+		ne := expr.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+			return unknown
+		}
+		cname := ne.Expression.Text()
+		def, ok := classes[cname]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return unknown
+		}
+		if !saIfaceMethodOnly(classes, retIface) {
+			return unknown
+		}
+		if !saClassSatisfies(classes, cname, retIface) && !saClassStructurallySatisfies(classes, cname, retIface) {
+			return unknown
+		}
+		return saIfaceRetPath{class: cname}
+	case ast.KindThisKeyword:
+		// Instance methods only: static methods have no `this` at
+		// lowering, and the ladder this arm requires thisSelf != "".
+		if isStatic {
+			return unknown
+		}
+		def, ok := classes[analyzingClass]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return unknown
+		}
+		if !saIfaceMethodOnly(classes, retIface) {
+			return unknown
+		}
+		if !saClassSatisfies(classes, analyzingClass, retIface) && !saClassStructurallySatisfies(classes, analyzingClass, retIface) {
+			return unknown
+		}
+		return saIfaceRetPath{class: analyzingClass}
 	case ast.KindCallExpression:
 		ce := expr.AsCallExpression()
 		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
