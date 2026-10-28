@@ -1253,6 +1253,19 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			if k, ok := scope.types[e.Text()]; ok && k == "map" {
 				return e.Text(), ""
 			}
+			// 顶层 claimed map 整体返回（JEV whole_map_return
+			// materialize_fresh 0.98，scope all_claimed 0.94）：具名顶层
+			// map 不在 scope.types 内，沿旧门拒；此处经 saTopMapLookup
+			// 具化新鲜 btree_map 槽后直返（返前释放除外口守住该槽；
+			// 调用方得到快照拷贝的所有权，快照本身不变；具名局部遮蔽
+			// 由 saTopMapLookup 内门排除）。具化失败沿旧门大声拒。
+			if tm, ok := saTopMapLookup(scope, e); ok {
+				slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				return slot, ""
+			}
 			return "", "map return needs matching map value"
 		}
 	}
@@ -9350,6 +9363,46 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsToken ||
 			be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken) {
+			// jsval-vs-jsval strict equality (JEV jsval_jsval_eq build_helper
+			// 1.0, scope field_and_named 0.30 LOW — near-tie with
+			// all_jsval_exprs 0.47, conservative gate below): without this
+			// arm both sides fall to the generic tail, which evaluates them
+			// to jsval box handles and emits pointer `eq` — a silent
+			// miscompile, since boxes are fresh `alloc 32` per boxing (no
+			// interning): equal primitives in distinct boxes, and the same
+			// object stored in two fields (boxed twice), compare unequal
+			// under pointer eq but equal under JS ===. The helper compares
+			// tag+payload (string payloads by content, object/array/function
+			// by payload identity). Strict ===/!== only; loose ==/!= still
+			// falls to the generic tail (pointer eq — known remain, needs
+			// its own JEV: refuse vs coerce-helper). LANDING: this arm must
+			// land together with or after @ts_jsval_equals in sa_std
+			// (coordinator's serialized sci flow); landing it alone breaks
+			// `sa check` on every jsval-===-jsval program.
+			if be.OperatorToken.Kind == ast.KindEqualsEqualsEqualsToken ||
+				be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken {
+				if saIsJsValEqOperand(be.Left, scope) && saIsJsValEqOperand(be.Right, scope) {
+					lh, msgL := saEvalJsValHandle(w, be.Left, scope, pos, refusals, nextTemp)
+					if msgL != "" {
+						return "", msgL
+					}
+					rh, msgR := saEvalJsValHandle(w, be.Right, scope, pos, refusals, nextTemp)
+					if msgR != "" {
+						return "", msgR
+					}
+					scope.addImport("sa_std/ts_jsval.sa")
+					t := fmt.Sprintf("t_%d", *nextTemp)
+					*nextTemp++
+					w.Write(fmt.Sprintf("  %s = call @ts_jsval_equals(%s, %s)\n", t, lh, rh))
+					if be.OperatorToken.Kind == ast.KindExclamationEqualsEqualsToken {
+						nt := fmt.Sprintf("t_%d", *nextTemp)
+						*nextTemp++
+						w.Write(fmt.Sprintf("  %s = eq %s, 0\n", nt, t))
+						return nt, ""
+					}
+					return t, ""
+				}
+			}
 			// handle equality compares directly (arr bindings from enum instantiations
 			// against i32 values; address semantics; inst identifier pairs compare
 			// handles directly (JEV handle_eq 1.0); string sides keep old gates).
