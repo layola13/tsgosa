@@ -5363,8 +5363,11 @@ func saIsLiteralDefault(n *ast.Node) bool {
 // 故门保持窄口径；empty_array_fresh noul 0.75）：
 // 3_deffile: cross-file identifier/call defaults additionally replay when
 // the callee sig carries a harvest-time defining-file record (defConstText /
-// defCallQual); see saEnrichDefDefaults. Caller-link same-prefix consts are
-// intentionally NOT trusted (subsumed-or-unsafe: see patch note).
+// defCallQual); see saEnrichDefDefaults. 4_link_mask M1 (flagged only, JEV
+// m1_mechanism flagged_only): a caller-link same-prefix const replays ONLY
+// when scope.topConstSeed proves the caller value is a seed from the
+// callee's defining file (see the arm below); unflagged same-prefix
+// values keep refusing.
 //   - 旧字面量形（不变）；
 //   - 空数组字面量，仅 arr 形参：saArrValueOf 每调用新造空句柄，与 JS
 //     逐调用新数组语义一致；非空字面量仍拒；
@@ -5418,6 +5421,27 @@ func saIsReplayableDefault(n *ast.Node, sig saFuncSig, i int, scope *saScope, fn
 			// never stand in for the defining value (2b shadow lesson).
 			if i < len(sig.defConstText) && sig.defConstText[i] != "" {
 				return true
+			}
+			// 4_link_mask M1 flagged (JEV m1_mechanism flagged_only 0.69,
+			// m1_kinds str_i32_only 0.78, m1_prefix_necessary 0.89): replay
+			// only a seed-proven const whose origin prefix equals the callee
+			// link prefix. A caller local fold never sets the flag, and a
+			// seed from a different file carries a different prefix, so both
+			// trap shapes keep refusing. Shadowed names already returned
+			// false above; bool and all other kinds keep refusing here.
+			if qf, ok := scope.linkResolve[fname]; ok {
+				if src, seeded := scope.topConstSeed[name]; seeded && strings.TrimSuffix(qf, fname) == src {
+					if i < len(sig.paramKinds) {
+						if sig.paramKinds[i] == "str" && scope.topStr[name] {
+							return true
+						}
+						if sig.paramKinds[i] == "i32" {
+							if text, ok2 := scope.topConsts[name]; ok2 && saIsIntLitText(text) {
+								return true
+							}
+						}
+					}
+				}
 			}
 			return false
 		}

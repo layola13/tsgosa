@@ -474,6 +474,7 @@ type saFileLink struct {
 	topRegexSeed     map[string]saTopRegex             // out/in: imported local name -> defining regex claim
 	topMapSeed       map[string]saTopMap               // out/in: imported local name -> defining Record claim
 	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
+	constSeedSrc     map[string]string                 // 4_link_mask: imported local const name -> defining-file prefix (origin of the constSeed entry; same set/overwrite semantics as constSeed)            // out/in: imported local const name -> folded value
 	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
 	slotHarvests     map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
 	slotSeed         map[string]*saModState            // out/in: imported local slot name -> defining slot
@@ -553,6 +554,7 @@ func saScopeLinkCopy(dst, src *saScope) {
 	dst.defPrefix = src.defPrefix
 	dst.linkResolve = src.linkResolve
 	dst.linkHarvests = src.linkHarvests
+	dst.topConstSeed = src.topConstSeed
 }
 
 // saLinkResolveMap returns the link resolve map for link mode (nil when nil).
@@ -1245,6 +1247,12 @@ func bindProgNsConsts(link *saFileLink, tgt, remote, local string) bool {
 			link.constSeed = map[string]saProgConst{}
 		}
 		link.constSeed[local+"."+member] = ch
+		if link.constSeedSrc == nil {
+			link.constSeedSrc = map[string]string{}
+		}
+		if pfx, ok := link.prefixOf[tgt]; ok {
+			link.constSeedSrc[local+"."+member] = pfx
+		}
 		bound = true
 	}
 	return bound
@@ -1484,7 +1492,7 @@ func saHarvestDefaultPassthrough(sf *ast.SourceFile, link *saFileLink, pos func(
 // value for them, the same limitation as the named-import const path
 // (saBindProgImports), which this preseed deliberately mirrors rather
 // than widening.
-func saPreseedImportedConsts(sf *ast.SourceFile, topConsts map[string]string, topStr map[string]bool, link *saFileLink) {
+func saPreseedImportedConsts(sf *ast.SourceFile, topConsts map[string]string, topStr map[string]bool, link *saFileLink, seedSrc map[string]string) {
 	if sf == nil || link == nil || link.specOf == nil || link.constHarvests == nil {
 		return
 	}
@@ -1576,6 +1584,11 @@ func saPreseedImportedConsts(sf *ast.SourceFile, topConsts map[string]string, to
 				topConsts[name] = ch.text
 				if ch.isStr {
 					topStr[name] = true
+				}
+				if seedSrc != nil {
+					if pfx, ok := link.prefixOf[ktgt]; ok {
+						seedSrc[name] = pfx
+					}
 				}
 			}
 		}
@@ -2399,6 +2412,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 						}
 						if _, dup := link.constSeed[nsLocal+"."+name]; !dup {
 							link.constSeed[nsLocal+"."+name] = kc
+							if link.constSeedSrc == nil {
+								link.constSeedSrc = map[string]string{}
+							}
+							if pfx, ok := link.prefixOf[t]; ok {
+								link.constSeedSrc[nsLocal+"."+name] = pfx
+							}
 							bound = true
 						}
 					}
@@ -2576,6 +2595,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					link.constSeed = map[string]saProgConst{}
 				}
 				link.constSeed[local] = ch
+				if link.constSeedSrc == nil {
+					link.constSeedSrc = map[string]string{}
+				}
+				if pfx, ok := link.prefixOf[ktgt]; ok {
+					link.constSeedSrc[local] = pfx
+				}
 				continue
 			}
 			// 命名空间整件直链（`import { N }` + `N.f()` 经成员点键绑定；
@@ -2715,6 +2740,12 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 						link.constSeed = map[string]saProgConst{}
 					}
 					link.constSeed[local] = ch
+					if link.constSeedSrc == nil {
+						link.constSeedSrc = map[string]string{}
+					}
+					if pfx, ok := link.prefixOf[dtgt]; ok {
+						link.constSeedSrc[local] = pfx
+					}
 					continue
 				}
 				if claim, ok := link.topArrHarvests[dtgt][dremote]; ok {
@@ -3590,7 +3621,8 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// via imported values (e.g. PREFS_KEY from STORAGE_PREFIX) fold in
 	// loop 1 exactly like same-file consts. Hook C-const below keeps
 	// seeding the same values for function-body scopes (local wins).
-	saPreseedImportedConsts(sf, topConsts, topStr, link)
+	topConstSeedSrc := map[string]string{}
+	saPreseedImportedConsts(sf, topConsts, topStr, link, topConstSeedSrc)
 	// 2b_k244handles patch2: top-level const names in file order (seeds
 	// may reference consts declared after the map; they are folded by the
 	// time functions lower, and un-foldable ones fail loudly at ensure).
@@ -3928,6 +3960,9 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			if c.isStr {
 				topStr[local] = true
 			}
+			if src, ok := link.constSeedSrc[local]; ok {
+				topConstSeedSrc[local] = src
+			}
 		}
 		// Program hook C-slot: seed imported slot layouts (local slots win;
 		// defining-file pointer shared read-only).
@@ -4147,7 +4182,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					emitted[mb.under] = true
 					// 裸兄弟读窗口（同域纯量体内直折；出域恢复）。
 					restore := saEnterNsScopeConsts(topConsts, topStr, modVars, members, mb.scope)
-					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
+					saLowerFunction(w, mb.node, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), mb.under)
 					restore()
 				}
 				continue
@@ -4212,7 +4247,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 					continue
 				}
 				emitted[name] = true
-				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+				saLowerArrowConst(w, name, arrow, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 				continue
 			}
 			// (par_notexp) memo 包装发射：内层函数体按 const 名发射（JEV
@@ -4250,7 +4285,7 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 						continue
 					}
 					emitted[name] = true
-					saLowerArrowConst(w, name, emitNode, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
+					saLowerArrowConst(w, name, emitNode, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, aliasOf, imports, importRemote, &pendingFns, &arrowSeq, link)
 					continue
 				}
 			}
@@ -4333,12 +4368,12 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 			}
 			emitted[nm.Text()] = true
 		}
-		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
+		saLowerFunction(w, st, funcs, enums, enumNonInt, classes, topConsts, topStr, topConstSeedSrc, topArrs, topObjs, topRegex, topSets, topMaps, topJSONs, topMaths, modVars, src, mainRenamed, pos, &refusals, needImport, &nextLabel, &nextTemp, strPool, tcx, &pendingFns, &arrowSeq, aliasOf, imports, importRemote, saLinkDefPrefix(link), saLinkResolveMap(link), saLinkHarvestsMap(link), "")
 	}
 	if len(entryStmts) > 0 {
 		// 入口 `@main`（空作用域帧，i32 出口；缺尾返补 `ret 0`）。
 		w.Write("@main() -> i32:\n")
-		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+		escope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topConstSeed: topConstSeedSrc, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: &nextLabel, retKind: "i32", strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: &pendingFns, arrowSeq: &arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 		saScopeLinkFill(escope, link)
 		if escope.regexPat == nil {
 			escope.regexPat = map[string]string{}
@@ -6081,19 +6116,20 @@ type saLoop struct {
 // 绑定时落子，语句终结随语句消亡；串行复用合法，同名嵌套拒；形状证据：封存
 // labels.go:1-58）。
 type saScope struct {
-	types      map[string]string
-	loops      []saLoop
-	labels     map[string]saLoop
-	pending    []string
-	mathAlias  map[string]string
-	funcs      map[string]saFuncSig
-	enums      map[string]map[string]int64
-	enumNonInt map[string]map[string]bool
-	classes    map[string]*saClassDef
-	topConsts  map[string]string
-	topStr     map[string]bool
-	topArrs    map[string]saTopArr // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
-	topObjs    map[string]saTopObj // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
+	types        map[string]string
+	loops        []saLoop
+	labels       map[string]saLoop
+	pending      []string
+	mathAlias    map[string]string
+	funcs        map[string]saFuncSig
+	enums        map[string]map[string]int64
+	enumNonInt   map[string]map[string]bool
+	classes      map[string]*saClassDef
+	topConsts    map[string]string
+	topStr       map[string]bool
+	topConstSeed map[string]string   // 4_link_mask: local const name -> defining-file prefix; set ONLY when an imported seed actually lands in topConsts (preseed or hook C); local folds never set it
+	topArrs      map[string]saTopArr // 顶层 const 数组快照（名→快照；i32/串元；用点物化；698/758）
+	topObjs      map[string]saTopObj // 顶层 const 对象快照（名→快照；接口布局先行；用点物化；788）
 	// topObjClaim is the claim whose init is currently being lowered
 	// (par_notexp, JEV idfield_snapshot): saLowerObjectLiteral consults
 	// it for identifier fields resolved at prescan time; nil outside a
@@ -6351,7 +6387,7 @@ func saIsEntryStmt(st *ast.Node) bool {
 	}
 }
 
-func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
+func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]saFuncSig, enums map[string]map[string]int64, enumNonInt map[string]map[string]bool, classes map[string]*saClassDef, topConsts map[string]string, topStr map[string]bool, topConstSeed map[string]string, topArrs map[string]saTopArr, topObjs map[string]saTopObj, topRegex map[string]saTopRegex, topSets map[string]saTopSet, topMaps map[string]saTopMap, topJSONs map[string]saTopJSON, topMaths map[string]string, modVars map[string]*saModState, src string, mainRenamed bool, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, strPool *saStrPool, tcx *saTypeCtx, pendingFns *[]string, arrowSeq *int, aliasOf map[string]*ast.TypeNode, imports, importRemote map[string]string, defPrefix string, linkResolve map[string]string, linkHarvests map[string]map[string]saProgFunc, forceName string) {
 	fn := st.AsFunctionDeclaration()
 	name, ok := saFuncName(fn)
 	if !ok {
@@ -6439,7 +6475,7 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		saWriteFailedTerminator(w, isVoid)
 		return
 	}
-	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
+	scope := &saScope{types: map[string]string{}, funcs: funcs, enums: enums, enumNonInt: enumNonInt, classes: classes, topConsts: topConsts, topStr: topStr, topConstSeed: topConstSeed, topArrs: topArrs, topObjs: topObjs, topRegex: topRegex, topSets: topSets, topMaps: topMaps, topJSONs: topJSONs, modVars: modVars, mainRenamed: mainRenamed, nextLabel: nextLabel, retKind: retKind, strPool: strPool, src: src, addImport: needImport, tcx: tcx, pendingFns: pendingFns, arrowSeq: arrowSeq, aliasOf: aliasOf, imports: imports, importRemote: importRemote}
 	scope.curFunc = name
 	if fn.Type == nil && isVoid {
 		// Void-fallback scan cause (JEV voidmask enrich_only): only for
@@ -8326,6 +8362,7 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			topRegexSeed:     map[string]saTopRegex{},
 			topMapSeed:       map[string]saTopMap{},
 			constSeed:        map[string]saProgConst{},
+			constSeedSrc:     map[string]string{},
 			slotHarvest:      map[string]*saModState{},
 			slotHarvests:     slotHarvests,
 			slotSeed:         map[string]*saModState{},
