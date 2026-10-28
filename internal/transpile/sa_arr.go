@@ -2406,8 +2406,18 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 			}
 			strAnnot := false
 			unresAnnot := false
+			typelitAnnot := false
 			if vd.Type != nil {
-				if k, ok := saAnnotKind(vd.Type); ok {
+				if el := saArrayElemAnnot(vd.Type); el != nil && el.Kind == ast.KindTypeLiteral {
+					// (4_c2, JEV annot_typelit_arr prescan_only 0.99 / elem_kind_source
+					// literal_values 0.99): an ArrayType whose element is an inline
+					// TypeLiteral counts as 'arr' for this prescan gate only;
+					// saAnnotKind elsewhere is unchanged, and element field kinds
+					// still come from literal values via saTopObjElemParse plus
+					// the layout consistency checks below (annotation members,
+					// e.g. a string-union alias, are NOT a kind source).
+					typelitAnnot = true
+				} else if k, ok := saAnnotKind(vd.Type); ok {
 					if k != "arr" {
 						okAll = false
 						break
@@ -2480,6 +2490,22 @@ func saTopArrPrescan(stmts []*ast.Node, funcs map[string]saFuncSig, classes map[
 				nKinds++
 			}
 			if !eleOk || nKinds > 1 {
+				okAll = false
+				break
+			}
+			// (4_c2) A TypeLiteral-element annotation promises objects: a
+			// scalar-only element list under it refuses loudly instead
+			// of silently claiming a mistyped plain array (its layout
+			// would be unknowable). EMPTY lists are exempt (local fix2
+			// correction): patch1's blanket empty refusal regressed a
+			// base-passing shape -- `Array<{...}> = []` (server
+			// websocketDisconnects) newly refused kind-244, proven by
+			// probe (base passes, patch1 refuses). An empty list has
+			// no elements to mistype, so it falls through to the base
+			// plain-empty claim below; any later layout-needing use
+			// still refuses loudly via the missing-layout discipline,
+			// and the scalar-only mistype protection above is kept.
+			if typelitAnnot && len(objs) == 0 && (len(i32s) > 0 || len(strs) > 0 || len(subs) > 0) {
 				okAll = false
 				break
 			}
@@ -9610,6 +9636,24 @@ func saArrElemAt(w printer.EmitTextWriter, data, idx string, nextTemp *int) stri
 	return v
 }
 
+// saArrElemPtrAt mirrors saArrElemAt but loads the element as a ptr
+// handle (4_c2 fix2, JEV inst_arm_in_scan 0.91): instance-element
+// array buffers hold element pointers, and the inst-param binding in
+// saCallbackValue needs a ptr-typed value to field-load from; the i32
+// word load of the generic filter path cannot serve an inst binding.
+func saArrElemPtrAt(w printer.EmitTextWriter, data, idx string, nextTemp *int) string {
+	off := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = mul %s, 4\n", off, idx))
+	addr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, %s\n", addr, data, off))
+	v := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", v, addr))
+	return v
+}
+
 // saHigherOrder взвод通用扫描骨架：forEach/filter/find 系/some/every 共用
 // （各按命中语义收尾；形状证据：封存 lowerHigherOrder:4926-5119）。
 // saFindTypeofGuard detects a find callback whose body is exactly a typeof
@@ -9968,6 +10012,87 @@ func saHigherOrderScan(w printer.EmitTextWriter, recv, method string, cb *ast.No
 			saOwnTemp(scope, eh)
 			saReleaseOwnedTemp(w, scope, recv)
 			return eh, "arr", ""
+		}
+		if elemLayout != "" {
+			if _, ok := scope.classes[elemLayout]; !ok {
+				return "", "", "filter instance element layout not recorded"
+			}
+			// Instance-element filter arm (4_c2 fix2, JEV
+			// inst_arm_in_scan 0.91): the generic path loads
+			// elements as i32 words and binds the callback
+			// parameter via saNestedElemKinds, which never yields
+			// an inst kind, so a field-comparison callback such as
+			// `(o) => o.value !== 'off'` cannot bind o as an
+			// instance and falls through to "array initializer
+			// must be literal or array". This arm loads elements
+			// as ptr handles, binds the parameter as
+			// inst:elemLayout (mirror of saHigherOrderMap), pushes
+			// matching element ptrs, and marks the result handle
+			// with arrElemLayout=elemLayout directly (not via
+			// recv-mark propagation), so a chained .map resolves
+			// the layout. Fail-closed: an unrecorded layout
+			// refuses above; without elemLayout the generic path
+			// below runs unchanged.
+			// Retain-copy discipline: saCallbackValue's inst-param
+			// path MOVES a temp argVal into the param name and
+			// releases it after the body, so the take branch must
+			// not push the moved temp. A throwaway copy feeds the
+			// callback; the pushed value is the untouched element
+			// load, the same borrowed discipline as the generic
+			// path (elements stay borrowed from the source array,
+			// the result array owns only its buffer).
+			ih := saNewEmptyArray(w, nextTemp)
+			ii := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = 0\n", ii))
+			itopL := fmt.Sprintf("L_fin_top_%d", *nextLabel)
+			*nextLabel++
+			ibodyL := fmt.Sprintf("L_fin_body_%d", *nextLabel)
+			*nextLabel++
+			iendL := fmt.Sprintf("L_fin_end_%d", *nextLabel)
+			*nextLabel++
+			itakeL := fmt.Sprintf("L_fin_take_%d", *nextLabel)
+			*nextLabel++
+			iskipL := fmt.Sprintf("L_fin_skip_%d", *nextLabel)
+			*nextLabel++
+			w.Write(fmt.Sprintf("%s:\n", itopL))
+			ic := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = slt %s, %s\n", ic, ii, ln))
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ic, ibodyL, iendL))
+			w.Write(fmt.Sprintf("%s:\n", ibodyL))
+			iel := saArrElemPtrAt(w, data, ii, nextTemp)
+			ielC := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 0\n", ielC, iel))
+			iv, imsg := saCallbackValue(w, cb, []string{ielC, ii}, true, "i32", scope, pos, refusals, needImport, nextLabel, nextTemp, true, []string{"inst:" + elemLayout, "i32"})
+			if imsg != "" {
+				return "", "", imsg
+			}
+			if _, err := strconv.ParseInt(iv, 10, 64); err == nil {
+				it := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s\n", it, iv))
+				iv = it
+			}
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", iv, itakeL, iskipL))
+			w.Write(fmt.Sprintf("%s:\n", itakeL))
+			saLowerArrayPush(w, ih, iel, scope, nextTemp)
+			w.Write(fmt.Sprintf("  jmp %s\n", iskipL))
+			w.Write(fmt.Sprintf("%s:\n", iskipL))
+			iinext := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = add %s, 1\n", iinext, ii))
+			w.Write(fmt.Sprintf("  %s = %s\n", ii, iinext))
+			w.Write(fmt.Sprintf("  jmp %s\n", itopL))
+			w.Write(fmt.Sprintf("%s:\n", iendL))
+			if scope.arrElemLayout == nil {
+				scope.arrElemLayout = map[string]string{}
+			}
+			scope.arrElemLayout[ih] = elemLayout
+			saOwnTemp(scope, ih)
+			saReleaseOwnedTemp(w, scope, recv)
+			return ih, "arr", ""
 		}
 		h := saNewEmptyArray(w, nextTemp)
 		i := fmt.Sprintf("t_%d", *nextTemp)

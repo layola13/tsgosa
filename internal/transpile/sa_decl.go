@@ -3359,7 +3359,117 @@ func saLazyMemberInt(pa *ast.Node, consts map[string]string, strs map[string]boo
 	return result, true
 }
 
-func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx, topObjs map[string]saTopObj, assigned map[string]bool, topConstNames map[string]bool) bool {
+// saFoldTypeofGlobalThis folds `typeof (globalThis as {...}).Member ===/!==
+// "undefined" to "1"/"0" (4_c2, JEV typeof_scope cast_globalThis_member_only
+// 0.62, design target_fold_only 0.71): in the SA target there is no host
+// global, so a cast globalThis member probe is absent, exactly as
+// saEnvProbeArm already treats binder-invisible typeof probes in ternaries.
+// Narrow on purpose: the base must be a cast (As/Satisfies) of the
+// identifier globalThis, the member an identifier, the other side the
+// string literal "undefined"; tcx-nil refuses, and a user-shadowed
+// globalThis refuses via the r4 shadow gate below (lib-vs-user
+// declaration distinction, JEV implement_shadow_check 1.0). Any other
+// typeof shape returns false.
+func saFoldTypeofGlobalThis(init *ast.Node, tcx *saTypeCtx) (string, bool) {
+	if tcx == nil || init == nil {
+		return "", false
+	}
+	beNode := saUnwrapTransparent(init)
+	if beNode == nil || beNode.Kind != ast.KindBinaryExpression {
+		return "", false
+	}
+	be := beNode.AsBinaryExpression()
+	if be == nil {
+		return "", false
+	}
+	isEq := false
+	switch saBinaryOpKind(be) {
+	case ast.KindEqualsEqualsToken, ast.KindEqualsEqualsEqualsToken:
+		isEq = true
+	case ast.KindExclamationEqualsToken, ast.KindExclamationEqualsEqualsToken:
+		isEq = false
+	default:
+		return "", false
+	}
+	var typeOp, litNode *ast.Node
+	for _, side := range []*ast.Node{be.Left, be.Right} {
+		if side != nil && side.Kind == ast.KindTypeOfExpression {
+			typeOp = side
+		}
+		if side != nil && side.Kind == ast.KindStringLiteral {
+			litNode = side
+		}
+	}
+	if typeOp == nil || litNode == nil || litNode.Text() != "undefined" {
+		return "", false
+	}
+	to := typeOp.AsTypeOfExpression()
+	if to == nil || to.Expression == nil || to.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := to.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return "", false
+	}
+	base := pa.Expression
+	// (local fix2 reconstruction: the cast base is parenthesized in the
+	// real shape `(globalThis as {...}).Bun`, so peel parens before the
+	// cast check; the cast gate itself is unchanged -- a non-cast base
+	// still refuses below. Without this peel the adopted typeof fold
+	// never fires on the parenthesized shape.)
+	for base != nil && base.Kind == ast.KindParenthesizedExpression {
+		if pe := base.AsParenthesizedExpression(); pe != nil && pe.Expression != nil {
+			base = pe.Expression
+		} else {
+			break
+		}
+	}
+	if base == nil || (base.Kind != ast.KindAsExpression && base.Kind != ast.KindSatisfiesExpression) {
+		return "", false
+	}
+	var inner *ast.Node
+	if base.Kind == ast.KindAsExpression {
+		if ae := base.AsAsExpression(); ae != nil {
+			inner = ae.Expression
+		}
+	} else {
+		if se := base.AsSatisfiesExpression(); se != nil {
+			inner = se.Expression
+		}
+	}
+	inner = saUnwrapTransparent(inner)
+	if inner == nil || inner.Kind != ast.KindIdentifier || inner.Text() != "globalThis" {
+		return "", false
+	}
+	// (r4 shadow gate, JEV implement_shadow_check 1.0): a user-shadowed
+	// globalThis must refuse loudly here (the caller turns a false fold
+	// into a kind-244 refusal, as on baseline), never fold: folding a
+	// user object's member probe would map it to "absent".
+	if saGlobalThisUserShadowed(tcx, inner) {
+		return "", false
+	}
+	// (local fix2 reconstruction: NO binder gate here. The patch1
+	// fail-closed gate `saDeclaredAt(tcx, inner)` made this fold dead
+	// code: the tsgo build path's checker resolves `globalThis` (the
+	// DBG probe on r_pos stops exactly at "globalThis-declared"), so
+	// no adopted-shape const ever folded. The gate conflated "the
+	// checker knows the name" with "the name exists at runtime in the
+	// target"; the JEV target rationale is that the SA target has no
+	// host global, which holds regardless of checker resolution. The
+	// remaining gates still pin the adopted scope exactly: base must
+	// be a cast of the identifier globalThis, member an identifier,
+	// other side exactly "undefined", operator ===/!==. A non-cast
+	// globalThis probe, a non-globalThis typeof, and a wrong literal
+	// all still refuse below/above. The r4 shadow gate above is the narrow
+	// exception to "no binder gate": it refuses only when the resolved
+	// symbol carries a non-lib declaration.)
+	if isEq {
+		return "1", true
+	}
+	return "0", true
+}
+
+func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string]bool, maths map[string]string, pos func(int) (int, int), refusals *[]SARefusal, tcx *saTypeCtx, topObjs map[string]saTopObj, assigned map[string]bool, topConstNames map[string]bool, runtimeBools map[string]bool) bool {
 	if st.Kind != ast.KindVariableStatement {
 		return false
 	}
@@ -3415,6 +3525,36 @@ func saFoldTopLevelConst(st *ast.Node, consts map[string]string, strs map[string
 		if init.Kind == ast.KindConditionalExpression {
 			if arm, ok := saEnvProbeArm(init.AsConditionalExpression(), tcx); ok {
 				init = arm
+			}
+		}
+		// (4_c2, JEV target_fold_only 0.71): runtime-detection consts,
+		// const-only and never assigned. A typeof-globalThis fold marks
+		// the name as a runtime bool; a negation fires ONLY on such a
+		// marked name (JEV negation_of_lazy_only 0.80), so `!5` and
+		// `!plainConst` keep refusing via the switch below instead of
+		// silently inverting an unrelated i32 (note the pre-existing
+		// True/False arms both fold to "0", which is why provenance,
+		// not the bare "0"/"1" text, gates negation).
+		if isConst && !assigned[nm.Text()] {
+			if v, ok := saFoldTypeofGlobalThis(init, tcx); ok {
+				consts[nm.Text()] = v
+				if runtimeBools != nil {
+					runtimeBools[nm.Text()] = true
+				}
+				continue
+			}
+			if un := saUnwrapTransparent(init); un != nil && un.Kind == ast.KindPrefixUnaryExpression {
+				if pu := un.AsPrefixUnaryExpression(); pu != nil && pu.Operator == ast.KindExclamationToken && pu.Operand != nil && pu.Operand.Kind == ast.KindIdentifier && runtimeBools != nil && runtimeBools[pu.Operand.Text()] {
+					if t, ok := consts[pu.Operand.Text()]; ok && !strs[pu.Operand.Text()] && (t == "0" || t == "1") {
+						if t == "0" {
+							consts[nm.Text()] = "1"
+						} else {
+							consts[nm.Text()] = "0"
+						}
+						runtimeBools[nm.Text()] = true
+						continue
+					}
+				}
 			}
 		}
 		switch init.Kind {
