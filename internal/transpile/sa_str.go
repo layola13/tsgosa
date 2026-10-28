@@ -273,6 +273,31 @@ func saIsStrExpr(e *ast.Node, scope *saScope) bool {
 			return false
 		}
 		return saIsStrValue(tce.WhenTrue, scope) && saIsStrValue(tce.WhenFalse, scope)
+	case ast.KindAwaitExpression:
+		// Awaited future values in string position (promise_tspromise
+		// step 3): awaited future identifiers, resolve calls, and
+		// future calls are str values iff their value kind is str.
+		// Predicate mirrors the saEvalStr Await arms; kind probes
+		// are pure (no emission).
+		if inner, saw := saPeelAwait(e); saw && inner != nil {
+			if inner.Kind == ast.KindIdentifier {
+				if fk, ok := saFutureKindOf(scope, inner.Text()); ok && fk == "str" {
+					return true
+				}
+			}
+			if inner.Kind == ast.KindCallExpression {
+				ice := inner.AsCallExpression()
+				if saIsPromiseResolveCall(ice, scope) {
+					return saPromiseResolveKind(ice, scope) == "str"
+				}
+				if saIsFutureCall(ice, scope) {
+					if sig, ok := saFutureCallSig(ice, scope); ok && sig.retKind == "string" {
+						return true
+					}
+				}
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -601,6 +626,21 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindIdentifier {
 			if fk, ok := saFutureKindOf(scope, inner.Text()); ok && fk == "str" {
 				return saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
+			}
+		}
+		// Direct await of a resolve call in string position: lower
+		// the resolve, then poll the resulting future temp. A kind
+		// mismatch falls through to the refusal below.
+		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindCallExpression {
+			ice := inner.AsCallExpression()
+			if saIsPromiseResolveCall(ice, scope) {
+				fut, kind, _, msg := saLowerPromiseResolve(w, ice, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if kind == "str" {
+					return saLowerFuturePoll(w, fut, kind, scope, nextTemp)
+				}
 			}
 		}
 		if peeled := saPeelAwaitCall(e, scope); peeled != nil && saIsFutureCall(peeled, scope) {

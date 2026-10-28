@@ -7700,6 +7700,93 @@ func saIsPromiseResolveCall(ce *ast.CallExpression, scope *saScope) bool {
 	return true
 }
 
+// saCallArgNodes returns a call's argument nodes, nil-safe (a bare
+// Arguments pointer panics on field access; 0-crash iron rule).
+func saCallArgNodes(ce *ast.CallExpression) []*ast.Node {
+	if ce == nil || ce.Arguments == nil {
+		return nil
+	}
+	return ce.Arguments.Nodes
+}
+
+// saPromiseValueKind is the PURE kind probe for promise values (no
+// emission): future identifiers -> their kind; future calls -> retKind
+// map; resolve calls -> recurse; plain literals/identifiers -> kind by
+// shape (array literals: arrStr iff non-empty and every element is a
+// string literal, else arr). "" means not statically known. Mirrors
+// the emitting dispatch in saLowerPromiseResolve/saPromiseResolveValue,
+// conservatively.
+func saPromiseValueKind(u *ast.Node, scope *saScope) string {
+	if u == nil {
+		return ""
+	}
+	if u.Kind == ast.KindIdentifier {
+		if fk, ok := saFutureKindOf(scope, u.Text()); ok {
+			return fk
+		}
+		switch scope.types[u.Text()] {
+		case "str":
+			return "str"
+		case "i32", "bool":
+			return "i32"
+		case "arr":
+			if scope.arrStr != nil && scope.arrStr[u.Text()] {
+				return "arrStr"
+			}
+			return "arr"
+		}
+		return ""
+	}
+	if u.Kind == ast.KindCallExpression {
+		ce := u.AsCallExpression()
+		if saIsPromiseResolveCall(ce, scope) {
+			return saPromiseResolveKind(ce, scope)
+		}
+		if saIsFutureCall(ce, scope) {
+			sig, _ := saFutureCallSig(ce, scope)
+			switch sig.retKind {
+			case "string":
+				return "str"
+			case "number", "i32", "boolean", "bool":
+				return "i32"
+			}
+		}
+		return ""
+	}
+	switch u.Kind {
+	case ast.KindStringLiteral:
+		return "str"
+	case ast.KindNumericLiteral, ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "i32"
+	case ast.KindArrayLiteralExpression:
+		al := u.AsArrayLiteralExpression()
+		if al != nil && al.Elements != nil && len(al.Elements.Nodes) > 0 {
+			allStr := true
+			for _, el := range al.Elements.Nodes {
+				if el == nil || saUnwrapTransparent(el).Kind != ast.KindStringLiteral {
+					allStr = false
+					break
+				}
+			}
+			if allStr {
+				return "arrStr"
+			}
+		}
+		return "arr"
+	}
+	return ""
+}
+
+// saPromiseResolveKind probes the value kind of a Promise.resolve call
+// WITHOUT emitting (predicate for saIsStrExpr).
+func saPromiseResolveKind(ce *ast.CallExpression, scope *saScope) string {
+	args := saCallArgNodes(ce)
+	if len(args) != 1 {
+		return ""
+	}
+	return saPromiseValueKind(saUnwrapTransparent(args[0]), scope)
+}
+
 // saPromisePlainValue evaluates a non-future plain value (literal or
 // bound identifier) to (temp, kind, msg), kind in {"i32","str","arr",
 // "arrStr"}. Kind is decided BEFORE evaluating, so no failed attempt
@@ -7792,10 +7879,11 @@ func saPromiseElemValue(w printer.EmitTextWriter, e *ast.Node, scope *saScope, p
 	if u.Kind == ast.KindCallExpression {
 		ce := u.AsCallExpression()
 		if saIsPromiseResolveCall(ce, scope) {
-			if len(ce.Arguments.Nodes) != 1 {
+			args := saCallArgNodes(ce)
+			if len(args) != 1 {
 				return "", "", "Promise.resolve takes exactly one argument"
 			}
-			return saPromiseResolveValue(w, ce.Arguments.Nodes[0], scope, pos, refusals, nextTemp)
+			return saPromiseResolveValue(w, args[0], scope, pos, refusals, nextTemp)
 		}
 		if saIsFutureCall(ce, scope) {
 			return saPromiseFutureCallValue(w, u, ce, scope, pos, refusals, nextTemp)
@@ -7830,10 +7918,11 @@ func saPromiseResolveValue(w printer.EmitTextWriter, e *ast.Node, scope *saScope
 	if u.Kind == ast.KindCallExpression {
 		ce := u.AsCallExpression()
 		if saIsPromiseResolveCall(ce, scope) {
-			if len(ce.Arguments.Nodes) != 1 {
+			args := saCallArgNodes(ce)
+			if len(args) != 1 {
 				return "", "", "Promise.resolve takes exactly one argument"
 			}
-			return saPromiseResolveValue(w, ce.Arguments.Nodes[0], scope, pos, refusals, nextTemp)
+			return saPromiseResolveValue(w, args[0], scope, pos, refusals, nextTemp)
 		}
 		if saIsFutureCall(ce, scope) {
 			return saPromiseFutureCallValue(w, u, ce, scope, pos, refusals, nextTemp)
@@ -7860,17 +7949,20 @@ func saLowerFuturePoll(w printer.EmitTextWriter, name, kind string, scope *saSco
 		return "", "unsupported future value kind " + kind
 	}
 	if kind == "i32" {
+		// Load directly as i32 (no u64 load + trunc): the helper
+		// stores i32 values as i32, and a trunc temp bound to a name
+		// leaks per the verifier (trunc results are Active, and the
+		// binding assign does not propagate EphemeralScalar from
+		// them — bisect V2/V6). A direct i32 load yields
+		// EphemeralScalar, which the binding assign propagates.
 		fv := fmt.Sprintf("t_%d", *nextTemp)
 		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = load %s + 8 as u64\n", fv, name))
-		v := fmt.Sprintf("t_%d", *nextTemp)
-		*nextTemp++
-		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v, fv))
+		w.Write(fmt.Sprintf("  %s = load %s + 8 as i32\n", fv, name))
 		if scope.futurePolled == nil {
 			scope.futurePolled = map[string]bool{}
 		}
 		scope.futurePolled[name] = true
-		return v, ""
+		return fv, ""
 	}
 	fv := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
@@ -7881,7 +7973,7 @@ func saLowerFuturePoll(w printer.EmitTextWriter, name, kind string, scope *saSco
 			cp := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			scope.addImport("sa_std/ts_array.sa")
-			w.Write(fmt.Sprintf("  %s = call @ts_arr_concat2(ptr %s, ptr %s)\n", cp, fv, empty))
+			w.Write(fmt.Sprintf("  %s = call @ts_arr_concat2(%s, %s)\n", cp, fv, empty))
 			saOwnTemp(scope, empty)
 			saReleaseOwnedTemp(w, scope, empty)
 			saOwnTemp(scope, cp)
@@ -7911,20 +8003,22 @@ func saLowerFuturePoll(w printer.EmitTextWriter, name, kind string, scope *saSco
 }
 
 // saLowerPromiseResolve lowers Promise.resolve(arg) to a ReadyFuture
-// struct temp (state 1 + value as u64 at +8) and returns
+// struct temp (16B: state 1 at +0, value slot at +8) and returns
 // (futureTemp, valueKind, borrowed, msg). A future-identifier argument
-// is ADOPTED (JEV step3_resolve_adopt 0.74): the new future binding
-// borrows the same struct, so the caller must declare it plain rather
-// than owned. Nested resolve calls recurse. Any other argument is
-// evaluated by kind and wrapped via the matching @ts_promise_resolve_*
-// helper (OVERLAY PENDING: the helper lives in sci sa_std/ts_promise.sa,
-// which this task must not touch; see ~/workspace/promise_tspromise_overlay/).
+// is ADOPTED (JEV step3_resolve_adopt 0.74): the call returns the
+// source name with borrowed=true, and the caller moves it into the
+// new binding (move semantics; see saLowerFutureBinding). Nested
+// resolve calls recurse. Any other argument is evaluated by kind and
+// wrapped via the matching @ts_promise_resolve_* helper (OVERLAY
+// PENDING: the helper lives in sci sa_std/ts_promise.sa, which this
+// task must not touch; see ~/workspace/promise_tspromise_overlay/).
 // Exactly one argument is required; anything else refuses loudly.
 func saLowerPromiseResolve(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, bool, string) {
-	if len(ce.Arguments.Nodes) != 1 {
+	args := saCallArgNodes(ce)
+	if len(args) != 1 {
 		return "", "", false, "Promise.resolve takes exactly one argument"
 	}
-	arg := saUnwrapTransparent(ce.Arguments.Nodes[0])
+	arg := saUnwrapTransparent(args[0])
 	if arg != nil && arg.Kind == ast.KindIdentifier {
 		if fk, ok := saFutureKindOf(scope, arg.Text()); ok {
 			return arg.Text(), fk, true, ""
@@ -7973,19 +8067,67 @@ func saLowerPromiseResolve(w printer.EmitTextWriter, ce *ast.CallExpression, sco
 	scope.addImport("sa_std/ts_promise.sa")
 	fut := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	if kind == "i32" {
-		w.Write(fmt.Sprintf("  %s = call %s(i32 %s)\n", fut, helper, val))
-	} else {
-		w.Write(fmt.Sprintf("  %s = call %s(ptr %s)\n", fut, helper, val))
-	}
+	// SA call args are UNTYPED (call @f(a, 4)): no i32/ptr prefixes,
+	// and literals pass through as args (cf @ts_arr_push_word calls).
+	w.Write(fmt.Sprintf("  %s = call %s(%s)\n", fut, helper, val))
 	saOwnTemp(scope, fut)
-	// Move semantics (codebase discipline: owned values move on
-	// binding): an owned temp or binding value is consumed into the
-	// future; plain/i32 values are unaffected (saConsumeOwn no-ops
-	// unless the name is heap-owned). Later use of a moved binding
-	// is a loud verifier UseAfterMove, not a silent alias.
-	saConsumeOwn(scope, val)
+	// Copy semantics: the helper COPIES handle inputs (str shallow,
+	// arr via buffer copy), so the caller RETAINS the input value —
+	// no consume here (resolve does not move in JS, and the future
+	// holds an independent copy, so no dangle is possible). A heap
+	// VALUE TEMP must still be ended, or the verifier flags it live
+	// at exit: owned temps via the owned release, unowned temps
+	// (e.g. string literal handles, never registered) via a raw `!`.
+	// Named bindings are left alone (scope-exit release covers them).
+	if (kind == "str" || kind == "arr" || kind == "arrStr") && saIsTempOp(val) {
+		if b := saOwnOf(scope, val); b != nil && b.heap && !b.consumed && !b.released {
+			saReleaseOwnedTemp(w, scope, val)
+		} else if b == nil {
+			w.Write(fmt.Sprintf("  !%s\n", val))
+		}
+	}
 	return fut, kind, false, ""
+}
+
+// saPromiseBareAllElemKind is the PURE pre-scan kind for one bare-all
+// element (no emission): future identifiers -> their kind,
+// future-marked calls -> retKind map, resolve calls -> recurse.
+// Anything else yields "" (direct plain values stay refused in v1,
+// matching step 2's strictness). Used to validate the whole element
+// list BEFORE emitting, so kind-mismatch refusals leave no partial
+// emission in the refused stub.
+func saPromiseBareAllElemKind(e *ast.Node, scope *saScope) string {
+	u := saUnwrapTransparent(e)
+	if u == nil {
+		return ""
+	}
+	if u.Kind == ast.KindIdentifier {
+		if fk, ok := saFutureKindOf(scope, u.Text()); ok {
+			return fk
+		}
+		return ""
+	}
+	if u.Kind == ast.KindCallExpression {
+		ce := u.AsCallExpression()
+		if saIsPromiseResolveCall(ce, scope) {
+			args := saCallArgNodes(ce)
+			if len(args) != 1 {
+				return ""
+			}
+			return saPromiseBareAllElemKind(args[0], scope)
+		}
+		if saIsFutureCall(ce, scope) {
+			sig, _ := saFutureCallSig(ce, scope)
+			switch sig.retKind {
+			case "string":
+				return "str"
+			case "number", "i32", "boolean", "bool":
+				return "i32"
+			}
+		}
+		return ""
+	}
+	return ""
 }
 
 // saLowerPromiseAllBare lowers a bare (unawaited) Promise.all(...) to a
@@ -7999,16 +8141,44 @@ func saLowerPromiseResolve(w printer.EmitTextWriter, ce *ast.CallExpression, sco
 // array) — the asymmetry is documented in the step-3 report.
 // Array-valued elements refuse all-of-arr (no nested join in v1).
 func saLowerPromiseAllBare(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
-	if len(ce.Arguments.Nodes) != 1 || saUnwrapTransparent(ce.Arguments.Nodes[0]).Kind != ast.KindArrayLiteralExpression {
+	args := saCallArgNodes(ce)
+	if len(args) != 1 || saUnwrapTransparent(args[0]).Kind != ast.KindArrayLiteralExpression {
 		return "", "", "Promise.all takes a single array literal argument"
 	}
-	arrLit := saUnwrapTransparent(ce.Arguments.Nodes[0]).AsArrayLiteralExpression()
+	arrLit := saUnwrapTransparent(args[0]).AsArrayLiteralExpression()
 	var elems []*ast.Node
 	if arrLit.Elements != nil {
 		elems = arrLit.Elements.Nodes
 	}
 	if len(elems) == 0 {
 		return "", "", "empty Promise.all is refused (no elements to join)"
+	}
+	// Pure pre-scan (no emission): every element must be a future
+	// source of one homogeneous i32/str kind. Kind mismatches,
+	// non-future elements, and array-valued elements refuse here,
+	// before any element is evaluated, so the refused stub carries
+	// no partial emission.
+	preKind := ""
+	for _, el := range elems {
+		u := saUnwrapTransparent(el)
+		if u == nil || u.Kind == ast.KindOmittedExpression {
+			return "", "", "Promise.all elements must not contain holes"
+		}
+		if u.Kind == ast.KindSpreadElement {
+			return "", "", "Promise.all with spread elements is not lowerable"
+		}
+		ek := saPromiseBareAllElemKind(el, scope)
+		if ek == "" {
+			return "", "", "Promise.all elements must be future calls, future bindings, or Promise.resolve calls"
+		}
+		if ek == "arr" || ek == "arrStr" {
+			return "", "", "Promise.all of array-valued elements is not lowerable"
+		}
+		if preKind == "" {
+			preKind = ek
+		} else if preKind != ek {
+			return "", "", "Promise.all elements must be homogeneous"
+		}
 	}
 	kind := ""
 	var vals []string
@@ -8049,9 +8219,11 @@ func saLowerPromiseAllBare(w printer.EmitTextWriter, ce *ast.CallExpression, sco
 	scope.addImport("sa_std/ts_promise.sa")
 	fut := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = call @ts_promise_resolve_arr(ptr %s)\n", fut, h))
+	w.Write(fmt.Sprintf("  %s = call @ts_promise_resolve_arr(%s)\n", fut, h))
 	saOwnTemp(scope, fut)
-	saConsumeOwn(scope, h)
+	// Copy semantics (as in saLowerPromiseResolve): the helper copies
+	// the array, so h stays owned and is released at function exit;
+	// the future holds the independent copy.
 	outKind := "arr"
 	if kind == "str" {
 		outKind = "arrStr"
@@ -8331,6 +8503,22 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 					return "", msg
 				}
 				return v, ""
+			}
+		}
+		// Direct await of a resolve call in array position
+		// (promise_tspromise step 3): lower the resolve, then poll
+		// the resulting future temp. A kind mismatch falls through
+		// to the refusal below.
+		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindCallExpression {
+			ice := inner.AsCallExpression()
+			if saIsPromiseResolveCall(ice, scope) {
+				fut, kind, _, msg := saLowerPromiseResolve(w, ice, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if kind == "arr" || kind == "arrStr" {
+					return saLowerFuturePoll(w, fut, kind, scope, nextTemp)
+				}
 			}
 		}
 		// Future-kind await in array position (promise_futurekind step 2):

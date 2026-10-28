@@ -147,6 +147,38 @@ func saPromiseAnnotKind(tn *ast.TypeNode, scope *saScope) string {
 	}
 }
 
+// saBindPolledValue binds a polled future value (temp v of kind fk) to
+// name, following the same discipline as the inferred declaration
+// arms: i32 is plain, str/arr/arrStr are owned (consume the temp when
+// it is a temp-op), arrStr propagates the element mark.
+func saBindPolledValue(w printer.EmitTextWriter, name, v, fk string, scope *saScope) {
+	w.Write(fmt.Sprintf("  %s = %s\n", name, v))
+	switch fk {
+	case "i32":
+		scope.types[name] = "i32"
+		saDeclarePlain(scope, name)
+	case "str":
+		scope.types[name] = "str"
+		if saIsTempOp(v) {
+			saConsumeOwn(scope, v)
+		}
+		saDeclareOwned(scope, name)
+	case "arr":
+		scope.types[name] = "arr"
+		if saIsTempOp(v) {
+			saConsumeOwn(scope, v)
+		}
+		saDeclareOwned(scope, name)
+	case "arrStr":
+		scope.types[name] = "arr"
+		if saIsTempOp(v) {
+			saConsumeOwn(scope, v)
+		}
+		saDeclareOwned(scope, name)
+		saPropArrStr(scope, v, name)
+	}
+}
+
 // saLowerFutureBinding intercepts future bindings in saLowerVarDeclList
 // (promise_tspromise step 3). It returns (handled, ok): handled=false
 // means "not a future binding, fall through to normal dispatch";
@@ -202,7 +234,15 @@ func saLowerFutureBinding(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variabl
 	w.Write(fmt.Sprintf("  %s = %s\n", name, fut))
 	scope.types[name] = "future"
 	if borrowed {
-		saDeclarePlain(scope, name)
+		// Adopt is a MOVE in v1 (codebase discipline: owned values
+		// move on binding): `name = fut` already moved the struct in
+		// the verifier's eyes, so mark the source consumed (exit
+		// skips it) and own the new binding (exit releases it once).
+		// Later use of the source is a loud UseAfterMove, not a
+		// silent alias. A true borrow would need a shared-borrow
+		// form the emitter does not have (only `&mut` exists).
+		saConsumeOwn(scope, fut)
+		saDeclareOwned(scope, name)
 	} else {
 		if saIsTempOp(fut) {
 			saConsumeOwn(scope, fut)
@@ -1841,6 +1881,29 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 	// route array/string handles into i32 position. saPeelAwait
 	// reports saw=false for bare identifiers, so unawaited future
 	// bindings never reach this arm.
+	// Direct await of a resolve call in inferred position
+	// (promise_tspromise step 3): lower the resolve, poll the
+	// resulting future temp, bind by the polled kind. Must precede
+	// the i32 fallback below.
+	if inner, saw := saPeelAwait(init); saw && inner != nil && inner.Kind == ast.KindCallExpression {
+		ice := inner.AsCallExpression()
+		if saIsPromiseResolveCall(ice, scope) {
+			fut, kind, _, msg := saLowerPromiseResolve(w, ice, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			v, msg := saLowerFuturePoll(w, fut, kind, scope, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			saBindPolledValue(w, name, v, kind, scope)
+			return true
+		}
+	}
 	if inner, saw := saPeelAwait(init); saw && inner != nil && inner.Kind == ast.KindIdentifier {
 		if fk, ok := saFutureKindOf(scope, inner.Text()); ok {
 			v, msg := saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
@@ -1849,31 +1912,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
 				return false
 			}
-			w.Write(fmt.Sprintf("  %s = %s\n", name, v))
-			switch fk {
-			case "i32":
-				scope.types[name] = "i32"
-				saDeclarePlain(scope, name)
-			case "str":
-				scope.types[name] = "str"
-				if saIsTempOp(v) {
-					saConsumeOwn(scope, v)
-				}
-				saDeclareOwned(scope, name)
-			case "arr":
-				scope.types[name] = "arr"
-				if saIsTempOp(v) {
-					saConsumeOwn(scope, v)
-				}
-				saDeclareOwned(scope, name)
-			case "arrStr":
-				scope.types[name] = "arr"
-				if saIsTempOp(v) {
-					saConsumeOwn(scope, v)
-				}
-				saDeclareOwned(scope, name)
-				saPropArrStr(scope, v, name)
-			}
+			saBindPolledValue(w, name, v, fk, scope)
 			return true
 		}
 	}

@@ -9663,6 +9663,22 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				return saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
 			}
 		}
+		// Direct await of a resolve call in i32 position
+		// (promise_tspromise step 3): lower the resolve, then poll
+		// the resulting future temp. A kind mismatch falls through
+		// to the pre-existing peel below.
+		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindCallExpression {
+			ice := inner.AsCallExpression()
+			if saIsPromiseResolveCall(ice, scope) {
+				fut, kind, _, msg := saLowerPromiseResolve(w, ice, scope, pos, refusals, nextTemp)
+				if msg != "" {
+					return "", msg
+				}
+				if kind == "i32" {
+					return saLowerFuturePoll(w, fut, kind, scope, nextTemp)
+				}
+			}
+		}
 		// await 值透传（悬挂在内层调用门大声拒；形状证据：封存 lowerExpr:2863-2871）。
 		return saEvalI32(w, e.AsAwaitExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindObjectLiteralExpression:
