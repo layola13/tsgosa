@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -475,6 +476,7 @@ type saFileLink struct {
 	topMapSeed       map[string]saTopMap               // out/in: imported local name -> defining Record claim
 	constSeed        map[string]saProgConst            // out/in: imported local const name -> folded value
 	constSeedSrc     map[string]string                 // 4_link_mask: imported local const name -> defining-file prefix (origin of the constSeed entry; same set/overwrite semantics as constSeed)            // out/in: imported local const name -> folded value
+	xfileConstSeed   map[string]saXfileConst           // out/in: cross-file delayed-fold slot seeds (Phase B): imported local const name -> harvested defining value + defining file/name. Populated ONLY by the mixed-chain fallthrough in saBindProgImports when every existing chain failed; consumed ONLY by saClaimCrossFileConstSlots. NEVER flows into topConsts (unlike constSeed): these names stay runtime slots, not folds, so string/ambiguous/unharvested imports keep refusing exactly as today.
 	slotHarvest      map[string]*saModState            // out: own ns slots for dependents (pointer shared read-only)
 	slotHarvests     map[string]map[string]*saModState // all files: target -> name -> harvested slot (driver fills)
 	slotSeed         map[string]*saModState            // out/in: imported local slot name -> defining slot
@@ -511,6 +513,20 @@ type saProgClass struct {
 type saProgConst struct {
 	text  string
 	isStr bool
+}
+
+// saXfileConst is one cross-file delayed-fold slot seed (lazy const-slot
+// v1, Phase B): the harvested folded text of a defining const resolved
+// through a mixed star+named re-export chain, plus the defining file key
+// (dtgt) and defining name (dremote) that form the slot's defining-file
+// key identity (JEV slot_identity_reask: defining_file_key 0.66, 0.83 vs
+// importer_local 0.17). text is ALWAYS a canonical i32 decimal
+// (non-string, i32-parseable -- enforced at record time in
+// saBindProgImports); the delayed pass re-validates before claiming.
+type saXfileConst struct {
+	text    string
+	dtgt    string
+	dremote string
 }
 
 // saProgAlias 收割类型别名节点 + export 旗（与 classHarvest 同表；调用方本地 aliasOf 同键植入，共享节点只读）。
@@ -964,6 +980,68 @@ func saProgConstReexpTarget(link *saFileLink, tgt, remote string) (string, strin
 		tgt, remote = parts[0], parts[1]
 		followed = true
 	}
+}
+
+// saChaseMixedConst resolves a const import through MIXED re-export
+// chains (star edges and named edges in any order, any depth) to a
+// unique defining file/name with a harvested folded const. It runs ONLY
+// as a last resort in saBindProgImports, after the direct, star-fallback,
+// named-re-export (M3), snapshot, and bare-shim chains all failed, so it
+// cannot change behavior for any program those chains already resolve.
+// Rules (fail closed): DFS over (file, name) pairs, cycle-guarded via
+// seen; a named edge (link.reexps[t][r] = "file\x00name") moves to the
+// new pair; a star edge (link.stars[t]) keeps the name and moves to the
+// star target; success = constHarvests[file][name] present (harvests are
+// export-filtered and fold-only, so presence implies an exported folded
+// const -- a defining file's Phase-A-slotted const is never harvested and
+// therefore never resolves here). If the reachable defining files number
+// != 1 (zero = unharvested or missing, two+ = ambiguous star, e.g. two
+// star targets exporting the same name), resolution FAILS and the caller
+// keeps refusing loudly. Snapshots (topConstHarvests) are NOT consulted:
+// only scalar folds resolve here.
+func saChaseMixedConst(link *saFileLink, tgt, remote string) (string, string, saProgConst, bool) {
+	if link == nil || link.constHarvests == nil {
+		return "", "", saProgConst{}, false
+	}
+	found := map[string]saProgConst{}
+	seen := map[string]bool{}
+	var walk func(t, r string)
+	walk = func(t, r string) {
+		key := t + "\x00" + r
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		if c, ok := link.constHarvests[t][r]; ok {
+			// A defining file terminates this path: an explicit local
+			// export shadows any star re-export of the same name (TS
+			// semantics), so outgoing edges from a defining file are
+			// not followed for this name.
+			found[key] = c
+			return
+		}
+		if edge, ok := link.reexps[t][r]; ok {
+			parts := strings.SplitN(edge, "\x00", 2)
+			if len(parts) == 2 {
+				walk(parts[0], parts[1])
+			}
+		}
+		for _, st := range link.stars[t] {
+			walk(st, r)
+		}
+	}
+	walk(tgt, remote)
+	if len(found) != 1 {
+		return "", "", saProgConst{}, false
+	}
+	for fk, c := range found {
+		parts := strings.SplitN(fk, "\x00", 2)
+		if len(parts) != 2 {
+			return "", "", saProgConst{}, false
+		}
+		return parts[0], parts[1], c, true
+	}
+	return "", "", saProgConst{}, false
 }
 
 // saProgOwnConst reports whether an exported top const of THIS file (folded
@@ -2808,6 +2886,30 @@ func saBindProgImports(st *ast.Node, link *saFileLink, pos func(int) (int, int),
 					continue
 				}
 			}
+			// (lazy const-slot Phase B) Mixed-chain delayed-fold slot
+			// seed: every chain above failed; resolve through mixed
+			// star+named edges to a unique defining folded const. On
+			// success with a non-string i32-parseable text, record a
+			// slot seed and SKIP the "not exported" refusal -- the
+			// delayed pass claims the slot, and use sites load it.
+			// On ANY failure (unharvested, ambiguous, string, non-i32
+			// text, empty defining key) fall through to the refusal
+			// unchanged: no behavior change for those programs, and
+			// no string/ambiguous const ever becomes a slot. This
+			// record is NOT constSeed: it must never flow into
+			// topConsts (hook C-const), or mixed-chain strings would
+			// fold and named-chain fold semantics would change.
+			if dtgt, dremote, ch, ok := saChaseMixedConst(link, tgt, remote); ok && !ch.isStr {
+				if v, err := strconv.ParseInt(ch.text, 10, 32); err == nil && dtgt != "" && dremote != "" {
+					if link.xfileConstSeed == nil {
+						link.xfileConstSeed = map[string]saXfileConst{}
+					}
+					if _, dup := link.xfileConstSeed[local]; !dup {
+						link.xfileConstSeed[local] = saXfileConst{text: strconv.FormatInt(v, 10), dtgt: dtgt, dremote: dremote}
+					}
+					continue
+				}
+			}
 			ln, col := pos(n.Pos())
 			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: remote + " is not exported by " + spec})
 			continue
@@ -4093,6 +4195,16 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 	// the slots via the shared modVars map. See
 	// saClaimDelayedConstSlots.
 	saClaimDelayedConstSlots(sf.AsSourceFile().Statements.Nodes, assigned, topConsts, topStr, topObjs, topConstNames, modVars, funcs, classes, handledTop)
+	// Lazy const-slot v1 (Phase B): delayed claim for cross-file consts
+	// resolved through mixed re-export chains (see
+	// saClaimCrossFileConstSlots). Runs at the same point as Phase A,
+	// after all prescan/seeding, so topConsts/modVars are final and
+	// function scopes see the slots via the shared modVars map. No
+	// load-path change: first-use loads go through the existing
+	// saModLoadI32 call sites verbatim.
+	if link != nil {
+		saClaimCrossFileConstSlots(sf.AsSourceFile().Statements.Nodes, link.xfileConstSeed, assigned, topConsts, modVars, funcs, classes)
+	}
 	strPool := &saStrPool{seen: map[string]string{}, prefix: saLinkDefPrefix(link)}
 	emitted := map[string]bool{}
 	// 入口合成规划：顶层执行语句聚入生成的 `@main() -> i32`（定义之后落字）；

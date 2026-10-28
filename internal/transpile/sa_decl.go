@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -6250,6 +6251,145 @@ func saClaimDelayedConstSlots(stmts []*ast.Node, assigned map[string]bool, topCo
 		if claimedAny && allAccounted {
 			handledTop[st] = true
 		}
+	}
+}
+
+// saClaimCrossFileConstSlots claims i32 modstate slots for cross-file
+// consts resolved through mixed star+named re-export chains (lazy
+// const-slot v1, Phase B). It is the delayed half of the mechanism whose
+// bind half lives in saBindProgImports: the bind fallthrough records a
+// slot seed (and skips the "not exported" refusal) ONLY when every
+// existing chain failed and a mixed chase found a unique defining folded
+// const; this pass turns recorded seeds into slots.
+//
+// WHY TWO HALVES: the bind refusal is appended during Program hook B,
+// before the delayed-pass point, so a slot claim alone could never flip
+// a mixed-chain program -- the refusal would persist. The bind half
+// therefore records the seed instead of refusing, and this pass claims
+// the slot; use sites then load it through existing saModLoadI32 call
+// sites verbatim (no load-path change, same as Phase A).
+//
+// CLAIM GATE (all must hold; otherwise fail closed: no claim, and the
+// program refuses exactly as before -- the bind half already fell
+// through to the refusal for unrecorded names):
+//   - the imported local name is actually REFERENCED in this file
+//     (identifier walk over all statements except import/export
+//     declarations, whose specifier names are not value uses), so
+//     unused imports claim nothing and cannot perturb output;
+//   - absent from topConsts (preseed / hook C-const did not fold it);
+//   - never assigned (assigned[local]);
+//   - not already in modVars, and not colliding with a func/class name;
+//   - no top-level declarator in this file bears the name (local
+//     definitions shadow imports -- a local const that failed folding
+//     must keep refusing, never silently load an imported value);
+//   - the recorded text re-parses as i32 and the defining file/name are
+//     non-empty (defense in depth; the bind half already enforced this).
+//
+// KEY NAMESPACING (JEV slot_identity_reask: defining_file_key 0.66,
+// 0.83 vs importer_local 0.17): const slots derive their keys from qual
+// "const\x00"+dtgt+"\x00"+dremote through the same saModKeyOf, where
+// dtgt is the defining file's LINK KEY (unique per file in the program
+// graph) and dremote the defining name. The display prefix (prefixOf)
+// is NOT the identity component: it is "" for entry-adjacent files, so
+// it cannot distinguish defining files. All importers of the same
+// defining const derive the SAME qual (shared slot, seeded once), and
+// renames share it too (map key is the local name, qual is defining).
+// A NUL byte cannot appear in a TS identifier or a file key, so a
+// cross-file qual can never equal a Phase A qual ("const\x00"+name),
+// a bare var qual, a dotted namespace qual, or a "name\x00collinit"
+// flag qual. Slot init mirrors Phase A's i32 construction verbatim
+// (flag unset + empty init for zero = registry zero-fill fast path;
+// flag + canonical literal init otherwise).
+//
+// NON-GOALS (fail closed, unchanged): string consts (never recorded),
+// ambiguous star resolutions (never recorded), unharvested defining
+// consts (a defining file's Phase-A-slotted const is never harvested),
+// namespace imports (separate "link in a later stage" mechanism),
+// snapshot consts (arrays/objects/regex/maps -- not constHarvests).
+func saClaimCrossFileConstSlots(stmts []*ast.Node, xfile map[string]saXfileConst, assigned map[string]bool, topConsts map[string]string, modVars map[string]*saModState, funcs map[string]saFuncSig, classes map[string]*saClassDef) {
+	if len(xfile) == 0 {
+		return
+	}
+	// Referenced value-use names (import/export specifier names excluded).
+	ref := map[string]bool{}
+	var walk func(n *ast.Node)
+	walk = func(n *ast.Node) {
+		if n == nil {
+			return
+		}
+		if n.Kind == ast.KindIdentifier {
+			ref[n.Text()] = true
+		}
+		n.ForEachChild(func(c *ast.Node) bool {
+			walk(c)
+			return false
+		})
+	}
+	// Local top-level declarator names (any flags) shadow imports.
+	localNames := map[string]bool{}
+	for _, st := range stmts {
+		if st == nil {
+			continue
+		}
+		if st.Kind == ast.KindVariableStatement {
+			vs := st.AsVariableStatement()
+			if vs == nil || vs.DeclarationList == nil {
+				continue
+			}
+			vdl := vs.DeclarationList.AsVariableDeclarationList()
+			if vdl == nil {
+				continue
+			}
+			for _, dd := range vdl.Declarations.Nodes {
+				vd := dd.AsVariableDeclaration()
+				if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+					continue
+				}
+				localNames[vd.Name().Text()] = true
+			}
+		}
+	}
+	for _, st := range stmts {
+		if st == nil || st.Kind == ast.KindImportDeclaration || st.Kind == ast.KindExportDeclaration {
+			continue
+		}
+		walk(st)
+	}
+	for local, xc := range xfile {
+		if !ref[local] {
+			continue
+		}
+		if _, ok := topConsts[local]; ok {
+			continue
+		}
+		if assigned[local] {
+			continue
+		}
+		if _, ok := modVars[local]; ok {
+			continue
+		}
+		if _, ok := funcs[local]; ok {
+			continue
+		}
+		if _, ok := classes[local]; ok {
+			continue
+		}
+		if localNames[local] {
+			continue
+		}
+		v, err := strconv.ParseInt(xc.text, 10, 32)
+		if err != nil || xc.dtgt == "" || xc.dremote == "" {
+			continue
+		}
+		canon := strconv.FormatInt(v, 10)
+		qual := "const\x00" + xc.dtgt + "\x00" + xc.dremote
+		key, flag := saModKeyOf(qual)
+		ms := &saModState{qual: qual, w: "i32", key: key}
+		if canon != "0" {
+			ms.flag = flag
+			ms.init = canon
+		}
+		modVars[local] = ms
 	}
 }
 
