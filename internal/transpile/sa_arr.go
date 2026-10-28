@@ -11530,6 +11530,10 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		resKind := "i32"
 		switch method0 {
 		case "some", "every", "forEach":
+		// 4_site_gaps (JEV includes_chained): bool-result includes
+		// joins the i32 group; nil arm yields 0 like some/every.
+		// indexOf/lastIndexOf stay refused (JEV indexof_keep).
+		case "includes":
 		case "filter", "map":
 			resKind = "arr"
 		default:
@@ -11544,7 +11548,56 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 		if !saIsArrValue(pa.Expression, scope) {
 			return "", "", "optional member call not lowerable"
 		}
-		recv, msg := saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
+		var recv string
+		var msg string
+		if method0 == "includes" && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+			if rpa := pa.Expression.AsPropertyAccessExpression(); rpa != nil && rpa.QuestionDotToken != nil {
+				if rpa.Expression == nil || rpa.Expression.Kind != ast.KindIdentifier || rpa.Name() == nil {
+					return "", "", "optional member call not lowerable"
+				}
+				bh, bdef, bmsg := saInstBase(rpa.Expression, scope)
+				if bmsg != "" || bdef == nil {
+					return "", "", "optional member call not lowerable"
+				}
+				fname := rpa.Name().Text()
+				off, ok := bdef.offsets[fname]
+				if !ok || bdef.fkinds[fname] != "arr" {
+					return "", "", "optional member call not lowerable"
+				}
+				gslot := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 8\n", gslot))
+				saOwnTemp(scope, gslot)
+				bnull := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", bnull, bh))
+				gnullL := fmt.Sprintf("L_optarr_gnull_%d", *nextLabel)
+				*nextLabel++
+				gokL := fmt.Sprintf("L_optarr_gok_%d", *nextLabel)
+				*nextLabel++
+				gendL := fmt.Sprintf("L_optarr_gend_%d", *nextLabel)
+				*nextLabel++
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", bnull, gnullL, gokL))
+				w.Write(fmt.Sprintf("%s:\n", gnullL))
+				w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", gslot))
+				w.Write(fmt.Sprintf("  jmp %s\n", gendL))
+				w.Write(fmt.Sprintf("%s:\n", gokL))
+				ft := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", ft, bh, off))
+				w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", gslot, ft))
+				w.Write(fmt.Sprintf("  jmp %s\n", gendL))
+				w.Write(fmt.Sprintf("%s:\n", gendL))
+				recv = fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as ptr\n", recv, gslot))
+				saReleaseOwnedTemp(w, scope, gslot)
+			} else {
+				recv, msg = saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
+			}
+		} else {
+			recv, msg = saArrValueOf(w, pa.Expression, scope, pos, refusals, nextTemp)
+		}
 		if msg != "" {
 			if h, ok := saTopArrPureRecv(w, pa, scope, nextTemp); ok {
 				recv = h
@@ -12059,6 +12112,35 @@ func saLowerArrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 			saLiteralIsStrArray(pa.Expression, scope) && saIsStrExpr(argNodes[0], scope) {
 			saMarkArrStr(scope, recv)
 			return saLowerArrayScanStr(w, recv, method, argNodes, scope, pos, refusals, nextLabel, nextTemp)
+		}
+		// 4_site_gaps gate2 (JEV field_includes_only 0.55, needed 0.73;
+		// near-tie field_and_union 0.43 NOT adopted): includes on a
+		// struct-field str array routes to the content scan. The field's
+		// declared type (fdefs, via saFieldIsStrArray) is the static proof;
+		// union params and indexOf/lastIndexOf stay refused. The receiver's
+		// ?. token is irrelevant to its declared type, so it is cleared
+		// transiently for the check only (same pattern as the optional
+		// wrapper above) and restored immediately. Null receivers trap
+		// loudly (plain field load / scan of a 0 handle), never silently
+		// miscompare; the optional path is null-guarded by its wrapper.
+		if method == "includes" && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && saIsStrExpr(argNodes[0], scope) {
+			if rpa := pa.Expression.AsPropertyAccessExpression(); rpa != nil {
+				qd := rpa.QuestionDotToken
+				rpa.QuestionDotToken = nil
+				isStr := saFieldIsStrArray(pa.Expression, scope)
+				rpa.QuestionDotToken = qd
+				if isStr {
+					return saLowerArrayScanStr(w, recv, method, argNodes, scope, pos, refusals, nextLabel, nextTemp)
+				}
+			}
+		}
+		// Includes with a string needle on an unrecognized receiver refuses
+		// with the true reason (not the literal message from the i32 gate
+		// below): the receiver is not a proven string array. Message-only:
+		// every such needle already refuses via i32arg, so no program
+		// changes pass/refused status here.
+		if method == "includes" && saIsStrExpr(argNodes[0], scope) {
+			return "", "", "includes receiver is not a recognized string array (field must be declared string[]; union fields/params are not recognized)"
 		}
 		want, msg := i32arg(0)
 		if msg != "" {
