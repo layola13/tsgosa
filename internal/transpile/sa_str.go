@@ -454,6 +454,14 @@ func saCallIsStr(ce *ast.CallExpression, scope *saScope) bool {
 			saIsToStringableI32(pa.Expression, scope) {
 			return true
 		}
+		// f64 `toFixed()` 即串返回（与发射臂同律；调用位经 saEvalStr 时亦须
+		// 认串，否则 console.log/模板位误走 i32 打印堆地址——V05
+		// JSON.stringify 同类实证修。谓词只认名 + 非 `?.`（与发射臂条件
+		// 同形）；接收者/digits 门在发射臂，误认只致大声拒，禁静默错打）。
+		if pa.Name() != nil && pa.Name().Text() == "toFixed" && pa.QuestionDotToken == nil &&
+			ce.QuestionDotToken == nil {
+			return true
+		}
 		return false
 	}
 	// i32 `toString()` 即串返回（`String(x)` interp 同形；可证 i32 门内聚）。
@@ -2181,6 +2189,48 @@ func saLowerStrCall(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saS
 	// 同文件 string 函数走通用调用核（saEvalCall 标识符分支按签名表落字）；
 	// 此处仅处理 String()/String.from*/串方法。
 	return "", false, "not a string call"
+}
+
+// saLowerToFixed lowering `num.toFixed([digits])`（串返回；与 i32
+// `toString()` 臂同位：数值接收者 → 串柄）。digits 缺省 0，须为常量整数
+// 0..100（JS 越界抛 RangeError，@ts_num_tofixed 无法抛，故非常量/越界
+// 大声拒，禁静默钳制）。接收者经 saEvalF64 求值（整字面量带 ".0" 提升，
+// 非数值接收者沿 saEvalF64 门大声拒）。返回柄为 @ts_num_tofixed 的 16
+// 字节薄柄（调用方持有，saOwnTemp 记名，域出释）。
+func saLowerToFixed(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	args := []*ast.Node{}
+	if ce.Arguments != nil {
+		args = ce.Arguments.Nodes
+	}
+	if len(args) > 1 {
+		return "", "toFixed takes at most 1 argument"
+	}
+	digits := "0"
+	if len(args) == 1 {
+		rn := args[0]
+		if rn == nil || rn.Kind != ast.KindNumericLiteral {
+			return "", "toFixed digits must be a constant integer 0..100"
+		}
+		var dv int
+		if _, err := fmt.Sscanf(rn.Text(), "%d", &dv); err != nil || dv < 0 || dv > 100 {
+			return "", "toFixed digits must be a constant integer 0..100"
+		}
+		digits = fmt.Sprintf("%d", dv)
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil {
+		return "", "toFixed needs a receiver"
+	}
+	v, msg := saEvalF64(w, pa.Expression, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	scope.addImport("sa_std/ts_num.sa")
+	h := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_num_tofixed(%s, %s)\n", h, v, digits))
+	saOwnTemp(scope, h)
+	return h, ""
 }
 
 // saLowerStringSplit lowering `s.split(sep[, limit])`（串元数组；封存 lowerStringSplit:7469-7527

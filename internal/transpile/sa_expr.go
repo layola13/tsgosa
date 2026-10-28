@@ -3228,6 +3228,19 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			saIsToStringableI32(pa.Expression, scope) {
 			return saLowerStrCall(w, ce, scope, pos, refusals, nextTemp)
 		}
+		// f64 `toFixed([digits])` 经 @ts_num_tofixed（sa_std/ts_num.sa，
+		// 精确二进制值十进制舍入；JEV exact_bignum_sa 0.70）。digits 须为
+		// 常量整数 0..100（JS 越界抛 RangeError，辅助无法抛，故非常量/
+		// 越界大声拒）；接收者经 saEvalF64 求值（非数值接收者沿其门
+		// 大声拒）；`?.` 沿旧门。
+		if pa.Name() != nil && pa.Name().Text() == "toFixed" && pa.QuestionDotToken == nil &&
+			ce.QuestionDotToken == nil {
+			h, msg := saLowerToFixed(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", false, msg
+			}
+			return h, false, ""
+		}
 		// 数组成员调用与 Array.from（基为数组位；其余成员拒）。
 		// 管线经 scope 内取（addImport/nextLabel 已随 scope 走，无需改签名）。
 		if pa.Name() != nil {
