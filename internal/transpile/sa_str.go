@@ -586,6 +586,21 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			return "", "top-level const object " + nm + " is not a string value (read fields directly)"
 		}
 		return "", "unknown variable " + nm
+	case ast.KindAwaitExpression:
+		// Future-kind await in string position (promise_futurekind step 2):
+		// a poll point producing a string (JEV poll_future 0.83), NOT a
+		// transparent peel. Only an awaited direct call to a
+		// future-marked function lowers here; every other awaited shape
+		// falls through to the same "not a string expression" refusal as
+		// before (strict_future_kind 0.94: awaited sync calls stay
+		// refused). The i32 evaluator's pre-existing await peel is
+		// untouched by this step.
+		if peeled := saPeelAwaitCall(e, scope); peeled != nil && saIsFutureCall(peeled, scope) {
+			if sig, ok := saFutureCallSig(peeled, scope); ok && sig.retKind == "string" {
+				return saEvalStr(w, peeled.AsNode(), scope, pos, refusals, nextTemp)
+			}
+		}
+		return "", "not a string expression"
 	case ast.KindCallExpression:
 		op, voidCall, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)
 		if msg != "" {

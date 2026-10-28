@@ -2907,13 +2907,32 @@ func saLowerExprStmt(w printer.EmitTextWriter, s *ast.Node, scope *saScope, pos 
 	}
 	// await 语句位同步解包（`await f();` 与 `f();` 同路；悬挂在内层调用门拒；
 	// 形状证据：封存 lowerExpr:2863-2871 + lowerExprStatement:2712-2715）。
+	sawAwait := false
 	for e != nil && e.Kind == ast.KindAwaitExpression {
+		sawAwait = true
 		e = e.AsAwaitExpression().Expression
 	}
 	if e == nil {
 		ln, col := pos(s.Pos())
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported expression statement (calls and assignments only)"})
 		return false
+	}
+	// Awaited Promise.all statement (promise_futurekind step 2): the
+	// element calls run for their side effects and the assembled array
+	// is discarded via the existing statement-temp release. Gated on
+	// sawAwait so a bare Promise.all statement keeps refusing exactly
+	// as before.
+	if sawAwait && e.Kind == ast.KindCallExpression {
+		if ice := e.AsCallExpression(); ice != nil && saIsPromiseAllCall(ice, scope) {
+			h, _, msg := saLowerPromiseAll(w, ice, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(s.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported call statement: " + msg})
+				return false
+			}
+			saReleaseStmtTemp(w, scope, h)
+			return true
+		}
 	}
 	if e.Kind == ast.KindCallExpression {
 		op, _, msg := saEvalCall(w, e.AsCallExpression(), scope, pos, refusals, nextTemp)

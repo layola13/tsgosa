@@ -7491,6 +7491,159 @@ func saIsArrJoinCall(ce *ast.CallExpression, scope *saScope) bool {
 
 // saArrValueOf 求数组句柄（绑定直传；字面量构造；数组返回调用；括号类直通）。
 // 链式下标基（`pairs[0]`）递归读回内层句柄值（与上游 lowerExpr 递归同形）。
+// ---- Promise future-kind plumbing (promise_futurekind step 2) ----
+// A function declared to return Promise<T> produces a future<T> value;
+// awaiting it is a poll point (JEV poll_future 0.83). For SYNC producers
+// (the only producers the emitter lowers today — async fns erase to sync
+// functions returning T), the poll point resolves immediately to the
+// direct value (JEV direct_value 0.92): no poll loop is generated at
+// expression positions. Genuinely async producers keep refusing at their
+// own gates. v1 limits (JEV async_calls_only 0.46, homogeneous_only 1.0,
+// strict_future_kind 0.94): Promise.all takes exactly one array-literal
+// argument; every element must call a future-marked function; all
+// elements share one kind (all string or all i32); mixed kinds, non-call
+// elements, spread elements, holes, and non-literal arguments refuse
+// loudly. Async arrow consts are NOT marked in v1 (only prescan function
+// declarations carry retIsPromise); awaited sync calls stay refused
+// (strict kind gating). The i32 evaluator's pre-existing await peel is
+// untouched by this step (it predates the future-kind design). No arm in
+// this step lowers a BARE (non-awaited) Promise.all in value position:
+// saArrValueOf's arm sits in an Await case, and the decl/statement arms
+// use saPeelAwaitCall, which returns non-nil only when an await was
+// actually peeled.
+
+// saIsPromiseAllCall reports whether ce is the global Promise.all call
+// (unshadowed Promise; no optional chaining).
+func saIsPromiseAllCall(ce *ast.CallExpression, scope *saScope) bool {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Text() != "all" || pa.QuestionDotToken != nil {
+		return false
+	}
+	if pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier || pa.Expression.Text() != "Promise" {
+		return false
+	}
+	if _, shadowed := scope.types["Promise"]; shadowed {
+		return false
+	}
+	if _, shadowed := scope.funcs["Promise"]; shadowed {
+		return false
+	}
+	return true
+}
+
+// saFutureCallSig resolves a direct identifier call (through fn: aliases
+// and the program link table, mirroring saCallIsStr) to its signature.
+func saFutureCallSig(ce *ast.CallExpression, scope *saScope) (saFuncSig, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		return saFuncSig{}, false
+	}
+	nm := ce.Expression.Text()
+	if k, ok := scope.types[nm]; ok && len(k) > 3 && k[:3] == "fn:" {
+		if sig, ok := scope.funcs[k[3:]]; ok {
+			return sig, true
+		}
+	}
+	if sig, ok := scope.funcs[nm]; ok {
+		return sig, true
+	}
+	if q, linked := saLinkCallee(scope, nm); linked {
+		if sig, ok := scope.funcs[q]; ok {
+			return sig, true
+		}
+	}
+	return saFuncSig{}, false
+}
+
+// saIsFutureCall reports whether ce calls a function declared to return
+// Promise<T> (future-producing, prescan-marked) and not void.
+func saIsFutureCall(ce *ast.CallExpression, scope *saScope) bool {
+	sig, ok := saFutureCallSig(ce, scope)
+	return ok && sig.retIsPromise && !sig.isVoid
+}
+
+// saLowerPromiseAll lowers Promise.all(<array literal of future calls>)
+// with sync producers only. Returns the fresh array handle, whether its
+// elements are strings, or a v1-limit refusal message. Element values are
+// assembled with the same runtime as spread array literals
+// (saNewEmptyArray + @ts_arr_push_word); the handle is owned like an
+// array literal result (saOwnTemp), and string-element arrays carry the
+// arrStr mark so downstream element reads take the str path.
+func saLowerPromiseAll(w printer.EmitTextWriter, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, bool, string) {
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	if len(argNodes) != 1 {
+		return "", false, "Promise.all takes a single array literal argument (v1: sync producers only)"
+	}
+	lit := saUnwrapTransparent(argNodes[0])
+	if lit == nil || lit.Kind != ast.KindArrayLiteralExpression {
+		return "", false, "Promise.all takes a single array literal argument (v1: sync producers only)"
+	}
+	al := lit.AsArrayLiteralExpression()
+	if al == nil || al.Elements == nil {
+		return "", false, "Promise.all takes a single array literal argument (v1: sync producers only)"
+	}
+	var vals []string
+	isStr := false
+	seen := false
+	for _, el := range al.Elements.Nodes {
+		if el == nil {
+			return "", false, "Promise.all holes are not lowerable in v1"
+		}
+		if el.Kind == ast.KindSpreadElement {
+			return "", false, "Promise.all spread elements are not lowerable in v1"
+		}
+		if el.Kind == ast.KindOmittedExpression {
+			return "", false, "Promise.all holes are not lowerable in v1"
+		}
+		callNode := saUnwrapTransparent(el)
+		if callNode == nil || callNode.Kind != ast.KindCallExpression {
+			return "", false, "Promise.all element is not a sync-producer async call (v1: every element must call a function declared to return Promise<T>)"
+		}
+		ece := callNode.AsCallExpression()
+		if ece == nil || !saIsFutureCall(ece, scope) {
+			return "", false, "Promise.all element is not a sync-producer async call (v1: every element must call a function declared to return Promise<T>)"
+		}
+		sig, _ := saFutureCallSig(ece, scope)
+		var v string
+		var msg string
+		switch sig.retKind {
+		case "string":
+			if seen && !isStr {
+				return "", false, "Promise.all elements must share one kind in v1 (all string or all i32)"
+			}
+			isStr = true
+			v, msg = saEvalStr(w, callNode, scope, pos, refusals, nextTemp)
+		case "number", "i32", "boolean", "bool":
+			if seen && isStr {
+				return "", false, "Promise.all elements must share one kind in v1 (all string or all i32)"
+			}
+			v, msg = saEvalI32(w, callNode, scope, pos, refusals, nextTemp)
+		default:
+			return "", false, "Promise.all element kind " + sig.retKind + " is not lowerable in v1"
+		}
+		if msg != "" {
+			return "", false, msg
+		}
+		seen = true
+		vals = append(vals, v)
+	}
+	h := saNewEmptyArray(w, nextTemp)
+	for _, v := range vals {
+		saLowerArrayPush(w, h, v, scope, nextTemp)
+	}
+	saOwnTemp(scope, h)
+	scope.types[h] = "arr"
+	if isStr {
+		saMarkArrStr(scope, h)
+	}
+	return h, isStr, ""
+}
+
 func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
 	if e == nil {
 		return "", "missing expression"
@@ -7748,6 +7901,20 @@ func saArrValueOf(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos fun
 				return "", msg
 			}
 			saOwnTemp(scope, h)
+			return h, ""
+		}
+		return "", "not an array expression"
+	case ast.KindAwaitExpression:
+		// Future-kind await in array position (promise_futurekind step 2):
+		// ONLY an awaited Promise.all lowers here (poll point over sync
+		// producers, direct value). Any other awaited shape falls through
+		// to the same refusal as before — no blanket peel. Direct async
+		// calls returning arrays are a v1 limit (still refused).
+		if peeled := saPeelAwaitCall(e, scope); peeled != nil && saIsPromiseAllCall(peeled, scope) {
+			h, _, msg := saLowerPromiseAll(w, peeled, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
 			return h, ""
 		}
 		return "", "not an array expression"

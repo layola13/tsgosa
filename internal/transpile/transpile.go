@@ -4735,6 +4735,21 @@ func saUnwrapPromise(t *ast.TypeNode) *ast.TypeNode {
 	return t
 }
 
+// saIsPromiseHead reports whether t is a Promise<...> type reference head
+// (the raw annotation before saUnwrapPromise erasure). Used to mark
+// future-producing functions at signature prescan. Bare Promise (no type
+// argument) is not marked.
+func saIsPromiseHead(t *ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	return ref.TypeName.Text() == "Promise" && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil
+}
+
 func saIsBareTypeParam(t *ast.TypeNode, tparams map[string]bool) bool {
 	if t == nil || t.Kind != ast.KindTypeReference {
 		return false
@@ -6080,6 +6095,7 @@ type saFuncSig struct {
 	params       int
 	isVoid       bool
 	retKind      string
+	retIsPromise bool // 声明返回注解为 Promise<T>（future-kind 标记；预扫时记，await 门凭此认 future 种；零值 false，余构造点不受影响）
 	paramKinds   []string
 	defaults     []bool
 	defaultExprs []*ast.Node

@@ -1687,6 +1687,30 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 	}
+	// Awaited Promise.all binding (promise_futurekind step 2): the
+	// future-kind array arm. Must precede the i32 fallback below, whose
+	// await peel would otherwise route the array handle into i32
+	// position and refuse it there. saPeelAwaitCall returns non-nil
+	// only when an await was actually peeled, so bare Promise.all
+	// keeps refusing exactly as before.
+	if peeled := saPeelAwaitCall(init, scope); peeled != nil && saIsPromiseAllCall(peeled, scope) {
+		h, isStr, msg := saLowerPromiseAll(w, peeled, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+			return false
+		}
+		w.Write(fmt.Sprintf("  %s = %s\n", name, h))
+		scope.types[name] = "arr"
+		if saIsTempOp(h) {
+			saConsumeOwn(scope, h)
+		}
+		saDeclareOwned(scope, name)
+		if isStr {
+			saPropArrStr(scope, h, name)
+		}
+		return true
+	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		if init.Kind == ast.KindPropertyAccessExpression {
@@ -3948,7 +3972,7 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 			retMapVal = v
 		}
 	}
-	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest, retMapVal: retMapVal}
+	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, retIsPromise: saIsPromiseHead(fn.Type), paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest, retMapVal: retMapVal}
 	return true
 }
 
