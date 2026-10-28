@@ -7494,7 +7494,7 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 			}
 			// 基类形参接派生实参多态（实参类为形参类本身或派生即直传句柄；与声明位 step395 同规：绑定跟初值，用点取决；无关/反向沿旧门）。
 			if k, ok := scope.types[a.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-				if saIsDerivedFrom(scope.classes, k[5:], sig.paramKinds[i][5:]) {
+				if saClassSatisfies(scope.classes, k[5:], sig.paramKinds[i][5:]) {
 					return a.Text(), ""
 				}
 			}
@@ -7519,13 +7519,30 @@ func saEvalCallArg(w printer.EmitTextWriter, sig saFuncSig, i int, a *ast.Node, 
 				}
 			}
 		}
+		// new 实参（4_if_flow, JEV record_implements_args 0.95）：
+		// 自由函数实参位此前无 new 臂，连精确类 new 都拒（方法实参位
+		// saInstArg 已有同核 saLowerNewStmt）。仅当新类满足 want（精确 /
+		// 派生 / 实现）时才具化；不满足时沿旧门落入文末拒因，构造副
+		// 作用不提前发射。新柄经 saLowerNewClass 登记为 owned temp，与
+		// 工厂新柄同律，随调用后 drain 释放。
+		if na := saUnwrapTransparent(a); na != nil && na.Kind == ast.KindNewExpression {
+			if cname, msg := saNewStmtClassName(na.AsNewExpression()); msg == "" {
+				if saClassSatisfies(scope.classes, cname, sig.paramKinds[i][5:]) {
+					h, msg := saLowerNewStmt(w, na, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					return h, ""
+				}
+			}
+		}
 		// 工厂调用实参（`use(mk())`；返回种 `inst:` 即新柄直传，布局须
 		// 匹配 want（含派生 step396 同规）；新柄归属经内层调用核自动登记，
 		// 与 `new` 实参臂（step419）同物；上游 `t_4 = call @mk()` 实证）。
 		if a != nil && a.Kind == ast.KindCallExpression {
 			if k, ok := saCallRetKind(a.AsCallExpression(), scope); ok && len(k) > 5 && k[:5] == "inst:" {
 				want := sig.paramKinds[i][5:]
-				if k[5:] == want || saIsDerivedFrom(scope.classes, k[5:], want) {
+				if saClassSatisfies(scope.classes, k[5:], want) {
 					op, voidCall, msg := saEvalCall(w, a.AsCallExpression(), scope, pos, refusals, nextTemp)
 					if msg != "" || voidCall {
 						return "", msg
