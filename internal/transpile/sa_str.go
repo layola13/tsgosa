@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/printer"
+	"strconv"
 	"strings"
 )
 
@@ -528,7 +529,7 @@ func saIsStrMethod(m string) bool {
 	case "charCodeAt", "codePointAt", "indexOf", "lastIndexOf", "startsWith", "endsWith",
 		"toLowerCase", "toUpperCase", "repeat", "padStart", "padEnd", "replace", "replaceAll",
 		"includes", "search", "match", "charAt", "at", "trim", "trimStart", "trimEnd", "concat",
-		"slice", "substring", "substr", "toString", "localeCompare":
+		"slice", "substring", "substr", "toString", "localeCompare", "normalize":
 		return true
 	}
 	return false
@@ -3418,6 +3419,54 @@ func saLowerStrMethod(w printer.EmitTextWriter, recv, method string, ce *ast.Cal
 		*nextTemp++
 		w.Write(fmt.Sprintf("  %s = call @ts_str_trim(%s, %s, %s)\n", out, bp, bl, mode))
 		// 修剪柄归属(返前释放；上游同位缺失，上游另有空操作数错).
+		saOwnTemp(scope, out)
+		return out, false, ""
+	case "normalize":
+		// String.prototype.normalize lowering, backed by the sci Unicode
+		// extern (sa_std/ts_unicode.sa @ts_unicode_normalize; JEV
+		// extern_first, no pure-SA tables). Form folds at compile time:
+		// no argument -> NFC (0); literal "NFC"/"NFD"/"NFKC"/"NFKD" ->
+		// codes 0..3; any other literal -> code -1, which the extern
+		// panics on at runtime (JEV runtime_panic, the SA shape closest
+		// to JS RangeError; never a silent NFC default). Non-literal
+		// forms (variable/ternary/call/template) refuse loudly in v1.
+		// Receiver expands to (ptr, len) like the other ts_* arms; the
+		// result is a fresh handle (caller-owned, saOwnTemp).
+		if len(args) > 1 {
+			return "", false, "normalize needs 0 or 1 argument"
+		}
+		form := "0"
+		if len(args) == 1 {
+			if args[0] == nil || args[0].Kind != ast.KindStringLiteral {
+				return "", false, "normalize form must be a string literal"
+			}
+			ft := args[0].Text()
+			if len(ft) >= 2 && ft[0] == '"' {
+				if unq, err := strconv.Unquote(ft); err == nil {
+					ft = unq
+				} else {
+					return "", false, "normalize form literal is not parseable"
+				}
+			} else if len(ft) >= 2 && ft[0] == '\'' && ft[len(ft)-1] == '\'' {
+				ft = ft[1 : len(ft)-1]
+			}
+			switch ft {
+			case "NFC":
+				form = "0"
+			case "NFD":
+				form = "1"
+			case "NFKC":
+				form = "2"
+			case "NFKD":
+				form = "3"
+			default:
+				form = "-1"
+			}
+		}
+		scope.addImport("sa_std/ts_unicode.sa")
+		out := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @ts_unicode_normalize(%s, %s, %s)\n", out, bp, bl, form))
 		saOwnTemp(scope, out)
 		return out, false, ""
 	case "concat":
