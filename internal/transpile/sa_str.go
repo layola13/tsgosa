@@ -595,6 +595,14 @@ func saEvalStr(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// before (strict_future_kind 0.94: awaited sync calls stay
 		// refused). The i32 evaluator's pre-existing await peel is
 		// untouched by this step.
+		// Future-identifier await in string position (promise_tspromise
+		// step 3): poll a future-typed binding; falls through to the
+		// step-2 call arm below when not a future identifier.
+		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindIdentifier {
+			if fk, ok := saFutureKindOf(scope, inner.Text()); ok && fk == "str" {
+				return saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
+			}
+		}
 		if peeled := saPeelAwaitCall(e, scope); peeled != nil && saIsFutureCall(peeled, scope) {
 			if sig, ok := saFutureCallSig(peeled, scope); ok && sig.retKind == "string" {
 				return saEvalStr(w, peeled.AsNode(), scope, pos, refusals, nextTemp)

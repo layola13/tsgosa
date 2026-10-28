@@ -9655,6 +9655,14 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 	case ast.KindDeleteExpression:
 		return "", "delete operator is not lowerable (static layouts cannot drop fields; Maps/Sets use .delete())"
 	case ast.KindAwaitExpression:
+		// Future-identifier await in i32 position (promise_tspromise
+		// step 3): poll point for a future-typed binding; the
+		// pre-existing blanket peel below is untouched.
+		if inner, saw := saPeelAwait(e); saw && inner != nil && inner.Kind == ast.KindIdentifier {
+			if fk, ok := saFutureKindOf(scope, inner.Text()); ok && fk == "i32" {
+				return saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
+			}
+		}
 		// await 值透传（悬挂在内层调用门大声拒；形状证据：封存 lowerExpr:2863-2871）。
 		return saEvalI32(w, e.AsAwaitExpression().Expression, scope, pos, refusals, nextTemp)
 	case ast.KindObjectLiteralExpression:

@@ -98,6 +98,121 @@ func saNullInitKind(vd *ast.VariableDeclaration) string {
 	return "undefined"
 }
 
+// saPromiseAnnotKind maps a Promise<T> annotation to the underlying
+// value kind, or "" when the annotation is not Promise<T> (or T is
+// unmapped, in which case the caller skips the annotation check and
+// trusts the inferred kind). string -> "str", number/i32/boolean ->
+// "i32", string[]/Array<string> -> "arrStr",
+// number[]/i32[]/Array<number>/Array<i32> -> "arr".
+func saPromiseAnnotKind(tn *ast.TypeNode, scope *saScope) string {
+	if tn == nil || tn.Kind != ast.KindTypeReference {
+		return ""
+	}
+	ref := tn.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeName.Text() != "Promise" {
+		return ""
+	}
+	if ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) != 1 {
+		return ""
+	}
+	arg := ref.TypeArguments.Nodes[0]
+	switch arg.Kind {
+	case ast.KindStringKeyword:
+		return "str"
+	case ast.KindNumberKeyword, ast.KindBooleanKeyword:
+		return "i32"
+	case ast.KindTypeReference:
+		if r := arg.AsTypeReferenceNode(); r != nil && r.TypeName != nil && r.TypeName.Kind == ast.KindIdentifier && r.TypeName.Text() == "i32" {
+			return "i32"
+		}
+		return ""
+	case ast.KindArrayType:
+		el := arg.AsArrayTypeNode().ElementType
+		if el == nil {
+			return ""
+		}
+		switch el.Kind {
+		case ast.KindStringKeyword:
+			return "arrStr"
+		case ast.KindNumberKeyword:
+			return "arr"
+		case ast.KindTypeReference:
+			if r := el.AsTypeReferenceNode(); r != nil && r.TypeName != nil && r.TypeName.Kind == ast.KindIdentifier && r.TypeName.Text() == "i32" {
+				return "arr"
+			}
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+// saLowerFutureBinding intercepts future bindings in saLowerVarDeclList
+// (promise_tspromise step 3). It returns (handled, ok): handled=false
+// means "not a future binding, fall through to normal dispatch";
+// handled=true with ok=false means a refusal was appended. A future
+// binding is any declaration whose initializer is a Promise.resolve
+// call, a bare Promise.all call, or an awaited future-identifier
+// (await of a future binding is a poll point, NOT a new future —
+// awaited values bind by their value kind through the normal arms,
+// so they are deliberately NOT intercepted here). Annotated
+// declarations (Promise<T>) are checked against the inferred kind
+// BEFORE emitting anything: a mismatch refuses loudly. Unannotated
+// declarations bind by the inferred kind. Resolve-adopt bindings
+// borrow (saDeclarePlain); fresh futures are owned. The binding's
+// type is "future" so other arms refuse loudly on future values.
+func saLowerFutureBinding(w printer.EmitTextWriter, d *ast.Node, vd *ast.VariableDeclaration, name string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (bool, bool) {
+	if vd.Initializer == nil {
+		return false, true
+	}
+	init := saUnwrapTransparent(vd.Initializer)
+	var fut, kind string
+	borrowed := false
+	if init.Kind == ast.KindCallExpression {
+		ce := init.AsCallExpression()
+		if saIsPromiseResolveCall(ce, scope) {
+			var msg string
+			fut, kind, borrowed, msg = saLowerPromiseResolve(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return true, false
+			}
+		} else if saIsPromiseAllCall(ce, scope) {
+			var msg string
+			fut, kind, msg = saLowerPromiseAllBare(w, ce, scope, pos, refusals, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return true, false
+			}
+		} else {
+			return false, true
+		}
+	} else {
+		return false, true
+	}
+	if vd.Type != nil {
+		if want := saPromiseAnnotKind(vd.Type, scope); want != "" && want != kind {
+			ln, col := pos(d.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "Promise annotation does not match the resolved value kind"})
+			return true, false
+		}
+	}
+	w.Write(fmt.Sprintf("  %s = %s\n", name, fut))
+	scope.types[name] = "future"
+	if borrowed {
+		saDeclarePlain(scope, name)
+	} else {
+		if saIsTempOp(fut) {
+			saConsumeOwn(scope, fut)
+		}
+		saDeclareOwned(scope, name)
+	}
+	saMarkFuture(scope, name, kind)
+	return true, true
+}
+
 func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.VariableDeclarationList, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) bool {
 	if dl.AsNode().Flags&ast.NodeFlagsUsing != 0 {
 		// `using`/`await using` 同旗（后者 NodeFlagsAwaitUsing 含 Using 位）；
@@ -136,6 +251,15 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			return false
 		}
 		if saTryMathAliasDecl(d, vd, name, scope, pos, refusals) {
+			continue
+		}
+		// Future bindings (promise_tspromise step 3): resolve/all
+		// initializers bind a ReadyFuture struct before any other
+		// dispatch; non-future declarations fall through unchanged.
+		if handled, ok := saLowerFutureBinding(w, d, vd, name, scope, pos, refusals, nextTemp); handled {
+			if !ok {
+				return false
+			}
 			continue
 		}
 		litInit := vd.Initializer
@@ -1710,6 +1834,48 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			saPropArrStr(scope, h, name)
 		}
 		return true
+	}
+	// Awaited future-identifier binding (promise_tspromise step 3):
+	// poll a future-typed binding into the awaited value's kind. Must
+	// precede the i32 fallback below, whose await peel would otherwise
+	// route array/string handles into i32 position. saPeelAwait
+	// reports saw=false for bare identifiers, so unawaited future
+	// bindings never reach this arm.
+	if inner, saw := saPeelAwait(init); saw && inner != nil && inner.Kind == ast.KindIdentifier {
+		if fk, ok := saFutureKindOf(scope, inner.Text()); ok {
+			v, msg := saLowerFuturePoll(w, inner.Text(), fk, scope, nextTemp)
+			if msg != "" {
+				ln, col := pos(d.Pos())
+				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "unsupported initializer: " + msg})
+				return false
+			}
+			w.Write(fmt.Sprintf("  %s = %s\n", name, v))
+			switch fk {
+			case "i32":
+				scope.types[name] = "i32"
+				saDeclarePlain(scope, name)
+			case "str":
+				scope.types[name] = "str"
+				if saIsTempOp(v) {
+					saConsumeOwn(scope, v)
+				}
+				saDeclareOwned(scope, name)
+			case "arr":
+				scope.types[name] = "arr"
+				if saIsTempOp(v) {
+					saConsumeOwn(scope, v)
+				}
+				saDeclareOwned(scope, name)
+			case "arrStr":
+				scope.types[name] = "arr"
+				if saIsTempOp(v) {
+					saConsumeOwn(scope, v)
+				}
+				saDeclareOwned(scope, name)
+				saPropArrStr(scope, v, name)
+			}
+			return true
+		}
 	}
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {

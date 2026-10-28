@@ -6184,7 +6184,19 @@ type saScope struct {
 	arrNest        map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
-	arrStr         map[string]bool
+	arrStr map[string]bool
+	// futureVals records future-typed bindings (promise_tspromise step 3):
+	// name -> underlying value kind ("i32", "str", "arr", "arrStr").
+	// The binding's SSA name holds a ReadyFuture struct ptr; await of
+	// the name is a poll point reading the value slot WITHOUT consuming
+	// (JEV read_noconsume; JS promises are multi-awaitable). Block
+	// scopes share the scope object so marks are visible there;
+	// closure bodies do not inherit marks (same as arrStr).
+	futureVals map[string]string
+	// futurePolled records future bindings already awaited once (for
+	// array futures, later polls copy the array so two owned bindings
+	// never share one handle).
+	futurePolled   map[string]bool
 	arrJsVal       map[string]bool   // array handle whose elements are jsval handles (unknown[] / jsval receiver)
 	arrElemLayout  map[string]string // array handle -> element instance layout name (from a param/local annotation T[]; element kind only, never ownership; top-array receivers resolve via their snapshot layout at the find site)
 	matchArr       map[string]bool   // variables bound to String.match results (null on miss is empty array struct, head 0)
