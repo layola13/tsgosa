@@ -3609,6 +3609,36 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 						}
 					}
 				}
+				// Direct-call dispatch (DC-1): the receiver is
+				// itself an unguarded method call whose result
+				// handle h already exists (emitted upstream by
+				// saInstBaseElem). Resolve the inner call's
+				// recorded methodProv with saResolveDirectCallProv
+				// (pure lookup; same-file bound inside) and, on
+				// success, inline the outer method against the
+				// caller-scope concrete def exactly as the
+				// Identifier prov branch does with a binding.
+				// Any failure falls through unchanged to the
+				// interface message below: no-prov inner calls,
+				// free-fn/static/chain/cross-file/guarded inner
+				// calls, and litFn results all stay deferred.
+				if recvExpr != nil && recvExpr.Kind == ast.KindCallExpression {
+					if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
+						if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
+							if prov, ok := saResolveDirectCallProv(scope, innerPA); ok {
+								if cdef := scope.classes[prov]; cdef != nil && !cdef.isIface && !cdef.isAbstract {
+									if mn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && mn.Body() != nil {
+										op, msg := saInlineMethod(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+										if msg != "" {
+											return "", false, msg
+										}
+										return op, false, ""
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 			op, msg := saInlineMethod(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 			if msg != "" {

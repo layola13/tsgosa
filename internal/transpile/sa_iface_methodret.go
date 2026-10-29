@@ -680,3 +680,141 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 		cls = def.parent
 	}
 }
+
+// saResolveDirectCallProv is the direct-call dispatch resolver (DC-1):
+// a pure lookup over scope + AST, mirroring saAttachIfaceMethodProv's
+// walk exactly, minus the bind/kind checks (no binding, no vkind —
+// the outer call's kind comes from saInstBaseElem). It resolves the
+// inner method call's recorded methodProv entry from the inner
+// call's receiver base:
+//
+//   - ThisKeyword (scope.thisSelf != "") -> scope.thisClass;
+//   - Identifier with inst:<Concrete> kind -> that concrete class;
+//   - Identifier with inst:<Iface> kind + scope.ifaceProv entry ->
+//     the prov concrete class (bind-prov-mediated inner calls);
+//   - NewExpression -> saNewStmtClassName, concrete non-abstract
+//     def in caller scope.
+//
+// Class-name (static) receivers fall through (dc_static deferred:
+// the resolver never consults staticMethods in v1), as do Call
+// receivers (chains deferred, single_level) and everything else.
+// The parent-chain walk is override-shadows: the first def holding
+// the method node wins, and a missing methodProv entry there STOPS
+// the walk. The same-file bound (dc_xfile same_file_only) applies
+// last: when the callee def pointer-searches (saInlineFindDefFile
+// precedent) to exactly one file that is NOT the current lowering
+// file (scope.link.self), the branch is skipped; pointer-search
+// failure (live same-file defs are not harvest pointers) or a
+// current-file resolution engages. The resolver writes nothing to
+// scope (read-only table lookups); the inner call's emission
+// already happened upstream in saInstBaseElem. Any failure returns
+// ("", false) and the caller falls through unchanged to the
+// interface message.
+func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
+	if scope == nil || innerPA == nil || innerPA.Name() == nil {
+		return "", false
+	}
+	innerMethod := innerPA.Name().Text()
+	if strings.HasPrefix(innerMethod, "#") {
+		return "", false
+	}
+	recv := saRetPeelParenNonNull(innerPA.Expression)
+	if recv == nil {
+		return "", false
+	}
+	var startClass string
+	switch {
+	case recv.Kind == ast.KindThisKeyword:
+		if scope.thisSelf == "" || scope.thisClass == "" {
+			return "", false
+		}
+		startClass = scope.thisClass
+	case recv.Kind == ast.KindIdentifier:
+		rn := recv.Text()
+		// Static receivers are deferred (dc_static): a class name
+		// unshadowed in types and funcs must NOT resolve here.
+		if def, ok := scope.classes[rn]; ok && def != nil {
+			if _, shadowed := scope.types[rn]; !shadowed {
+				if _, shadowed := scope.funcs[rn]; !shadowed {
+					return "", false
+				}
+			}
+		}
+		k, ok := scope.types[rn]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return "", false
+		}
+		kind := k[5:]
+		d, ok := scope.classes[kind]
+		if !ok || d == nil {
+			return "", false
+		}
+		if d.isIface {
+			prov, ok := scope.ifaceProv[rn]
+			if !ok || prov == "" {
+				return "", false
+			}
+			pd, ok := scope.classes[prov]
+			if !ok || pd == nil || pd.isIface || pd.isAbstract {
+				return "", false
+			}
+			startClass = prov
+		} else {
+			if d.isAbstract {
+				return "", false
+			}
+			startClass = kind
+		}
+	case recv.Kind == ast.KindNewExpression:
+		cname, msg := saNewStmtClassName(recv.AsNewExpression())
+		if msg != "" || cname == "" {
+			return "", false
+		}
+		d, ok := scope.classes[cname]
+		if !ok || d == nil || d.isIface || d.isAbstract {
+			return "", false
+		}
+		startClass = cname
+	default:
+		// Call receivers (chains) and everything else fall through.
+		return "", false
+	}
+	visited := map[string]bool{}
+	var prov string
+	var calleeDef *saClassDef
+	for cls := startClass; cls != ""; {
+		if visited[cls] {
+			return "", false
+		}
+		visited[cls] = true
+		def, ok := scope.classes[cls]
+		if !ok || def == nil {
+			return "", false
+		}
+		mn, ok := def.methods[innerMethod]
+		if ok && mn != nil {
+			p, ok := def.methodProv[innerMethod]
+			if !ok || p == "" {
+				return "", false
+			}
+			prov = p
+			calleeDef = def
+			break
+		}
+		cls = def.parent
+	}
+	if calleeDef == nil || prov == "" {
+		return "", false
+	}
+	// Same-file bound (dc_xfile same_file_only): skip when the
+	// callee def resolves to exactly one file that is not the
+	// current lowering file; engage on pointer-search failure or
+	// a current-file resolution (mirrors saInlineOrigin's
+	// file-identity comparison, including the no-self guard).
+	if scope.link != nil && scope.link.self != "" {
+		if f, ok := saInlineFindDefFile(scope.link, calleeDef); ok && f != scope.link.self {
+			return "", false
+		}
+	}
+	return prov, true
+}
