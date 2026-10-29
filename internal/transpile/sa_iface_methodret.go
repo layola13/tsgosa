@@ -488,13 +488,21 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 // name (concrete, non-abstract, in classes); identifier → walker
 // entries map (entry class, absent → unknown; no static case —
 // class-name identifiers yield unknown like params, GATE-B deferred);
-// Call → fallthrough (chains deferred); guarded → fallthrough.
+// Call → one budgeted peel (method-return chains, JEV
+// mc_chain_depth one_step_only: the wrapper passes peels=1, the
+// core recurses through itself so guard checks re-apply, the inner
+// kind is discarded and the outer walk returns the outer method's
+// declared kind); guarded → fallthrough.
 // Parent-chain walk override-shadows, missing methodProv entry stops
 // the walk. Returns the inner prov class and the inner method's
 // declared return kind ("inst:"+iface), or ok=false. The walk reads
 // def.methods (instance) only; the method name must be a plain
 // identifier (never `#`).
 func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool) (string, string, bool) {
+	return saMethodCallProvBudget(ce, entries, classes, analyzingClass, isStatic, 1)
+}
+
+func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int) (string, string, bool) {
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return "", "", false
 	}
@@ -543,8 +551,26 @@ func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry
 			return "", "", false
 		}
 		startClass = e.class
+	case ast.KindCallExpression:
+		// Chain receivers: one budgeted peel. Recursing through the
+		// core itself re-applies the guard checks (unguarded CE + PA,
+		// plain identifier method name, never `#`) to the inner call.
+		// The inner kind is discarded: the outer walk below returns
+		// the outer method's declared kind.
+		if peels <= 0 {
+			return "", "", false
+		}
+		recvCE := recv.AsCallExpression()
+		if recvCE == nil {
+			return "", "", false
+		}
+		innerProv, _, ok := saMethodCallProvBudget(recvCE, entries, classes, analyzingClass, isStatic, peels-1)
+		if !ok || innerProv == "" {
+			return "", "", false
+		}
+		startClass = innerProv
 	default:
-		// Call receivers (chains) and everything else fall through.
+		// Everything else falls through.
 		return "", "", false
 	}
 	visited := map[string]bool{}
