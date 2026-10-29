@@ -488,8 +488,8 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 // name (concrete, non-abstract, in classes); identifier → walker
 // entries map (entry class, absent → unknown; no static case —
 // class-name identifiers yield unknown like params, GATE-B deferred);
-// Call → one budgeted peel (method-return chains, JEV
-// mc_chain_depth one_step_only: the wrapper passes peels=1, the
+// Call → two budgeted peels (chain depth-3, JEV
+// uc_depth cap_2_peels: the wrapper passes peels=2, the
 // core recurses through itself so guard checks re-apply, the inner
 // kind is discarded and the outer walk returns the outer method's
 // declared kind); guarded → fallthrough.
@@ -499,7 +499,7 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 // def.methods (instance) only; the method name must be a plain
 // identifier (never `#`).
 func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool) (string, string, bool) {
-	return saMethodCallProvBudget(ce, entries, classes, analyzingClass, isStatic, 1)
+	return saMethodCallProvBudget(ce, entries, classes, analyzingClass, isStatic, 2)
 }
 
 func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int) (string, string, bool) {
@@ -872,12 +872,12 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 		}
 	case recv.Kind == ast.KindCallExpression:
 		// Bind-chain attach (iface_bindchain, bc_mechanism
-		// core_reuse, bc_depth one_step_only): the initializer
+		// core_reuse, iface_unbounded_chain uc_depth cap_2_peels): the initializer
 		// is itself a chain call whose result the core
 		// resolves. Outer guards first (the DC-1 branch's
 		// pre-checks — the core does not check the outer
 		// PA's guard token), then the receiver-call guards,
-		// then one budgeted core resolution (peels=1,
+		// then one budgeted core resolution (peels=2,
 		// bound=false per bc_xfile inherit_existing).
 		// Anything else returns with no prov installed.
 		if pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
@@ -1009,26 +1009,29 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 // lookups); the inner call's emission already happened
 // upstream in saInstBaseElem. Any failure returns ("", false)
 // and the caller falls through unchanged to the interface
-// message.
+// message. Chain budget is cap_2 (iface_unbounded_chain, JEV
+// uc_depth): depth-3 chains resolve, depth-4 stays refused
+// (boundary at length 4); the single-level same-file bound is
+// untouched.
 func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
-	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 1, true)
+	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 2, true)
 	return prov, ok
 }
 
 // saResolveDirectCallProvDef is the def-returning wrapper for
 // attach (iface_bindchain, bc_mechanism core_reuse): same budget
-// as the attach Call case (one peel, unbounded — bc_depth
-// one_step_only, bc_xfile inherit_existing). The returned def is
+// as the attach Call case (two peels, unbounded — uc_depth
+// cap_2_peels, bc_xfile inherit_existing). The returned def is
 // the def holding the resolved method node (from the core's own
 // walk), so attach can re-walk for the method node and run the
 // existing kind check + harvest fallback.
 func saResolveDirectCallProvDef(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, *saClassDef, bool) {
-	return saResolveDirectCallProvBudget(scope, innerPA, 1, false)
+	return saResolveDirectCallProvBudget(scope, innerPA, 2, false)
 }
 
 // saResolveDirectCallProvBudget is the budgeted core behind
 // saResolveDirectCallProv: peels is the remaining Call-receiver
-// peel budget (1 for the DC-1 call site — one step only), and
+// peel budget (2 for the call sites — cap_2 per JEV uc_depth), and
 // bound selects the same-file pointer-search bound (true for
 // the single-level path; chain links always resolve unbounded).
 // It also returns the def holding the resolved method node
