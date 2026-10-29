@@ -1170,6 +1170,18 @@ func saBinaryOpKind(be *ast.BinaryExpression) ast.Kind {
 // saEvalReturnOperand 按函数返回种求 return 操作数：boolean 函数走 saEvalBool
 // （bool 标识符直用，其余 0/1 操作数），number 函数走 saEvalI32；数组无返回位。
 func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// Bound-unification (iface_boundunif) context (c): a method
+	// body's return operand is in method-return position —
+	// chainCtx is set for the operand evaluation so a chain
+	// link's DC-1 bound is bypassed, then restored at return.
+	// Method bodies only (scope.thisClass != "", which the
+	// inline core sets for inlined method bodies);
+	// free-function return position is NOT a context.
+	prevChainCtx := scope.chainCtx
+	if scope.thisClass != "" {
+		scope.chainCtx = true
+	}
+	defer func() { scope.chainCtx = prevChainCtx }()
 	// 括号透明（`({a: 1})` 即 `{a: 1}`；箭头表达式体必带括号，与既有解包
 	// 纪律同律）。
 	for e != nil && e.Kind == ast.KindParenthesizedExpression {
@@ -3626,7 +3638,14 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 					if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
 						if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
 							if prov, ok := saResolveDirectCallProv(scope, innerPA); ok {
-								if cdef := scope.classes[prov]; cdef != nil && !cdef.isIface && !cdef.isAbstract {
+								// Bound-unification (iface_boundunif, JEV
+								// bu_asymmetry core_and_branch_harvest):
+								// the Identifier branch's lookup verbatim
+								// (sa_expr.go:3585), anchored on the
+								// interface def. The concrete +
+								// bodied-method checks below apply
+								// unchanged to either provenance.
+								if cdef := saScopeOrHarvestClassDef(scope, prov, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
 									if mn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && mn.Body() != nil {
 										op, msg := saInlineMethod(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
 										if msg != "" {

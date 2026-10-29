@@ -878,7 +878,7 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 		// pre-checks — the core does not check the outer
 		// PA's guard token), then the receiver-call guards,
 		// then one budgeted core resolution (peels=2,
-		// bound=false per bc_xfile inherit_existing).
+		// chain-context bound bypass per bc_xfile inherit_existing).
 		// Anything else returns with no prov installed.
 		if pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
 			return
@@ -909,8 +909,13 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 				return
 			}
 			visited[cls] = true
-			def, ok := scope.classes[cls]
-			if !ok || def == nil {
+			// Bound-unification (iface_boundunif, JEV bu_asymmetry
+			// core_and_branch_harvest): caller-scope first, then
+			// harvest anchored on the def the core returned (its
+			// defining file first, then program-wide unique).
+			// Nil def stops the walk exactly as today.
+			def := saScopeOrHarvestClassDef(scope, cls, calleeDef)
+			if def == nil {
 				return
 			}
 			mn, ok := def.methods[mname]
@@ -1012,9 +1017,10 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 // message. Chain budget is cap_2 (iface_unbounded_chain, JEV
 // uc_depth): depth-3 chains resolve, depth-4 stays refused
 // (boundary at length 4); the single-level same-file bound is
-// untouched.
+// bypassed only in chain context (scope.chainCtx) and stands
+// for standalone single-level dispatch.
 func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
-	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 2, true)
+	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 2)
 	return prov, ok
 }
 
@@ -1026,19 +1032,21 @@ func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpressi
 // walk), so attach can re-walk for the method node and run the
 // existing kind check + harvest fallback.
 func saResolveDirectCallProvDef(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, *saClassDef, bool) {
-	return saResolveDirectCallProvBudget(scope, innerPA, 2, false)
+	return saResolveDirectCallProvBudget(scope, innerPA, 2)
 }
 
 // saResolveDirectCallProvBudget is the budgeted core behind
 // saResolveDirectCallProv: peels is the remaining Call-receiver
-// peel budget (2 for the call sites — cap_2 per JEV uc_depth), and
-// bound selects the same-file pointer-search bound (true for
-// the single-level path; chain links always resolve unbounded).
+// peel budget (2 for the call sites — cap_2 per JEV uc_depth).
+// The single-level same-file pointer-search bound applies except
+// in chain context (scope.chainCtx — iface_boundunif, JEV
+// bu_mechanism chain_context_threading) and except for chain
+// links (which always resolve unbounded).
 // It also returns the def holding the resolved method node
 // (nil on failure); the recursive call's def is discarded — the
 // outer walk's def is the result, since attach re-walks from it
 // for the outer method node.
-func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessExpression, peels int, bound bool) (string, *saClassDef, bool) {
+func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessExpression, peels int) (string, *saClassDef, bool) {
 	if scope == nil || innerPA == nil || innerPA.Name() == nil {
 		return "", nil, false
 	}
@@ -1119,7 +1127,17 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		if linkPA == nil || linkPA.QuestionDotToken != nil || linkPA.Name() == nil || strings.HasPrefix(linkPA.Name().Text(), "#") {
 			return "", nil, false
 		}
-		innerProv, _, ok := saResolveDirectCallProvBudget(scope, linkPA, peels-1, false)
+		// Bound-unification (iface_boundunif): a chain link's
+		// recursion inherits the chain context — this replaces
+		// the deleted bound=false recursion parameter, so the
+		// whole chain resolution is unbounded exactly as before;
+		// only a top-level single-level invocation consults the
+		// bound (gated by scope.chainCtx). Restored immediately
+		// after the call; nested links save/restore in turn.
+		prevChainCtx := scope.chainCtx
+		scope.chainCtx = true
+		innerProv, _, ok := saResolveDirectCallProvBudget(scope, linkPA, peels-1)
+		scope.chainCtx = prevChainCtx
 		if !ok || innerProv == "" {
 			return "", nil, false
 		}
@@ -1140,8 +1158,13 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 			return "", nil, false
 		}
 		visited[cls] = true
-		def, ok := scope.classes[cls]
-		if !ok || def == nil {
+		// Bound-unification (iface_boundunif, JEV bu_asymmetry
+		// core_and_branch_harvest): caller-scope first, then
+		// harvest (program-wide unique, exported-only; nil anchor
+		// skips the anchor-file step — no anchor def exists at
+		// walk time). Nil def fails the walk exactly as today.
+		def := saScopeOrHarvestClassDef(scope, cls, nil)
+		if def == nil {
 			return "", nil, false
 		}
 		mn, ok := def.methods[innerMethod]
@@ -1166,8 +1189,12 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	// (mirrors saInlineOrigin's file-identity comparison,
 	// including the no-self guard). Chain links are unbounded
 	// (ch_xfile caller_scope_only) — the branch's caller-scope
-	// prov-def lookup is their only file control.
-	if bound && !chainLink && scope.link != nil && scope.link.self != "" {
+	// prov-def lookup is their only file control. Chain
+	// context (scope.chainCtx — iface_boundunif) bypasses the
+	// bound for single-level links lowered in receiver, const
+	// -init, or method-return position; standalone single-level
+	// dispatch keeps the bound.
+	if !chainLink && !scope.chainCtx && scope.link != nil && scope.link.self != "" {
 		if f, ok := saInlineFindDefFile(scope.link, calleeDef); ok && f != scope.link.self {
 			return "", nil, false
 		}

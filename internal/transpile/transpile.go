@@ -6333,6 +6333,20 @@ type saScope struct {
 	// by saInlineScopeSaved, and never threaded as a parameter — the
 	// scope object itself carries it through arm and swap boundaries.
 	inlineStack []*ast.Node
+	// chainCtx marks chain-context lowering (iface_boundunif, JEV
+	// bu_mechanism chain_context_threading): while set, the DC-1
+	// single-level same-file bound is bypassed, so a chain link
+	// whose callee def lives in another file still resolves. Set
+	// ONLY in three lowering contexts, each with save/restore
+	// (never leaking across statements): (a) saInstBaseElem's
+	// Call-receiver arm (receiver position), (b) const-decl
+	// initializer op computation in saLowerInferredDecl (bind
+	// position), (c) saEvalReturnOperand while lowering a method
+	// body (scope.thisClass != "", incl. inlined method bodies;
+	// free-function returns are NOT a context). Standalone
+	// single-level dispatch (d_xfile_direct2) lowers with the
+	// flag clear, so the bound stands there.
+	chainCtx bool
 	// futureVals records future-typed bindings (promise_tspromise step 3):
 	// name -> underlying value kind ("i32", "str", "arr", "arrStr").
 	// The binding's SSA name holds a ReadyFuture struct ptr; await of

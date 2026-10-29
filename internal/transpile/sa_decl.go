@@ -1930,6 +1930,19 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 			return true
 		}
 	}
+	// Bound-unification (iface_boundunif) context (b): a const
+	// initializer is in bind position — chainCtx is set for the
+	// op computation and the attach calls that follow it in this
+	// declaration's lowering (attach's own core resolution is
+	// single-level-bound: without the flag live through attach,
+	// the bind would never install and r.next() would still
+	// refuse), then restored at function return. Const only:
+	// let initializers keep the bound.
+	prevChainCtx := scope.chainCtx
+	if isConst {
+		scope.chainCtx = true
+	}
+	defer func() { scope.chainCtx = prevChainCtx }()
 	op, msg := saEvalI32(w, init, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		if init.Kind == ast.KindPropertyAccessExpression {

@@ -7801,6 +7801,14 @@ func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 	}
 	if e != nil && e.Kind == ast.KindCallExpression {
 		// 调用结果基（`M.get(k).f`；求值后按记种消解布局；上游 lowerExpr 通用基同形）。
+		// Bound-unification (iface_boundunif) context (a): a call
+		// lowered as an instance base is in receiver position —
+		// chainCtx is set for its lowering so a nested chain
+		// link's DC-1 bound is bypassed, then restored at arm
+		// exit (defer runs at function return).
+		prevChainCtx := scope.chainCtx
+		scope.chainCtx = true
+		defer func() { scope.chainCtx = prevChainCtx }()
 		ce := e.AsCallExpression()
 		op, voidCall, msg := saEvalCall(w, ce, scope, pos, refusals, nextTemp)
 		if msg != "" {
