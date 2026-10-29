@@ -9900,6 +9900,21 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 	if msg != "" {
 		return "", msg
 	}
+	// Inline-recursion guard (iface_inline_recursion): a node already
+	// on the stack is being expanded inside itself — inlining is
+	// unconditional textual expansion, so that is infinite. Refuse
+	// loudly naming the repeated frame, WITHOUT pushing and WITHOUT
+	// touching thisSelf/thisClass or the swap (the arg-error path
+	// above is the precedent: return before any mutation). The key
+	// is the node pointer: inherited methods share the parent's node
+	// (def.methods[k] = v copies the map entry, not the node), so a
+	// (class, method) key would miss cross-class inherited cycles.
+	for _, n := range scope.inlineStack {
+		if n == mn {
+			return "", "recursive inline of " + className + "." + method + " (method already being inlined)"
+		}
+	}
+	scope.inlineStack = append(scope.inlineStack, mn)
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = thisSelf, className
 	// Inline-scope swap (iface_inline): defining namespace install
@@ -9927,6 +9942,11 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 		saved.restore(scope)
 	}
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	// Guard pop sits with the restores, BEFORE the msg check: a
+	// missed pop would leak the frame into later lowering in the
+	// same file scope and falsely refuse legitimate later inlines
+	// of the same method (stop-the-build defect).
+	scope.inlineStack = scope.inlineStack[:len(scope.inlineStack)-1]
 	if msg != "" {
 		return "", msg
 	}
@@ -9948,6 +9968,16 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	if len(gn.Parameters()) != 0 {
 		return "", "getter " + name + " takes 0 parameters"
 	}
+	// Inline-recursion guard (iface_inline_recursion), same
+	// discipline as the core: check-then-push after the node checks,
+	// pop with the restore before the msg check; the key is the
+	// getter node pointer.
+	for _, n := range scope.inlineStack {
+		if n == gn {
+			return "", "recursive inline of " + def.name + "." + name + " (getter already being inlined)"
+		}
+	}
+	scope.inlineStack = append(scope.inlineStack, gn)
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = recv, def.name
 	wantKind := "i32"
@@ -9958,6 +9988,7 @@ func saInlineGetter(w printer.EmitTextWriter, recv string, def *saClassDef, name
 	}
 	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	scope.inlineStack = scope.inlineStack[:len(scope.inlineStack)-1]
 	if msg != "" {
 		return "", msg
 	}
@@ -9980,6 +10011,16 @@ func saInlineStaticGetter(w printer.EmitTextWriter, className string, def *saCla
 	if len(gn.Parameters()) != 0 {
 		return "", "getter " + name + " takes 0 parameters"
 	}
+	// Inline-recursion guard (iface_inline_recursion), same
+	// discipline as the core: check-then-push after the node checks,
+	// pop with the restore before the msg check; the key is the
+	// getter node pointer.
+	for _, n := range scope.inlineStack {
+		if n == gn {
+			return "", "recursive inline of " + def.name + "." + name + " (getter already being inlined)"
+		}
+	}
+	scope.inlineStack = append(scope.inlineStack, gn)
 	savedSelf, savedClass := scope.thisSelf, scope.thisClass
 	scope.thisSelf, scope.thisClass = "", def.name
 	wantKind := "i32"
@@ -9990,6 +10031,7 @@ func saInlineStaticGetter(w printer.EmitTextWriter, className string, def *saCla
 	}
 	v, msg := saCallbackValue(w, gn, nil, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	scope.inlineStack = scope.inlineStack[:len(scope.inlineStack)-1]
 	if msg != "" {
 		return "", msg
 	}

@@ -6323,6 +6323,16 @@ type saScope struct {
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr map[string]bool
+	// inlineStack is the stack of method/getter nodes currently being
+	// expanded by the inline entry points (iface_inline_recursion):
+	// pushed by saInlineMethodCore / saInlineGetter /
+	// saInlineStaticGetter after arg/node checks and popped alongside
+	// the thisSelf/thisClass restore, before the msg check; a repeat
+	// node on the stack is a loud recursive-inline refusal, never a
+	// crash. It is NEVER snapshotted by saScopeEnter/saScopeExit or
+	// by saInlineScopeSaved, and never threaded as a parameter — the
+	// scope object itself carries it through arm and swap boundaries.
+	inlineStack []*ast.Node
 	// futureVals records future-typed bindings (promise_tspromise step 3):
 	// name -> underlying value kind ("i32", "str", "arr", "arrStr").
 	// The binding's SSA name holds a ReadyFuture struct ptr; await of
