@@ -844,6 +844,66 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 			}
 			startClass = k[5:]
 		}
+	case recv.Kind == ast.KindCallExpression:
+		// Bind-chain attach (iface_bindchain, bc_mechanism
+		// core_reuse, bc_depth one_step_only): the initializer
+		// is itself a chain call whose result the core
+		// resolves. Outer guards first (the DC-1 branch's
+		// pre-checks — the core does not check the outer
+		// PA's guard token), then the receiver-call guards,
+		// then one budgeted core resolution (peels=1,
+		// bound=false per bc_xfile inherit_existing).
+		// Anything else returns with no prov installed.
+		if pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+			return
+		}
+		recvCE := recv.AsCallExpression()
+		if recvCE == nil || recvCE.QuestionDotToken != nil || recvCE.Expression == nil || recvCE.Expression.Kind != ast.KindPropertyAccessExpression {
+			return
+		}
+		linkPA := recvCE.Expression.AsPropertyAccessExpression()
+		if linkPA == nil || linkPA.QuestionDotToken != nil || linkPA.Name() == nil || strings.HasPrefix(linkPA.Name().Text(), "#") {
+			return
+		}
+		prov, calleeDef, ok := saResolveDirectCallProvDef(scope, pa)
+		if !ok || prov == "" || calleeDef == nil {
+			return
+		}
+		// Re-walk calleeDef's parent chain for the method
+		// node, with the core's walk discipline exactly
+		// (visited guard; first def holding the node wins;
+		// a def holding the node but lacking the methodProv
+		// entry STOPS the walk). The re-walk finds the same
+		// def the core did, and recovers the node the core
+		// does not return, for the existing kind check +
+		// harvest fallback below.
+		visited := map[string]bool{}
+		for cls := calleeDef.name; cls != ""; {
+			if visited[cls] {
+				return
+			}
+			visited[cls] = true
+			def, ok := scope.classes[cls]
+			if !ok || def == nil {
+				return
+			}
+			mn, ok := def.methods[mname]
+			if ok && mn != nil {
+				p, ok := def.methodProv[mname]
+				if !ok || p == "" {
+					return
+				}
+				if saMethodDeclaredIface(mn, scope.classes) != vkind {
+					if !saAttachIfaceDeclaredHarvest(scope, def, mn, vkind) {
+						return
+					}
+				}
+				saSetIfaceProv(scope, name, prov)
+				return
+			}
+			cls = def.parent
+		}
+		return
 	default:
 		return
 	}
@@ -925,7 +985,19 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 // and the caller falls through unchanged to the interface
 // message.
 func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
-	return saResolveDirectCallProvBudget(scope, innerPA, 1, true)
+	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 1, true)
+	return prov, ok
+}
+
+// saResolveDirectCallProvDef is the def-returning wrapper for
+// attach (iface_bindchain, bc_mechanism core_reuse): same budget
+// as the attach Call case (one peel, unbounded — bc_depth
+// one_step_only, bc_xfile inherit_existing). The returned def is
+// the def holding the resolved method node (from the core's own
+// walk), so attach can re-walk for the method node and run the
+// existing kind check + harvest fallback.
+func saResolveDirectCallProvDef(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, *saClassDef, bool) {
+	return saResolveDirectCallProvBudget(scope, innerPA, 1, false)
 }
 
 // saResolveDirectCallProvBudget is the budgeted core behind
@@ -933,17 +1005,21 @@ func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpressi
 // peel budget (1 for the DC-1 call site — one step only), and
 // bound selects the same-file pointer-search bound (true for
 // the single-level path; chain links always resolve unbounded).
-func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessExpression, peels int, bound bool) (string, bool) {
+// It also returns the def holding the resolved method node
+// (nil on failure); the recursive call's def is discarded — the
+// outer walk's def is the result, since attach re-walks from it
+// for the outer method node.
+func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessExpression, peels int, bound bool) (string, *saClassDef, bool) {
 	if scope == nil || innerPA == nil || innerPA.Name() == nil {
-		return "", false
+		return "", nil, false
 	}
 	innerMethod := innerPA.Name().Text()
 	if strings.HasPrefix(innerMethod, "#") {
-		return "", false
+		return "", nil, false
 	}
 	recv := saRetPeelParenNonNull(innerPA.Expression)
 	if recv == nil {
-		return "", false
+		return "", nil, false
 	}
 	var startClass string
 	var chainProv string
@@ -951,7 +1027,7 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	switch {
 	case recv.Kind == ast.KindThisKeyword:
 		if scope.thisSelf == "" || scope.thisClass == "" {
-			return "", false
+			return "", nil, false
 		}
 		startClass = scope.thisClass
 	case recv.Kind == ast.KindIdentifier:
@@ -961,67 +1037,67 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		if def, ok := scope.classes[rn]; ok && def != nil {
 			if _, shadowed := scope.types[rn]; !shadowed {
 				if _, shadowed := scope.funcs[rn]; !shadowed {
-					return "", false
+					return "", nil, false
 				}
 			}
 		}
 		k, ok := scope.types[rn]
 		if !ok || len(k) <= 5 || k[:5] != "inst:" {
-			return "", false
+			return "", nil, false
 		}
 		kind := k[5:]
 		d, ok := scope.classes[kind]
 		if !ok || d == nil {
-			return "", false
+			return "", nil, false
 		}
 		if d.isIface {
 			prov, ok := scope.ifaceProv[rn]
 			if !ok || prov == "" {
-				return "", false
+				return "", nil, false
 			}
 			pd, ok := scope.classes[prov]
 			if !ok || pd == nil || pd.isIface || pd.isAbstract {
-				return "", false
+				return "", nil, false
 			}
 			startClass = prov
 		} else {
 			if d.isAbstract {
-				return "", false
+				return "", nil, false
 			}
 			startClass = kind
 		}
 	case recv.Kind == ast.KindNewExpression:
 		cname, msg := saNewStmtClassName(recv.AsNewExpression())
 		if msg != "" || cname == "" {
-			return "", false
+			return "", nil, false
 		}
 		d, ok := scope.classes[cname]
 		if !ok || d == nil || d.isIface || d.isAbstract {
-			return "", false
+			return "", nil, false
 		}
 		startClass = cname
 	case recv.Kind == ast.KindCallExpression:
 		// One chain link: peel exactly one Call receiver, with
 		// the DC-1 guards re-applied to the peeled link.
 		if peels <= 0 {
-			return "", false
+			return "", nil, false
 		}
 		ce := recv.AsCallExpression()
 		if ce == nil || ce.QuestionDotToken != nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
-			return "", false
+			return "", nil, false
 		}
 		linkPA := ce.Expression.AsPropertyAccessExpression()
 		if linkPA == nil || linkPA.QuestionDotToken != nil || linkPA.Name() == nil || strings.HasPrefix(linkPA.Name().Text(), "#") {
-			return "", false
+			return "", nil, false
 		}
-		innerProv, ok := saResolveDirectCallProvBudget(scope, linkPA, peels-1, false)
+		innerProv, _, ok := saResolveDirectCallProvBudget(scope, linkPA, peels-1, false)
 		if !ok || innerProv == "" {
-			return "", false
+			return "", nil, false
 		}
 		chainProv = innerProv
 		chainLink = true
 	default:
-		return "", false
+		return "", nil, false
 	}
 	walkFrom := startClass
 	if chainLink {
@@ -1032,18 +1108,18 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	var calleeDef *saClassDef
 	for cls := walkFrom; cls != ""; {
 		if visited[cls] {
-			return "", false
+			return "", nil, false
 		}
 		visited[cls] = true
 		def, ok := scope.classes[cls]
 		if !ok || def == nil {
-			return "", false
+			return "", nil, false
 		}
 		mn, ok := def.methods[innerMethod]
 		if ok && mn != nil {
 			p, ok := def.methodProv[innerMethod]
 			if !ok || p == "" {
-				return "", false
+				return "", nil, false
 			}
 			prov = p
 			calleeDef = def
@@ -1052,7 +1128,7 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		cls = def.parent
 	}
 	if calleeDef == nil || prov == "" {
-		return "", false
+		return "", nil, false
 	}
 	// Same-file bound (dc_xfile same_file_only), single-level
 	// path only: skip when the callee def resolves to exactly
@@ -1064,8 +1140,8 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	// prov-def lookup is their only file control.
 	if bound && !chainLink && scope.link != nil && scope.link.self != "" {
 		if f, ok := saInlineFindDefFile(scope.link, calleeDef); ok && f != scope.link.self {
-			return "", false
+			return "", nil, false
 		}
 	}
-	return prov, true
+	return prov, calleeDef, true
 }
