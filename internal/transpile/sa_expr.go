@@ -4656,6 +4656,9 @@ func saTernaryInstArm(e *ast.Node, scope *saScope) (string, bool) {
 			if _, ok := scope.classes[k[5:]]; ok {
 				return k, true
 			}
+			if saScopeOrHarvestClassDef(scope, k[5:], nil) != nil {
+				return k, true
+			}
 		}
 		return "", false
 	}

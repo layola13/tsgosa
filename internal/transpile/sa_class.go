@@ -7873,7 +7873,7 @@ func saEvalInstOperand(w printer.EmitTextWriter, e *ast.Node, scope *saScope, po
 	u := saUnwrapTransparent(e)
 	if u != nil && u.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[u.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-			if _, ok := scope.classes[k[5:]]; !ok {
+			if saScopeOrHarvestClassDef(scope, k[5:], nil) == nil {
 				return "", "", "unknown class " + k[5:]
 			}
 			return u.Text(), k, ""
