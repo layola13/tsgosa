@@ -2780,16 +2780,29 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 }
 
 // saMethodInstReturn 方法返回注解的实例类（`this` 类型即接收者类；具名类
-// 引用无类型实参；接口/未知/余形为空）。
+// 引用无类型实参；接口/未知/余形为空）。方法声明与方法签名均受理（JEV
+// iface_chain ch_gate extend_methodinstreturn）：签名经通用 mn.Type()
+// 取声明返回；签名上的 ThisType 恒为空（fail closed——签名所属接口名不是
+// 实现者类，不能作静态类）。想调用方须知：签名到达 wantKind 的路径不
+// 存在（saInlineMethod / saInlineStaticMethod 先拒无体节点，litFn 分支
+// 显式验 MethodDeclaration），故 widen 只影响门（saStaticInstClass）。
 func saMethodInstReturn(mn *ast.Node, className string, scope *saScope) string {
-	if mn == nil || mn.Kind != ast.KindMethodDeclaration {
+	if mn == nil || (mn.Kind != ast.KindMethodDeclaration && mn.Kind != ast.KindMethodSignature) {
 		return ""
 	}
-	typ := mn.AsMethodDeclaration().Type
+	var typ *ast.Node
+	if mn.Kind == ast.KindMethodDeclaration {
+		typ = mn.AsMethodDeclaration().Type
+	} else {
+		typ = mn.Type()
+	}
 	if typ == nil {
 		return ""
 	}
 	if typ.Kind == ast.KindThisType {
+		if mn.Kind == ast.KindMethodSignature {
+			return ""
+		}
 		return className
 	}
 	if typ.Kind == ast.KindTypeReference {

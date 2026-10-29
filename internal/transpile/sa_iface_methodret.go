@@ -898,23 +898,42 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 //     the prov concrete class (bind-prov-mediated inner calls);
 //   - NewExpression -> saNewStmtClassName, concrete non-abstract
 //     def in caller scope.
+//   - CallExpression -> one chain link (iface_chain, ch_depth
+//     one_step_only): peel one Call receiver, re-applying the
+//     DC-1 guards per link (unguarded CE + PA, non-#, PA callee),
+//     recurse for the inner prov, then walk the inner prov
+//     class's parent chain for the current method's entry.
 //
 // Class-name (static) receivers fall through (dc_static deferred:
-// the resolver never consults staticMethods in v1), as do Call
-// receivers (chains deferred, single_level) and everything else.
-// The parent-chain walk is override-shadows: the first def holding
-// the method node wins, and a missing methodProv entry there STOPS
-// the walk. The same-file bound (dc_xfile same_file_only) applies
-// last: when the callee def pointer-searches (saInlineFindDefFile
-// precedent) to exactly one file that is NOT the current lowering
-// file (scope.link.self), the branch is skipped; pointer-search
-// failure (live same-file defs are not harvest pointers) or a
-// current-file resolution engages. The resolver writes nothing to
-// scope (read-only table lookups); the inner call's emission
-// already happened upstream in saInstBaseElem. Any failure returns
-// ("", false) and the caller falls through unchanged to the
-// interface message.
+// the resolver never consults staticMethods in v1), as do
+// free-fn (bare-Identifier callee) links, guarded links, and
+// everything else. The parent-chain walk is override-shadows:
+// the first def holding the method node wins, and a missing
+// methodProv entry there STOPS the walk. The same-file bound
+// (dc_xfile same_file_only) applies to the single-level path
+// only: when the callee def pointer-searches
+// (saInlineFindDefFile precedent) to exactly one file that is
+// NOT the current lowering file (scope.link.self), the branch
+// is skipped; pointer-search failure (live same-file defs are
+// not harvest pointers) or a current-file resolution engages.
+// Chain links carry NO pointer-search bound (iface_chain,
+// ch_xfile caller_scope_only): the only file control for a
+// chain is the DC-1 branch's caller-scope prov-def lookup.
+// The resolver writes nothing to scope (read-only table
+// lookups); the inner call's emission already happened
+// upstream in saInstBaseElem. Any failure returns ("", false)
+// and the caller falls through unchanged to the interface
+// message.
 func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
+	return saResolveDirectCallProvBudget(scope, innerPA, 1, true)
+}
+
+// saResolveDirectCallProvBudget is the budgeted core behind
+// saResolveDirectCallProv: peels is the remaining Call-receiver
+// peel budget (1 for the DC-1 call site — one step only), and
+// bound selects the same-file pointer-search bound (true for
+// the single-level path; chain links always resolve unbounded).
+func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessExpression, peels int, bound bool) (string, bool) {
 	if scope == nil || innerPA == nil || innerPA.Name() == nil {
 		return "", false
 	}
@@ -927,6 +946,8 @@ func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpressi
 		return "", false
 	}
 	var startClass string
+	var chainProv string
+	var chainLink bool
 	switch {
 	case recv.Kind == ast.KindThisKeyword:
 		if scope.thisSelf == "" || scope.thisClass == "" {
@@ -979,14 +1000,37 @@ func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpressi
 			return "", false
 		}
 		startClass = cname
+	case recv.Kind == ast.KindCallExpression:
+		// One chain link: peel exactly one Call receiver, with
+		// the DC-1 guards re-applied to the peeled link.
+		if peels <= 0 {
+			return "", false
+		}
+		ce := recv.AsCallExpression()
+		if ce == nil || ce.QuestionDotToken != nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+			return "", false
+		}
+		linkPA := ce.Expression.AsPropertyAccessExpression()
+		if linkPA == nil || linkPA.QuestionDotToken != nil || linkPA.Name() == nil || strings.HasPrefix(linkPA.Name().Text(), "#") {
+			return "", false
+		}
+		innerProv, ok := saResolveDirectCallProvBudget(scope, linkPA, peels-1, false)
+		if !ok || innerProv == "" {
+			return "", false
+		}
+		chainProv = innerProv
+		chainLink = true
 	default:
-		// Call receivers (chains) and everything else fall through.
 		return "", false
+	}
+	walkFrom := startClass
+	if chainLink {
+		walkFrom = chainProv
 	}
 	visited := map[string]bool{}
 	var prov string
 	var calleeDef *saClassDef
-	for cls := startClass; cls != ""; {
+	for cls := walkFrom; cls != ""; {
 		if visited[cls] {
 			return "", false
 		}
@@ -1010,12 +1054,15 @@ func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpressi
 	if calleeDef == nil || prov == "" {
 		return "", false
 	}
-	// Same-file bound (dc_xfile same_file_only): skip when the
-	// callee def resolves to exactly one file that is not the
-	// current lowering file; engage on pointer-search failure or
-	// a current-file resolution (mirrors saInlineOrigin's
-	// file-identity comparison, including the no-self guard).
-	if scope.link != nil && scope.link.self != "" {
+	// Same-file bound (dc_xfile same_file_only), single-level
+	// path only: skip when the callee def resolves to exactly
+	// one file that is not the current lowering file; engage on
+	// pointer-search failure or a current-file resolution
+	// (mirrors saInlineOrigin's file-identity comparison,
+	// including the no-self guard). Chain links are unbounded
+	// (ch_xfile caller_scope_only) — the branch's caller-scope
+	// prov-def lookup is their only file control.
+	if bound && !chainLink && scope.link != nil && scope.link.self != "" {
 		if f, ok := saInlineFindDefFile(scope.link, calleeDef); ok && f != scope.link.self {
 			return "", false
 		}
