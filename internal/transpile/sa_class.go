@@ -2808,7 +2808,12 @@ func saMethodInstReturn(mn *ast.Node, className string, scope *saScope) string {
 	if typ.Kind == ast.KindTypeReference {
 		ref := typ.AsTypeReferenceNode()
 		if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
-			if d, ok := scope.classes[ref.TypeName.Text()]; ok {
+			// Statics gate (JEV st_follow_gate fourth_site): the
+			// gate's return-type lookup is harvest-aware, so a
+			// cross-file static method's declared return type
+			// resolves even when the caller imports only the
+			// defining class (anchor = receiver class def).
+			if d := saScopeOrHarvestClassDef(scope, ref.TypeName.Text(), scope.classes[className]); d != nil {
 				// Interface return types count as instance returns too
 				// (JEV iface_objectliteral 1.0): a recorded interface
 				// layout is a valid instance layout, same as a class.
@@ -2849,6 +2854,21 @@ func saStaticInstClass(e *ast.Node, scope *saScope) string {
 		pa := ce.Expression.AsPropertyAccessExpression()
 		if pa.QuestionDotToken != nil || pa.Name() == nil {
 			return ""
+		}
+		// Static leaf (GATE-B): an unshadowed class-name Identifier
+		// base resolves through staticMethods, not methods. The
+		// Identifier arm above stays bound-instances only; the
+		// class-name check lives here so the two existing call
+		// sites keep their contract.
+		if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+			rn := pa.Expression.Text()
+			if d, ok := scope.classes[rn]; ok && d != nil {
+				_, inTypes := scope.types[rn]
+				_, inFuncs := scope.funcs[rn]
+				if !inTypes && !inFuncs {
+					return saMethodInstReturn(d.staticMethods[pa.Name().Text()], rn, scope)
+				}
+			}
 		}
 		base := saStaticInstClass(pa.Expression, scope)
 		if base == "" {
@@ -7818,7 +7838,12 @@ func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 			return "", nil, "void call cannot be an instance base"
 		}
 		if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
-			if def, ok := scope.classes[k[5:]]; ok {
+			// Statics gate (JEV st_follow2_fifth fifth_site):
+			// the call-result def may be an interface the
+			// caller did not import (cross-file static chain
+			// base); fall back to harvest (nil anchor — no
+			// receiver class def is at hand in this arm).
+			if def := saScopeOrHarvestClassDef(scope, k[5:], nil); def != nil {
 				return op, def, ""
 			}
 			return "", nil, "unknown class " + k[5:]

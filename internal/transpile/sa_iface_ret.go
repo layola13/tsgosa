@@ -749,6 +749,13 @@ type saRetWalker struct {
 	// for all R0/P0/P1/fields calls.
 	methodClass  string
 	methodStatic bool
+	// params is Phase M only: the analyzing method's parameter
+	// names, for the GATE-B static-case full-shadowing exclusion
+	// (a param shadowing a class name must never resolve as the
+	// class — s_static_paramshadow). Set from saAnalyzeMethodReturns
+	// paramNames; nil for non-method walks (map reads on nil are
+	// safe, so the exclusion degrades to absent).
+	params map[string]bool
 }
 
 func saRetCopyShadow(in map[string]bool) map[string]bool {
@@ -785,7 +792,7 @@ func (w *saRetWalker) walkList(stmts []*ast.Node, depth int, shadowed map[string
 		case ast.KindReturnStatement:
 			if rs := st.AsReturnStatement(); rs != nil {
 				if w.methodMode {
-					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, w.methodClass, w.methodStatic))
+					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, w.methodClass, w.methodStatic, w.params))
 				} else {
 					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, &w.litSeq, w.forbidden))
 				}
@@ -906,7 +913,7 @@ func (w *saRetWalker) bindVarDecl(st *ast.Node) {
 			continue
 		}
 		if w.methodMode {
-			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf, w.methodClass, w.methodStatic, w.retIface); ok {
+			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf, w.methodClass, w.methodStatic, w.retIface, w.params, nil); ok {
 				w.entries[name] = e
 			}
 		} else if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {

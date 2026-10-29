@@ -453,6 +453,7 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 		methodMode:   true,
 		methodClass:  className,
 		methodStatic: isStatic,
+		params:       paramNameSet(paramNames),
 	}
 	w.walkList(stmts, 0, nil)
 	if !w.ok || len(w.paths) == 0 {
@@ -496,13 +497,14 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 // Parent-chain walk override-shadows, missing methodProv entry stops
 // the walk. Returns the inner prov class and the inner method's
 // declared return kind ("inst:"+iface), or ok=false. The walk reads
-// def.methods (instance) only; the method name must be a plain
-// identifier (never `#`).
-func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool) (string, string, bool) {
-	return saMethodCallProvBudget(ce, entries, classes, analyzingClass, isStatic, 2)
+// def.methods (instance) on the instance path and def.staticMethods
+// on the static path (GATE-B: unshadowed class-name receiver); the
+// method name must be a plain identifier (never `#`).
+func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool) (string, string, bool) {
+	return saMethodCallProvBudget(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, 2)
 }
 
-func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int) (string, string, bool) {
+func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int) (string, string, bool) {
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return "", "", false
 	}
@@ -524,6 +526,7 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 		return "", "", false
 	}
 	var startClass string
+	var staticWalk bool
 	switch recv.Kind {
 	case ast.KindThisKeyword:
 		if isStatic || analyzingClass == "" {
@@ -548,9 +551,30 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 	case ast.KindIdentifier:
 		e, ok := entries[recv.Text()]
 		if !ok || e.class == "" {
-			return "", "", false
+			// Static case (GATE-B): fires ONLY when the name
+			// is absent from entries + funcs + params +
+			// shadowed AND names a concrete class in classes.
+			// The full-shadowing exclusion is a soundness rule
+			// (s_static_paramshadow): a param shadowing the
+			// class name must never resolve as the class.
+			if _, inFuncs := funcs[recv.Text()]; inFuncs {
+				return "", "", false
+			}
+			if params[recv.Text()] {
+				return "", "", false
+			}
+			if shadowed[recv.Text()] {
+				return "", "", false
+			}
+			def, ok := classes[recv.Text()]
+			if !ok || def == nil || def.isIface || def.isAbstract {
+				return "", "", false
+			}
+			startClass = recv.Text()
+			staticWalk = true
+		} else {
+			startClass = e.class
 		}
-		startClass = e.class
 	case ast.KindCallExpression:
 		// Chain receivers: one budgeted peel. Recursing through the
 		// core itself re-applies the guard checks (unguarded CE + PA,
@@ -564,7 +588,7 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 		if recvCE == nil {
 			return "", "", false
 		}
-		innerProv, _, ok := saMethodCallProvBudget(recvCE, entries, classes, analyzingClass, isStatic, peels-1)
+		innerProv, _, ok := saMethodCallProvBudget(recvCE, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, peels-1)
 		if !ok || innerProv == "" {
 			return "", "", false
 		}
@@ -583,7 +607,15 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 		if !ok || def == nil {
 			return "", "", false
 		}
-		mn, ok := def.methods[mname]
+		// Static path (GATE-B): the walk consults staticMethods
+		// (parent chain included); the instance path is unchanged.
+		// (ok is already declared by the def lookup above.)
+		var mn *ast.Node
+		if staticWalk {
+			mn, ok = def.staticMethods[mname]
+		} else {
+			mn, ok = def.methods[mname]
+		}
 		if ok && mn != nil {
 			prov, ok := def.methodProv[mname]
 			if !ok || prov == "" {
@@ -618,7 +650,7 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 // yield no entry (field/litFn origins are all deferred in v1).
 // analyzingClass/isStatic/retIface are the enclosing method's (the
 // walker carries them; the sole caller is the methodMode branch).
-func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, analyzingClass string, isStatic bool, retIface string) (saIfaceRetEntry, bool) {
+func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, analyzingClass string, isStatic bool, retIface string, params map[string]bool, shadowed map[string]bool) (saIfaceRetEntry, bool) {
 	if init == nil {
 		return saIfaceRetEntry{}, false
 	}
@@ -665,7 +697,7 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 		// same-interface + methodOnly guards are enforced here at
 		// record time (see the function comment).
 		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
-			prov, innerKind, ok := saMethodCallProv(ce, entries, classes, analyzingClass, isStatic)
+			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic)
 			if !ok || innerKind == "" {
 				return saIfaceRetEntry{}, false
 			}
@@ -703,7 +735,7 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 // are true handles via the ladder's alias discipline, M0 probe
 // §2.2). Param, field, and litFn origins all yield unknown (each
 // deferred in v1); the isLit rejection stays.
-func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, analyzingClass string, isStatic bool) saIfaceRetPath {
+func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, analyzingClass string, isStatic bool, params map[string]bool) saIfaceRetPath {
 	unknown := saIfaceRetPath{unknown: true}
 	if expr == nil {
 		return unknown
@@ -783,7 +815,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		// prov exists AND inner declared iface == outer retIface
 		// AND outer iface method-only; otherwise unknown.
 		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
-			prov, innerKind, ok := saMethodCallProv(ce, entries, classes, analyzingClass, isStatic)
+			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic)
 			if !ok || innerKind != retKind {
 				return unknown
 			}
@@ -1061,6 +1093,7 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	var startClass string
 	var chainProv string
 	var chainLink bool
+	var staticWalk bool
 	switch {
 	case recv.Kind == ast.KindThisKeyword:
 		if scope.thisSelf == "" || scope.thisClass == "" {
@@ -1069,39 +1102,43 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		startClass = scope.thisClass
 	case recv.Kind == ast.KindIdentifier:
 		rn := recv.Text()
-		// Static receivers are deferred (dc_static): a class name
-		// unshadowed in types and funcs must NOT resolve here.
+		// Static case (GATE-B): an unshadowed class name resolves
+		// through the staticMethods walk below. This REPLACES the
+		// old explicit static refusal (dc_static deferred).
 		if def, ok := scope.classes[rn]; ok && def != nil {
-			if _, shadowed := scope.types[rn]; !shadowed {
-				if _, shadowed := scope.funcs[rn]; !shadowed {
+			_, inTypes := scope.types[rn]
+			_, inFuncs := scope.funcs[rn]
+			if !inTypes && !inFuncs {
+				startClass = rn
+				staticWalk = true
+			}
+		}
+		if !staticWalk {
+			k, ok := scope.types[rn]
+			if !ok || len(k) <= 5 || k[:5] != "inst:" {
+				return "", nil, false
+			}
+			kind := k[5:]
+			d, ok := scope.classes[kind]
+			if !ok || d == nil {
+				return "", nil, false
+			}
+			if d.isIface {
+				prov, ok := scope.ifaceProv[rn]
+				if !ok || prov == "" {
 					return "", nil, false
 				}
+				pd, ok := scope.classes[prov]
+				if !ok || pd == nil || pd.isIface || pd.isAbstract {
+					return "", nil, false
+				}
+				startClass = prov
+			} else {
+				if d.isAbstract {
+					return "", nil, false
+				}
+				startClass = kind
 			}
-		}
-		k, ok := scope.types[rn]
-		if !ok || len(k) <= 5 || k[:5] != "inst:" {
-			return "", nil, false
-		}
-		kind := k[5:]
-		d, ok := scope.classes[kind]
-		if !ok || d == nil {
-			return "", nil, false
-		}
-		if d.isIface {
-			prov, ok := scope.ifaceProv[rn]
-			if !ok || prov == "" {
-				return "", nil, false
-			}
-			pd, ok := scope.classes[prov]
-			if !ok || pd == nil || pd.isIface || pd.isAbstract {
-				return "", nil, false
-			}
-			startClass = prov
-		} else {
-			if d.isAbstract {
-				return "", nil, false
-			}
-			startClass = kind
 		}
 	case recv.Kind == ast.KindNewExpression:
 		cname, msg := saNewStmtClassName(recv.AsNewExpression())
@@ -1167,7 +1204,16 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		if def == nil {
 			return "", nil, false
 		}
-		mn, ok := def.methods[innerMethod]
+		// Static path (GATE-B): the walk consults staticMethods
+		// (parent chain included — inherited statics resolve at
+		// the ancestor); the instance path is unchanged.
+		var mn *ast.Node
+		var ok bool
+		if staticWalk {
+			mn, ok = def.staticMethods[innerMethod]
+		} else {
+			mn, ok = def.methods[innerMethod]
+		}
 		if ok && mn != nil {
 			p, ok := def.methodProv[innerMethod]
 			if !ok || p == "" {
