@@ -906,7 +906,7 @@ func (w *saRetWalker) bindVarDecl(st *ast.Node) {
 			continue
 		}
 		if w.methodMode {
-			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf); ok {
+			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf, w.methodClass, w.methodStatic, w.retIface); ok {
 				w.entries[name] = e
 			}
 		} else if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {
