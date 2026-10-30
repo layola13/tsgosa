@@ -2718,8 +2718,11 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 		// `new C()` 临时实例基（`new C().m()`；类已记布局才放行，构造与
 		// 归属复用 saLowerNewStmt，与 step419 实参 new 形同核）。
 		if cname, msg := saNewStmtClassName(e.AsNewExpression()); msg == "" {
-			def, ok := scope.classes[cname]
-			return ok && !def.isIface && !def.isAbstract
+			// Third-file-import bodies (iface_thirdimport): the New
+			// gate's class may live in a third file under the
+			// defining-file swap; fall back to harvest (nil anchor).
+			def := saScopeOrHarvestClassDef(scope, cname, nil)
+			return def != nil && !def.isIface && !def.isAbstract
 		}
 	}
 	if e != nil && e.Kind == ast.KindCallExpression {
@@ -2874,7 +2877,10 @@ func saStaticInstClass(e *ast.Node, scope *saScope) string {
 		if base == "" {
 			return ""
 		}
-		if d, ok := scope.classes[base]; ok {
+		// Third-file-import bodies (iface_thirdimport): the static
+		// chain's base class may live in a third file under the
+		// defining-file swap; fall back to harvest (nil anchor).
+		if d := saScopeOrHarvestClassDef(scope, base, nil); d != nil {
 			return saMethodInstReturn(d.methods[pa.Name().Text()], base, scope)
 		}
 	}
@@ -2941,7 +2947,34 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 	default:
 		return "method instance return must be this, a bound instance, new or an instance call"
 	}
-	if !saIsDerivedFrom(scope.classes, have, want) && !(saIfaceMethodOnly(scope.classes, want) && (saClassSatisfies(scope.classes, have, want) || saClassStructurallySatisfies(scope.classes, have, want))) {
+	// Third-file-import bodies, seventh site (JEV ti_follow_seventh
+	// harvest_ladder): the M0 ladder check consults the plain
+	// swap-scope map and fails closed on third-file names, even
+	// though the six surgical sites already resolved them. Resolve
+	// have/want through the shared harvest lookup (nil anchor, same
+	// as the other sites) before the four map checks. The augmented
+	// map is local to this check and is never written back to
+	// scope.classes (the swap still clears); when both names are
+	// already in scope, the check runs on scope.classes unchanged.
+	checkClasses := scope.classes
+	haveDef := saScopeOrHarvestClassDef(scope, have, nil)
+	wantDef := saScopeOrHarvestClassDef(scope, want, nil)
+	_, haveInScope := scope.classes[have]
+	_, wantInScope := scope.classes[want]
+	if (haveDef != nil && !haveInScope) || (wantDef != nil && !wantInScope) {
+		aug := make(map[string]*saClassDef, len(scope.classes)+2)
+		for k, v := range scope.classes {
+			aug[k] = v
+		}
+		if haveDef != nil && !haveInScope {
+			aug[have] = haveDef
+		}
+		if wantDef != nil && !wantInScope {
+			aug[want] = wantDef
+		}
+		checkClasses = aug
+	}
+	if !saIsDerivedFrom(checkClasses, have, want) && !(saIfaceMethodOnly(checkClasses, want) && (saClassSatisfies(checkClasses, have, want) || saClassStructurallySatisfies(checkClasses, have, want))) {
 		return "method instance return class mismatch (want " + want + ")"
 	}
 	mode := 2
@@ -7817,7 +7850,10 @@ func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 		if msg != "" {
 			return "", nil, msg
 		}
-		return h, scope.classes[cname], ""
+		// Third-file-import bodies (iface_thirdimport): the New
+		// arm's def may live in a third file under the
+		// defining-file swap; fall back to harvest (nil anchor).
+		return h, saScopeOrHarvestClassDef(scope, cname, nil), ""
 	}
 	if e != nil && e.Kind == ast.KindCallExpression {
 		// 调用结果基（`M.get(k).f`；求值后按记种消解布局；上游 lowerExpr 通用基同形）。
@@ -7858,7 +7894,10 @@ func saInstBaseElem(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 		return "", nil, msg
 	}
 	if k, ok := scope.types[op]; ok && len(k) > 5 && k[:5] == "inst:" {
-		if def, ok := scope.classes[k[5:]]; ok {
+		// Third-file-import bodies (iface_thirdimport): the
+		// element-access def may live in a third file under the
+		// defining-file swap; fall back to harvest (nil anchor).
+		if def := saScopeOrHarvestClassDef(scope, k[5:], nil); def != nil {
 			return op, def, ""
 		}
 		return "", nil, "unknown class " + k[5:]
@@ -8209,8 +8248,12 @@ func saLowerNewStmt(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos f
 }
 
 func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
-	def, ok := scope.classes[name]
-	if !ok {
+	// Third-file-import bodies (iface_thirdimport): the constructed
+	// class may live in a third file under the defining-file swap;
+	// fall back to harvest (nil anchor). The !ok branch keeps its
+	// std-opaque check, then `unknown class <name>`.
+	def := saScopeOrHarvestClassDef(scope, name, nil)
+	if def == nil {
 		if saIsStdOpaqueClass(name) {
 			return saLowerStdOpaqueNew(w, name, ce, scope, pos, refusals, nextTemp)
 		}

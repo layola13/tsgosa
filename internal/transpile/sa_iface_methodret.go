@@ -150,6 +150,72 @@ func saScopeOrHarvestClassDef(scope *saScope, name string, anchor *saClassDef) *
 	return saHarvestClassDef(scope, name, anchor)
 }
 
+// saAnalysisHarvestIface resolves a class name for method-return
+// analysis through link.classHarvests, mirroring saHarvestClassDef
+// step 2 exactly: program-wide exactly-one file defining the name,
+// exported-only, plain names only. It is scope-free because analysis
+// has no saScope; it consults ONLY the fallback (the caller checks
+// caller-scope classes first). Returns nil on ambiguity, absence,
+// non-exported, or dotted names. (M1, JEV ti_ext_m1 analysis_harvest:
+// fallback-only; existing checks run unchanged on the resolved def.)
+func saAnalysisHarvestIface(link *saFileLink, name string) *saClassDef {
+	if link == nil || name == "" || strings.Contains(name, ".") {
+		return nil
+	}
+	harvests := link.classHarvests
+	if len(harvests) == 0 {
+		return nil
+	}
+	files := make([]string, 0, len(harvests))
+	for f := range harvests {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	var found *saClassDef
+	for _, f := range files {
+		if pc, ok := harvests[f][name]; ok && pc.def != nil && pc.exported {
+			if found != nil {
+				return nil
+			}
+			found = pc.def
+		}
+	}
+	return found
+}
+
+// saMethodDeclaredIfaceHarvest is saMethodDeclaredIface with the M1
+// fallback: when the method's declared interface return is missing
+// from the analysis classes map, resolve it program-wide unique +
+// exported-only via link.classHarvests and return its kind plus the
+// resolved def (nil when no fallback fired). Existing
+// saMethodDeclaredIface semantics are unchanged; the fallback fires
+// only on a missing name, and only for an interface def.
+func saMethodDeclaredIfaceHarvest(mn *ast.Node, classes map[string]*saClassDef, link *saFileLink) (string, *saClassDef) {
+	if dk := saMethodDeclaredIface(mn, classes); dk != "" {
+		return dk, nil
+	}
+	if mn == nil || mn.Kind != ast.KindMethodDeclaration {
+		return "", nil
+	}
+	md := mn.AsMethodDeclaration()
+	if md == nil || md.Type == nil || md.Type.Kind != ast.KindTypeReference {
+		return "", nil
+	}
+	ref := md.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return "", nil
+	}
+	name := ref.TypeName.Text()
+	if _, ok := classes[name]; ok {
+		return "", nil
+	}
+	def := saAnalysisHarvestIface(link, name)
+	if def == nil || !def.isIface {
+		return "", nil
+	}
+	return "inst:" + name, def
+}
+
 // saAttachIfaceDeclaredHarvest checks a method node's declared
 // interface return against link.classHarvests: the walk-def's defining
 // file first, then program-wide exactly-one file, both requiring
@@ -272,7 +338,7 @@ func saMethodDeclaredIface(mn *ast.Node, classes map[string]*saClassDef) string 
 // recording read only stable entries, so later growth cannot
 // invalidate it; a method unknown in round N (missing inner) may
 // resolve in round N+1. Monotone add-only; agreement preserved.
-func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) {
+func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) {
 	if sf == nil || funcs == nil || classes == nil {
 		return
 	}
@@ -292,7 +358,7 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 		total += len(def.methods) + len(def.staticMethods)
 	}
 	for round := 0; round <= total; round++ {
-		if saAnalyzeMethodIfaceProvRound(sf, funcs, classes, aliasOf) == 0 {
+		if saAnalyzeMethodIfaceProvRound(sf, funcs, classes, aliasOf, link) == 0 {
 			return
 		}
 	}
@@ -307,7 +373,7 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 // (a name recorded in an earlier round is never revisited, so a
 // later-resolving same-name method of the other kind cannot
 // invalidate it).
-func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) int {
+func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) int {
 	added := 0
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st == nil || st.Kind != ast.KindClassDeclaration {
@@ -368,9 +434,22 @@ func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSi
 				if md.TypeParameters != nil && len(md.TypeParameters.Nodes) > 0 {
 					continue
 				}
-				dk := saMethodDeclaredIface(mn, classes)
+				dk, harvested := saMethodDeclaredIfaceHarvest(mn, classes, link)
 				if dk == "" {
 					continue
+				}
+				// M1: when the declared return interface was missing
+				// from the analysis classes and resolved via harvest,
+				// analyze against a COPY augmented with the resolved
+				// def, so every downstream return-interface check runs
+				// unchanged. The shared classes map is never mutated.
+				effClasses := classes
+				if harvested != nil {
+					effClasses = make(map[string]*saClassDef, len(classes)+1)
+					for k, v := range classes {
+						effClasses[k] = v
+					}
+					effClasses[dk[5:]] = harvested
 				}
 				var paramNodes []*ast.Node
 				if md.Parameters != nil {
@@ -384,7 +463,7 @@ func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSi
 				if body == nil || body.Kind != ast.KindBlock {
 					continue
 				}
-				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, classes, aliasOf, name, src.isStatic)
+				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, effClasses, aliasOf, name, src.isStatic)
 				if !ok {
 					continue
 				}
@@ -642,12 +721,14 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 // method-call init also classifies via saMethodCallProv: entry =
 // {class: inner prov class, kind: "inst:" + inner declared iface}
 // (JEV mc_init_kind, declared_kind), guarded at record time by
-// same-interface match (inner declared kind == the enclosing
-// method's retKind) AND methodOnly — the guard must live here
-// because the identifier passthrough enforces kind == retKind but has
-// no methodOnly check, so a fieldful init-mediated path would
-// otherwise leak. Field reads, object literals, and everything else
-// yield no entry (field/litFn origins are all deferred in v1).
+// methodOnly only (JEV ti_ext_m2 initguard_form: the innerKind ==
+// inst:retIface equality is dropped — the chain-return path
+// re-validates kind at the return, and the identifier passthrough
+// still enforces kind == retKind — so the methodOnly guard must live
+// here because the identifier passthrough has no methodOnly check,
+// and a fieldful init-mediated path would otherwise leak. Field reads,
+// object literals, and everything else yield no entry (field/litFn
+// origins are all deferred in v1).
 // analyzingClass/isStatic/retIface are the enclosing method's (the
 // walker carries them; the sole caller is the methodMode branch).
 func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, analyzingClass string, isStatic bool, retIface string, params map[string]bool, shadowed map[string]bool) (saIfaceRetEntry, bool) {
@@ -694,14 +775,15 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 		}
 		// Phase MC method-call arm (see saMethodCallProv): the
 		// entry kind is the inner DECLARED kind, and the
-		// same-interface + methodOnly guards are enforced here at
-		// record time (see the function comment).
+		// methodOnly guard is enforced here at record time (see the
+		// function comment; kind equality is enforced at the return,
+		// not here, per JEV ti_ext_m2 initguard_form).
 		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
 			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic)
 			if !ok || innerKind == "" {
 				return saIfaceRetEntry{}, false
 			}
-			if innerKind != "inst:"+retIface || !saIfaceMethodOnly(classes, retIface) {
+			if !saIfaceMethodOnly(classes, retIface) {
 				return saIfaceRetEntry{}, false
 			}
 			return saIfaceRetEntry{class: prov, kind: innerKind}, true
