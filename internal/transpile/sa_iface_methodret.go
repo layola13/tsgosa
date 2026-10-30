@@ -1535,6 +1535,41 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 		if ok && mn != nil {
 			p, ok := def.methodProv[innerMethod]
 			if !ok || p == "" {
+				// Chain-prov (iface_chainprov, JEV cp_form concrete_link_core):
+				// when methodProv is absent, consult the method's declared
+				// concrete return instead of failing closed. NOTE on the
+				// helper shape: saMethodReturnKind cannot serve here — it
+				// returns saAnnotKind, which yields ("", false) for plain
+				// named TypeReferences (verified by read of saAnnotKind's
+				// TypeReference arm); it never yields "inst:<C>". The
+				// declared return name is therefore read directly with
+				// saMethodDeclaredIface's discipline (plain TypeReference
+				// identifier, no type arguments). Instance path only
+				// (skip when staticWalk); interface/unknown/absent
+				// returns still fail closed, unchanged.
+				if !staticWalk {
+					var retType *ast.TypeNode
+					switch mn.Kind {
+					case ast.KindMethodDeclaration:
+						if md := mn.AsMethodDeclaration(); md != nil {
+							retType = md.Type
+						}
+					case ast.KindGetAccessor:
+						if gd := mn.AsGetAccessorDeclaration(); gd != nil {
+							retType = gd.Type
+						}
+					}
+					if retType != nil && retType.Kind == ast.KindTypeReference {
+						if ref := retType.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+							retName := ref.TypeName.Text()
+							if cd := saScopeOrHarvestClassDef(scope, retName, def); cd != nil && !cd.isIface && !cd.isAbstract {
+								prov = retName
+								calleeDef = def
+								break
+							}
+						}
+					}
+				}
 				return "", nil, false
 			}
 			prov = p
