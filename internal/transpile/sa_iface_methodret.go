@@ -183,7 +183,234 @@ func saAnalysisHarvestIface(link *saFileLink, name string) *saClassDef {
 	return found
 }
 
-// saMethodDeclaredIfaceHarvest is saMethodDeclaredIface with the M1
+// saLazyIfaceLayout resolves an interface layout on demand for the M1
+// fallback, from the driver's already-parsed ASTs. It fires ONLY when the
+// harvest step has already missed (see saMethodDeclaredIfaceHarvest), so
+// programs whose harvests resolve never observe it. Contract, mirroring
+// saAnalysisHarvestIface: top-level resolution is program-wide unique +
+// exported-only + plain names only (ambiguous/absent/non-exported/dotted
+// -> nil, fail closed). The returned def is an ANALYSIS-ONLY layout: it
+// feeds the analysis checks through the existing effClasses copy and
+// never escapes analysis (recorded prov entries are strings).
+//
+// The def replicates lowering's saRecordIface layout for the checked
+// fields (isIface, fields name set, methods name set, parent,
+// implements): methods are the interface's OWN method signatures only
+// (lowering's extends block flattens FIELDS, not methods); fields are
+// own property signatures plus inherited base fields, in extends order
+// with first-wins dedup; parent is "" and implements is nil (lowering
+// never sets them on interface defs). Heritage bases resolve
+// recursively through the index + parsed ASTs, memoized per build.
+// Cycle safety is fail-closed, not best-effort: a heritage cycle
+// anywhere in the resolved subtree taints the whole resolution, which
+// returns nil and memoizes nothing on that path (lowering's single-pass
+// file-order recording has no cycle semantics to replicate, so a cyclic
+// layout is never trusted). Two faithful refinements beyond a bare
+// index lookup, both mirroring lowering's defining-file recording:
+// (a) a heritage base declared in the SAME file as the derived
+// interface resolves regardless of export, but ONLY if declared BEFORE
+// it (lowering records interfaces in file order: a base declared after
+// its derived type drops its fields); (b) a heritage base element with
+// type arguments fails closed for that base only (lowering instantiates
+// generic bases, which the lazy path does not replicate; the miss
+// leaves analysis unchanged, never a wrong layout). A non-interface
+// declaration (class) resolves to nil here: the M1 caller rejects
+// non-iface defs anyway, so this is behaviorally identical at the call
+// site.
+func saLazyIfaceLayout(link *saFileLink, name string) *saClassDef {
+	if link == nil || link.lazyIndex == nil || link.lazyParsed == nil {
+		return nil
+	}
+	if name == "" || strings.Contains(name, ".") {
+		return nil
+	}
+	f, ok := link.lazyIndex[name]
+	if !ok || f == "" {
+		return nil
+	}
+	def, tainted := saLazyIfaceLayoutInFile(link, f, name)
+	if tainted {
+		return nil
+	}
+	return def
+}
+
+// saLazyIfaceLayoutInFile builds the lazy layout for the interface
+// named name declared in file f (memoized on file+"\x00"+name).
+// The second result reports heritage-cycle taint: true means some base
+// resolution hit an in-progress node, and the caller must discard the
+// def (nil is returned alongside) and memoize nothing on that path.
+// Ordinary misses (absent/ambiguous/non-iface/generic base) are NOT
+// taint: lowering skips such bases too, so the derived def completes
+// without those fields.
+func saLazyIfaceLayoutInFile(link *saFileLink, f, name string) (*saClassDef, bool) {
+	key := f + "\x00" + name
+	if link.lazyMemo != nil {
+		if d, ok := link.lazyMemo[key]; ok {
+			return d, false
+		}
+	}
+	if link.lazyActive[key] {
+		return nil, true
+	}
+	decl := saLazyFindIfaceDecl(link, f, name)
+	if decl == nil {
+		return nil, false
+	}
+	if link.lazyActive == nil {
+		link.lazyActive = map[string]bool{}
+	}
+	link.lazyActive[key] = true
+	defer delete(link.lazyActive, key)
+	def := &saClassDef{name: name, methods: map[string]*ast.Node{}, isIface: true}
+	seen := map[string]bool{}
+	// Heritage fields first (extends order, first-wins), mirroring
+	// saRecordIface's extends block; own fields below skip duplicates.
+	if d := decl.AsInterfaceDeclaration(); d != nil && d.HeritageClauses != nil {
+		for _, h := range d.HeritageClauses.Nodes {
+			if h == nil || h.Kind != ast.KindHeritageClause || h.AsHeritageClause().Token != ast.KindExtendsKeyword {
+				continue
+			}
+			for _, el := range h.AsHeritageClause().Types.Nodes {
+				base := saLazyHeritageBaseName(el)
+				if base == "" {
+					continue
+				}
+				bdef, tainted := saLazyHeritageBase(link, f, decl, base)
+				if tainted {
+					return nil, true
+				}
+				if bdef == nil || !bdef.isIface {
+					continue
+				}
+				for _, fld := range bdef.fields {
+					if seen[fld.name] {
+						continue
+					}
+					seen[fld.name] = true
+					def.fields = append(def.fields, saClassField{name: fld.name})
+				}
+			}
+		}
+	}
+	// Own members: property signatures become fields, method signatures
+	// become methods (name sets only are consumed by the checks).
+	if d := decl.AsInterfaceDeclaration(); d != nil {
+		for _, m := range d.Members.Nodes {
+			if m == nil {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				continue
+			}
+			switch m.Kind {
+			case ast.KindPropertySignature:
+				if seen[fn.Text()] {
+					continue
+				}
+				seen[fn.Text()] = true
+				def.fields = append(def.fields, saClassField{name: fn.Text()})
+			case ast.KindMethodSignature:
+				def.methods[fn.Text()] = m
+			}
+		}
+	}
+	if link.lazyMemo == nil {
+		link.lazyMemo = map[string]*saClassDef{}
+	}
+	link.lazyMemo[key] = def
+	return def, false
+}
+
+// saLazyFindIfaceDecl returns the top-level InterfaceDeclaration node
+// named name in file f's parsed AST, or nil (absent, or a class rather
+// than an interface).
+func saLazyFindIfaceDecl(link *saFileLink, f, name string) *ast.Node {
+	sf := link.lazyParsed[f]
+	if sf == nil {
+		return nil
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil || st.Kind != ast.KindInterfaceDeclaration {
+			continue
+		}
+		nm := st.Name()
+		if nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != name {
+			continue
+		}
+		return st
+	}
+	return nil
+}
+
+// saLazyHeritageBaseName extracts a plain heritage base name from an
+// extends element, or "" when the element is not a plain identifier
+// base (type arguments fail closed: lowering instantiates generic
+// bases, which the lazy path does not replicate).
+func saLazyHeritageBaseName(el *ast.Node) string {
+	if el == nil {
+		return ""
+	}
+	switch el.Kind {
+	case ast.KindExpressionWithTypeArguments:
+		ex := el.AsExpressionWithTypeArguments()
+		if ex == nil || ex.Expression == nil || ex.Expression.Kind != ast.KindIdentifier {
+			return ""
+		}
+		if ex.TypeArguments != nil && len(ex.TypeArguments.Nodes) > 0 {
+			return ""
+		}
+		return ex.Expression.Text()
+	case ast.KindTypeReference:
+		tn := el.AsTypeReferenceNode()
+		if tn == nil || tn.TypeName == nil || tn.TypeName.Kind != ast.KindIdentifier {
+			return ""
+		}
+		if tn.TypeArguments != nil && len(tn.TypeArguments.Nodes) > 0 {
+			return ""
+		}
+		return tn.TypeName.Text()
+	case ast.KindIdentifier:
+		return el.Text()
+	}
+	return ""
+}
+
+// saLazyHeritageBase resolves one heritage base for an interface
+// declared in file f (derived node decl): a base declared in f itself
+// resolves regardless of export but only when declared BEFORE decl
+// (lowering's file-order recording); otherwise the base resolves
+// through the exported index (unique only, ambiguous -> nil). The base
+// must be an interface (lowering skips non-iface bases). The second
+// result reports heritage-cycle taint (see saLazyIfaceLayoutInFile).
+func saLazyHeritageBase(link *saFileLink, f string, decl *ast.Node, base string) (*saClassDef, bool) {
+	if sf := link.lazyParsed[f]; sf != nil {
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || st.Kind != ast.KindInterfaceDeclaration {
+				continue
+			}
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier || nm.Text() != base {
+				continue
+			}
+			// File-order visibility: a base declared after its derived
+			// type drops its fields in lowering, so it contributes
+			// nothing here either — unless the same name is imported
+			// (preseed), so fall through to the index lookup below
+			// instead of returning nil outright.
+			if decl != nil && st.Pos() < decl.Pos() {
+				return saLazyIfaceLayoutInFile(link, f, base)
+			}
+		}
+	}
+	bf, ok := link.lazyIndex[base]
+	if !ok || bf == "" {
+		return nil, false
+	}
+	return saLazyIfaceLayoutInFile(link, bf, base)
+}
+
 // fallback: when the method's declared interface return is missing
 // from the analysis classes map, resolve it program-wide unique +
 // exported-only via link.classHarvests and return its kind plus the
@@ -210,6 +437,13 @@ func saMethodDeclaredIfaceHarvest(mn *ast.Node, classes map[string]*saClassDef, 
 		return "", nil
 	}
 	def := saAnalysisHarvestIface(link, name)
+	if def == nil {
+		// Timing slice: lazy layout-on-demand, second fallback step
+		// ONLY (the harvest step above is unchanged). Fires only on a
+		// harvest miss, so programs whose harvests resolve never
+		// observe it; the isIface gate below still applies.
+		def = saLazyIfaceLayout(link, name)
+	}
 	if def == nil || !def.isIface {
 		return "", nil
 	}

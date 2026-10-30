@@ -449,6 +449,10 @@ type saFileLink struct {
 	harvest          map[string]saProgFunc                 // out: own top-level functions for dependents
 	classHarvest     map[string]saProgClass                // out: own top-level classes for dependents
 	classHarvests    map[string]map[string]saProgClass     // all files: target -> name -> harvested class (driver fills)
+	lazyIndex        map[string]string                     // timing slice: exported name -> defining file over REACHABLE files only (driver fills, shared read-only); "" = ambiguous (lazy fails closed)
+	lazyParsed       map[string]*ast.SourceFile            // timing slice: driver parsed ASTs (shared read-only, for lazy heritage resolution)
+	lazyMemo         map[string]*saClassDef                // timing slice: (file+"\x00"+name) -> lazy interface layout (driver fills, shared memoized)
+	lazyActive       map[string]bool                       // timing slice: in-progress lazy layouts (heritage-cycle guard, driver fills)
 	classSeed        map[string]*saClassDef                // out/in: imported local class name -> defining layout
 	enumHarvest      map[string]saProgEnum                 // out: own top-level enums for dependents
 	enumHarvests     map[string]map[string]saProgEnum      // all files: target -> name -> harvested enum (driver fills)
@@ -8531,6 +8535,45 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 	topRegexHarvests := map[string]map[string]saTopRegex{}
 	topMapHarvests := map[string]map[string]saTopMap{}
 	declHarvests := map[string]map[string]saFuncSig{}
+	// Timing slice (lazy layout-on-demand): name -> defining-file index
+	// over REACHABLE files only, built once from the driver's already-
+	// parsed ASTs. Only top-level ClassDeclaration / InterfaceDeclaration
+	// nodes with a plain identifier name AND the export modifier are
+	// indexed; a name claimed by two different files maps to ""
+	// (ambiguous -> lazy resolution fails closed, mirroring harvest
+	// uniqueness). Unreachable files are never indexed: they are outside
+	// the program's harvest universe and must not shadow or ambiguate a
+	// lazy resolution. No change to the lowering loop, the DFS, the retry
+	// pass, or recordDiags.
+	lazyIndex := map[string]string{}
+	for _, p := range reachable {
+		sf := parsed[p]
+		if sf == nil {
+			continue
+		}
+		for _, st := range sf.AsSourceFile().Statements.Nodes {
+			if st == nil || (st.Kind != ast.KindClassDeclaration && st.Kind != ast.KindInterfaceDeclaration) {
+				continue
+			}
+			nm := st.Name()
+			if nm == nil || nm.Kind != ast.KindIdentifier {
+				continue
+			}
+			if !ast.HasModifier(st, ast.ModifierFlagsExport) {
+				continue
+			}
+			name := nm.Text()
+			if prev, ok := lazyIndex[name]; ok {
+				if prev != p {
+					lazyIndex[name] = ""
+				}
+				continue
+			}
+			lazyIndex[name] = p
+		}
+	}
+	lazyMemo := map[string]*saClassDef{}
+	lazyActive := map[string]bool{}
 	// lowerOne lowers one file with the currently accumulated harvests
 	// and records its harvests for dependents. It is called once per file
 	// in post-order, then at most once more per cycle file in the retry
@@ -8557,6 +8600,10 @@ func saLowerProgram(entry string, files map[string]string, dir string) *saProgRe
 			harvest:          map[string]saProgFunc{},
 			classHarvest:     map[string]saProgClass{},
 			classHarvests:    classHarvests,
+			lazyIndex:        lazyIndex,
+			lazyParsed:       parsed,
+			lazyMemo:         lazyMemo,
+			lazyActive:       lazyActive,
 			classSeed:        map[string]*saClassDef{},
 			enumHarvest:      map[string]saProgEnum{},
 			enumHarvests:     enumHarvests,
