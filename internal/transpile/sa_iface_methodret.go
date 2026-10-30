@@ -1348,13 +1348,14 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 // free-fn (bare-Identifier callee) links, guarded links, and
 // everything else. The parent-chain walk is override-shadows:
 // the first def holding the method node wins, and a missing
-// methodProv entry there STOPS the walk. The same-file bound
-// (dc_xfile same_file_only) applies to the single-level path
-// only: when the callee def pointer-searches
-// (saInlineFindDefFile precedent) to exactly one file that is
-// NOT the current lowering file (scope.link.self), the branch
-// is skipped; pointer-search failure (live same-file defs are
-// not harvest pointers) or a current-file resolution engages.
+// methodProv entry there STOPS the walk. GATE-C
+// (iface_directcall_xfile, JEV dcx_form bound_drop): the v1
+// same-file bound (dc_xfile same_file_only) is REMOVED —
+// the single-level path no longer vetoes a callee def that
+// pointer-searches to a file other than the current lowering
+// file; the walk's methodProv gate and the outer dispatch's
+// prov-def harvest (exported-only, unique) are the file
+// controls. Chain links were already unbounded.
 // Chain links carry NO pointer-search bound (iface_chain,
 // ch_xfile caller_scope_only): the only file control for a
 // chain is the DC-1 branch's caller-scope prov-def lookup.
@@ -1364,9 +1365,9 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 // and the caller falls through unchanged to the interface
 // message. Chain budget is cap_2 (iface_unbounded_chain, JEV
 // uc_depth): depth-3 chains resolve, depth-4 stays refused
-// (boundary at length 4); the single-level same-file bound is
-// bypassed only in chain context (scope.chainCtx) and stands
-// for standalone single-level dispatch.
+// (boundary at length 4); GATE-C removed the single-level
+// same-file bound, so standalone single-level dispatch resolves
+// cross-file exactly as chain links do.
 func saResolveDirectCallProv(scope *saScope, innerPA *ast.PropertyAccessExpression) (string, bool) {
 	prov, _, ok := saResolveDirectCallProvBudget(scope, innerPA, 2)
 	return prov, ok
@@ -1386,10 +1387,11 @@ func saResolveDirectCallProvDef(scope *saScope, innerPA *ast.PropertyAccessExpre
 // saResolveDirectCallProvBudget is the budgeted core behind
 // saResolveDirectCallProv: peels is the remaining Call-receiver
 // peel budget (2 for the call sites — cap_2 per JEV uc_depth).
-// The single-level same-file pointer-search bound applies except
-// in chain context (scope.chainCtx — iface_boundunif, JEV
-// bu_mechanism chain_context_threading) and except for chain
-// links (which always resolve unbounded).
+// GATE-C (iface_directcall_xfile, JEV dcx_form bound_drop):
+// the v1 single-level same-file pointer-search bound is
+// REMOVED — cross-file callee defs resolve on the single-level
+// path exactly as in chain context (scope.chainCtx) and for
+// chain links (which always resolved unbounded).
 // It also returns the def holding the resolved method node
 // (nil on failure); the recursive call's def is discarded — the
 // outer walk's def is the result, since attach re-walks from it
@@ -1544,22 +1546,16 @@ func saResolveDirectCallProvBudget(scope *saScope, innerPA *ast.PropertyAccessEx
 	if calleeDef == nil || prov == "" {
 		return "", nil, false
 	}
-	// Same-file bound (dc_xfile same_file_only), single-level
-	// path only: skip when the callee def resolves to exactly
-	// one file that is not the current lowering file; engage on
-	// pointer-search failure or a current-file resolution
-	// (mirrors saInlineOrigin's file-identity comparison,
-	// including the no-self guard). Chain links are unbounded
-	// (ch_xfile caller_scope_only) — the branch's caller-scope
-	// prov-def lookup is their only file control. Chain
-	// context (scope.chainCtx — iface_boundunif) bypasses the
-	// bound for single-level links lowered in receiver, const
-	// -init, or method-return position; standalone single-level
-	// dispatch keeps the bound.
-	if !chainLink && !scope.chainCtx && scope.link != nil && scope.link.self != "" {
-		if f, ok := saInlineFindDefFile(scope.link, calleeDef); ok && f != scope.link.self {
-			return "", nil, false
-		}
-	}
+	// GATE-C (iface_directcall_xfile, JEV dcx_form bound_drop):
+	// the v1 same-file bound (dc_xfile same_file_only) is
+	// REMOVED. The single-level path no longer vetoes a callee
+	// def that pointer-searches (saInlineFindDefFile) to exactly
+	// one file other than the current lowering file
+	// (scope.link.self); the walk's methodProv gate and the
+	// outer dispatch's prov-def harvest are the file controls.
+	// Chain links were already unbounded, and chain context
+	// (scope.chainCtx — iface_boundunif) already bypassed the
+	// bound; GATE-C extends that permission to standalone
+	// single-level dispatch. No other behavior changes here.
 	return prov, calleeDef, true
 }
