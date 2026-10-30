@@ -10026,6 +10026,41 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 	} else if ic := saMethodInstReturn(mn, className, scope); ic != "" {
 		wantKind = "inst:" + ic
 	}
+	// E1-blocker caller-scope fallback (iface_e1blocker, JEV
+	// core_caller_fallback): when the defining-namespace-first
+	// computation resolved nothing (wantKind still i32) under an
+	// installed swap, and the declared return is a plain-Identifier
+	// TypeReference with no type arguments (mirroring
+	// saMethodInstReturn's condition), fall back to the pre-swap
+	// caller scope. The return interface may be declared in the
+	// still-lowering caller file, which lowerOne has not harvested
+	// yet (classHarvests is recorded only after the file's lowering
+	// returns), so defining-scope and harvest tiers both miss it.
+	// Install the caller def into the FRESH swapped map (discarded
+	// on restore) so body lowering sees it — including the M0
+	// ladder's checkClasses, which starts from scope.classes; a
+	// wantKind-only label without the install cannot flip. Never
+	// overwrites a name already in the swapped map.
+	if wantKind == "i32" && saved != nil && mn != nil {
+		var typ *ast.Node
+		if mn.Kind == ast.KindMethodDeclaration {
+			typ = mn.AsMethodDeclaration().Type
+		} else if mn.Kind == ast.KindMethodSignature {
+			typ = mn.Type()
+		}
+		if typ != nil && typ.Kind == ast.KindTypeReference {
+			ref := typ.AsTypeReferenceNode()
+			if ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+				name := ref.TypeName.Text()
+				if _, inSwapped := scope.classes[name]; !inSwapped {
+					if d, ok := saved.classes[name]; ok && d != nil {
+						wantKind = "inst:" + name
+						scope.classes[name] = d
+					}
+				}
+			}
+		}
+	}
 	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
 	if saved != nil {
 		saved.restore(scope)
