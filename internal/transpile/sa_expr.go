@@ -3699,6 +3699,33 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 				// free-fn/static/chain/cross-file/guarded inner
 				// calls, and litFn results all stay deferred.
 				if recvExpr != nil && recvExpr.Kind == ast.KindCallExpression {
+					// Free-function direct-call (funcs_branch): the inner
+					// call's callee is a bare Identifier naming a
+					// top-level function with recorded class prov.
+					// Shadow check first: scope.funcs is NOT
+					// shadow-aware for locals, while locals DO enter
+					// scope.types — a shadowed name must skip this
+					// branch, or the top-level prov would silently
+					// win over the shadowing local. retIfaceLitFn is
+					// never consulted (class prov only). Any failure
+					// falls through unchanged to the interface
+					// message below.
+					if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindIdentifier {
+						innerName := innerCE.Expression.Text()
+						if _, shadowed := scope.types[innerName]; !shadowed {
+							if sig, ok := scope.funcs[innerName]; ok && sig.retIfaceProv != "" {
+								if cdef := saScopeOrHarvestClassDef(scope, sig.retIfaceProv, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
+									if mn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && mn.Body() != nil {
+										op, msg := saInlineMethod(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+										if msg != "" {
+											return "", false, msg
+										}
+										return op, false, ""
+									}
+								}
+							}
+						}
+					}
 					if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
 						if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
 							if prov, ok := saResolveDirectCallProv(scope, innerPA); ok {
