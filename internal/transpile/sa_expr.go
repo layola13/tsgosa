@@ -3564,6 +3564,70 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			if pa.Name() != nil && (ce.QuestionDotToken != nil || pa.QuestionDotToken != nil) {
 				if mn, ok := def.methods[pa.Name().Text()]; ok {
 					if k, kok := saMethodReturnKind(mn); !kok || k != "str" {
+						// G1 guarded direct-call (branch_prov): for an
+						// interface def, resolve the receiver's recorded
+						// prov and join against the concrete def instead
+						// of the interface def. Any failure falls through
+						// to the current body below (interface message,
+						// byte-identical). Str-returning interface
+						// methods are excluded first: saMethodReturnKind
+						// is blind to MethodSignatures, so the signature's
+						// declared return is checked via Node.Type()
+						// (sa_str.go pattern); str keeps today's message.
+						if def.isIface {
+							strRet := false
+							if mn.Kind == ast.KindMethodSignature {
+								if typ := mn.Type(); typ != nil {
+									if k2, ok2 := saAnnotKind(typ); ok2 && k2 == "str" {
+										strRet = true
+									}
+								}
+							}
+							if !strRet {
+								// Receiver Identifier (possibly
+								// parenthesized): prov via scope.ifaceProv
+								// (Identifier branch verbatim); receiver
+								// unguarded Call: prov via
+								// saResolveDirectCallProv (DC-1 gate
+								// verbatim). Guarded inner links fail the
+								// gate, so G1 is skipped and behavior is
+								// unchanged for them.
+								recvExpr := pa.Expression
+								for recvExpr != nil && recvExpr.Kind == ast.KindParenthesizedExpression {
+									pe := recvExpr.AsParenthesizedExpression()
+									if pe == nil || pe.Expression == nil {
+										break
+									}
+									recvExpr = pe.Expression.AsNode()
+								}
+								var prov string
+								provOk := false
+								if recvExpr != nil && recvExpr.Kind == ast.KindIdentifier {
+									if p, ok := scope.ifaceProv[recvExpr.Text()]; ok {
+										prov, provOk = p, true
+									}
+								} else if recvExpr != nil && recvExpr.Kind == ast.KindCallExpression {
+									if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
+										if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
+											if p, ok := saResolveDirectCallProv(scope, innerPA); ok {
+												prov, provOk = p, true
+											}
+										}
+									}
+								}
+								if provOk {
+									if cdef := saScopeOrHarvestClassDef(scope, prov, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
+										if cmn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && cmn.Body() != nil {
+											op, msg := saLowerGuardedMethodCall(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+											if msg != "" {
+												return "", false, msg
+											}
+											return op, false, ""
+										}
+									}
+								}
+							}
+						}
 						op, msg := saLowerGuardedMethodCall(w, h, def, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
 						if msg != "" {
 							return "", false, msg
