@@ -59,6 +59,20 @@ type saClassDef struct {
 	abstractKinds map[string]string
 	tparams       []string
 	fdefs         map[string]*ast.TypeNode
+	// iface_typeparam slice (additive; consulted only by the new
+	// call-site substitution paths): monoTmpl/monoArgs record a mono
+	// def's template + substituted arg kinds (parallel to the
+	// template's tparams; a bare tparam name is kept as a placeholder
+	// when the arg is unresolved, never used as a value kind);
+	// implArgs records a class's implements-clause type-argument
+	// nodes per interface name (converted at comparison time, so
+	// recording order cannot poison them); tparamFields records a
+	// class field declared as a bare tparam (field name -> tparam
+	// name) for direct field-read substitution.
+	monoTmpl      string
+	monoArgs      []string
+	implArgs      map[string][]*ast.TypeNode
+	tparamFields  map[string]string
 	size          int
 	methods       map[string]*ast.Node
 	staticMethods map[string]*ast.Node
@@ -1490,6 +1504,28 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 							}
 							if inm != "" {
 								def.implements = append(def.implements, inm)
+								// iface_typeparam GAP-4: record the clause's
+								// type arguments alongside the bare name
+								// (raw nodes; converted at comparison time
+								// so recording order cannot poison them).
+								// Every clause gets an entry — including
+								// bare ones (nil args) — so the child-most
+								// declaration decides the mono arm.
+								if def.implArgs == nil {
+									def.implArgs = map[string][]*ast.TypeNode{}
+								}
+								var iargs []*ast.TypeNode
+								switch el.Kind {
+								case ast.KindExpressionWithTypeArguments:
+									if tl := el.AsExpressionWithTypeArguments().TypeArguments; tl != nil {
+										iargs = tl.Nodes
+									}
+								case ast.KindTypeReference:
+									if ref := el.AsTypeReferenceNode(); ref != nil && ref.TypeArguments != nil {
+										iargs = ref.TypeArguments.Nodes
+									}
+								}
+								def.implArgs[inm] = iargs
 							}
 						}
 					}
@@ -1852,6 +1888,21 @@ func saRecordClassNamed(st *ast.Node, forceName string, aliasOwn bool, nsScope s
 				continue
 			}
 			ownFields[fkey] = true
+			// iface_typeparam GAP-1(d): record bare-tparam fields for
+			// direct field-read substitution (class fields only;
+			// interface fields already carry fdefs, and mono fields
+			// are pre-substituted, so neither needs this record).
+			if tp := saBareTypeName(pd.Type); tp != "" {
+				for _, tpn := range def.tparams {
+					if tpn == tp {
+						if def.tparamFields == nil {
+							def.tparamFields = map[string]string{}
+						}
+						def.tparamFields[fkey] = tp
+						break
+					}
+				}
+			}
 			off = saAlignOff(off, fkind)
 			def.fields = append(def.fields, saClassField{name: fkey, offset: off})
 			def.offsets[fkey] = off
@@ -2777,6 +2828,58 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 					}
 				}
 			}
+			// iface_typeparam GAP-1(b): a method call whose declared
+			// return is a bare tparam resolved by the active inline
+			// substitution to an instance kind is an instance
+			// operand. Identifier/this receivers only; outside an
+			// inline substitution nothing changes.
+			if ce.Expression.Kind == ast.KindPropertyAccessExpression && scope.tparamSubst != nil {
+				pa := ce.Expression.AsPropertyAccessExpression()
+				if pa != nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier && pa.QuestionDotToken == nil {
+					recvClass := ""
+					if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+						if k, ok := scope.types[pa.Expression.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+							recvClass = k[5:]
+						}
+					} else if pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && scope.thisClass != "" {
+						recvClass = scope.thisClass
+					}
+					if recvClass != "" {
+						if def, ok := scope.classes[recvClass]; ok && def != nil {
+							if mn, ok := def.methods[pa.Name().Text()]; ok && mn != nil {
+								var retTn *ast.TypeNode
+								if mn.Kind == ast.KindMethodDeclaration {
+									retTn = mn.AsMethodDeclaration().Type
+								} else if mn.Kind == ast.KindMethodSignature {
+									retTn = mn.Type()
+								}
+								if tpName := saBareTypeName(retTn); tpName != "" {
+									if sk, ok := scope.tparamSubst[tpName]; ok && len(sk) > 5 && sk[:5] == "inst:" {
+										return true
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// iface_typeparam GAP-1(b): a this-base bare-tparam field
+	// read resolved by the active inline substitution to an
+	// instance kind is an instance operand (method calls on
+	// `this.v` where v: T). This-base only; other bases keep
+	// today's behavior.
+	if e != nil && e.Kind == ast.KindPropertyAccessExpression && scope.tparamSubst != nil && scope.thisSelf != "" {
+		pa := e.AsPropertyAccessExpression()
+		if pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier && pa.QuestionDotToken == nil {
+			if def, ok := scope.classes[scope.thisClass]; ok && def != nil {
+				if tp, ok := def.tparamFields[pa.Name().Text()]; ok && tp != "" {
+					if sk, ok := scope.tparamSubst[tp]; ok && len(sk) > 5 && sk[:5] == "inst:" {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false
@@ -2963,18 +3066,65 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 			return "method instance return must be this, a bound instance, new or an instance call"
 		}
 		fname := pa.Name().Text()
-		if def.fkinds[fname] != "inst" {
-			return "method instance return must be this, a bound instance, new or an instance call"
+		// iface_typeparam GAP-1(b): a bare-tparam field read in
+		// instance-return position yields the substituted kind
+		// (active body substitution). The shared have/want check
+		// below still gates the result — substitution only
+		// supplies the kind, never the acceptance.
+		tpFieldDone := false
+		if tp, ok := def.tparamFields[fname]; ok && tp != "" {
+			if sk, ok2 := scope.tparamSubst[tp]; ok2 && len(sk) > 5 && sk[:5] == "inst:" {
+				th, msg := saLowerClassFieldLoad(w, scope.thisSelf, def, fname, scope, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				scope.types[th] = sk
+				h, have = th, sk[5:]
+				tpFieldDone = true
+			}
 		}
-		prov, ok := def.fieldProv[fname]
-		if !ok || prov == "" {
-			return "method instance return must be this, a bound instance, new or an instance call"
+		if !tpFieldDone {
+			if def.fkinds[fname] != "inst" {
+				return "method instance return must be this, a bound instance, new or an instance call"
+			}
+			if prov, ok := def.fieldProv[fname]; ok && prov != "" {
+				th, msg := saLowerClassFieldLoad(w, scope.thisSelf, def, fname, scope, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				h, have = th, prov
+			} else {
+				// iface_typeparam GAP-1(b): concrete/mono instance
+				// fields carry no prov; the recorded field class
+				// (fsub) is the class. Decided from fsub BEFORE
+				// emitting the load, so still-refusing shapes emit
+				// nothing new (stub byte-identical); the load's
+				// temp kind for an inst field is exactly
+				// "inst:"+fsub, so this is equivalent. The
+				// mirrored have/want pre-check keeps the ORIGINAL
+				// refusal message for every still-refusing shape;
+				// the shared check below re-confirms accepted ones.
+				// Interface-typed fields without prov keep the
+				// original refusal: their values need provenance
+				// to dispatch (methfieldread's prov-less interface
+				// returns stay refused).
+				haveName, ok := def.fsub[fname]
+				if !ok || haveName == "" {
+					return "method instance return must be this, a bound instance, new or an instance call"
+				}
+				if hdef, ok := scope.classes[haveName]; ok && hdef != nil && hdef.isIface {
+					return "method instance return must be this, a bound instance, new or an instance call"
+				}
+				if !saIsDerivedFrom(scope.classes, haveName, want) && !((saIfaceMethodOnly(scope.classes, want) || saIfaceLayoutCompatible(scope.classes, haveName, want)) && (saClassSatisfies(scope.classes, haveName, want) || saClassStructurallySatisfies(scope.classes, haveName, want))) {
+					return "method instance return must be this, a bound instance, new or an instance call"
+				}
+				th, msg := saLowerClassFieldLoad(w, scope.thisSelf, def, fname, scope, nextTemp)
+				if msg != "" {
+					return msg
+				}
+				h, have = th, haveName
+			}
 		}
-		th, msg := saLowerClassFieldLoad(w, scope.thisSelf, def, fname, scope, nextTemp)
-		if msg != "" {
-			return msg
-		}
-		h, have = th, prov
 	default:
 		return "method instance return must be this, a bound instance, new or an instance call"
 	}
@@ -4742,6 +4892,322 @@ func saMonoName(key string) string {
 	return b.String()
 }
 
+// saInstTargs is a construction's call-site type arguments: the class
+// name plus one kind string per class tparam ("inst:X", "i32", "str",
+// "arr", "f64", "bool"). Recorded for new-expression bindings and for
+// method parameters whose declared type mentions tparams. Consulted
+// only when the binding's recorded kind still names the same class,
+// so a rebinding to another type silently drops the entry.
+type saInstTargs struct {
+	class string
+	args  []string
+}
+
+// saIsValueKind reports whether s is a usable value kind (a primitive
+// or an inst: kind). Bare tparam placeholders and "" are not kinds.
+func saIsValueKind(s string) bool {
+	switch s {
+	case "i32", "bool", "str", "arr", "f64":
+		return true
+	}
+	return len(s) > 5 && s[:5] == "inst:"
+}
+
+// saTypeNodeKind renders a type node as a value kind string: primitives
+// via saAnnotKind, bare class names as "inst:<name>", generic
+// instantiations as their mono layout name. Bare tparams and
+// unresolvable shapes yield ("", false) — fail closed.
+func saTypeNodeKind(tn *ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
+	if tn == nil {
+		return "", false
+	}
+	if k, ok := saAnnotKind(tn); ok {
+		switch k {
+		case "i32", "bool", "str", "arr", "f64":
+			return k, true
+		}
+	}
+	if tn.Kind == ast.KindTypeReference {
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return "", false
+		}
+		name := ref.TypeName.Text()
+		if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+			if lname, ok := saInstantiateIface(name, ref.TypeArguments.Nodes, classes); ok {
+				return "inst:" + lname, true
+			}
+			return "", false
+		}
+		if _, ok := classes[name]; ok {
+			return "inst:" + name, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// saArgKindForInference renders an argument node as a value kind for
+// call-site type-argument inference: identifiers via the caller's kind
+// lookup, new-expressions via their class, literals via their
+// primitive kind, calls via the caller's return-kind lookup (nil
+// callKind leaves calls unresolved). Anything else yields "".
+func saArgKindForInference(a *ast.Node, identKind func(string) (string, bool), callKind func(*ast.CallExpression) (string, bool), classes map[string]*saClassDef) string {
+	if a == nil {
+		return ""
+	}
+	a = saUnwrapTransparent(a)
+	if a == nil {
+		return ""
+	}
+	switch a.Kind {
+	case ast.KindIdentifier:
+		if k, ok := identKind(a.Text()); ok {
+			return k
+		}
+		return ""
+	case ast.KindNewExpression:
+		ne := a.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+			return ""
+		}
+		if _, ok := classes[ne.Expression.Text()]; ok {
+			return "inst:" + ne.Expression.Text()
+		}
+		return ""
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(a.Text()) {
+			return "f64"
+		}
+		return "i32"
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return "str"
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "bool"
+	case ast.KindCallExpression:
+		if callKind != nil {
+			if k, ok := callKind(a.AsCallExpression()); ok {
+				return k
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
+// saInferNewArgs infers a construction's per-tparam kinds: explicit
+// type arguments first, else one kind per constructor parameter whose
+// declared type is a bare tparam of the class, taken from the matching
+// argument node. Mismatched counts, conflicting mappings for one
+// tparam, or unresolvable args yield nil (fail closed).
+func saInferNewArgs(def *saClassDef, ne *ast.NewExpression, identKind func(string) (string, bool), callKind func(*ast.CallExpression) (string, bool), classes map[string]*saClassDef) []string {
+	if def == nil || ne == nil || len(def.tparams) == 0 {
+		return nil
+	}
+	if ne.TypeArguments != nil && len(ne.TypeArguments.Nodes) > 0 {
+		if len(ne.TypeArguments.Nodes) != len(def.tparams) {
+			return nil
+		}
+		out := make([]string, 0, len(ne.TypeArguments.Nodes))
+		for _, tn := range ne.TypeArguments.Nodes {
+			k, ok := saTypeNodeKind(tn, classes)
+			if !ok {
+				return nil
+			}
+			out = append(out, k)
+		}
+		return out
+	}
+	if def.ctor == nil {
+		return nil
+	}
+	params := def.ctor.Parameters()
+	var argNodes []*ast.Node
+	if ne.Arguments != nil {
+		argNodes = ne.Arguments.Nodes
+	}
+	if len(argNodes) != len(params) {
+		return nil
+	}
+	out := make([]string, len(def.tparams))
+	filled := make([]bool, len(def.tparams))
+	for i, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.Type == nil || pd.Type.Kind != ast.KindTypeReference {
+			continue
+		}
+		ref := pd.Type.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			continue
+		}
+		tpName := ref.TypeName.Text()
+		for j, tp := range def.tparams {
+			if tp != tpName {
+				continue
+			}
+			k := saArgKindForInference(argNodes[i], identKind, callKind, classes)
+			if k == "" {
+				return nil
+			}
+			if filled[j] && out[j] != k {
+				return nil
+			}
+			out[j] = k
+			filled[j] = true
+		}
+	}
+	for _, f := range filled {
+		if !f {
+			return nil
+		}
+	}
+	return out
+}
+
+// saBareTypeName returns the bare identifier name of a type node when
+// it is a plain TypeReference with no type arguments, else "".
+func saBareTypeName(tn *ast.TypeNode) string {
+	if tn == nil || tn.Kind != ast.KindTypeReference {
+		return ""
+	}
+	ref := tn.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return ""
+	}
+	return ref.TypeName.Text()
+}
+
+// saInferCallTparams infers a callee's tparam -> kind map at a call
+// site: explicit type arguments first (in tparam order), else
+// per-parameter unification — a bare-tparam parameter takes its
+// argument's kind; a C<args> parameter takes the argument's
+// construction/mono args at the positions where the parameter's args
+// are bare tparams. Unresolvable positions stay absent (fail closed
+// per position, never guessed).
+// saScopeTargs returns a binding's recorded construction args when
+// the binding still holds the recorded class — directly, or through
+// a mono of that class (prov dispatch binds mono-typed receivers to
+// their concrete template, e.g. `w: Wrap<Counter>` inlines get()
+// with className Wrap while the binding kind stays Wrap_Counter_).
+// Stale after any rebinding to another class.
+func saScopeTargs(scope *saScope, name string) (saInstTargs, bool) {
+	if scope.instTargs == nil {
+		return saInstTargs{}, false
+	}
+	tg, ok := scope.instTargs[name]
+	if !ok {
+		return saInstTargs{}, false
+	}
+	k, ok2 := scope.types[name]
+	if !ok2 {
+		return saInstTargs{}, false
+	}
+	if k == "inst:"+tg.class {
+		return tg, true
+	}
+	if len(k) > 5 && k[:5] == "inst:" {
+		if mdef, ok3 := scope.classes[k[5:]]; ok3 && mdef != nil && mdef.isMono && mdef.monoTmpl == tg.class {
+			return tg, true
+		}
+	}
+	return saInstTargs{}, false
+}
+
+func saInferCallTparams(tparams []string, paramTypes []*ast.TypeNode, argNodes []*ast.Node, explicitArgs []*ast.TypeNode, identKind func(string) (string, bool), callKind func(*ast.CallExpression) (string, bool), scopeTargs func(string) (saInstTargs, bool), monoOf func(string) (*saClassDef, bool), activeSubst map[string]string, classes map[string]*saClassDef) map[string]string {
+	out := map[string]string{}
+	if len(tparams) == 0 {
+		return out
+	}
+	if len(explicitArgs) == len(tparams) && len(explicitArgs) > 0 {
+		for i, tp := range tparams {
+			if k, ok := saTypeNodeKind(explicitArgs[i], classes); ok {
+				out[tp] = k
+			} else if nm := saBareTypeName(explicitArgs[i]); nm != "" {
+				// Explicit arg is itself an enclosing tparam: resolve
+				// through the active substitution of the enclosing
+				// inline, if any (nested generic calls).
+				if k, ok := activeSubst[nm]; ok && saIsValueKind(k) {
+					out[tp] = k
+				}
+			}
+		}
+		return out
+	}
+	for i, pt := range paramTypes {
+		if i >= len(argNodes) || pt == nil {
+			continue
+		}
+		if tp := saBareTypeName(pt); tp != "" {
+			if k := saArgKindForInference(argNodes[i], identKind, callKind, classes); k != "" {
+				if prev, ok := out[tp]; !ok || prev == k {
+					out[tp] = k
+				}
+			}
+			continue
+		}
+		if pt.Kind != ast.KindTypeReference {
+			continue
+		}
+		ref := pt.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0 {
+			continue
+		}
+		cname := ref.TypeName.Text()
+		var cargs []string
+		anode := saUnwrapTransparent(argNodes[i])
+		if anode != nil && anode.Kind == ast.KindNewExpression {
+			if ne := anode.AsNewExpression(); ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier && ne.Expression.Text() == cname {
+				if cdef, ok := classes[cname]; ok {
+					cargs = saInferNewArgs(cdef, ne, identKind, callKind, classes)
+				}
+			}
+		} else if anode != nil && anode.Kind == ast.KindIdentifier {
+			if tg, ok := scopeTargs(anode.Text()); ok && tg.class == cname {
+				cargs = tg.args
+			} else if k, ok := identKind(anode.Text()); ok && len(k) > 5 && k[:5] == "inst:" {
+				if mdef, ok := monoOf(k[5:]); ok && mdef != nil && mdef.monoTmpl == cname {
+					cargs = mdef.monoArgs
+				}
+			}
+		}
+		if len(cargs) != len(ref.TypeArguments.Nodes) {
+			continue
+		}
+		for j, atn := range ref.TypeArguments.Nodes {
+			if tp := saBareTypeName(atn); tp != "" && saIsValueKind(cargs[j]) {
+				if prev, ok := out[tp]; !ok || prev == cargs[j] {
+					out[tp] = cargs[j]
+				}
+			}
+		}
+	}
+	return out
+}
+
+// saSubstBareTypeKind resolves a bare-tparam return/field type node
+// through a call-site substitution map: the tparam's mapped kind, or
+// ("", false) when unmapped.
+func saSubstBareTypeKind(tn *ast.TypeNode, subst map[string]string) (string, bool) {
+	if tn == nil || len(subst) == 0 {
+		return "", false
+	}
+	if name := saBareTypeName(tn); name != "" {
+		if k, ok := subst[name]; ok && saIsValueKind(k) {
+			return k, true
+		}
+	}
+	return "", false
+}
+
+// saSubstArgKind resolves one kind string through a substitution map:
+// a bare tparam name maps to its kind, anything else passes through.
+func saSubstArgKind(kind string, subst map[string]string) string {
+	if k, ok := subst[kind]; ok {
+		return k
+	}
+	return kind
+}
+
 // saSubstArg 代入单实参（持参泛型引用非闭合；封存 substFieldType 闭合门同形）。
 func saSubstArg(a *ast.TypeNode, pmap map[string]*ast.TypeNode) (*ast.TypeNode, bool) {
 	if a != nil && a.Kind == ast.KindTypeReference {
@@ -4839,6 +5305,159 @@ func saSubstFieldKind(ftn *ast.TypeNode, pmap map[string]*ast.TypeNode, classes 
 // saInstantiateIface 单态具化泛型接口（模板 tparams/args 等长；字段代入重算
 // 种与偏移；shell 先行保递归终止；结果缓存布局表；未知模板/元数错/键碰撞
 // 沿旧门 false。封存 instantiateLayout 全形）。
+// saInstantiateClass builds a mono CLASS def alongside
+// saInstantiateIface (iface_typeparam GAP-5): a class template
+// instantiated with kind-string args, so a generic concrete layout
+// (substituted field kinds) agrees with the mono interface layout.
+// The name carries a "_cls" suffix so it can never collide with an
+// interface mono of the same template/args. Getters, setters and
+// static methods are NOT copied (same deferral as GAP-2); fieldProv
+// and methodProv are NOT copied (GAP-3: mono defs stay out of the
+// prov passes). ("", false) on any unresolvable arg or collision.
+func saInstantiateClass(name string, args []string, classes map[string]*saClassDef) (string, bool) {
+	tmpl, ok := classes[name]
+	if !ok || tmpl == nil || tmpl.isIface {
+		return "", false
+	}
+	if len(tmpl.tparams) == 0 {
+		return tmpl.name, true
+	}
+	if len(args) != len(tmpl.tparams) {
+		return "", false
+	}
+	parts := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "" {
+			return "", false
+		}
+		parts = append(parts, strings.TrimPrefix(a, "inst:"))
+	}
+	mangled := saMonoName(name+"<"+strings.Join(parts, ",")+">") + "_cls"
+	if def, ok := classes[mangled]; ok {
+		if def.isMono && !def.isIface && def.monoTmpl == name && saStrSliceEq(def.monoArgs, args) {
+			return def.name, true
+		}
+		return "", false
+	}
+	def := &saClassDef{name: mangled, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isMono: true, isIface: false, monoTmpl: name, monoArgs: append([]string(nil), args...)}
+	for m, mn := range tmpl.methods {
+		def.methods[m] = mn
+	}
+	off := 0
+	for _, f := range tmpl.fields {
+		fkind, sub := tmpl.fkinds[f.name], tmpl.fsub[f.name]
+		if fkind == "" {
+			fkind = "i32"
+			sub = ""
+		}
+		if tp, ok := tmpl.tparamFields[f.name]; ok && tp != "" {
+			idx := -1
+			for k, tpn := range tmpl.tparams {
+				if tpn == tp {
+					idx = k
+					break
+				}
+			}
+			if idx < 0 {
+				return "", false
+			}
+			sk := args[idx]
+			switch {
+			case len(sk) > 5 && sk[:5] == "inst:":
+				fkind, sub = "inst", sk[5:]
+			case sk == "i32" || sk == "bool":
+				fkind, sub = "i32", ""
+			case sk == "str":
+				fkind, sub = "str", ""
+			case sk == "arr":
+				fkind, sub = "arr", ""
+			case sk == "f64":
+				fkind, sub = "f64", ""
+			case sk == "jsval":
+				fkind, sub = "jsval", ""
+			default:
+				return "", false
+			}
+		}
+		off = saAlignOff(off, fkind)
+		def.fields = append(def.fields, saClassField{name: f.name, offset: off})
+		def.offsets[f.name] = off
+		def.fkinds[f.name] = fkind
+		if sub != "" {
+			if def.fsub == nil {
+				def.fsub = map[string]string{}
+			}
+			def.fsub[f.name] = sub
+		}
+		sz, _ := saFieldWidth(fkind)
+		off += sz
+	}
+	def.size = off
+	classes[mangled] = def
+	return def.name, true
+}
+
+// saDeriveClassMono derives the mono class layout name for a concrete
+// prov class viewed through a mono interface (iface_typeparam GAP-5):
+// the interface mono's args unified through the prov class's
+// implements clause for the mono's template, then instantiated as a
+// class mono. ("", false) when the prov class does not declare the
+// template, when unification fails, or when instantiation fails.
+// A prov class with no tparams needs no mono: prov itself is returned.
+// No construction args are needed here: the interface mono's args +
+// the implements clause determine the class args.
+func saDeriveClassMono(classes map[string]*saClassDef, prov string, kindDef *saClassDef) (string, bool) {
+	if kindDef == nil || !kindDef.isMono || kindDef.monoTmpl == "" {
+		return "", false
+	}
+	pdef, ok := classes[prov]
+	if !ok || pdef == nil || pdef.isIface {
+		return "", false
+	}
+	if len(pdef.tparams) == 0 {
+		return prov, true
+	}
+	implNodes, ok := pdef.implArgs[kindDef.monoTmpl]
+	if !ok || len(implNodes) != len(kindDef.monoArgs) {
+		return "", false
+	}
+	classArgs := make([]string, len(pdef.tparams))
+	filled := make([]bool, len(pdef.tparams))
+	for j, tn := range implNodes {
+		wantArg := kindDef.monoArgs[j]
+		if wantArg == "" {
+			return "", false
+		}
+		if tpName := saBareTypeName(tn); tpName != "" {
+			idx := -1
+			for k, tp := range pdef.tparams {
+				if tp == tpName {
+					idx = k
+					break
+				}
+			}
+			if idx >= 0 {
+				if filled[idx] && classArgs[idx] != wantArg {
+					return "", false
+				}
+				classArgs[idx] = wantArg
+				filled[idx] = true
+				continue
+			}
+		}
+		k, ok := saTypeNodeKind(tn, classes)
+		if !ok || k != wantArg {
+			return "", false
+		}
+	}
+	for _, f := range filled {
+		if !f {
+			return "", false
+		}
+	}
+	return saInstantiateClass(prov, classArgs, classes)
+}
+
 func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*saClassDef) (string, bool) {
 	tmpl, ok := classes[name]
 	if !ok || tmpl == nil {
@@ -4868,7 +5487,23 @@ func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*s
 	for i, p := range tmpl.tparams {
 		pmap[p] = args[i]
 	}
-	def := &saClassDef{name: mangled, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isMono: true}
+	def := &saClassDef{name: mangled, offsets: map[string]int{}, fkinds: map[string]string{}, methods: map[string]*ast.Node{}, isIface: true, isMono: true, monoTmpl: name}
+	for _, a := range args {
+		if k, ok := saTypeNodeKind(a, classes); ok {
+			def.monoArgs = append(def.monoArgs, k)
+		} else if nm := saBareTypeName(a); nm != "" {
+			def.monoArgs = append(def.monoArgs, nm)
+		} else {
+			def.monoArgs = append(def.monoArgs, "")
+		}
+	}
+	// iface_typeparam GAP-2: mono defs carry the template's instance
+	// methods (shared pointers; substitution at use). Getters,
+	// setters and static methods are NOT copied (deferred own item:
+	// no gate program needs them through a mono receiver).
+	for m, mn := range tmpl.methods {
+		def.methods[m] = mn
+	}
 	classes[mangled] = def
 	off := 0
 	for _, f := range tmpl.fields {
@@ -4900,6 +5535,94 @@ func saInstantiateIface(name string, args []*ast.TypeNode, classes map[string]*s
 
 // saMatchIface 按键集匹配唯一接口布局（0 或 2+ 匹配皆大声拒，确定性优先；
 // 形状证据：封存 layoutOfLiteral:8953-8975 + matchLayout 名集匹配）。
+// saSubstMethodCallRetKind resolves a method call's declared return
+// through call-site substitution (GAP-1(c), annotbind-local only —
+// shared saCallRetKind is untouched): when the declared return is a
+// bare tparam of the method, explicit type arguments or
+// per-parameter inference supply the concrete kind. ("", false) when
+// the return is not a bare tparam or no substitution resolves.
+func saSubstMethodCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return "", false
+	}
+	recvClass := saPAReceiverClass(pa.Expression, scope)
+	if recvClass == "" {
+		return "", false
+	}
+	def, ok := scope.classes[recvClass]
+	if !ok || def == nil {
+		return "", false
+	}
+	mn, ok := def.methods[pa.Name().Text()]
+	if !ok || mn == nil {
+		return "", false
+	}
+	var retTn *ast.TypeNode
+	if mn.Kind == ast.KindMethodDeclaration {
+		retTn = mn.AsMethodDeclaration().Type
+	} else if mn.Kind == ast.KindMethodSignature {
+		retTn = mn.Type()
+	}
+	if retTn == nil {
+		return "", false
+	}
+	tpName := saBareTypeName(retTn)
+	if tpName == "" {
+		return "", false
+	}
+	var methodTparams []string
+	for _, tp := range mn.TypeParameters() {
+		if tp == nil || tp.Kind != ast.KindTypeParameter {
+			continue
+		}
+		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			methodTparams = append(methodTparams, nm.Text())
+		}
+	}
+	var paramTypes []*ast.TypeNode
+	for _, p := range mn.Parameters() {
+		if pd := p.AsParameterDeclaration(); pd != nil {
+			paramTypes = append(paramTypes, pd.Type)
+		} else {
+			paramTypes = append(paramTypes, nil)
+		}
+	}
+	var argNodes []*ast.Node
+	if ce.Arguments != nil {
+		argNodes = ce.Arguments.Nodes
+	}
+	var explicitArgs []*ast.TypeNode
+	if ce.TypeArguments != nil {
+		explicitArgs = ce.TypeArguments.Nodes
+	}
+	identKind := func(nm string) (string, bool) {
+		k, ok := scope.types[nm]
+		return k, ok
+	}
+	callKind := func(cce *ast.CallExpression) (string, bool) {
+		return saCallRetKind(cce, scope)
+	}
+	scopeTargs := func(nm string) (saInstTargs, bool) {
+		return saScopeTargs(scope, nm)
+	}
+	monoOf := func(nm string) (*saClassDef, bool) {
+		d, ok := scope.classes[nm]
+		if !ok || d == nil || !d.isMono {
+			return nil, false
+		}
+		return d, true
+	}
+	subst := saInferCallTparams(methodTparams, paramTypes, argNodes, explicitArgs, identKind, callKind, scopeTargs, monoOf, scope.tparamSubst, scope.classes)
+	if k, ok := subst[tpName]; ok && saIsValueKind(k) {
+		return k, true
+	}
+	return "", false
+}
+
 func saMatchIface(keys []string, classes map[string]*saClassDef) (*saClassDef, string) {
 	hits := saMatchIfaceList(keys, classes)
 	if len(hits) > 1 {
@@ -8177,6 +8900,115 @@ func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 // saSuperBase 解析方法内 super 基（同接收者；形状证据：封存
 // superBaseForRecv:219-232 + lowerSuperMethodCall:237-250）。
 // saIsDerivedFrom 报告sub 是否为 base 本身或其传统派生（跟 parent 链，防环；形状证据：抽象校验祖先链同形）。
+// saMonoArmMatch compares a concrete class against a mono want via
+// the have class's implements-clause type args for the mono's
+// template, walking up the parent chain; the first (most-derived)
+// class declaring the template decides. haveTargs, when non-nil,
+// supplies the have class's own tparams' values positionally (for
+// generic have classes like GenBox<T>); a bare-tparam implements arg
+// without haveTargs is unresolvable -> mismatch (fail closed).
+// Returns (matched, decided); decided=false when no class in the
+// chain declares the template.
+func saMonoArmMatch(classes map[string]*saClassDef, have string, wantDef *saClassDef, haveTargs []string) (bool, bool) {
+	if wantDef == nil || wantDef.monoTmpl == "" {
+		return false, false
+	}
+	seen := map[string]bool{}
+	for c := have; c != "" && !seen[c]; {
+		seen[c] = true
+		def, ok := classes[c]
+		if def == nil || !ok {
+			break
+		}
+		implNodes, ok := def.implArgs[wantDef.monoTmpl]
+		if !ok {
+			c = def.parent
+			continue
+		}
+		// Decided by this declaration.
+		if len(implNodes) != len(wantDef.monoArgs) {
+			return false, true
+		}
+		for j, tn := range implNodes {
+			wantArg := wantDef.monoArgs[j]
+			if wantArg == "" {
+				return false, true
+			}
+			var haveArg string
+			resolved := false
+			if tpName := saBareTypeName(tn); tpName != "" {
+				for k, tp := range def.tparams {
+					if tp == tpName {
+						if haveTargs == nil || k >= len(haveTargs) || !saIsValueKind(haveTargs[k]) {
+							return false, true
+						}
+						haveArg = haveTargs[k]
+						resolved = true
+						break
+					}
+				}
+			}
+			if !resolved {
+				k, ok := saTypeNodeKind(tn, classes)
+				if !ok {
+					return false, true
+				}
+				haveArg = k
+			}
+			if haveArg != wantArg {
+				return false, true
+			}
+		}
+		return true, true
+	}
+	return false, false
+}
+
+// saClassSatisfiesWithArgs is saClassSatisfies with the have class's
+// own tparam values supplied (for generic have classes); for
+// non-mono wants it is identical to saClassSatisfies.
+func saClassSatisfiesWithArgs(classes map[string]*saClassDef, have, want string, haveTargs []string) bool {
+	if have == want {
+		return true
+	}
+	if wdef, ok := classes[want]; ok && wdef != nil && wdef.isMono && wdef.monoTmpl != "" {
+		if matched, decided := saMonoArmMatch(classes, have, wdef, haveTargs); decided {
+			return matched
+		}
+	}
+	return saClassSatisfies(classes, have, want)
+}
+
+// saStrSliceEq compares two kind-arg slices (nil and empty are equal).
+func saStrSliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// saP0Agrees is P0's agreement predicate with the type-param narrow
+// gate (iface_typeparam GAP-4): when the have class declares the want
+// mono's template in its implements clause, the mono arm — with the
+// edge's construction args for generic have classes — DECIDES, and
+// structural satisfaction must NOT override a mismatch (otherwise
+// FakeBox/FakeCounter would agree structurally and miscompile).
+// When the have class does NOT declare the template, today's
+// satisfies || structural behavior is preserved.
+func saP0Agrees(classes map[string]*saClassDef, have string, haveTargs []string, want string) bool {
+	if wdef, ok := classes[want]; ok && wdef != nil && wdef.isMono && wdef.monoTmpl != "" {
+		if matched, decided := saMonoArmMatch(classes, have, wdef, haveTargs); decided {
+			return matched
+		}
+	}
+	return saClassSatisfies(classes, have, want) || saClassStructurallySatisfies(classes, have, want)
+}
+
 // saClassSatisfies reports whether an instance of class `have` may be
 // passed where class/interface `want` is expected: exact match, the
 // existing parent-chain derivation, or a directly implemented interface
@@ -8189,6 +9021,17 @@ func saInstBase(e *ast.Node, scope *saScope) (string, *saClassDef, string) {
 func saClassSatisfies(classes map[string]*saClassDef, have, want string) bool {
 	if have == want {
 		return true
+	}
+	// iface_typeparam GAP-4: a mono want is decided by the mono
+	// arm (base name + implements-clause type args) when the
+	// have chain declares the template; undecided falls through
+	// to the old walk below (which cannot match a mono name).
+	// strip_bare is REJECTED: bare-name comparison would accept
+	// FakeCounter where Counter is expected (silent miscompile).
+	if wdef, ok := classes[want]; ok && wdef != nil && wdef.isMono && wdef.monoTmpl != "" {
+		if matched, decided := saMonoArmMatch(classes, have, wdef, nil); decided {
+			return matched
+		}
 	}
 	if saIsDerivedFrom(classes, have, want) {
 		return true
@@ -8487,6 +9330,54 @@ func saLowerNewClass(w printer.EmitTextWriter, name string, ce *ast.NewExpressio
 				}
 				paramVal[nm.Text()] = v
 				continue
+			}
+		}
+		// iface_typeparam GAP-1(a): new-expression args lower verbatim
+		// for bare-tparam parameters (the substitution records what
+		// construction supplied) and for exact concrete matches.
+		// Interface parameters are NOT touched here: the R0 arm above
+		// already accepted satisfying news, and non-satisfying ones
+		// must keep refusing. Generic-instantiation parameters keep
+		// today's refusal (fail closed).
+		if na := saUnwrapTransparent(a); na != nil && na.Kind == ast.KindNewExpression {
+			if cname, cmsg := saNewStmtClassName(na.AsNewExpression()); cmsg == "" {
+				if _, ok := scope.classes[cname]; ok && pd.Type != nil && pd.Type.Kind == ast.KindTypeReference {
+					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+						fire := false
+						if sub, ok := scope.classes[ref.TypeName.Text()]; ok {
+							if !sub.isIface && cname == ref.TypeName.Text() {
+								fire = true
+							}
+						} else {
+							fire = true
+						}
+						if fire {
+							h, msg := saLowerNewStmt(w, na, scope, pos, refusals, nextTemp)
+							if msg != "" {
+								return "", msg
+							}
+							paramVal[nm.Text()] = h
+							continue
+						}
+					}
+				}
+			}
+		}
+		// iface_typeparam GAP-1(a): bound-instance args pass
+		// verbatim for bare-tparam parameters (same substitution
+		// semantics as the new-expression arm above; the field
+		// store is a pointer store). Known-class params keep
+		// today's exact-match arms above.
+		if ia := saUnwrapTransparent(a); ia != nil && ia.Kind == ast.KindIdentifier {
+			if k, ok := scope.types[ia.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+				if pd.Type != nil && pd.Type.Kind == ast.KindTypeReference {
+					if ref := pd.Type.AsTypeReferenceNode(); ref != nil && ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier && ref.TypeArguments == nil {
+						if _, ok := scope.classes[ref.TypeName.Text()]; !ok {
+							paramVal[nm.Text()] = ia.Text()
+							continue
+						}
+					}
+				}
 			}
 		}
 		v, msg := saEvalI32(w, a, scope, pos, refusals, nextTemp)
@@ -10098,11 +10989,199 @@ func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, de
 			}
 		}
 	}
+	// iface_typeparam GAP-1(b): method/class tparam returns substitute
+	// the call-site concrete kind, and the substitution is installed
+	// for the body lowering (direct field reads + nested inlines).
+	// Method tparams come from explicit type arguments or
+	// per-parameter inference; class tparams come from the receiver
+	// (side-table entry, else mono args mapped through the concrete
+	// class's implements clause for the mono's template). Saved and
+	// restored with the thisSelf/thisClass swap below.
+	identKind := func(nm string) (string, bool) {
+		k, ok := scope.types[nm]
+		return k, ok
+	}
+	callKind := func(cce *ast.CallExpression) (string, bool) {
+		return saCallRetKind(cce, scope)
+	}
+	scopeTargs := func(nm string) (saInstTargs, bool) {
+		return saScopeTargs(scope, nm)
+	}
+	monoOf := func(nm string) (*saClassDef, bool) {
+		d, ok := scope.classes[nm]
+		if !ok || d == nil || !d.isMono {
+			return nil, false
+		}
+		return d, true
+	}
+	var methodTparams []string
+	for _, tp := range mn.TypeParameters() {
+		if tp == nil || tp.Kind != ast.KindTypeParameter {
+			continue
+		}
+		if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			methodTparams = append(methodTparams, nm.Text())
+		}
+	}
+	var paramTypes []*ast.TypeNode
+	for _, p := range mn.Parameters() {
+		if pd := p.AsParameterDeclaration(); pd != nil {
+			paramTypes = append(paramTypes, pd.Type)
+		} else {
+			paramTypes = append(paramTypes, nil)
+		}
+	}
+	var callArgNodes []*ast.Node
+	if ce.Arguments != nil {
+		callArgNodes = ce.Arguments.Nodes
+	}
+	var explicitArgs []*ast.TypeNode
+	if ce.TypeArguments != nil {
+		explicitArgs = ce.TypeArguments.Nodes
+	}
+	callSubst := saInferCallTparams(methodTparams, paramTypes, callArgNodes, explicitArgs, identKind, callKind, scopeTargs, monoOf, scope.tparamSubst, scope.classes)
+	classSubst := map[string]string{}
+	// A mono receiver supplies its own class tparams directly:
+	// template tparams zipped with the mono's args. This must
+	// precede the side-table/implements branches (a mono
+	// receiver has neither).
+	if cdef, ok := scope.classes[className]; ok && cdef != nil && cdef.isMono && cdef.monoTmpl != "" {
+		if tmpl, ok2 := scope.classes[cdef.monoTmpl]; ok2 && tmpl != nil && len(tmpl.tparams) == len(cdef.monoArgs) {
+			for j, tp := range tmpl.tparams {
+				if saIsValueKind(cdef.monoArgs[j]) {
+					classSubst[tp] = cdef.monoArgs[j]
+				}
+			}
+		}
+	} else if tg, ok := scopeTargs(thisSelf); ok && tg.class == className {
+		if cdef, ok2 := scope.classes[tg.class]; ok2 && cdef != nil && len(cdef.tparams) == len(tg.args) {
+			for j, tp := range cdef.tparams {
+				if saIsValueKind(tg.args[j]) {
+					classSubst[tp] = tg.args[j]
+				}
+			}
+		}
+	} else if k, ok := scope.types[thisSelf]; ok && len(k) > 5 && k[:5] == "inst:" {
+		if mdef, ok2 := scope.classes[k[5:]]; ok2 && mdef != nil && mdef.isMono && mdef.monoTmpl != "" {
+			if cdef, ok3 := scope.classes[className]; ok3 && cdef != nil {
+				if implNodes, ok4 := cdef.implArgs[mdef.monoTmpl]; ok4 && len(implNodes) == len(mdef.monoArgs) {
+					agree := true
+					derived := map[string]string{}
+					for j, tn := range implNodes {
+						if tp := saBareTypeName(tn); tp != "" {
+							if !saIsValueKind(mdef.monoArgs[j]) {
+								agree = false
+								break
+							}
+							derived[tp] = mdef.monoArgs[j]
+						} else if kk, ok5 := saTypeNodeKind(tn, scope.classes); !ok5 || kk != mdef.monoArgs[j] {
+							agree = false
+							break
+						}
+					}
+					if agree {
+						classSubst = derived
+					}
+				}
+			}
+		}
+	}
+	if wantKind == "i32" {
+		var retTn *ast.TypeNode
+		if mn.Kind == ast.KindMethodDeclaration {
+			retTn = mn.AsMethodDeclaration().Type
+		} else if mn.Kind == ast.KindMethodSignature {
+			retTn = mn.Type()
+		}
+		if tpName := saBareTypeName(retTn); tpName != "" {
+			if k, ok := callSubst[tpName]; ok && saIsValueKind(k) {
+				wantKind = k
+			} else if k, ok := classSubst[tpName]; ok && saIsValueKind(k) {
+				wantKind = k
+			}
+		}
+	}
+	// Install the body substitution (method tparams shadow class
+	// tparams of the same name) + parameter side-table entries for
+	// parameters whose declared type mentions substituted tparams.
+	savedTparamSubst := scope.tparamSubst
+	mergedSubst := map[string]string{}
+	for k, v := range classSubst {
+		mergedSubst[k] = v
+	}
+	for k, v := range callSubst {
+		mergedSubst[k] = v
+	}
+	scope.tparamSubst = mergedSubst
+	savedParamTargs := map[string]saInstTargs{}
+	savedParamTargsOK := map[string]bool{}
+	if scope.instTargs == nil {
+		scope.instTargs = map[string]saInstTargs{}
+	}
+	for _, p := range mn.Parameters() {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.Type == nil || pd.Type.Kind != ast.KindTypeReference {
+			continue
+		}
+		ref := pd.Type.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0 {
+			continue
+		}
+		cname := ref.TypeName.Text()
+		cdef, ok := scope.classes[cname]
+		if !ok || cdef == nil || len(cdef.tparams) == 0 {
+			continue
+		}
+		var pargs []string
+		pargsOK := true
+		for _, atn := range ref.TypeArguments.Nodes {
+			if tp := saBareTypeName(atn); tp != "" {
+				if k, ok := mergedSubst[tp]; ok && saIsValueKind(k) {
+					pargs = append(pargs, k)
+					continue
+				}
+				pargsOK = false
+				break
+			}
+			if k, ok := saTypeNodeKind(atn, scope.classes); ok {
+				pargs = append(pargs, k)
+				continue
+			}
+			pargsOK = false
+			break
+		}
+		if !pargsOK || len(pargs) != len(cdef.tparams) {
+			continue
+		}
+		pname := ""
+		if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+			pname = nm.Text()
+		}
+		if pname == "" {
+			continue
+		}
+		if prev, ok := scope.instTargs[pname]; ok {
+			savedParamTargs[pname] = prev
+			savedParamTargsOK[pname] = true
+		} else {
+			savedParamTargsOK[pname] = false
+		}
+		scope.instTargs[pname] = saInstTargs{class: cname, args: pargs}
+	}
 	v, msg := saCallbackValue(w, mn, argVals, true, wantKind, scope, pos, refusals, needImport, nextLabel, nextTemp, false, kinds)
 	if saved != nil {
 		saved.restore(scope)
 	}
 	scope.thisSelf, scope.thisClass = savedSelf, savedClass
+	scope.tparamSubst = savedTparamSubst
+	for pname, had := range savedParamTargsOK {
+		if had {
+			scope.instTargs[pname] = savedParamTargs[pname]
+		} else {
+			delete(scope.instTargs, pname)
+		}
+	}
+
 	// Guard pop sits with the restores, BEFORE the msg check: a
 	// missed pop would leak the frame into later lowering in the
 	// same file scope and falsely refuse legitimate later inlines
@@ -10379,6 +11458,24 @@ func saLowerClassFieldLoad(w printer.EmitTextWriter, h string, def *saClassDef, 
 	off, ok := def.offsets[field]
 	if !ok {
 		return "", "unknown field " + field
+	}
+	// iface_typeparam GAP-1(b): during method-body inlining, a
+	// this-base bare-tparam field load yields the active
+	// substituted kind (the slot still holds the erased
+	// pointer; only the temp's recorded kind changes). Gated
+	// on the this-base handle so other-instance field loads
+	// never see a foreign substitution; outside an inline
+	// substitution the load behaves exactly as before.
+	if scope != nil && scope.thisSelf != "" && h == scope.thisSelf && scope.tparamSubst != nil {
+		if tp, ok := def.tparamFields[field]; ok && tp != "" {
+			if sk, ok2 := scope.tparamSubst[tp]; ok2 && saIsValueKind(sk) {
+				t := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + %d as ptr\n", t, h, off))
+				scope.types[t] = sk
+				return t, ""
+			}
+		}
 	}
 	// str/arr 域读回句柄（16 字节头在堆上，值即其址；临时量记 str
 	// 供下游串位；封存 lowerMemberChain:8294-8297 `load as <type>` 同形）。
@@ -10922,6 +12019,19 @@ func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExp
 						}
 						if k == "arr" || k == "str" {
 							return nil, nil, "method parameters must be i32"
+						}
+					}
+				}
+				// iface_typeparam GAP-1(a): new-expression args against
+				// erasable parameters inherit the constructed class,
+				// mirroring the identifier arm above, so the value arm
+				// routes through saInstArg (which lowers the
+				// construction) instead of the i32 fallthrough.
+				if na := saUnwrapTransparent(argNodes[i]); na != nil && na.Kind == ast.KindNewExpression {
+					if ne := na.AsNewExpression(); ne != nil && ne.Expression != nil && ne.Expression.Kind == ast.KindIdentifier {
+						if _, ok := scope.classes[ne.Expression.Text()]; ok {
+							kinds[i] = "inst:" + ne.Expression.Text()
+							continue
 						}
 					}
 				}

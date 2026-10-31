@@ -6246,6 +6246,14 @@ type saFuncSig struct {
 	hasRest         bool     // trailing ...rest param; calls pack into one slice (cf funcHasRest)
 	retFn           string   // 函数值返回别名目标（`(): Fn` 单 return 箭头直传登记；多 return 异构拒）
 	retMapVal       string   // map 返回的值种（Record<string, T> 的 T 种；空即未知）
+	// iface_typeparam slice (additive): for functions whose declared
+	// return is a bare tparam, retTparam names it and tparams /
+	// paramTypes record the callee's tparams + parameter type nodes
+	// for call-site return-kind substitution. Empty = no tparam
+	// return (all other sigs; fail closed).
+	retTparam  string
+	tparams    []string
+	paramTypes []*ast.TypeNode
 	// 3_deffile sig-carried defining-file default resolutions (JEV def_scope
 	// sig_full): per-param, parallel to defaults/defaultExprs, "" = none.
 	// Recorded at defining-file harvest time from defining-file state only
@@ -6323,7 +6331,13 @@ type saScope struct {
 	ifaceProv      map[string]string               // 4_ifc_lower: interface-typed const binding -> concrete class name (method dispatch only)
 	ifaceLitFn     map[string]map[string]*ast.Node // 4_ifc_lower: interface-typed const binding -> method name -> literal arrow/method node
 	ifaceLitTarget string                          // 4_ifc_lower: binding name for the literal currently lowering; consumed at saLowerObjectLiteral entry
-	arrNest        map[string]bool                 // array handle holds slice handles (deep clone recurses; flat by default)
+	// iface_typeparam slice (additive): instTargs records a binding's
+	// construction type args (class + per-tparam kinds) for call-site
+	// substitution; tparamSubst is the active tparam -> kind map while
+	// a method body lowers (save/restored by saInlineMethodCore).
+	instTargs   map[string]saInstTargs
+	tparamSubst map[string]string
+	arrNest     map[string]bool // array handle holds slice handles (deep clone recurses; flat by default)
 	// arrStr marks array handles whose elements are string handles
 	// (callback/for-of params bind str; flat/i32 arrays stay unmarked).
 	arrStr map[string]bool
@@ -6700,6 +6714,52 @@ func saLowerFunction(w printer.EmitTextWriter, st *ast.Node, funcs map[string]sa
 		scope.types[p] = paramKinds[p]
 		// 形参归属（封存 declareOwned；release 逆序依赖声明序）。
 		saDeclareOwned(scope, p)
+	}
+	// iface_typeparam GAP-1(b): generic-instantiation parameters
+	// record their declared construction args, so method calls
+	// on such a parameter substitute the declared args (e.g.
+	// pass's `w: Wrap<Counter>` supplies Wrap's T = Counter for
+	// w.get()). Guarded at use by the binding-kind check.
+	if fn.Parameters != nil {
+		for _, p := range fn.Parameters.Nodes {
+			pd := p.AsParameterDeclaration()
+			if pd == nil || pd.Type == nil || pd.Type.Kind != ast.KindTypeReference {
+				continue
+			}
+			ref := pd.Type.AsTypeReferenceNode()
+			if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments == nil || len(ref.TypeArguments.Nodes) == 0 {
+				continue
+			}
+			cname := ref.TypeName.Text()
+			cdef, ok := scope.classes[cname]
+			if !ok || cdef == nil || len(cdef.tparams) == 0 || len(cdef.tparams) != len(ref.TypeArguments.Nodes) {
+				continue
+			}
+			var pargs []string
+			pargsOK := true
+			for _, atn := range ref.TypeArguments.Nodes {
+				if k, ok := saTypeNodeKind(atn, scope.classes); ok {
+					pargs = append(pargs, k)
+					continue
+				}
+				pargsOK = false
+				break
+			}
+			if !pargsOK {
+				continue
+			}
+			pname := ""
+			if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				pname = nm.Text()
+			}
+			if pname == "" {
+				continue
+			}
+			if scope.instTargs == nil {
+				scope.instTargs = map[string]saInstTargs{}
+			}
+			scope.instTargs[pname] = saInstTargs{class: cname, args: pargs}
+		}
 	}
 	// Phase P0 interface-parameter provenance: install recorded param
 	// prov on the parameter bindings (ns members look up by forceName,

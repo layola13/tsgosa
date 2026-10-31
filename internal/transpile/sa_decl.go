@@ -813,6 +813,23 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			}
 			w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 			scope.types[name] = "inst:" + cname
+			// iface_typeparam GAP-1: record a generic construction's
+			// call-site type args for later substitution (method
+			// return slots, direct field reads). Guarded at use by
+			// the binding-kind check, so rebinding drops it.
+			if cdef, ok := scope.classes[cname]; ok && cdef != nil && len(cdef.tparams) > 0 {
+				if targs := saInferNewArgs(cdef, ne, func(nm string) (string, bool) {
+					k, ok := scope.types[nm]
+					return k, ok
+				}, func(cce *ast.CallExpression) (string, bool) {
+					return saCallRetKind(cce, scope)
+				}, scope.classes); targs != nil {
+					if scope.instTargs == nil {
+						scope.instTargs = map[string]saInstTargs{}
+					}
+					scope.instTargs[name] = saInstTargs{class: cname, args: targs}
+				}
+			}
 			saConsumeOwn(scope, h)
 			saDeclareOwned(scope, name)
 			// 实例函数字段捕获随具名绑定透传（`const b = new C(arrow)` 后去虚化；封存 trackBinding:1533-1537）。
@@ -1166,6 +1183,16 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				return saLowerJSONParseDecl(w, vd, name, vkind, scope, pos, refusals, nextTemp)
 			}
 			got, ok := saCallRetKind(callInit.AsCallExpression(), scope)
+			if !ok {
+				// iface_typeparam GAP-1(c): the A4 gate compares the
+				// SUBSTITUTED call return kind (a bare-tparam return
+				// resolves through the call's type arguments), not the
+				// erased kind. Annotbind-local only; shared
+				// saCallRetKind is untouched.
+				if sub, sok := saSubstMethodCallRetKind(callInit.AsCallExpression(), scope); sok {
+					got, ok = sub, true
+				}
+			}
 			if !ok {
 				// iface_annotbind (m1_plus_attach): M1-local PA fallback -
 				// saCallRetKind has no property-access arm, so annotated
@@ -4244,7 +4271,35 @@ func saPrescanFuncSig(fn *ast.FunctionDeclaration, st *ast.Node, key string, fun
 			retMapVal = v
 		}
 	}
-	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, retIsPromise: saIsPromiseHead(fn.Type), paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest, retMapVal: retMapVal}
+	// iface_typeparam GAP-1(b): record a bare-tparam return + the
+	// callee's ordered tparams + parameter type nodes for call-site
+	// return-kind substitution. Unrecorded = today's behavior.
+	var sigTparams []string
+	var sigParamTypes []*ast.TypeNode
+	var sigRetTparam string
+	if fn.TypeParameters != nil {
+		for _, tp := range fn.TypeParameters.Nodes {
+			if tp == nil || tp.Kind != ast.KindTypeParameter {
+				continue
+			}
+			if nm := tp.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				sigTparams = append(sigTparams, nm.Text())
+			}
+		}
+	}
+	if fn.Parameters != nil {
+		for _, p := range fn.Parameters.Nodes {
+			if pd := p.AsParameterDeclaration(); pd != nil {
+				sigParamTypes = append(sigParamTypes, pd.Type)
+			} else {
+				sigParamTypes = append(sigParamTypes, nil)
+			}
+		}
+	}
+	if !saIsPromiseHead(fn.Type) && saIsBareTypeParam(rtype, saTypeParamSet(fn.TypeParameters)) {
+		sigRetTparam = saBareTypeName(rtype)
+	}
+	funcs[key] = saFuncSig{params: nparams, isVoid: isVoid, retKind: retKind, retIsPromise: saIsPromiseHead(fn.Type), paramKinds: pk, defaults: defs, defaultExprs: dexprs, hasRest: hasRest, retMapVal: retMapVal, retTparam: sigRetTparam, tparams: sigTparams, paramTypes: sigParamTypes}
 	return true
 }
 

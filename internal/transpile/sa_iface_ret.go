@@ -151,6 +151,21 @@ func saIfaceFieldReadLayoutRefusal(scope *saScope, recvName string, kindDef *saC
 	if !ok || prov == "" {
 		return ""
 	}
+	// iface_typeparam GAP-5: for a mono interface, compare against
+	// the prov class's mono layout (derived from the interface
+	// mono's args through the prov class's implements clause) so
+	// substituted and erased layouts agree by construction. The
+	// guard stays strict (offset + kind compared); derivation
+	// failure falls through to today's comparison (fail closed
+	// for generic prov classes, unchanged otherwise).
+	if kindDef.isMono && kindDef.monoTmpl != "" {
+		if monoName, ok := saDeriveClassMono(scope.classes, prov, kindDef); ok {
+			if saIfaceLayoutCompatible(scope.classes, monoName, kindDef.name) {
+				return ""
+			}
+			return "interface field read layout mismatch: field " + field + " of interface " + kindDef.name + " read through " + prov + " layout (concrete offsets/kinds differ from interface layout)"
+		}
+	}
 	if saIfaceLayoutCompatible(scope.classes, prov, kindDef.name) {
 		return ""
 	}
@@ -174,6 +189,16 @@ func saIfaceFieldWriteLayoutRefusal(scope *saScope, recvName string, kindDef *sa
 	prov, ok := scope.ifaceProv[recvName]
 	if !ok || prov == "" {
 		return ""
+	}
+	// iface_typeparam GAP-5: write twin of the read hook above
+	// (same derivation, same strict comparison, same fall-through).
+	if kindDef.isMono && kindDef.monoTmpl != "" {
+		if monoName, ok := saDeriveClassMono(scope.classes, prov, kindDef); ok {
+			if saIfaceLayoutCompatible(scope.classes, monoName, kindDef.name) {
+				return ""
+			}
+			return "interface field write layout mismatch: field " + field + " of interface " + kindDef.name + " written through " + prov + " layout (concrete offsets/kinds differ from interface layout)"
+		}
 	}
 	if saIfaceLayoutCompatible(scope.classes, prov, kindDef.name) {
 		return ""

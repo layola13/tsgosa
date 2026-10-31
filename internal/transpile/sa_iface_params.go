@@ -56,8 +56,9 @@ import (
 
 // saParamProv is one resolved parameter provenance value.
 type saParamProv struct {
-	class    string // concrete class ("" when lit)
-	isLit    bool   // literal-method table (mutually exclusive with class)
+	class    string   // concrete class ("" when lit)
+	targs    []string // construction args for a generic class value (nil otherwise)
+	isLit    bool     // literal-method table (mutually exclusive with class)
 	litFn    map[string]*ast.Node
 	litID    int    // agreement id (pass-global fresh ids for local tables; saRetCallLitID for call results)
 	litIface string // interface the litFn table was built/filtered for ("" when unknown)
@@ -75,6 +76,7 @@ const (
 type saParamEdge struct {
 	kind     int
 	class    string
+	targs    []string // construction args for a generic class value (NewExpression edges only; nil otherwise)
 	litFn    map[string]*ast.Node
 	litID    int
 	litIface string
@@ -1076,6 +1078,128 @@ func (s *saParamScan) addEdge(key string, idx int, e saParamEdge) {
 	s.p.edges[key][idx] = append(s.p.edges[key][idx], e)
 }
 
+// prescanNewArgs infers a new-expression's construction args for the
+// P0 edge (iface_typeparam GAP-4): explicit type args first, else
+// per-ctor-param mapping where the param's declared type is a bare
+// tparam of the class. Identifier arg kinds come from the walk
+// entries; new-expression args contribute their class; literals
+// contribute primitives; bare-identifier call args contribute the
+// callee sig's retKind. Anything else -> nil (fail closed).
+func (w *saParamBodyWalk) prescanNewArgs(ne *ast.NewExpression) []string {
+	if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+		return nil
+	}
+	cdef, ok := w.p.classes[ne.Expression.Text()]
+	if !ok || cdef == nil || len(cdef.tparams) == 0 {
+		return nil
+	}
+	if ne.TypeArguments != nil && len(ne.TypeArguments.Nodes) > 0 {
+		if len(ne.TypeArguments.Nodes) != len(cdef.tparams) {
+			return nil
+		}
+		out := make([]string, 0, len(ne.TypeArguments.Nodes))
+		for _, tn := range ne.TypeArguments.Nodes {
+			k, ok := saTypeNodeKind(tn, w.p.classes)
+			if !ok {
+				return nil
+			}
+			out = append(out, k)
+		}
+		return out
+	}
+	if cdef.ctor == nil {
+		return nil
+	}
+	params := cdef.ctor.Parameters()
+	var argNodes []*ast.Node
+	if ne.Arguments != nil {
+		argNodes = ne.Arguments.Nodes
+	}
+	if len(argNodes) != len(params) {
+		return nil
+	}
+	out := make([]string, len(cdef.tparams))
+	filled := make([]bool, len(cdef.tparams))
+	for i, p := range params {
+		pd := p.AsParameterDeclaration()
+		if pd == nil || pd.Type == nil || pd.Type.Kind != ast.KindTypeReference {
+			continue
+		}
+		ref := pd.Type.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			continue
+		}
+		tpName := ref.TypeName.Text()
+		for j, tp := range cdef.tparams {
+			if tp != tpName {
+				continue
+			}
+			k := w.prescanArgKind(argNodes[i])
+			if k == "" {
+				return nil
+			}
+			if filled[j] && out[j] != k {
+				return nil
+			}
+			out[j] = k
+			filled[j] = true
+		}
+	}
+	for _, f := range filled {
+		if !f {
+			return nil
+		}
+	}
+	return out
+}
+
+// prescanArgKind classifies one prescan argument expression to a kind
+// string ("" when unresolvable).
+func (w *saParamBodyWalk) prescanArgKind(a *ast.Node) string {
+	if a == nil {
+		return ""
+	}
+	a = saRetPeelParenNonNull(a)
+	if a == nil {
+		return ""
+	}
+	switch a.Kind {
+	case ast.KindIdentifier:
+		if entry, ok := w.entries[a.Text()]; ok {
+			return entry.kind
+		}
+		return ""
+	case ast.KindNewExpression:
+		ne := a.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+			return ""
+		}
+		if _, ok := w.p.classes[ne.Expression.Text()]; ok {
+			return "inst:" + ne.Expression.Text()
+		}
+		return ""
+	case ast.KindNumericLiteral:
+		if saIsFloatLit(a.Text()) {
+			return "f64"
+		}
+		return "i32"
+	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
+		return "str"
+	case ast.KindTrueKeyword, ast.KindFalseKeyword:
+		return "bool"
+	case ast.KindCallExpression:
+		ce := a.AsCallExpression()
+		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+			return ""
+		}
+		if sig, ok := w.p.funcs[ce.Expression.Text()]; ok && !sig.isVoid {
+			return sig.retKind
+		}
+		return ""
+	}
+	return ""
+}
+
 // classifyArg classifies one argument expression against one interface
 // parameter kind. Anything unlisted is unknown (blocks the parameter).
 func (w *saParamBodyWalk) classifyArg(arg *ast.Node, paramKind string) saParamEdge {
@@ -1093,7 +1217,11 @@ func (w *saParamBodyWalk) classifyArg(arg *ast.Node, paramKind string) saParamEd
 		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
 			return unknown
 		}
-		return saParamEdge{kind: saParamEdgeClass, class: ne.Expression.Text()}
+		// iface_typeparam GAP-4: a new-expression edge carries its
+		// construction args, so P0 can agree generic have classes
+		// (GenBox<T> vs Box<Counter>) without treating have-side
+		// tparams as wildcards (which would be unsound).
+		return saParamEdge{kind: saParamEdgeClass, class: ne.Expression.Text(), targs: w.prescanNewArgs(ne)}
 	case ast.KindIdentifier:
 		name := arg.Text()
 		if w.taint.tainted(name) {
@@ -1399,7 +1527,7 @@ func (p *saParamPass) fixpointAndRecord() {
 				case saParamEdgeUnknown:
 					blocked = true
 				case saParamEdgeClass:
-					cur = saParamProv{class: e.class}
+					cur = saParamProv{class: e.class, targs: e.targs}
 				case saParamEdgeLit:
 					cur = saParamProv{isLit: true, litFn: e.litFn, litID: e.litID, litIface: e.litIface}
 				case saParamEdgeVar:
@@ -1434,7 +1562,7 @@ func (p *saParamPass) fixpointAndRecord() {
 					}
 					// Same lit id: same table lineage. Keep the
 					// first edge's table and litIface.
-				} else if agreed.class != cur.class {
+				} else if agreed.class != cur.class || !saStrSliceEq(agreed.targs, cur.targs) {
 					blocked = true
 					break
 				}
@@ -1506,11 +1634,13 @@ func (p *saParamPass) fixpointAndRecord() {
 				prov.litIface = iface
 			}
 		} else {
-			// The agreed class must satisfy the parameter interface
-			// (explicitly or structurally); otherwise the call itself
-			// refuses at argument matching, and no prov is recorded.
-			if !saClassSatisfies(p.classes, prov.class, iface) &&
-				!saClassStructurallySatisfies(p.classes, prov.class, iface) {
+			// iface_typeparam GAP-4 narrow gate: when the agreed
+			// class declares the parameter mono's template, the
+			// mono arm (with the edge's construction args)
+			// DECIDES — structural must not override a mismatch
+			// (FakeBox/FakeCounter). Otherwise today's
+			// satisfies || structural behavior is preserved.
+			if !saP0Agrees(p.classes, prov.class, prov.targs, iface) {
 				continue
 			}
 		}

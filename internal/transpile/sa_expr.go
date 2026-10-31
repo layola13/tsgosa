@@ -3543,6 +3543,28 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 					return "", false, msg
 				}
 			}
+			// iface_typeparam GAP-1(b): this-base bare-tparam field
+			// receivers resolve through the field load, which
+			// records the substituted kind (Fix 7). Other PA
+			// receivers keep today's behavior.
+			if def == nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+				ipa := pa.Expression.AsPropertyAccessExpression()
+				if ipa != nil && ipa.Expression != nil && ipa.Expression.Kind == ast.KindThisKeyword && ipa.Name() != nil && ipa.Name().Kind == ast.KindIdentifier && ipa.QuestionDotToken == nil && scope.tparamSubst != nil {
+					if tdef, ok := scope.classes[scope.thisClass]; ok && tdef != nil {
+						if tp, ok := tdef.tparamFields[ipa.Name().Text()]; ok && tp != "" {
+							if sk, ok := scope.tparamSubst[tp]; ok && len(sk) > 5 && sk[:5] == "inst:" {
+								th, msg := saLowerClassFieldLoad(w, scope.thisSelf, tdef, ipa.Name().Text(), scope, nextTemp)
+								if msg != "" {
+									return "", false, msg
+								}
+								if sdef, ok := scope.classes[sk[5:]]; ok && sdef != nil {
+									h, def = th, sdef
+								}
+							}
+						}
+					}
+				}
+			}
 			if def == nil {
 				return "", false, "instance base did not resolve to a recorded layout"
 			}
@@ -8064,6 +8086,42 @@ func saEvalFuncCall(w printer.EmitTextWriter, name, callee string, sig saFuncSig
 			saSetMapVal(scope, t, sig.retMapVal)
 		}
 	}
+	// iface_typeparam GAP-1(b): a bare-tparam free-function return
+	// resolves through the call-site substitution (explicit type
+	// arguments or per-parameter inference); the call temp carries
+	// the substituted kind so callers bind it correctly. The SA call
+	// itself still returns the erased handle value.
+	if sig.retTparam != "" && len(sig.tparams) > 0 {
+		var argNodes []*ast.Node
+		if ce.Arguments != nil {
+			argNodes = ce.Arguments.Nodes
+		}
+		var explicitArgs []*ast.TypeNode
+		if ce.TypeArguments != nil {
+			explicitArgs = ce.TypeArguments.Nodes
+		}
+		identKind := func(nm string) (string, bool) {
+			k, ok := scope.types[nm]
+			return k, ok
+		}
+		callKind := func(cce *ast.CallExpression) (string, bool) {
+			return saCallRetKind(cce, scope)
+		}
+		scopeTargs := func(nm string) (saInstTargs, bool) {
+			return saScopeTargs(scope, nm)
+		}
+		monoOf := func(nm string) (*saClassDef, bool) {
+			d, ok := scope.classes[nm]
+			if !ok || d == nil || !d.isMono {
+				return nil, false
+			}
+			return d, true
+		}
+		subst := saInferCallTparams(sig.tparams, sig.paramTypes, argNodes, explicitArgs, identKind, callKind, scopeTargs, monoOf, scope.tparamSubst, scope.classes)
+		if k, ok := subst[sig.retTparam]; ok && saIsValueKind(k) {
+			scope.types[t] = k
+		}
+	}
 	return t, false, ""
 }
 
@@ -9040,6 +9098,30 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				t, msg := saLowerClassFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 				if msg != "" {
 					return "", msg
+				}
+				// iface_typeparam GAP-1(d): a bare-tparam field read
+				// yields the call-site substituted kind (active body
+				// substitution, else the receiver binding's
+				// construction args), not the erased arr slot kind.
+				// Substitution wins over the blanket i32 exemption
+				// below; without substitution the exemption behaves
+				// exactly as before.
+				if k, ok := scope.types[t]; ok && k == "arr" {
+					if tp, ok2 := def.tparamFields[pa.Name().Text()]; ok2 && tp != "" {
+						if sk, ok3 := scope.tparamSubst[tp]; ok3 && saIsValueKind(sk) {
+							scope.types[t] = sk
+						} else if pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier {
+							if tg, ok4 := saScopeTargs(scope, pa.Expression.Text()); ok4 && tg.class != "" {
+								if cdef, ok6 := scope.classes[tg.class]; ok6 && cdef != nil {
+									for j, ctp := range cdef.tparams {
+										if ctp == tp && j < len(tg.args) && saIsValueKind(tg.args[j]) {
+											scope.types[t] = tg.args[j]
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 				// 裸泛型参字段擦除豁免（`Box<T>.value` 未决 T 落 arr 回退；旧行为按
 				// i32 读（139），改记 i32 保零回退；真数组声明非裸参不受影响）。
