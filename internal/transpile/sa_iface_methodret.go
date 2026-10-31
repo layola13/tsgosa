@@ -1213,10 +1213,28 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 				return
 			}
 			d, ok := scope.classes[k[5:]]
-			if !ok || d == nil || d.isIface || d.isAbstract {
+			if !ok || d == nil || d.isAbstract {
 				return
 			}
-			startClass = k[5:]
+			if d.isIface {
+				// Direct arm (iface_btmpbind, direct_arm): an
+				// interface-kinded receiver consults the prov table
+				// the dispatch core already consults, mirroring the
+				// core leaf's exact checks (entry present, prov class
+				// concrete non-abstract). Failures fall through
+				// unchanged; instance walk only (staticRecv untouched).
+				prov, ok := scope.ifaceProv[rn]
+				if !ok || prov == "" {
+					return
+				}
+				pd, ok := scope.classes[prov]
+				if !ok || pd == nil || pd.isIface || pd.isAbstract {
+					return
+				}
+				startClass = prov
+			} else {
+				startClass = k[5:]
+			}
 		}
 	case recv.Kind == ast.KindCallExpression:
 		// Bind-chain attach (iface_bindchain, bc_mechanism
