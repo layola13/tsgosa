@@ -1034,6 +1034,49 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 		}
 		return saIfaceRetEntry{}, false
 	}
+	if init.Kind == ast.KindPropertyAccessExpression {
+		// Method bind-mediated field read (iface_methfieldread):
+		// `const x = this.svc` classifies like the free path's
+		// saIfaceFieldReadEntry — fieldProv present, inst field,
+		// declared interface kind, annotation match when present.
+		// This is the ONLY addition that flips mf_this_bind; the
+		// return side already exists (Identifier arm).
+		if isStatic {
+			return saIfaceRetEntry{}, false
+		}
+		pa := init.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier || strings.HasPrefix(pa.Name().Text(), "#") || pa.QuestionDotToken != nil {
+			return saIfaceRetEntry{}, false
+		}
+		base := saRetPeelParenNonNull(pa.Expression)
+		if base == nil || base.Kind != ast.KindThisKeyword {
+			return saIfaceRetEntry{}, false
+		}
+		def, ok := classes[analyzingClass]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return saIfaceRetEntry{}, false
+		}
+		fname := pa.Name().Text()
+		prov, ok := def.fieldProv[fname]
+		if !ok || prov == "" {
+			return saIfaceRetEntry{}, false
+		}
+		declared, ok := def.fsub[fname]
+		if !ok || declared == "" {
+			return saIfaceRetEntry{}, false
+		}
+		if def.fkinds[fname] != "inst" {
+			return saIfaceRetEntry{}, false
+		}
+		idef, ok := classes[declared]
+		if !ok || idef == nil || !idef.isIface {
+			return saIfaceRetEntry{}, false
+		}
+		if annotName != "" && annotName != declared {
+			return saIfaceRetEntry{}, false
+		}
+		return saIfaceRetEntry{class: prov, kind: "inst:" + declared}, true
+	}
 	return saIfaceRetEntry{}, false
 }
 
@@ -1157,6 +1200,43 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 			return saIfaceRetPath{class: sig.retIfaceProv}
 		}
 		return unknown
+	case ast.KindPropertyAccessExpression:
+		// Method field-read return (iface_methfieldread): `return
+		// this.svc` classifies to the field's recorded prov when the
+		// field is an inst field declared with the method's return
+		// interface and the shared predicate holds. Anything else
+		// stays unknown (param bases, chained bases, guarded reads,
+		// statics, and missing prov all fail closed).
+		if isStatic {
+			return unknown
+		}
+		pa := expr.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier || strings.HasPrefix(pa.Name().Text(), "#") || pa.QuestionDotToken != nil {
+			return unknown
+		}
+		base := saRetPeelParenNonNull(pa.Expression)
+		if base == nil || base.Kind != ast.KindThisKeyword {
+			return unknown
+		}
+		def, ok := classes[analyzingClass]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return unknown
+		}
+		fname := pa.Name().Text()
+		prov, ok := def.fieldProv[fname]
+		if !ok || prov == "" {
+			return unknown
+		}
+		if def.fkinds[fname] != "inst" || def.fsub[fname] != retIface {
+			return unknown
+		}
+		if !saIfaceMethodOnly(classes, retIface) && !saIfaceLayoutCompatible(classes, prov, retIface) {
+			return unknown
+		}
+		if !saClassSatisfies(classes, prov, retIface) && !saClassStructurallySatisfies(classes, prov, retIface) {
+			return unknown
+		}
+		return saIfaceRetPath{class: prov}
 	}
 	return unknown
 }

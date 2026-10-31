@@ -2944,6 +2944,37 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 			return msg
 		}
 		h, have = th, want
+	case e != nil && e.Kind == ast.KindPropertyAccessExpression:
+		// Method field-read return (iface_methfieldread): `return
+		// this.svc` lowers the field through the analyzing class's
+		// recorded field prov. This-base only, inst fields only;
+		// param bases, chained bases, guarded bases, statics, and
+		// missing prov all fall through to the default-arm refusal.
+		pa := e.AsPropertyAccessExpression()
+		if pa == nil || pa.Expression == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier || strings.HasPrefix(pa.Name().Text(), "#") || pa.QuestionDotToken != nil {
+			return "method instance return must be this, a bound instance, new or an instance call"
+		}
+		base := saUnwrapTransparent(pa.Expression)
+		if base == nil || base.Kind != ast.KindThisKeyword || scope.thisSelf == "" || scope.thisClass == "" {
+			return "method instance return must be this, a bound instance, new or an instance call"
+		}
+		def, ok := scope.classes[scope.thisClass]
+		if !ok || def == nil {
+			return "method instance return must be this, a bound instance, new or an instance call"
+		}
+		fname := pa.Name().Text()
+		if def.fkinds[fname] != "inst" {
+			return "method instance return must be this, a bound instance, new or an instance call"
+		}
+		prov, ok := def.fieldProv[fname]
+		if !ok || prov == "" {
+			return "method instance return must be this, a bound instance, new or an instance call"
+		}
+		th, msg := saLowerClassFieldLoad(w, scope.thisSelf, def, fname, scope, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		h, have = th, prov
 	default:
 		return "method instance return must be this, a bound instance, new or an instance call"
 	}
