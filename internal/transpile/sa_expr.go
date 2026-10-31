@@ -5884,6 +5884,139 @@ func saCallRetKind(ce *ast.CallExpression, scope *saScope) (string, bool) {
 	return "", false
 }
 
+// saCallRetKindPA resolves a method call's DECLARED return kind for
+// plain property-access callees, M1-site only (iface_annotbind,
+// m1_plus_attach). saCallRetKind has no property-access arm, so every
+// annotated method-call bind refuses at the M1 kind check before
+// attach ever runs; this resolver is the M1-local fallback, used ONLY
+// at the M1 site when saCallRetKind yields !ok. It is NOT a shared
+// helper: extending saCallRetKind would divert its other call sites
+// (array/class/spread/f64 lowering). Receiver-kind recursion:
+// Identifier -> scope.types (must be inst:; a class-name receiver
+// fails closed); Call -> recurse on the inner call's declared return
+// (same function); NewExpression -> inst:<constructed class> from
+// the New callee identifier (non-Identifier callee fails closed);
+// ThisKeyword / field-read / element-access / parenthesized /
+// anything else -> ("", false). The method-table lookup is a single
+// def.methods[mname] lookup (inherited methods are copied into child
+// defs at recording time, so no parent-chain walk is needed).
+// Declared-return extraction follows saMethodDeclaredIface's exact
+// guards (plain TypeReference identifier, TypeArguments == nil),
+// widened from interface-only to any plain named type ("inst:"+name
+// for interface OR concrete) - the widening is required for
+// intermediate chain links (an inner link may declare a concrete
+// return) and principled for the final step (M1 compares annotation
+// against declared return, period). Guarded calls (QuestionDotToken
+// on the callee PA or on the call itself) fail closed. Any step
+// failing yields ("", false) - today's behavior.
+func saCallRetKindPA(ce *ast.CallExpression, scope *saScope) (string, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.QuestionDotToken != nil || ce.QuestionDotToken != nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return "", false
+	}
+	mname := pa.Name().Text()
+	if strings.HasPrefix(mname, "#") {
+		return "", false
+	}
+	recvClass := saPAReceiverClass(pa.Expression, scope)
+	if recvClass == "" {
+		return "", false
+	}
+	def, ok := scope.classes[recvClass]
+	if !ok || def == nil {
+		return "", false
+	}
+	mn, ok := def.methods[mname]
+	if !ok || mn == nil {
+		return "", false
+	}
+	return saDeclaredReturnKind(mn)
+}
+
+// saPAReceiverClass resolves the class of a property-access receiver
+// for the M1-local PA resolver (iface_annotbind). It returns "" on
+// any failure (fail closed); the caller treats "" as ("", false).
+func saPAReceiverClass(recv *ast.Node, scope *saScope) string {
+	if recv == nil {
+		return ""
+	}
+	switch recv.Kind {
+	case ast.KindIdentifier:
+		k, ok := scope.types[recv.Text()]
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return ""
+		}
+		return k[5:]
+	case ast.KindCallExpression:
+		inner := recv.AsCallExpression()
+		if inner == nil {
+			return ""
+		}
+		k, ok := saCallRetKindPA(inner, scope)
+		if !ok || len(k) <= 5 || k[:5] != "inst:" {
+			return ""
+		}
+		return k[5:]
+	case ast.KindNewExpression:
+		ne := recv.AsNewExpression()
+		if ne == nil || ne.Expression == nil {
+			return ""
+		}
+		// Paren transparency matches saNewStmtClassName: `new (C)`
+		// is `new C`. A non-Identifier callee (e.g. a namespace
+		// member) fails closed, per the probe.
+		ex := saUnwrapTransparent(ne.Expression)
+		if ex == nil || ex.Kind != ast.KindIdentifier {
+			return ""
+		}
+		return ex.Text()
+	default:
+		return ""
+	}
+}
+
+// saDeclaredReturnKind extracts a method node's declared return kind
+// with saMethodDeclaredIface's exact type guards (plain TypeReference
+// identifier, TypeArguments == nil), widened from interface-only to
+// any plain named type ("inst:"+name for interface OR concrete).
+// Both node forms are accepted: MethodDeclaration (class methods)
+// and MethodSignature (interface method tables hold signatures, not
+// declarations - without this, every interface receiver fails closed;
+// precedent: saMethodInstReturn accepts both forms and reads the
+// signature return via the generic mn.Type()). Non-method nodes,
+// missing annotations, non-TypeReference types (unions, `this` types,
+// primitives), and generic returns (type arguments present) all yield
+// ("", false).
+func saDeclaredReturnKind(mn *ast.Node) (string, bool) {
+	if mn == nil || (mn.Kind != ast.KindMethodDeclaration && mn.Kind != ast.KindMethodSignature) {
+		return "", false
+	}
+	var typ *ast.Node
+	if mn.Kind == ast.KindMethodDeclaration {
+		md := mn.AsMethodDeclaration()
+		if md == nil {
+			return "", false
+		}
+		typ = md.Type
+	} else {
+		typ = mn.Type()
+	}
+	if typ == nil {
+		return "", false
+	}
+	if typ.Kind != ast.KindTypeReference {
+		return "", false
+	}
+	ref := typ.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return "", false
+	}
+	return "inst:" + ref.TypeName.Text(), true
+}
+
 // saCallRetFn 取同文件函数返回别名目标（`(): Fn` 单 return 箭头直传登记；
 // 本名直调；link/别名被调/定义在后沿旧门）。
 func saCallRetFn(ce *ast.CallExpression, scope *saScope) (string, bool) {

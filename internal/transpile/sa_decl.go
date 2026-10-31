@@ -1166,6 +1166,17 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				return saLowerJSONParseDecl(w, vd, name, vkind, scope, pos, refusals, nextTemp)
 			}
 			got, ok := saCallRetKind(callInit.AsCallExpression(), scope)
+			if !ok {
+				// iface_annotbind (m1_plus_attach): M1-local PA fallback -
+				// saCallRetKind has no property-access arm, so annotated
+				// method-call binds refuse here before attach ever runs.
+				// Fallback order preserves the Number.parseFloat special
+				// case (handled by saCallRetKind above). Shared
+				// saCallRetKind is untouched (G-local: any other site
+				// needing PA kinds is a scope expansion, not a silent
+				// extension).
+				got, ok = saCallRetKindPA(callInit.AsCallExpression(), scope)
+			}
 			if !ok || got != vkind {
 				ln, col := pos(d.Pos())
 				*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "struct call return mismatch for " + name})
@@ -1182,6 +1193,15 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 			// Phase R0: attach the callee's recorded return provenance
 			// (const bindings only; the dispatch site handles the call).
 			saAttachIfaceRetProv(scope, callInit.AsCallExpression(), name, vkind, isConst)
+			// iface_annotbind (m1_plus_attach): annotated method attach,
+			// mirroring inferred-site order (RetProv then MethodProv).
+			// RetProv no-ops for PA callees, so there is no
+			// double-recording; the inst: gate mirrors the inferred
+			// site. The Call case and the b_tmp_bind Identifier arm
+			// are reused unchanged.
+			if len(vkind) > 5 && vkind[:5] == "inst:" {
+				saAttachIfaceMethodProv(scope, callInit.AsCallExpression(), name, vkind, isConst)
+			}
 			if saIsTempOp(op) {
 				saConsumeOwn(scope, op)
 			}
