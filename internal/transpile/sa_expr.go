@@ -9005,6 +9005,23 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 				}
 				return t, ""
 			}
+			// Getset prov-accessor check (read): when the receiver
+			// carries known provenance and the proven concrete class
+			// implements this member with a getter, inline the CONCRETE
+			// getter body before the kind-offsets path. Typed (str/f64)
+			// kind fields keep today's typed paths; private names never
+			// reach here (the `#` arm above returns).
+			if prov, ok := scope.ifaceProv[saIfaceFieldReadRecvName(pa.Expression)]; ok && prov != "" {
+				if cdef, ok := scope.classes[prov]; ok && cdef != nil && !cdef.isIface && !cdef.isAbstract {
+					if _, ok := cdef.getters[fname]; ok && def.fkinds[fname] != "str" && def.fkinds[fname] != "f64" {
+						v, msg := saInlineGetter(w, h, cdef, fname, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						return v, ""
+					}
+				}
+			}
 			if _, ok := def.offsets[fname]; ok {
 				// `b?.v` 空守卫 join（底座复用；封存 lowerGuardedProperty）。
 				// Fieldful-wants read guard (half C): a prov-known
@@ -9295,6 +9312,38 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 								return "", msg
 							}
 							fname = key
+						}
+						// Getset prov-accessor check (write): when the
+						// receiver carries known provenance and the proven
+						// concrete class implements this member with a
+						// setter, inline the CONCRETE setter body before
+						// the offsets-store path. Private names are
+						// excluded (their `#` arm above resolves keys
+						// separately); typed (str/f64) kind fields keep
+						// today's typed store paths.
+						if !strings.HasPrefix(lpa.Name().Text(), "#") {
+							if prov, ok := scope.ifaceProv[saIfaceFieldReadRecvName(lpa.Expression)]; ok && prov != "" {
+								if cdef, ok := scope.classes[prov]; ok && cdef != nil && !cdef.isIface && !cdef.isAbstract {
+									if _, ok := cdef.setters[fname]; ok && def.fkinds[fname] != "str" && def.fkinds[fname] != "f64" {
+										op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", msg
+										}
+										if msg := saInlineSetter(w, h, cdef, fname, op, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp); msg != "" {
+											return "", msg
+										}
+										return op, ""
+									}
+								}
+							}
+							// Getset write guard (twin of the fieldful
+							// read guard): a prov-known interface-typed
+							// write through an incompatible concrete
+							// layout refuses loudly here, never silently
+							// stores to the wrong slot.
+							if msg := saIfaceFieldWriteLayoutRefusal(scope, saIfaceFieldReadRecvName(lpa.Expression), def, fname); msg != "" {
+								return "", msg
+							}
 						}
 						if _, ok := def.offsets[fname]; ok {
 							if def.fkinds[fname] == "str" {

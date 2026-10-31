@@ -157,6 +157,30 @@ func saIfaceFieldReadLayoutRefusal(scope *saScope, recvName string, kindDef *saC
 	return "interface field read layout mismatch: field " + field + " of interface " + kindDef.name + " read through " + prov + " layout (concrete offsets/kinds differ from interface layout)"
 }
 
+// saIfaceFieldWriteLayoutRefusal is the write twin of
+// saIfaceFieldReadLayoutRefusal: the loud refusal for an interface-typed
+// field write whose proven concrete layout disagrees with the interface
+// layout, or "" when the write proceeds as today. Same firing conditions
+// as the read guard (fieldful interface kind, known provenance,
+// layout-incompatible); the prov-accessor check runs before this guard,
+// so accessor-implemented members inline instead of refusing here.
+func saIfaceFieldWriteLayoutRefusal(scope *saScope, recvName string, kindDef *saClassDef, field string) string {
+	if kindDef == nil || !kindDef.isIface || len(kindDef.fields) == 0 {
+		return ""
+	}
+	if recvName == "" {
+		return ""
+	}
+	prov, ok := scope.ifaceProv[recvName]
+	if !ok || prov == "" {
+		return ""
+	}
+	if saIfaceLayoutCompatible(scope.classes, prov, kindDef.name) {
+		return ""
+	}
+	return "interface field write layout mismatch: field " + field + " of interface " + kindDef.name + " written through " + prov + " layout (concrete offsets/kinds differ from interface layout)"
+}
+
 // saIfaceRetEntry is one analyzer binding: the provenance a const binding
 // carries for return classification. kind is the lowering-recorded kind
 // ("inst:"+name, or "" when the binding is unannotated).
