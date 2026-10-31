@@ -1970,13 +1970,14 @@ func saRetAssignTarget(t *ast.Node, out map[string]bool) {
 }
 
 // saAttachIfaceRetProv attaches a callee's recorded return provenance to
-// a const call-result binding. It is a no-op unless every gate holds:
-// const binding, bare-identifier callee, same-file signature, same return
-// kind as the bound kind. Phase A (async v1): async fn decls are included
+// a call-result binding. It is a no-op unless every gate holds:
+// bare-identifier callee, same-file signature, same return kind as the
+// bound kind. The class-prov arm applies to const and let bindings; the
+// litFn arm stays const-gated (let-prov record_for_let). Phase A (async v1): async fn decls are included
 // via retKind erasure (their recorded prov attaches like sync prov); the
 // future machinery's own retIsPromise uses are untouched.
 func saAttachIfaceRetProv(scope *saScope, ce *ast.CallExpression, name, vkind string, isConst bool) {
-	if !isConst || ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
 		return
 	}
 	sig, ok := scope.funcs[ce.Expression.Text()]
@@ -1987,7 +1988,7 @@ func saAttachIfaceRetProv(scope *saScope, ce *ast.CallExpression, name, vkind st
 		saSetIfaceProv(scope, name, sig.retIfaceProv)
 		return
 	}
-	if len(sig.retIfaceLitFn) > 0 && len(vkind) > 5 && vkind[:5] == "inst:" {
+	if isConst && len(sig.retIfaceLitFn) > 0 && len(vkind) > 5 && vkind[:5] == "inst:" {
 		if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
 			for m, anode := range sig.retIfaceLitFn {
 				if _, isMeth := idef.methods[m]; isMeth {

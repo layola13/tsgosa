@@ -1162,8 +1162,8 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 }
 
 // saAttachIfaceMethodProv attaches a method's recorded return
-// provenance to a const method-call-result binding. It is a no-op
-// unless every gate holds: const binding, PropertyAccess callee with
+// provenance to a method-call-result binding (const or let). It is a
+// no-op unless every gate holds: PropertyAccess callee with
 // an identifier method name (never `#` private names), a resolvable
 // receiver class (identifier with a concrete inst kind, `this` via
 // scope.thisClass, or an unshadowed class name for static calls), an
@@ -1173,8 +1173,8 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 // entry, and a declared interface return kind matching the binding's
 // kind. The existing dispatch site then handles method calls on the
 // binding unchanged. Prov only, no ownership change.
-func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind string, isConst bool) {
-	if !isConst || ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind string, _ bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return
 	}
 	pa := ce.Expression.AsPropertyAccessExpression()

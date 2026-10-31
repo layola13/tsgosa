@@ -1106,44 +1106,40 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 				if k, ok := scope.types[init.Text()]; ok && k == vkind {
 					saStoreLocal(w, name, init.Text(), scope, nextTemp)
 					scope.types[name] = vkind
-					if isConst {
-						saCopyIfaceProv(scope, init.Text(), name, vkind)
-					}
+					saCopyIfaceProv(scope, init.Text(), name, vkind)
 					continue
 				}
-				if isConst {
-					if k, ok := scope.types[init.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
-						if cdef, ok := scope.classes[k[5:]]; ok && !cdef.isIface && !cdef.isAbstract {
-							if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
-								saStoreLocal(w, name, init.Text(), scope, nextTemp)
-								scope.types[name] = vkind
-								saSetIfaceProv(scope, name, k[5:])
-								continue
-							}
-						}
-					}
-					if prov, ok := scope.ifaceProv[init.Text()]; ok && len(vkind) > 5 {
+				if k, ok := scope.types[init.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
+					if cdef, ok := scope.classes[k[5:]]; ok && !cdef.isIface && !cdef.isAbstract {
 						if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
 							saStoreLocal(w, name, init.Text(), scope, nextTemp)
 							scope.types[name] = vkind
-							saSetIfaceProv(scope, name, prov)
+							saSetIfaceProv(scope, name, k[5:])
 							continue
 						}
 					}
-					if lit, ok := scope.ifaceLitFn[init.Text()]; ok && len(lit) > 0 && len(vkind) > 5 {
-						if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
-							copied := false
-							for m, anode := range lit {
-								if _, isMeth := idef.methods[m]; isMeth {
-									saSetIfaceLitFn(scope, name, m, anode)
-									copied = true
-								}
+				}
+				if prov, ok := scope.ifaceProv[init.Text()]; ok && len(vkind) > 5 {
+					if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
+						saStoreLocal(w, name, init.Text(), scope, nextTemp)
+						scope.types[name] = vkind
+						saSetIfaceProv(scope, name, prov)
+						continue
+					}
+				}
+				if lit, ok := scope.ifaceLitFn[init.Text()]; ok && len(lit) > 0 && len(vkind) > 5 {
+					if idef, ok := scope.classes[vkind[5:]]; ok && idef.isIface {
+						copied := false
+						for m, anode := range lit {
+							if _, isMeth := idef.methods[m]; isMeth {
+								saSetIfaceLitFn(scope, name, m, anode)
+								copied = true
 							}
-							if copied {
-								saStoreLocal(w, name, init.Text(), scope, nextTemp)
-								scope.types[name] = vkind
-								continue
-							}
+						}
+						if copied {
+							saStoreLocal(w, name, init.Text(), scope, nextTemp)
+							scope.types[name] = vkind
+							continue
 						}
 					}
 				}
@@ -1467,6 +1463,7 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		if k, ok := scope.types[init.Text()]; ok && len(k) > 5 && k[:5] == "inst:" {
 			saStoreLocal(w, name, init.Text(), scope, nextTemp)
 			scope.types[name] = k
+			saCopyIfaceProv(scope, init.Text(), name, k)
 			return true
 		}
 	}
