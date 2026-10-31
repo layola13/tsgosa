@@ -86,6 +86,77 @@ func saIfaceMethodOnly(classes map[string]*saClassDef, iface string) bool {
 	return len(def.fields) == 0
 }
 
+// saIfaceLayoutCompatible reports whether concrete class have may stand in
+// for interface want by FIELD LAYOUT agreement: every field declared by
+// want exists on have at the same byte offset with the same normalized
+// kind ("" normalizes to "i32", mirroring saWidenCompatible). Extra have
+// fields are ignored: trailing extras shift nothing (allowed), leading
+// extras shift interface fields' offsets and are refused via offset
+// mismatch. have must be concrete non-abstract; want must be an interface.
+// The predicate is an additional conjunct alongside satisfaction, never a
+// replacement for it (fieldful-wants slice, JEV fw_layout offset_kind_equal
+// UNANIMOUS, fw_granularity whole_interface).
+func saIfaceLayoutCompatible(classes map[string]*saClassDef, have, want string) bool {
+	hdef, ok := classes[have]
+	if !ok || hdef == nil || hdef.isIface || hdef.isAbstract {
+		return false
+	}
+	wdef, ok := classes[want]
+	if !ok || wdef == nil || !wdef.isIface {
+		return false
+	}
+	for _, f := range wdef.fields {
+		hoff, ok := hdef.offsets[f.name]
+		if !ok || hoff != f.offset {
+			return false
+		}
+		wk := wdef.fkinds[f.name]
+		if wk == "" {
+			wk = "i32"
+		}
+		hk := hdef.fkinds[f.name]
+		if hk == "" {
+			hk = "i32"
+		}
+		if wk != hk {
+			return false
+		}
+	}
+	return true
+}
+
+// saIfaceFieldReadRecvName extracts the receiver name for the read guard:
+// only a bare Identifier receiver carries provenance by name.
+func saIfaceFieldReadRecvName(e *ast.Node) string {
+	if e != nil && e.Kind == ast.KindIdentifier {
+		return e.Text()
+	}
+	return ""
+}
+
+// saIfaceFieldReadLayoutRefusal reports the loud refusal for an
+// interface-typed field read whose proven concrete layout disagrees with
+// the interface layout, or "" when the read proceeds as today: the kind
+// def must be a fieldful interface, the receiver's provenance must be
+// known (prov-unknown reads proceed: widened handles read correctly, and
+// params/temps carry no prov), and the pair must be layout-incompatible.
+func saIfaceFieldReadLayoutRefusal(scope *saScope, recvName string, kindDef *saClassDef, field string) string {
+	if kindDef == nil || !kindDef.isIface || len(kindDef.fields) == 0 {
+		return ""
+	}
+	if recvName == "" {
+		return ""
+	}
+	prov, ok := scope.ifaceProv[recvName]
+	if !ok || prov == "" {
+		return ""
+	}
+	if saIfaceLayoutCompatible(scope.classes, prov, kindDef.name) {
+		return ""
+	}
+	return "interface field read layout mismatch: field " + field + " of interface " + kindDef.name + " read through " + prov + " layout (concrete offsets/kinds differ from interface layout)"
+}
+
 // saIfaceRetEntry is one analyzer binding: the provenance a const binding
 // carries for return classification. kind is the lowering-recorded kind
 // ("inst:"+name, or "" when the binding is unannotated).

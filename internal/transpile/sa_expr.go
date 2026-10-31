@@ -8597,6 +8597,10 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 					}
 				}
 				if _, ok := def.offsets[fname]; ok && def.fkinds[fname] == "f64" {
+					// Fieldful-wants read guard (half C): see the i32 arm.
+					if msg := saIfaceFieldReadLayoutRefusal(scope, saIfaceFieldReadRecvName(pa.Expression), def, fname); msg != "" {
+						return "", msg
+					}
 					t, lmsg := saLowerClassFieldLoad(w, h, def, fname, scope, nextTemp)
 					if lmsg == "" {
 						return t, ""
@@ -8609,6 +8613,13 @@ func saEvalF64Strict(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos 
 		// 否则直读；直读零址仍沿旧门大声拒，不静默崩）。
 		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
 			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+			// Fieldful-wants chain-base guard: a layout-mismatch refusal
+			// from the chain base must surface with its own diag, not fall
+			// through to the direct arm's generic "instance base did not
+			// resolve" message. Other chain failures keep today's fall-through.
+			if msg != "" && strings.HasPrefix(msg, "interface field read layout mismatch") {
+				return "", msg
+			}
 			if msg == "" {
 				if _, ok := cdef.offsets[pa.Name().Text()]; ok && cdef.fkinds[pa.Name().Text()] == "f64" {
 					if pa.QuestionDotToken != nil || saChainHasOptional(pa.Expression) {
@@ -8888,6 +8899,13 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 		// `b?.v` 同形；非 i32 叶沿守卫门内大声拒）。
 		if pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression && pa.Name() != nil {
 			ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp)
+			// Fieldful-wants chain-base guard: a layout-mismatch refusal
+			// from the chain base must surface with its own diag, not fall
+			// through to the direct arm's generic "instance base did not
+			// resolve" message. Other chain failures keep today's fall-through.
+			if msg != "" && strings.HasPrefix(msg, "interface field read layout mismatch") {
+				return "", msg
+			}
 			if msg == "" {
 				if _, ok := cdef.offsets[pa.Name().Text()]; ok {
 					if pa.QuestionDotToken != nil {
@@ -8989,6 +9007,12 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 			}
 			if _, ok := def.offsets[fname]; ok {
 				// `b?.v` 空守卫 join（底座复用；封存 lowerGuardedProperty）。
+				// Fieldful-wants read guard (half C): a prov-known
+				// interface-typed read through an incompatible concrete
+				// layout refuses loudly here, never silently misreads.
+				if msg := saIfaceFieldReadLayoutRefusal(scope, saIfaceFieldReadRecvName(pa.Expression), def, fname); msg != "" {
+					return "", msg
+				}
 				if pa.QuestionDotToken != nil {
 					t, msg := saLowerGuardedFieldLoad(w, h, def, pa.Name().Text(), scope, nextTemp)
 					if msg != "" {

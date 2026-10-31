@@ -1017,7 +1017,7 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 			if !ok || innerKind == "" {
 				return saIfaceRetEntry{}, false
 			}
-			if !saIfaceMethodOnly(classes, retIface) {
+			if !saIfaceMethodOnly(classes, retIface) && !saIfaceLayoutCompatible(classes, prov, retIface) {
 				return saIfaceRetEntry{}, false
 			}
 			return saIfaceRetEntry{class: prov, kind: innerKind}, true
@@ -1083,7 +1083,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		// Alias soundness: the ladder passes the true handle, and
 		// method-only wants have no interface fields to misread.
 		if e.isNew && e.kind == "inst:"+e.class && e.class != "" &&
-			saIfaceMethodOnly(classes, retIface) &&
+			(saIfaceMethodOnly(classes, retIface) || saIfaceLayoutCompatible(classes, e.class, retIface)) &&
 			(saClassSatisfies(classes, e.class, retIface) || saClassStructurallySatisfies(classes, e.class, retIface)) {
 			return saIfaceRetPath{class: e.class}
 		}
@@ -1098,7 +1098,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		if !ok || def == nil || def.isIface || def.isAbstract {
 			return unknown
 		}
-		if !saIfaceMethodOnly(classes, retIface) {
+		if !saIfaceMethodOnly(classes, retIface) && !saIfaceLayoutCompatible(classes, cname, retIface) {
 			return unknown
 		}
 		if !saClassSatisfies(classes, cname, retIface) && !saClassStructurallySatisfies(classes, cname, retIface) {
@@ -1115,7 +1115,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		if !ok || def == nil || def.isIface || def.isAbstract {
 			return unknown
 		}
-		if !saIfaceMethodOnly(classes, retIface) {
+		if !saIfaceMethodOnly(classes, retIface) && !saIfaceLayoutCompatible(classes, analyzingClass, retIface) {
 			return unknown
 		}
 		if !saClassSatisfies(classes, analyzingClass, retIface) && !saClassStructurallySatisfies(classes, analyzingClass, retIface) {
@@ -1135,7 +1135,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 			if !ok || innerKind != retKind {
 				return unknown
 			}
-			if !saIfaceMethodOnly(classes, retIface) {
+			if !saIfaceMethodOnly(classes, retIface) && !saIfaceLayoutCompatible(classes, prov, retIface) {
 				return unknown
 			}
 			return saIfaceRetPath{class: prov}

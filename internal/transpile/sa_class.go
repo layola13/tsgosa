@@ -2974,7 +2974,7 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 		}
 		checkClasses = aug
 	}
-	if !saIsDerivedFrom(checkClasses, have, want) && !(saIfaceMethodOnly(checkClasses, want) && (saClassSatisfies(checkClasses, have, want) || saClassStructurallySatisfies(checkClasses, have, want))) {
+	if !saIsDerivedFrom(checkClasses, have, want) && !((saIfaceMethodOnly(checkClasses, want) || saIfaceLayoutCompatible(checkClasses, have, want)) && (saClassSatisfies(checkClasses, have, want) || saClassStructurallySatisfies(checkClasses, have, want))) {
 		return "method instance return class mismatch (want " + want + ")"
 	}
 	mode := 2
@@ -10571,6 +10571,7 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 	leaf := pa.Name().Text()
 	var h string
 	var def *saClassDef
+	recvName := ""
 	switch {
 	case pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword:
 		if scope.thisSelf == "" {
@@ -10591,6 +10592,7 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 				return "", nil, "unknown class " + k[5:]
 			}
 			h, def = pa.Expression.Text(), d
+			recvName = pa.Expression.Text()
 		} else if _, ok := scope.funcs[pa.Expression.Text()]; ok {
 			return "", nil, "chained base is not a bound instance"
 		} else if d, ok := scope.classes[pa.Expression.Text()]; ok {
@@ -10666,6 +10668,13 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 	}
 	if def.fkinds[leaf] != "inst" {
 		return "", nil, "chained field " + leaf + " is not a nested object"
+	}
+	// Fieldful-wants chain-base read guard (half C): the base step loads
+	// the nested handle via the base kind's offsets; a prov-known
+	// interface-typed base with an incompatible concrete layout refuses
+	// loudly here instead of silently misreading the handle.
+	if msg := saIfaceFieldReadLayoutRefusal(scope, recvName, def, leaf); msg != "" {
+		return "", nil, msg
 	}
 	t := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
