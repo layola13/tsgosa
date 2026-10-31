@@ -3670,7 +3670,7 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 						} else if litTbl, ok := scope.ifaceLitFn[recvName]; ok {
 							if anode, ok2 := litTbl[methodName]; ok2 && anode != nil {
 								if anode.Kind == ast.KindMethodDeclaration {
-									op, msg := saInlineMethodCore(w, h, def.name, def, anode, methodName, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+									op, msg := saInlineMethodCore(w, h, def.name, def, anode, methodName, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp, false)
 									if msg != "" {
 										return "", false, msg
 									}

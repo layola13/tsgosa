@@ -9854,7 +9854,7 @@ func saWireSuperCtor(w printer.EmitTextWriter, h, owner string, s *ast.Node, out
 // saInstArg 求实例实参句柄（绑定标识符/`this`/`new C()`；子类实例可传基形参，
 // 展平布局前缀一致，读基域安全；`new` 形经 saLowerNewStmt 求临时句柄直传，
 // 无命名绑定故无双重释放，上游 q4b 形同形）。
-func saInstArg(w printer.EmitTextWriter, a *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+func saInstArg(w printer.EmitTextWriter, a *ast.Node, want string, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, staticRecv bool) (string, string) {
 	var have, h string
 	switch {
 	case a != nil && a.Kind == ast.KindIdentifier:
@@ -9881,6 +9881,12 @@ func saInstArg(w printer.EmitTextWriter, a *ast.Node, want string, scope *saScop
 		return "", "method instance argument must be a bound instance"
 	}
 	if saClassSatisfies(scope.classes, have, want) {
+		return h, ""
+	}
+	// M-arg (iface_marg): structural arm with the fieldfulwants layout
+	// conjunct; the conjunct guards the structural disjunct ONLY. Static
+	// method args keep the satisfy-only check (G-static-WEAK).
+	if !staticRecv && saClassStructurallySatisfies(scope.classes, have, want) && (saIfaceMethodOnly(scope.classes, want) || saIfaceLayoutCompatible(scope.classes, have, want)) {
 		return h, ""
 	}
 	return "", "method instance argument class mismatch (want " + want + ")"
@@ -9965,7 +9971,7 @@ func saInlineMethod(w printer.EmitTextWriter, recv string, def *saClassDef, meth
 		}
 		return "", method + " has no body (overload signatures do not inline)"
 	}
-	return saInlineMethodCore(w, recv, def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return saInlineMethodCore(w, recv, def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp, false)
 }
 
 // saInlineStaticMethod 内联 `C.m(args)`（无实例，this 置空使实例态诚实拒，
@@ -9978,14 +9984,14 @@ func saInlineStaticMethod(w printer.EmitTextWriter, className string, def *saCla
 	if mn.Body() == nil {
 		return "", method + " has no body (overload signatures do not inline)"
 	}
-	return saInlineMethodCore(w, "", def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp)
+	return saInlineMethodCore(w, "", def.name, def, mn, method, ce, scope, pos, refusals, needImport, nextLabel, nextTemp, true)
 }
 
 // saInlineMethodCore 是实例/静态共享内联核：形参绑定（通法同例），
 // thisSelf 别接收者（静态置空），体经值槽汇合；形状证据：封存
 // inlineClassMethod:10188-10280。
-func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
-	argVals, kinds, msg := saMethodCallArgVals(w, mn, ce, scope, pos, refusals, nextTemp)
+func saInlineMethodCore(w printer.EmitTextWriter, thisSelf, className string, def *saClassDef, mn *ast.Node, method string, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int, staticRecv bool) (string, string) {
+	argVals, kinds, msg := saMethodCallArgVals(w, mn, ce, scope, pos, refusals, nextTemp, staticRecv)
 	if msg != "" {
 		return "", msg
 	}
@@ -10807,7 +10813,7 @@ func saLowerClassFieldStore(w printer.EmitTextWriter, h string, def *saClassDef,
 // saMethodCallArgVals is saInlineMethodCore's parameter-kind + argument-
 // evaluation loop, extracted verbatim for reuse by literal-method dispatch
 // (4_ifc_lower). Core semantics are unchanged: same code, same order.
-func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) ([]string, []string, string) {
+func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, staticRecv bool) ([]string, []string, string) {
 	params := mn.Parameters()
 	var argNodes []*ast.Node
 	if ce.Arguments != nil {
@@ -10901,7 +10907,7 @@ func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExp
 		}
 		// 实例形参实参直传句柄（子类实例可传基形参，展平前缀一致）。
 		if i < len(kinds) && len(kinds[i]) > 5 && kinds[i][:5] == "inst:" {
-			h, msg := saInstArg(w, a, kinds[i][5:], scope, pos, refusals, nextTemp)
+			h, msg := saInstArg(w, a, kinds[i][5:], scope, pos, refusals, nextTemp, staticRecv)
 			if msg != "" {
 				return nil, nil, msg
 			}
@@ -10969,7 +10975,7 @@ func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExp
 // arrow's explicit return annotation; unannotated and Promise/jsval returns
 // refuse loudly (async method lowering is a separate gap: p_prom_plain).
 func saInlineLiteralArrow(w printer.EmitTextWriter, anode *ast.Node, ce *ast.CallExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, needImport func(string), nextLabel, nextTemp *int) (string, string) {
-	argVals, kinds, msg := saMethodCallArgVals(w, anode, ce, scope, pos, refusals, nextTemp)
+	argVals, kinds, msg := saMethodCallArgVals(w, anode, ce, scope, pos, refusals, nextTemp, false)
 	if msg != "" {
 		return "", msg
 	}
