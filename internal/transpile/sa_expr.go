@@ -3537,8 +3537,25 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			}
 			// map 索引实例基（`m[k].m()`；saInstBase 只认标识符/this；
 			// 与 i32 读位 2450-2459 同形；否则 nil 解引用崩溃）。
-			if def == nil && pa.Expression != nil && (pa.Expression.Kind == ast.KindElementAccessExpression || pa.Expression.Kind == ast.KindCallExpression || pa.Expression.Kind == ast.KindNewExpression) {
-				h, def, msg = saInstBaseElem(w, pa.Expression, scope, pos, refusals, nextTemp)
+			// Annotated method-call binds (iface_annot_methodcall,
+			// amc_paren_recv, 4th arm): a parenthesized receiver
+			// peels to the inner node first — saInstBaseElem
+			// handles Call/New/ElementAccess only, so an unpeeled
+			// paren would fall through to "not a map index base".
+			// Peeling here mirrors the M1 paren case
+			// (saRetPeelParenNonNull) and routes
+			// (h.getMaker()).make() through the same path as
+			// h.getMaker().make(). The peel is local to this
+			// fallback: pa.Expression itself is unchanged for
+			// every later branch.
+			baseExpr := pa.Expression
+			if baseExpr != nil && baseExpr.Kind == ast.KindParenthesizedExpression {
+				if peeled := saRetPeelParenNonNull(baseExpr); peeled != nil && peeled != baseExpr {
+					baseExpr = peeled
+				}
+			}
+			if def == nil && baseExpr != nil && (baseExpr.Kind == ast.KindElementAccessExpression || baseExpr.Kind == ast.KindCallExpression || baseExpr.Kind == ast.KindNewExpression) {
+				h, def, msg = saInstBaseElem(w, baseExpr, scope, pos, refusals, nextTemp)
 				if msg != "" {
 					return "", false, msg
 				}
@@ -5995,6 +6012,28 @@ func saPAReceiverClass(recv *ast.Node, scope *saScope) string {
 			return ""
 		}
 		return ex.Text()
+	case ast.KindThisKeyword:
+		// Annotated method-call binds (iface_annot_methodcall,
+		// amc_this_recv): mirror attach's ThisKeyword case — the
+		// class of the enclosing method's receiver. Fail closed
+		// outside a method context (static context leaves
+		// scope.thisClass empty).
+		if scope.thisClass == "" {
+			return ""
+		}
+		return scope.thisClass
+	case ast.KindParenthesizedExpression, ast.KindNonNullExpression:
+		// Annotated method-call binds (iface_annot_methodcall,
+		// amc_paren_recv): mirror attach's paren peel
+		// (saRetPeelParenNonNull) + recurse. The peel returns the
+		// node itself when it is not a paren/non-null wrapper;
+		// guard against that so a malformed node cannot recurse
+		// forever.
+		peeled := saRetPeelParenNonNull(recv)
+		if peeled == nil || peeled == recv {
+			return ""
+		}
+		return saPAReceiverClass(peeled, scope)
 	default:
 		return ""
 	}

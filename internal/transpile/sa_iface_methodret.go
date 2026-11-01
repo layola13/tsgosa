@@ -1519,6 +1519,26 @@ func saAttachIfaceMethodProv(scope *saScope, ce *ast.CallExpression, name, vkind
 			cls = def.parent
 		}
 		return
+	case recv.Kind == ast.KindNewExpression:
+		// Annotated method-call binds (iface_annot_methodcall,
+		// amc_new_single): single-level new receivers pass M1 but
+		// install no prov without this case. Mirror the M1 New
+		// case: constructed class from the New callee Identifier,
+		// paren-transparent via saUnwrapTransparent; a
+		// non-Identifier callee fails closed. Instance-only (the
+		// shared walk below uses def.methods, never
+		// staticMethods); the walk itself fails closed on a
+		// missing def, and the methodProv gate + declared-iface
+		// == vkind check (else harvest fallback) still govern.
+		ne := recv.AsNewExpression()
+		if ne == nil || ne.Expression == nil {
+			return
+		}
+		ex := saUnwrapTransparent(ne.Expression)
+		if ex == nil || ex.Kind != ast.KindIdentifier {
+			return
+		}
+		startClass = ex.Text()
 	default:
 		return
 	}
