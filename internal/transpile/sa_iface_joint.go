@@ -35,6 +35,45 @@ import (
 // Hence the snapshot records class strings and litFn nil-ness/length,
 // never litIDs.
 
+// saAnalyzeIfaceJointProvOuter wraps the joint loop and the method pass
+// in the Phase FC outer fixpoint (probe §1.4): the joint loop's chain
+// arms consume methodProv (recorded by the method pass) and the method
+// pass's free-leaf arms consume retProv (recorded by the joint loop), so
+// the two passes iterate joint → method → joint … until the funcs,
+// fields, and methodProv snapshots are all quiet. Monotone add-only
+// (no pass ever removes or changes a recorded entry); bounded by total
+// slots + 1. The first outer iteration reproduces the pre-fixpoint state
+// exactly: the joint loop runs with empty methodProv (the method pass
+// has not run yet) and the method pass then consumes the same joint
+// output as before — first-iteration reproduction is a build-gate proof
+// (neighbor sets + regression), not an assumption.
+func saAnalyzeIfaceJointProvOuter(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) {
+	if sf == nil || funcs == nil || classes == nil {
+		return
+	}
+	bound := 1
+	for _, sig := range funcs {
+		bound++ // one return-prov field slot per function (conservative)
+		bound += len(sig.paramKinds)
+	}
+	for _, def := range classes {
+		if def != nil {
+			bound += len(def.fields) // one field-prov slot per field
+			bound += len(def.methods) + len(def.staticMethods)
+		}
+	}
+	for round := 0; round <= bound; round++ {
+		beforeFuncs := saIfaceJointSnapshot(funcs)
+		beforeFields := saIfaceFieldSnapshot(classes)
+		beforeMethods := saIfaceMethodSnapshot(classes)
+		saAnalyzeIfaceJointProv(sf, funcs, classes, aliasOf, link)
+		saAnalyzeMethodIfaceProv(sf, funcs, classes, aliasOf, link)
+		if saIfaceJointSnapshot(funcs) == beforeFuncs && saIfaceFieldSnapshot(classes) == beforeFields && saIfaceMethodSnapshot(classes) == beforeMethods {
+			return
+		}
+	}
+}
+
 // saIfaceJointSnapshot encodes the prov fields of every signature into
 // one deterministic string for change detection.
 func saIfaceJointSnapshot(funcs map[string]saFuncSig) string {

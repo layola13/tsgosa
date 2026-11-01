@@ -556,6 +556,66 @@ func saMethodDeclaredIface(mn *ast.Node, classes map[string]*saClassDef) string 
 	return "inst:" + d.name
 }
 
+// saMethodDeclaredConcrete returns the declared concrete return class of a
+// method node (plain TypeReference identifier, no type arguments, def
+// concrete non-abstract, same-file), mirroring saMethodDeclaredIface's
+// extraction discipline. "" for interface/unknown/absent returns. A nil
+// sameFile map fails closed (no name is same-file).
+func saMethodDeclaredConcrete(mn *ast.Node, classes map[string]*saClassDef, sameFile map[string]bool) string {
+	if mn == nil || mn.Kind != ast.KindMethodDeclaration {
+		return ""
+	}
+	md := mn.AsMethodDeclaration()
+	if md == nil || md.Type == nil || md.Type.Kind != ast.KindTypeReference {
+		return ""
+	}
+	ref := md.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return ""
+	}
+	name := ref.TypeName.Text()
+	if !sameFile[name] {
+		return ""
+	}
+	d, ok := classes[name]
+	if !ok || d == nil || d.isIface || d.isAbstract {
+		return ""
+	}
+	return name
+}
+
+// saIfaceMethodSnapshot encodes every recorded methodProv entry into one
+// deterministic string for the outer-fixpoint change detection (same
+// sorted-key discipline as saIfaceJointSnapshot).
+func saIfaceMethodSnapshot(classes map[string]*saClassDef) string {
+	keys := make([]string, 0, len(classes))
+	for k := range classes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		def := classes[k]
+		if def == nil {
+			continue
+		}
+		mkeys := make([]string, 0, len(def.methodProv))
+		for m := range def.methodProv {
+			mkeys = append(mkeys, m)
+		}
+		sort.Strings(mkeys)
+		for _, m := range mkeys {
+			b.WriteString(k)
+			b.WriteByte(0)
+			b.WriteString(m)
+			b.WriteByte(0)
+			b.WriteString(def.methodProv[m])
+			b.WriteByte(1)
+		}
+	}
+	return b.String()
+}
+
 // saAnalyzeMethodIfaceProv records methodProv on same-file class
 // definitions whose interface-typed methods provably return one
 // concrete class via free-function call results. It mutates only
@@ -573,6 +633,8 @@ func saMethodDeclaredIface(mn *ast.Node, classes map[string]*saClassDef) string 
 // invalidate it; a method unknown in round N (missing inner) may
 // resolve in round N+1. Monotone add-only; agreement preserved.
 func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) {
+	// Phase FC: the same-file bound for the new chain arms.
+	sameFile := saSameFileClassNames(sf)
 	if sf == nil || funcs == nil || classes == nil {
 		return
 	}
@@ -592,7 +654,7 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 		total += len(def.methods) + len(def.staticMethods)
 	}
 	for round := 0; round <= total; round++ {
-		if saAnalyzeMethodIfaceProvRound(sf, funcs, classes, aliasOf, link) == 0 {
+		if saAnalyzeMethodIfaceProvRound(sf, funcs, classes, aliasOf, link, sameFile) == 0 {
 			return
 		}
 	}
@@ -607,7 +669,7 @@ func saAnalyzeMethodIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 // (a name recorded in an earlier round is never revisited, so a
 // later-resolving same-name method of the other kind cannot
 // invalidate it).
-func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink) int {
+func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, link *saFileLink, sameFile map[string]bool) int {
 	added := 0
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		if st == nil || st.Kind != ast.KindClassDeclaration {
@@ -697,7 +759,7 @@ func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSi
 				if body == nil || body.Kind != ast.KindBlock {
 					continue
 				}
-				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, effClasses, aliasOf, name, src.isStatic)
+				class, ok := saAnalyzeMethodReturns(body, params, dk, funcs, effClasses, aliasOf, name, src.isStatic, sameFile)
 				if !ok {
 					continue
 				}
@@ -732,7 +794,7 @@ func saAnalyzeMethodIfaceProvRound(sf *ast.SourceFile, funcs map[string]saFuncSi
 // inherited node's entry for a child class is the child class) and
 // whether the method is static (the this arm is instance-only).
 // Returns the agreed concrete class, or ok=false.
-func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, className string, isStatic bool) (string, bool) {
+func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, className string, isStatic bool, sameFile map[string]bool) (string, bool) {
 	retIface := retKind[5:]
 	if body == nil || body.Kind != ast.KindBlock {
 		return "", false
@@ -767,6 +829,7 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 		methodClass:  className,
 		methodStatic: isStatic,
 		params:       paramNameSet(paramNames),
+		sameFile:     sameFile,
 	}
 	w.walkList(stmts, 0, nil)
 	if !w.ok || len(w.paths) == 0 {
@@ -813,11 +876,11 @@ func saAnalyzeMethodReturns(body *ast.Node, paramNames []string, retKind string,
 // def.methods (instance) on the instance path and def.staticMethods
 // on the static path (GATE-B: unshadowed class-name receiver); the
 // method name must be a plain identifier (never `#`).
-func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool) (string, string, bool) {
-	return saMethodCallProvBudget(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, 2)
+func saMethodCallProv(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool, sameFile map[string]bool) (string, string, bool) {
+	return saMethodCallProvBudget(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, 2, sameFile)
 }
 
-func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int) (string, string, bool) {
+func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, params map[string]bool, shadowed map[string]bool, classes map[string]*saClassDef, analyzingClass string, isStatic bool, peels int, sameFile map[string]bool) (string, string, bool) {
 	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
 		return "", "", false
 	}
@@ -901,11 +964,70 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 		if recvCE == nil {
 			return "", "", false
 		}
-		innerProv, _, ok := saMethodCallProvBudget(recvCE, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, peels-1)
-		if !ok || innerProv == "" {
-			return "", "", false
+		// Phase FC free-leaf case (MC-B analysis arm): the receiver
+		// is a bare-Identifier call, not a PA call — the recursion
+		// below would reject it at its entry gate. Resolve it
+		// directly from funcs: retIfaceProv for interface-returning
+		// leaves, or the declared concrete return class for
+		// concrete-returning leaves (R0 never records prov for
+		// those, so retIfaceProv alone cannot resolve them; the
+		// declared class is exact). Shadowed-map check first;
+		// entries/params shadowing also fails closed; never
+		// retIfaceLitFn; the free leaf's class must be same-file
+		// (F5). The free leaf consumes no peel: it makes no
+		// recursive call — but this handling still passed the
+		// peels check above, so a free leaf + 3 method links still
+		// exhausts peels at the innermost recursion (budget proof,
+		// probe §7 check 4).
+		if recvCE.Expression != nil && recvCE.Expression.Kind == ast.KindIdentifier {
+			if recvCE.QuestionDotToken != nil {
+				return "", "", false
+			}
+			fname := recvCE.Expression.Text()
+			if shadowed[fname] {
+				return "", "", false
+			}
+			if _, bound := entries[fname]; bound {
+				return "", "", false
+			}
+			if params[fname] {
+				return "", "", false
+			}
+			sig, ok := funcs[fname]
+			if !ok || sig.isVoid || sig.retIsPromise {
+				return "", "", false
+			}
+			if sig.retIfaceProv != "" {
+				if !sameFile[sig.retIfaceProv] {
+					return "", "", false
+				}
+				startClass = sig.retIfaceProv
+			} else if len(sig.retKind) > 5 && sig.retKind[:5] == "inst:" {
+				// Concrete leaf (fc_method_ret_freechain2): R0
+				// records prov only for interface-returning
+				// functions, so a concrete-returning free function
+				// never carries retIfaceProv; its declared concrete
+				// return class is exact (no dispatch ambiguity) and
+				// is the chain start. Same-file bound applies.
+				cname := sig.retKind[5:]
+				if !sameFile[cname] {
+					return "", "", false
+				}
+				def, ok := classes[cname]
+				if !ok || def == nil || def.isIface || def.isAbstract {
+					return "", "", false
+				}
+				startClass = cname
+			} else {
+				return "", "", false
+			}
+		} else {
+			innerProv, _, ok := saMethodCallProvBudget(recvCE, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, peels-1, sameFile)
+			if !ok || innerProv == "" {
+				return "", "", false
+			}
+			startClass = innerProv
 		}
-		startClass = innerProv
 	default:
 		// Everything else falls through.
 		return "", "", false
@@ -931,14 +1053,30 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 		}
 		if ok && mn != nil {
 			prov, ok := def.methodProv[mname]
-			if !ok || prov == "" {
-				return "", "", false
+			if ok && prov != "" {
+				innerKind := saMethodDeclaredIface(mn, classes)
+				if innerKind == "" {
+					return "", "", false
+				}
+				return prov, innerKind, true
 			}
-			innerKind := saMethodDeclaredIface(mn, classes)
-			if innerKind == "" {
-				return "", "", false
+			// Phase FC concrete-link port (MC-A): node exists but
+			// methodProv is absent (methodProv exists only for
+			// interface-returning methods) — consult the method's
+			// declared concrete return instead of failing closed,
+			// exactly the chainprov rule of the call-site core.
+			// Instance path only (skip when staticWalk); the
+			// declared class must be same-file (F5). The returned
+			// inner kind is "": recursion discards it for
+			// intermediate links, and the return/init arms reject ""
+			// for final answers, so a concrete-final method call
+			// never records prov through this port.
+			if !staticWalk {
+				if dname := saMethodDeclaredConcrete(mn, classes, sameFile); dname != "" {
+					return dname, "", true
+				}
 			}
-			return prov, innerKind, true
+			return "", "", false
 		}
 		cls = def.parent
 	}
@@ -965,7 +1103,7 @@ func saMethodCallProvBudget(ce *ast.CallExpression, entries map[string]saIfaceRe
 // origins are all deferred in v1).
 // analyzingClass/isStatic/retIface are the enclosing method's (the
 // walker carries them; the sole caller is the methodMode branch).
-func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, analyzingClass string, isStatic bool, retIface string, params map[string]bool, shadowed map[string]bool) (saIfaceRetEntry, bool) {
+func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, analyzingClass string, isStatic bool, retIface string, params map[string]bool, shadowed map[string]bool, sameFile map[string]bool) (saIfaceRetEntry, bool) {
 	if init == nil {
 		return saIfaceRetEntry{}, false
 	}
@@ -1013,7 +1151,7 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 		// function comment; kind equality is enforced at the return,
 		// not here, per JEV ti_ext_m2 initguard_form).
 		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
-			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic)
+			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, sameFile)
 			if !ok || innerKind == "" {
 				return saIfaceRetEntry{}, false
 			}
@@ -1094,7 +1232,7 @@ func saMethodClassifyInit(init *ast.Node, annot *ast.TypeNode, entries map[strin
 // are true handles via the ladder's alias discipline, M0 probe
 // §2.2). Param, field, and litFn origins all yield unknown (each
 // deferred in v1); the isLit rejection stays.
-func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, analyzingClass string, isStatic bool, params map[string]bool) saIfaceRetPath {
+func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, analyzingClass string, isStatic bool, params map[string]bool, sameFile map[string]bool) saIfaceRetPath {
 	unknown := saIfaceRetPath{unknown: true}
 	if expr == nil {
 		return unknown
@@ -1174,7 +1312,7 @@ func saMethodClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, 
 		// prov exists AND inner declared iface == outer retIface
 		// AND outer iface method-only; otherwise unknown.
 		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
-			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic)
+			prov, innerKind, ok := saMethodCallProv(ce, entries, funcs, params, shadowed, classes, analyzingClass, isStatic, sameFile)
 			if !ok || innerKind != retKind {
 				return unknown
 			}

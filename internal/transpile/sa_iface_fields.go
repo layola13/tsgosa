@@ -1159,7 +1159,7 @@ func (w *saFieldBodyWalk) walkList(stmts []*ast.Node, depth int, shadowed map[st
 				if w.taint.tainted(name) {
 					continue
 				}
-				if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.f.funcs, w.f.classes, w.f.aliasOf, &w.litSeq, saFieldCallerParamKinds(w.caller.params)); ok {
+				if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.f.funcs, w.f.classes, w.f.aliasOf, &w.litSeq, saFieldCallerParamKinds(w.caller.params), nil); ok {
 					w.entries[name] = e
 				}
 			}

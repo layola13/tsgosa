@@ -2990,6 +2990,240 @@ func saStaticInstClass(e *ast.Node, scope *saScope) string {
 	return ""
 }
 
+// saLadderFreeChainOK is the Phase FC ladder-local admission check (MC-B
+// lowering arm): e is an unguarded PA call whose receiver chain bottoms
+// out at a bare-Identifier free call with recorded class prov (scope.funcs
+// retIfaceProv, shadow check first via scope.types, never litFn), with at
+// most 2 PA links (the peels=2 budget; the free leaf consumes no peel).
+// Intermediate links resolve over scope.classes with the parent-chain
+// discipline (first def holding the node decides; methodProv or declared
+// concrete return). Guarded links, static links, field-read bases, and
+// litFn leaves all fail. It does NOT widen saCouldBeInst (G-ladder): it
+// is consulted only by the ladder's Call arm. Single-link chains admit
+// to the unchanged saInstBaseElem path (whose saEvalCall dispatch already
+// handles them via the DC-1 funcs_branch); multi-link chains lower via
+// the ladder-local path in saLadderLowerFreeChain (probe-gap completion:
+// admission alone cannot lower them, because saEvalCallInner's PA
+// dispatch gate rejects PA-call receivers). The analysis arms are the
+// real gate (methodProv recording); the ladder only admits chains the
+// analysis already agreed, so a looser scope here (no same-file set at
+// lowering time) cannot newly resolve a refused shape.
+func saLadderFreeChainOK(e *ast.Node, scope *saScope) bool {
+	_, _, ok := saLadderFreeChainResolve(e, scope)
+	return ok
+}
+
+// saLadderFreeChainResolve resolves a free-leaf PA-call chain at lowering
+// time, returning (recvClass, finalClass): recvClass is the class the
+// outermost method resolves against (the receiver chain's resolved
+// class), finalClass is the outermost link's prov/concrete class.
+// False when the chain does not resolve (same fallthroughs as the
+// analysis arm).
+func saLadderFreeChainResolve(e *ast.Node, scope *saScope) (string, string, bool) {
+	if e == nil || e.Kind != ast.KindCallExpression || scope == nil {
+		return "", "", false
+	}
+	ce := e.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", "", false
+	}
+	var methods []string
+	var leaf *ast.Node
+	cur := ce
+	for {
+		pa := cur.Expression.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier || strings.HasPrefix(pa.Name().Text(), "#") {
+			return "", "", false
+		}
+		if pa.QuestionDotToken != nil || cur.QuestionDotToken != nil {
+			return "", "", false
+		}
+		methods = append(methods, pa.Name().Text())
+		recv := saUnwrapTransparent(pa.Expression)
+		if recv == nil {
+			return "", "", false
+		}
+		if recv.Kind == ast.KindCallExpression {
+			inner := recv.AsCallExpression()
+			if inner == nil || inner.Expression == nil || inner.Expression.Kind != ast.KindPropertyAccessExpression {
+				leaf = recv
+				break
+			}
+			cur = inner
+			continue
+		}
+		leaf = recv
+		break
+	}
+	if len(methods) > 2 {
+		return "", "", false
+	}
+	if leaf == nil || leaf.Kind != ast.KindCallExpression {
+		return "", "", false
+	}
+	leafCE := leaf.AsCallExpression()
+	if leafCE == nil || leafCE.Expression == nil || leafCE.Expression.Kind != ast.KindIdentifier || leafCE.QuestionDotToken != nil {
+		return "", "", false
+	}
+	fname := leafCE.Expression.Text()
+	if _, shadowed := scope.types[fname]; shadowed {
+		return "", "", false
+	}
+	sig, ok := scope.funcs[fname]
+	if !ok || sig.isVoid || sig.retIsPromise {
+		return "", "", false
+	}
+	var startClass string
+	if sig.retIfaceProv != "" {
+		startClass = sig.retIfaceProv
+	} else if len(sig.retKind) > 5 && sig.retKind[:5] == "inst:" {
+		// Concrete leaf (fc_method_ret_freechain2): R0 records prov
+		// only for interface-returning functions, so a
+		// concrete-returning free function never carries
+		// retIfaceProv; its declared concrete return class is exact
+		// (no dispatch ambiguity) and is the chain start.
+		cname := sig.retKind[5:]
+		def, ok := scope.classes[cname]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return "", "", false
+		}
+		startClass = cname
+	} else {
+		return "", "", false
+	}
+	current := startClass
+	var recvClass string
+	for i := len(methods) - 1; i >= 0; i-- {
+		mname := methods[i]
+		if i == 0 {
+			recvClass = current
+		}
+		visited := map[string]bool{}
+		resolved := false
+		for cls := current; cls != ""; {
+			if visited[cls] {
+				return "", "", false
+			}
+			visited[cls] = true
+			def, ok := scope.classes[cls]
+			if !ok || def == nil {
+				return "", "", false
+			}
+			mn, ok := def.methods[mname]
+			if ok && mn != nil {
+				if prov, ok := def.methodProv[mname]; ok && prov != "" {
+					current = prov
+					resolved = true
+					break
+				}
+				if dname := saLadderDeclaredConcrete(mn, scope); dname != "" {
+					current = dname
+					resolved = true
+					break
+				}
+				return "", "", false
+			}
+			cls = def.parent
+		}
+		if !resolved {
+			return "", "", false
+		}
+	}
+	return recvClass, current, true
+}
+
+// saLadderFreeChainMulti reports whether e is a multi-link (2-link)
+// free-leaf chain: the outermost call's receiver is itself a PA call and
+// the whole chain resolves. Single-link chains keep the existing
+// saInstBaseElem path, so this case fires only for exactly 2 links (the
+// ladder budget caps methods at 2).
+func saLadderFreeChainMulti(e *ast.Node, scope *saScope) bool {
+	if e == nil || e.Kind != ast.KindCallExpression || scope == nil {
+		return false
+	}
+	ce := e.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil {
+		return false
+	}
+	recv := saUnwrapTransparent(pa.Expression)
+	if recv == nil || recv.Kind != ast.KindCallExpression {
+		return false
+	}
+	inner := recv.AsCallExpression()
+	if inner == nil || inner.Expression == nil || inner.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	return saLadderFreeChainOK(e, scope)
+}
+
+// saLadderLowerFreeChain lowers a validated 2-link free-leaf chain
+// ladder-locally (probe-gap completion, see saLadderFreeChainOK): the
+// receiver (a single-link free chain) lowers through the existing
+// instance-base path, whose gate passes and whose dispatch is the
+// established funcs_branch/concrete path; the outermost method is then
+// inlined on the receiver temp against the resolution's receiver class
+// (not the result kind's def, which is an interface def for
+// interface-final receivers and cannot inline). Returns the result
+// handle and the outermost link's resolved class (the ladder's have).
+// saCouldBeInst and saEvalCallInner are untouched (G-ladder).
+func saLadderLowerFreeChain(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, string) {
+	ce := e.AsCallExpression()
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", "", "method instance return must be this, a bound instance, new or an instance call"
+	}
+	pa := ce.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil {
+		return "", "", "method instance return must be this, a bound instance, new or an instance call"
+	}
+	outerMethod := pa.Name().Text()
+	recvAST := saUnwrapTransparent(pa.Expression)
+	recvClass, finalClass, ok := saLadderFreeChainResolve(e, scope)
+	if !ok {
+		return "", "", "method instance return must be this, a bound instance, new or an instance call"
+	}
+	recvDef := saScopeOrHarvestClassDef(scope, recvClass, nil)
+	if recvDef == nil {
+		return "", "", "method instance return must be this, a bound instance, new or an instance call"
+	}
+	recvTemp, _, msg := saInstBaseElem(w, recvAST, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	op, msg := saInlineMethod(w, recvTemp, recvDef, outerMethod, ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
+	return op, finalClass, ""
+}
+
+// saLadderDeclaredConcrete returns the declared concrete return class of a
+// method node (plain TypeReference identifier, no type arguments, def
+// concrete non-abstract in scope.classes), mirroring
+// saMethodDeclaredConcrete's discipline at lowering time.
+func saLadderDeclaredConcrete(mn *ast.Node, scope *saScope) string {
+	if mn == nil || mn.Kind != ast.KindMethodDeclaration || scope == nil {
+		return ""
+	}
+	md := mn.AsMethodDeclaration()
+	if md == nil || md.Type == nil || md.Type.Kind != ast.KindTypeReference {
+		return ""
+	}
+	ref := md.Type.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+		return ""
+	}
+	name := ref.TypeName.Text()
+	d, ok := scope.classes[name]
+	if !ok || d == nil || d.isIface || d.isAbstract {
+		return ""
+	}
+	return name
+}
+
 // saLowerInlineInstReturn 内联方法体 `return <实例>` 存槽（this/实例绑定为别名，
 // new/内联体新生归属为移交；同一方法别名与移交混返即归属不定大声拒；类须为
 // 声明返回类或其派生）。
@@ -3007,7 +3241,16 @@ func saLowerInlineInstReturn(w printer.EmitTextWriter, expr *ast.Node, scope *sa
 			return "method instance return must be an instance"
 		}
 		h, have = e.Text(), k[5:]
-	case e != nil && saCouldBeInst(e, scope) && (e.Kind == ast.KindNewExpression || e.Kind == ast.KindCallExpression):
+	case e != nil && e.Kind == ast.KindCallExpression && saLadderFreeChainMulti(e, scope):
+		// Ladder-local 2-link free-chain lowering (probe-gap
+		// completion; see saLadderLowerFreeChain). Single-link
+		// chains keep the existing path below.
+		th, haveClass, msg := saLadderLowerFreeChain(w, e, scope, pos, refusals, nextTemp)
+		if msg != "" {
+			return msg
+		}
+		h, have = th, haveClass
+	case e != nil && (saCouldBeInst(e, scope) || saLadderFreeChainOK(e, scope)) && (e.Kind == ast.KindNewExpression || e.Kind == ast.KindCallExpression):
 		th, def, msg := saInstBaseElem(w, e, scope, pos, refusals, nextTemp)
 		if msg != "" {
 			return msg

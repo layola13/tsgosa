@@ -1,6 +1,8 @@
 package transpile
 
 import (
+	"strings"
+
 	"github.com/microsoft/typescript-go/internal/ast"
 )
 
@@ -237,6 +239,9 @@ type saIfaceRetPath struct {
 // joint wrapper (sa_iface_joint.go) re-runs this analysis after each P0
 // pass so param prov feeds back into return analysis.
 func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode) {
+	// Phase FC: the same-file bound for the chain arms, computed once
+	// per file from its own declarations.
+	sameFile := saSameFileClassNames(sf)
 	type bodyInfo struct {
 		body       *ast.Node
 		params     []string
@@ -344,7 +349,7 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 					}
 				}
 			}
-			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, seed, sig.retKind, funcs, classes, aliasOf, paramKinds)
+			prov, litFn, has := saAnalyzeFuncReturns(bi.body, bi.params, seed, sig.retKind, funcs, classes, aliasOf, paramKinds, sameFile)
 			if !has {
 				continue
 			}
@@ -506,7 +511,7 @@ func saRetParamSeedEntries(sig saFuncSig, paramNodes []*ast.Node, classes map[st
 // param-origin entries (class only, block bodies only); expression bodies
 // classify with nil entries as before (block_only). Returns the agreed
 // concrete class (prov) or literal-method table (litFn), or has=false.
-func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]saIfaceRetEntry, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, paramKinds map[string]string) (string, map[string]*ast.Node, bool) {
+func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]saIfaceRetEntry, retKind string, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, paramKinds map[string]string, sameFile map[string]bool) (string, map[string]*ast.Node, bool) {
 	retIface := retKind[5:]
 	if body == nil {
 		return "", nil, false
@@ -515,7 +520,7 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 	// bindings: classify the expression directly.
 	if body.Kind != ast.KindBlock {
 		litSeq := 0
-		p := saRetClassifyReturn(body, nil, nil, retKind, retIface, funcs, classes, &litSeq, paramNameSet(paramNames))
+		p := saRetClassifyReturn(body, nil, nil, retKind, retIface, funcs, classes, &litSeq, paramNameSet(paramNames), sameFile)
 		if p.unknown {
 			return "", nil, false
 		}
@@ -569,6 +574,7 @@ func saAnalyzeFuncReturns(body *ast.Node, paramNames []string, seed map[string]s
 		litSeq:     0,
 		paramKinds: paramKinds,
 		forbidden:  forbidden,
+		sameFile:   sameFile,
 	}
 	// Phase P1: seed block-body entries with param-origin prov.
 	// Tainted names (assigned, or shared with a same-name const) are
@@ -873,6 +879,12 @@ type saRetWalker struct {
 	// paramNames; nil for non-method walks (map reads on nil are
 	// safe, so the exclusion degrades to absent).
 	params map[string]bool
+	// sameFile is Phase FC only: the set of class/interface names
+	// declared in the file under analysis (the F5 same-file bound
+	// for the chain arms). Nil for callers without a file context
+	// (field/param walkers), where the chain arm stays disabled, so
+	// their behavior is unchanged by construction.
+	sameFile map[string]bool
 }
 
 func saRetCopyShadow(in map[string]bool) map[string]bool {
@@ -909,9 +921,9 @@ func (w *saRetWalker) walkList(stmts []*ast.Node, depth int, shadowed map[string
 		case ast.KindReturnStatement:
 			if rs := st.AsReturnStatement(); rs != nil {
 				if w.methodMode {
-					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, w.methodClass, w.methodStatic, w.params))
+					w.paths = append(w.paths, saMethodClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, w.methodClass, w.methodStatic, w.params, w.sameFile))
 				} else {
-					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, &w.litSeq, w.forbidden))
+					w.paths = append(w.paths, saRetClassifyReturn(rs.Expression, w.entries, shadowed, w.retKind, w.retIface, w.funcs, w.classes, &w.litSeq, w.forbidden, w.sameFile))
 				}
 			} else {
 				w.paths = append(w.paths, saIfaceRetPath{unknown: true})
@@ -1030,10 +1042,10 @@ func (w *saRetWalker) bindVarDecl(st *ast.Node) {
 			continue
 		}
 		if w.methodMode {
-			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf, w.methodClass, w.methodStatic, w.retIface, w.params, nil); ok {
+			if e, ok := saMethodClassifyInit(vd.Initializer, vd.Type, w.entries, w.funcs, w.classes, w.aliasOf, w.methodClass, w.methodStatic, w.retIface, w.params, nil, w.sameFile); ok {
 				w.entries[name] = e
 			}
-		} else if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds); ok {
+		} else if e, ok := saRetClassifyInitWithEntries(vd.Initializer, vd.Type, w.entries, nil, w.funcs, w.classes, w.aliasOf, &w.litSeq, w.paramKinds, w.sameFile); ok {
 			w.entries[name] = e
 		}
 	}
@@ -1660,7 +1672,7 @@ func annotKindOrEmpty(annotName string) string {
 // (the annotation, else the source entry's kind interface), with a fresh
 // agreement id whenever the filter interface differs from the source
 // entry's kind interface (a filtered table is not the same table).
-func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, shadowed map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, litSeq *int, paramKinds map[string]string) (saIfaceRetEntry, bool) {
+func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries map[string]saIfaceRetEntry, shadowed map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, aliasOf map[string]*ast.TypeNode, litSeq *int, paramKinds map[string]string, sameFile map[string]bool) (saIfaceRetEntry, bool) {
 	if init == nil {
 		return saIfaceRetEntry{}, false
 	}
@@ -1726,6 +1738,25 @@ func saRetClassifyInitWithEntries(init *ast.Node, annot *ast.TypeNode, entries m
 			return e, true
 		}
 	}
+	// Phase FC (freefn chain returns, R0 init arm): PA-callee chain
+	// initializers classify through the per-site chain arm. The
+	// field/param walkers pass nil sameFile, so their behavior is
+	// unchanged by construction. A chain ending in a concrete link
+	// (innerKind "") records no entry: only interface-final chains
+	// carry a kind the return arm can check. The annotation
+	// discipline mirrors the bare-Identifier init arm exactly
+	// (annotation kind wins over the chain's declared kind).
+	if sameFile != nil && init.Kind == ast.KindCallExpression {
+		if ce := init.AsCallExpression(); ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			if prov, innerKind, ok := saRetResolveChainCall(ce, entries, shadowed, funcs, classes, sameFile); ok && prov != "" && innerKind != "" {
+				out := saIfaceRetEntry{class: prov, kind: innerKind}
+				if annotName != "" {
+					out.kind = "inst:" + annotName
+				}
+				return out, true
+			}
+		}
+	}
 	return saRetClassifyInit(init, annot, funcs, classes, aliasOf, litSeq)
 }
 
@@ -1748,7 +1779,7 @@ func saRetCallLitID(callee string) int {
 // forbidden is consulted only by the Phase R1 ObjectLiteral arm.
 // litSeq is Phase R1 only: fresh id per literal (nil for callers that
 // never classify a literal). All other arms ignore both.
-func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, litSeq *int, forbidden map[string]bool) saIfaceRetPath {
+func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, shadowed map[string]bool, retKind, retIface string, funcs map[string]saFuncSig, classes map[string]*saClassDef, litSeq *int, forbidden map[string]bool, sameFile map[string]bool) saIfaceRetPath {
 	unknown := saIfaceRetPath{unknown: true}
 	if expr == nil {
 		return unknown
@@ -1840,7 +1871,25 @@ func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, sha
 		return saIfaceRetPath{isLit: true, litID: id, litFn: table}
 	case ast.KindCallExpression:
 		ce := expr.AsCallExpression()
-		if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindIdentifier {
+		if ce == nil || ce.Expression == nil {
+			return unknown
+		}
+		// Phase FC (freefn chain returns, R0 return arm): PA-callee
+		// chains resolve through the per-site chain arm (same-file
+		// bound; guarded/static/field-read/litFn-receiver chains
+		// fall through unknown). The final link's declared
+		// interface must equal the function's return kind, exactly
+		// as the bare-Identifier arm requires below.
+		if ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			if sameFile == nil {
+				return unknown
+			}
+			if prov, innerKind, ok := saRetResolveChainCall(ce, entries, shadowed, funcs, classes, sameFile); ok && prov != "" && innerKind == retKind {
+				return saIfaceRetPath{class: prov}
+			}
+			return unknown
+		}
+		if ce.Expression.Kind != ast.KindIdentifier {
 			return unknown
 		}
 		sig, ok := funcs[ce.Expression.Text()]
@@ -1864,6 +1913,184 @@ func saRetClassifyReturn(expr *ast.Node, entries map[string]saIfaceRetEntry, sha
 		return unknown
 	}
 	return unknown
+}
+
+// saSameFileClassNames returns the set of class/interface names declared
+// in this source file (the Phase FC same-file bound, F5). Local
+// declarations win over imported seeds in the classes map, so a name in
+// this set always resolves to the local def. The bound is name-based
+// because saClassDef carries no file field.
+func saSameFileClassNames(sf *ast.SourceFile) map[string]bool {
+	out := map[string]bool{}
+	if sf == nil {
+		return out
+	}
+	for _, st := range sf.AsSourceFile().Statements.Nodes {
+		if st == nil {
+			continue
+		}
+		switch st.Kind {
+		case ast.KindClassDeclaration, ast.KindInterfaceDeclaration:
+			if nm := st.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
+				out[nm.Text()] = true
+			}
+		}
+	}
+	return out
+}
+
+// saRetChainWalkLink resolves one chain link from a concrete start class:
+// parent-chain walk, first def holding the node decides; methodProv wins,
+// else the chainprov concrete-link rule (declared concrete return,
+// instance path only, same-file). Returns the link's prov class and its
+// declared interface kind ("" for concrete links).
+func saRetChainWalkLink(startClass, mname string, classes map[string]*saClassDef, sameFile map[string]bool) (string, string, bool) {
+	visited := map[string]bool{}
+	for cls := startClass; cls != ""; {
+		if visited[cls] {
+			return "", "", false
+		}
+		visited[cls] = true
+		if !sameFile[cls] {
+			return "", "", false
+		}
+		def, ok := classes[cls]
+		if !ok || def == nil {
+			return "", "", false
+		}
+		mn, ok := def.methods[mname]
+		if ok && mn != nil {
+			if prov, ok := def.methodProv[mname]; ok && prov != "" {
+				innerKind := saMethodDeclaredIface(mn, classes)
+				if innerKind == "" {
+					return "", "", false
+				}
+				return prov, innerKind, true
+			}
+			if dname := saMethodDeclaredConcrete(mn, classes, sameFile); dname != "" {
+				return dname, "", true
+			}
+			return "", "", false
+		}
+		cls = def.parent
+	}
+	return "", "", false
+}
+
+// saRetResolveChainCall resolves a PA-call chain to the final link's (prov
+// class, declared interface kind). It is the Phase FC R0 arm (per-site;
+// no shared resolver): leaves are bound entries, new expressions, or
+// free-function calls (retIfaceProv only, never retIfaceLitFn);
+// intermediate links walk the parent chain with the first-def-holds-node
+// discipline and the chainprov concrete-link rule. Guarded links, static
+// links (class-name receivers), field-read receivers, and litFn leaves all
+// yield unknown. Every class consulted must be same-file (the F5 bound);
+// imported-class chains yield unknown. The returned declared kind is ""
+// for a concrete-final chain. Termination needs no artificial budget:
+// each recursion peels exactly one CallExpression AST node.
+func saRetResolveChainCall(ce *ast.CallExpression, entries map[string]saIfaceRetEntry, shadowed map[string]bool, funcs map[string]saFuncSig, classes map[string]*saClassDef, sameFile map[string]bool) (string, string, bool) {
+	if ce == nil || ce.Expression == nil || ce.Expression.Kind != ast.KindPropertyAccessExpression {
+		return "", "", false
+	}
+	// Collect links outermost-first, peeling parens at each step. A
+	// receiver call that is not itself a PA call is the leaf (a
+	// bare-Identifier free call); any other receiver kind is the leaf
+	// too (Identifier / new / field-read / ...).
+	var methods []string
+	var leaf *ast.Node
+	cur := ce
+	for {
+		pa := cur.Expression.AsPropertyAccessExpression()
+		if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier || strings.HasPrefix(pa.Name().Text(), "#") {
+			return "", "", false
+		}
+		if pa.QuestionDotToken != nil || cur.QuestionDotToken != nil {
+			return "", "", false
+		}
+		methods = append(methods, pa.Name().Text())
+		recv := saRetPeelParenNonNull(pa.Expression)
+		if recv == nil {
+			return "", "", false
+		}
+		if recv.Kind == ast.KindCallExpression {
+			inner := recv.AsCallExpression()
+			if inner == nil || inner.Expression == nil || inner.Expression.Kind != ast.KindPropertyAccessExpression {
+				leaf = recv
+				break
+			}
+			cur = inner
+			continue
+		}
+		leaf = recv
+		break
+	}
+	// Resolve the leaf to a start class.
+	var startClass string
+	switch leaf.Kind {
+	case ast.KindIdentifier:
+		// Bound entry only: a class-name Identifier must NOT fall back
+		// to classes[name] as a static class (fc_ret_static pin).
+		e, ok := entries[leaf.Text()]
+		if !ok || e.class == "" {
+			return "", "", false
+		}
+		startClass = e.class
+	case ast.KindNewExpression:
+		ne := leaf.AsNewExpression()
+		if ne == nil || ne.Expression == nil || ne.Expression.Kind != ast.KindIdentifier {
+			return "", "", false
+		}
+		cname := ne.Expression.Text()
+		if !sameFile[cname] {
+			return "", "", false
+		}
+		def, ok := classes[cname]
+		if !ok || def == nil || def.isIface || def.isAbstract {
+			return "", "", false
+		}
+		startClass = cname
+	case ast.KindCallExpression:
+		// Free leaf: bare-Identifier callee, shadowed-map check first
+		// (a bound name shadows the free function), retIfaceProv only,
+		// never retIfaceLitFn (freefn F4 stands).
+		inner := leaf.AsCallExpression()
+		if inner == nil || inner.Expression == nil || inner.Expression.Kind != ast.KindIdentifier || inner.QuestionDotToken != nil {
+			return "", "", false
+		}
+		fname := inner.Expression.Text()
+		if shadowed[fname] {
+			return "", "", false
+		}
+		if _, bound := entries[fname]; bound {
+			return "", "", false
+		}
+		sig, ok := funcs[fname]
+		if !ok || sig.isVoid || sig.retIsPromise || sig.retIfaceProv == "" {
+			return "", "", false
+		}
+		startClass = sig.retIfaceProv
+	default:
+		// Field-read receivers, this, and everything else fall through.
+		return "", "", false
+	}
+	if !sameFile[startClass] {
+		return "", "", false
+	}
+	// Resolve links innermost-first (methods is outermost-first, so
+	// iterate in reverse). All but the outermost link consume only the
+	// prov class; the outermost link also yields its declared kind.
+	current := startClass
+	for i := len(methods) - 1; i >= 0; i-- {
+		prov, innerKind, ok := saRetChainWalkLink(current, methods[i], classes, sameFile)
+		if !ok {
+			return "", "", false
+		}
+		if i == 0 {
+			return prov, innerKind, true
+		}
+		current = prov
+	}
+	return "", "", false
 }
 
 // saRetScanAssign records every assignment target in an expression into

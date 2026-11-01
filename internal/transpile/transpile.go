@@ -4268,16 +4268,15 @@ func saLowerSourceFile(sf *ast.SourceFile, src string, tcx *saTypeCtx, link *saF
 		}
 	}
 	mainRenamed := hasUserMain && len(entryStmts) > 0
-	// Phase P1 interface joint fixpoint (sa_iface_joint.go): R0 return
-	// analysis + P0 parameter analysis iterated until quiet, so param
-	// prov feeds back into return analysis; adds no refusals
+	// Phase FC outer fixpoint (sa_iface_joint.go): the joint loop
+	// (R0 return + P0 parameter + fields, iterated until quiet) and
+	// the method pass (methodProv, iterated until quiet) iterate
+	// joint → method → joint … until all snapshots are quiet, so
+	// R0 chain arms can consume methodProv and method free-leaf arms
+	// can consume retProv across passes. The first outer iteration
+	// reproduces the pre-fixpoint state exactly; adds no refusals
 	// (fail-closed).
-	saAnalyzeIfaceJointProv(sf, funcs, classes, aliasOf, link)
-	// Phase M interface method return analysis
-	// (sa_iface_methodret.go): one-shot pass AFTER the joint loop,
-	// consuming final joint-loop retProv; writes ONLY methodProv,
-	// adds no refusals (fail-closed).
-	saAnalyzeMethodIfaceProv(sf, funcs, classes, aliasOf, link)
+	saAnalyzeIfaceJointProvOuter(sf, funcs, classes, aliasOf, link)
 	for _, st := range sf.AsSourceFile().Statements.Nodes {
 		// 类型声明擦除（记录、无码；形状证据：封存 lowerTypeDecl:9242-9253）。
 		// export 修饰随声明擦除（单文件无模块边；`export default function`
