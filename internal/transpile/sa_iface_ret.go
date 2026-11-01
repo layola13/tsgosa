@@ -1130,6 +1130,17 @@ func saRetBuildLitFn(lit *ast.Node, iface string, classes map[string]*saClassDef
 				return nil, false
 			}
 			if _, isMeth := idef.methods[fname]; !isMeth {
+				// Declared-data skip arm (mixed literal prov slice, JEV
+				// ml_data declared_only UNANIMOUS): a data property
+				// declared in the target interface (present in
+				// def.offsets, the same notion the lowering layout
+				// match uses) is SKIPPED, not failed — the method
+				// table covers methods only; the data side is
+				// already lowered via the struct layout. Any other
+				// non-method property still fails the whole table.
+				if _, isField := idef.offsets[fname]; isField {
+					continue
+				}
 				return nil, false
 			}
 			init := p.AsPropertyAssignment().Initializer
