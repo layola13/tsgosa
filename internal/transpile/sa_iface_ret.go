@@ -350,15 +350,12 @@ func saAnalyzeReturnIfaceProv(sf *ast.SourceFile, funcs map[string]saFuncSig, cl
 			}
 			if prov != "" {
 				sig.retIfaceProv = prov
-			} else if !sig.retIsPromise {
-				// Phase A (async v1) JEV guard (fixpoint_loop_skip,
-				// Q6 defer_async_litfn): async functions never record
-				// litFn tables; a_async_litfn must keep refusing.
-				sig.retIfaceLitFn = litFn
 			} else {
-				// Async litFn result discarded: no table recorded,
-				// and no change signalled (the sig is unchanged).
-				continue
+				// Async litFn (async-litFn slice, JEV guard_lift 1.00):
+				// async fn decls record their already-computed litFn
+				// tables exactly like sync fn decls; the v1 Q6 guard
+				// is lifted.
+				sig.retIfaceLitFn = litFn
 			}
 			funcs[key] = sig
 			changed = true
