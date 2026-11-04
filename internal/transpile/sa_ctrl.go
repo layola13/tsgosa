@@ -98,13 +98,19 @@ func saWrapShiftResult(w printer.EmitTextWriter, op, t string, scope *saScope, n
 // saLowerElementAssign lowering `a[i] = v`（仅 plain `=`；下标/右值走 i32 求值）。
 func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int, where *ast.Node) bool {
 	ea := be.Left.AsElementAccessExpression()
-	if ea.QuestionDotToken != nil {
-		ln, col := pos(where.Pos())
-		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
-		return false
-	}
+	isOpt := ea.QuestionDotToken != nil
 	base, msg := saArrStoreBase(w, ea.Expression, scope, pos, refusals, nextTemp)
 	if msg != "" {
+		if isOpt {
+			// Guarded store over a non-array base (map/set
+			// included): not in the candidate set — keep
+			// refusing, never fall through to the unconditional
+			// map desugar below (that would store ignoring
+			// the guard, the arm-7 bug class).
+			ln, col := pos(where.Pos())
+			*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "optional index store not lowerable"})
+			return false
+		}
 		// Map 种基走 set 脱糖（`m[k] = v` ≡ `m.set(k, v)`；Set 无键值拒）。
 		if ea.Expression != nil && ea.Expression.Kind == ast.KindIdentifier {
 			if k, ok := scope.types[ea.Expression.Text()]; ok && (k == "map" || k == "set") {
@@ -125,6 +131,26 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: "index store base must be bound array"})
 		return false
 	}
+	// optchain beyond-v1 arm 6: guarded store — null base skips
+	// the store; idx/rhs evaluate only in the non-null arm, so
+	// their side effects are skipped too. Unguarded keeps
+	// straight-line emission, byte-identical.
+	var endL string
+	if isOpt {
+		nullL := fmt.Sprintf("L_gstore_null_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		doL := fmt.Sprintf("L_gstore_do_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		endL = fmt.Sprintf("L_gstore_end_%d", *scope.nextLabel)
+		*scope.nextLabel++
+		isnull := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, base))
+		w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, doL))
+		w.Write(fmt.Sprintf("%s:\n", nullL))
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", doL))
+	}
 	idx, msg := saEvalI32(w, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 	if msg != "" {
 		ln, col := pos(where.Pos())
@@ -142,6 +168,10 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 			return false
 		}
 		saLowerElementStore(w, base, idx, rhs, nextTemp)
+		if isOpt {
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+		}
 		return true
 	}
 	rhs, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
@@ -157,6 +187,10 @@ func saLowerElementAssign(w printer.EmitTextWriter, be *ast.BinaryExpression, sc
 		return false
 	}
 	saLowerElementStore(w, base, idx, rhs, nextTemp)
+	if isOpt {
+		w.Write(fmt.Sprintf("  jmp %s\n", endL))
+		w.Write(fmt.Sprintf("%s:\n", endL))
+	}
 	return true
 }
 

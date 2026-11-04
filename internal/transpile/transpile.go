@@ -6394,6 +6394,12 @@ type saScope struct {
 	// mapVals records map handle value kinds ("i32" default; "inst:T" for
 	// Record<string,T> constructions; reads bind result temps accordingly).
 	mapVals map[string]string
+	// mapRecord marks map-kind bindings whose map kind comes from a
+	// Record annotation/literal/view, NOT a Map construction/annotation
+	// (optchain beyond-v1 arm-5 narrowing, JEV scope_map_only): the
+	// guarded map-index arm refuses these bindings, while genuine Map
+	// instances take the null-join. Unguarded reads never consult it.
+	mapRecord map[string]bool
 	// recordView maps a Record-view variable name to the origin jsval handle
 	// it was cast from (value as Record<string, unknown>). The view itself is
 	// a borrowed btree_map handle (sidecar or empty fallback); returning or

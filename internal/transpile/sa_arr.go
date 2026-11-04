@@ -3073,6 +3073,86 @@ func saLowerOptionalIndex(w printer.EmitTextWriter, base, idx string, nextLabel,
 	return dest
 }
 
+// saLowerOptionalMapIndexLoad lowering `m?.[k]` (optchain beyond-v1
+// arm 5): null-join mirroring saLowerOptionalIndex — null base
+// stores 0, else the map-get load — with the map value kind
+// carried from the load temp to the joined dest (mirroring
+// saLowerMapIndexLoad's kind/mapVals/arrStr records). The load temp
+// is consumed after the store so the function-end drain does not
+// reference a branch-local temp (same transfer as the guarded
+// call arm).
+func saLowerOptionalMapIndexLoad(w printer.EmitTextWriter, recv string, key *ast.Node, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string) {
+	// Arm-5 narrowing (JEV scope_map_only): a Record-originated map
+	// binding refuses the guarded arm with the pre-arm-5 diag; genuine
+	// Map instances take the null-join below. Checked before any
+	// emission so a refused program's output is byte-identical to the
+	// pre-arm-5 refusal.
+	if saIsRecordMap(scope, recv) {
+		return "", "optional map index reads are not lowerable"
+	}
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	nullL := fmt.Sprintf("L_midx_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	chkL := fmt.Sprintf("L_midx_chk_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_midx_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	isnull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, recv))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, nullL, chkL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", chkL))
+	ownBefore := len(scope.ownOrder)
+	v, msg := saLowerMapIndexLoad(w, recv, key, scope, pos, refusals, nextTemp)
+	if msg != "" {
+		return "", msg
+	}
+	w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", slot, v))
+	if saIsTempOp(v) {
+		saConsumeOwn(scope, v)
+	}
+	// Load-internal owned temps (the str-key slice: str keys skip
+	// saReleaseKeySlice and rely on the function-end drain) were
+	// created inside the chk arm — release them here, since the
+	// drain after the join cannot reference branch-local temps.
+	// The map-get is a pure read; its inputs are dead after the
+	// call, so no live handle is released early (the value temp
+	// v above is excluded: it lives on in the slot).
+	for _, name := range scope.ownOrder[ownBefore:] {
+		if name == v || !saIsTempOp(name) {
+			continue
+		}
+		if b := saOwnOf(scope, name); b != nil && b.heap && !b.consumed && !b.released {
+			w.Write(fmt.Sprintf("  !%s\n", name))
+			b.released = true
+		}
+	}
+	vk := scope.types[v]
+	mv := scope.mapVals[v]
+	as := scope.arrStr != nil && scope.arrStr[v]
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	dest := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	if vk != "" {
+		scope.types[dest] = vk
+	}
+	if mv != "" {
+		saSetMapVal(scope, dest, mv)
+	}
+	if as {
+		saMarkArrStr(scope, dest)
+	}
+	return dest, ""
+}
+
 // saStructArrElemLayout 解析 struct 数组基布局名（`b.items` 经实例字段
 // fdefs 元查布局表；裸标识符 struct 数组另步，返 false）。
 func saStructArrElemLayout(base *ast.Node, scope *saScope) (string, bool) {
@@ -3948,12 +4028,23 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 			if tm.vkind == "empty" {
 				return "", "empty top map has no readable value kind"
 			}
-			if isOpt {
+			// Arm-5 narrowing (JEV scope_map_only): a
+			// Record-originated top snapshot refuses the guarded
+			// arm at the pre-arm-5 point (before materialization,
+			// so a refused program's output is byte-identical to
+			// the pre-arm-5 refusal); genuine top Map consts take
+			// the null-join.
+			if isOpt && tm.rec {
 				return "", "optional map index reads are not lowerable"
 			}
 			slot, msg := saLowerTopMap(w, tm, scope, pos, refusals, nextTemp)
 			if msg != "" {
 				return "", msg
+			}
+			if isOpt {
+				// optchain beyond-v1 arm 5: guarded top-map read
+				// via the null-join (same site as the local arm).
+				return saLowerOptionalMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 			}
 			return saLowerMapIndexLoad(w, slot, ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 		}
@@ -3962,7 +4053,10 @@ func saLowerIndexLoadExpr(w printer.EmitTextWriter, ea *ast.ElementAccessExpress
 				return "", "Set index reads need .has (no keyed values)"
 			}
 			if isOpt {
-				return "", "optional map index reads are not lowerable"
+				// optchain beyond-v1 arm 5: guarded local-map
+				// read via the null-join (null base → 0, else
+				// the map-get load).
+				return saLowerOptionalMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 			}
 			return saLowerMapIndexLoad(w, ea.Expression.Text(), ea.ArgumentExpression, scope, pos, refusals, nextTemp)
 		}

@@ -325,6 +325,8 @@ func saLowerRecordView(w printer.EmitTextWriter, name, origin, vkind string, sco
 	w.Write(fmt.Sprintf("  %s = %s\n", name, view))
 	scope.types[name] = "map"
 	saSetMapVal(scope, name, vkind)
+	// Arm-5 narrowing: a Record view is Record-originated by construction.
+	saMarkRecordMap(scope, name)
 	saSetRecordView(scope, name, origin)
 	saDeclarePlain(scope, name)
 }
@@ -379,6 +381,44 @@ func saSetMapVal(scope *saScope, name, vkind string) {
 		scope.mapVals = map[string]string{}
 	}
 	scope.mapVals[name] = vkind
+}
+
+// saMarkRecordMap marks a map-kind binding as Record-originated (its map
+// kind comes from a Record annotation/literal/view, not a Map
+// construction/annotation); nil-safe. Consulted ONLY by the guarded
+// map-index arm (optchain beyond-v1 arm-5 narrowing, JEV scope_map_only).
+func saMarkRecordMap(scope *saScope, name string) {
+	if scope == nil {
+		return
+	}
+	if scope.mapRecord == nil {
+		scope.mapRecord = map[string]bool{}
+	}
+	scope.mapRecord[name] = true
+}
+
+// saIsRecordMap reports whether a map-kind binding is Record-originated
+// (nil-safe; unmarked bindings are genuine Map instances).
+func saIsRecordMap(scope *saScope, name string) bool {
+	if scope == nil || scope.mapRecord == nil {
+		return false
+	}
+	return scope.mapRecord[name]
+}
+
+// saIsRecordTypeRef reports whether a type node is a direct `Record<...>`
+// reference (mirrors saRecordValueKind's own name check; aliases are not
+// resolved, so an aliased Record does not mark — same boundary as the
+// kind assignment it shadows).
+func saIsRecordTypeRef(t *ast.TypeNode) bool {
+	if t == nil || t.Kind != ast.KindTypeReference {
+		return false
+	}
+	ref := t.AsTypeReferenceNode()
+	if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+		return false
+	}
+	return ref.TypeName.Text() == "Record"
 }
 
 // saSeedSetVal records a Set handle element kind (first add wins; a
@@ -523,6 +563,12 @@ func saSeedParamMapVals(paramNodes []*ast.Node, kinds map[string]string, classes
 		}
 		if vkind, ok := saRecordValueKind(pd.Type, classes, scope.aliasOf); ok {
 			saSetMapVal(scope, nm.Text(), vkind)
+			// Arm-5 narrowing: a Record-annotated param is
+			// Record-originated even though it takes map kind; a
+			// Map-annotated param is a genuine Map instance.
+			if saIsRecordTypeRef(pd.Type) {
+				saMarkRecordMap(scope, nm.Text())
+			}
 		}
 	}
 }
@@ -859,6 +905,11 @@ type saTopMap struct {
 	init     *ast.Node
 	vkind    string
 	jsonVals map[string]map[string]string // JSON 导入名→扁平串表（nil 表无 JSON 值；物化时标识符臂查）
+	// rec marks a top snapshot as Record-originated (Record annotation;
+	// new-Map constructions and Map annotations leave it false). The
+	// guarded map-index arm refuses rec snapshots (optchain beyond-v1
+	// arm-5 narrowing, JEV scope_map_only); unguarded reads ignore it.
+	rec bool
 }
 
 // saTopMapValueKind 解析 Record/Map 注解的值种：串/数/布尔直值，或
@@ -1404,7 +1455,9 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 					okAll = false
 					break
 				}
-				pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons}})
+				// Arm-5 narrowing: a new-Map top const is a genuine
+				// Map instance unless its annotation names Record.
+				pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons, rec: saIsRecordTypeRef(vd.Type)}})
 				continue
 			}
 			if init == nil || init.Kind != ast.KindObjectLiteralExpression {
@@ -1486,7 +1539,9 @@ func saTopMapPrescan(stmts []*ast.Node, assigned map[string]bool, link *saFileLi
 				okAll = false
 				break
 			}
-			pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons}})
+			// Arm-5 narrowing: a Record-annotated top literal is
+			// Record-originated; a Map-annotated one is a Map instance.
+			pends = append(pends, pend{name: name, tm: saTopMap{init: init, vkind: vk, jsonVals: jsons, rec: ref.TypeName.Text() == "Record"}})
 		}
 		if !okAll {
 			continue

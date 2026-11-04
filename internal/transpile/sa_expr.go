@@ -3402,16 +3402,38 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 			}
 		}
 		// super.m() 内联基方法（同接收者；形状证据：封存 lowerSuperMethodCall:237-250）。
-		if pa.Expression != nil && pa.Expression.Kind == ast.KindSuperKeyword && pa.Name() != nil {
-			bdef, h, msg := saSuperBase(scope)
-			if msg != "" {
-				return "", false, msg
+		// optchain beyond-v1 arm 4: `super?.m()` parses with an
+		// empty-name PA wrapper around super (the outer PA carries
+		// `?.`), so the direct SuperKeyword check misses it.
+		// Guarded super routes through the guarded-call slot shape
+		// (super is never null, so the null arm is vacuous, but the
+		// emission stays uniform with other guarded calls);
+		// unguarded super keeps today's direct inline, byte-identical.
+		if pa.Expression != nil && pa.Name() != nil {
+			isSuper := pa.Expression.Kind == ast.KindSuperKeyword
+			if !isSuper && (pa.QuestionDotToken != nil || ce.QuestionDotToken != nil) && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+				if ipa := pa.Expression.AsPropertyAccessExpression(); ipa != nil && ipa.Name() != nil && ipa.Name().Text() == "" && ipa.Expression != nil && ipa.Expression.Kind == ast.KindSuperKeyword {
+					isSuper = true
+				}
 			}
-			op, msg := saInlineMethod(w, h, bdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
-			if msg != "" {
-				return "", false, msg
+			if isSuper {
+				bdef, h, msg := saSuperBase(scope)
+				if msg != "" {
+					return "", false, msg
+				}
+				if pa.QuestionDotToken != nil || ce.QuestionDotToken != nil {
+					op, msg := saLowerGuardedMethodCall(w, h, bdef, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+					if msg != "" {
+						return "", false, msg
+					}
+					return op, false, ""
+				}
+				op, msg := saInlineMethod(w, h, bdef, pa.Name().Text(), ce, scope, pos, refusals, scope.addImport, scope.nextLabel, nextTemp)
+				if msg != "" {
+					return "", false, msg
+				}
+				return op, false, ""
 			}
-			return op, false, ""
 		}
 		// Response.json() on identifier receivers: parse the body slice.
 		if pa.Name() != nil && pa.Name().Text() == "json" && pa.QuestionDotToken == nil && ce.QuestionDotToken == nil &&
@@ -3608,61 +3630,49 @@ func saEvalCallInner(w printer.EmitTextWriter, ce *ast.CallExpression, scope *sa
 						// prov and join against the concrete def instead
 						// of the interface def. Any failure falls through
 						// to the current body below (interface message,
-						// byte-identical). Str-returning interface
-						// methods are excluded first: saMethodReturnKind
-						// is blind to MethodSignatures, so the signature's
-						// declared return is checked via Node.Type()
-						// (sa_str.go pattern); str keeps today's message.
+						// byte-identical). Optchain beyond-v1 arm 3:
+						// the G1 str exclusion is lifted — prov
+						// resolution runs for str methods too.
 						if def.isIface {
-							strRet := false
-							if mn.Kind == ast.KindMethodSignature {
-								if typ := mn.Type(); typ != nil {
-									if k2, ok2 := saAnnotKind(typ); ok2 && k2 == "str" {
-										strRet = true
+							// Receiver Identifier (possibly
+							// parenthesized): prov via scope.ifaceProv
+							// (Identifier branch verbatim); receiver
+							// unguarded Call: prov via
+							// saResolveDirectCallProv (DC-1 gate
+							// verbatim). Guarded inner links fail the
+							// gate, so G1 is skipped and behavior is
+							// unchanged for them.
+							recvExpr := pa.Expression
+							for recvExpr != nil && recvExpr.Kind == ast.KindParenthesizedExpression {
+								pe := recvExpr.AsParenthesizedExpression()
+								if pe == nil || pe.Expression == nil {
+									break
+								}
+								recvExpr = pe.Expression.AsNode()
+							}
+							var prov string
+							provOk := false
+							if recvExpr != nil && recvExpr.Kind == ast.KindIdentifier {
+								if p, ok := scope.ifaceProv[recvExpr.Text()]; ok {
+									prov, provOk = p, true
+								}
+							} else if recvExpr != nil && recvExpr.Kind == ast.KindCallExpression {
+								if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
+									if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
+										if p, ok := saResolveDirectCallProv(scope, innerPA); ok {
+											prov, provOk = p, true
+										}
 									}
 								}
 							}
-							if !strRet {
-								// Receiver Identifier (possibly
-								// parenthesized): prov via scope.ifaceProv
-								// (Identifier branch verbatim); receiver
-								// unguarded Call: prov via
-								// saResolveDirectCallProv (DC-1 gate
-								// verbatim). Guarded inner links fail the
-								// gate, so G1 is skipped and behavior is
-								// unchanged for them.
-								recvExpr := pa.Expression
-								for recvExpr != nil && recvExpr.Kind == ast.KindParenthesizedExpression {
-									pe := recvExpr.AsParenthesizedExpression()
-									if pe == nil || pe.Expression == nil {
-										break
-									}
-									recvExpr = pe.Expression.AsNode()
-								}
-								var prov string
-								provOk := false
-								if recvExpr != nil && recvExpr.Kind == ast.KindIdentifier {
-									if p, ok := scope.ifaceProv[recvExpr.Text()]; ok {
-										prov, provOk = p, true
-									}
-								} else if recvExpr != nil && recvExpr.Kind == ast.KindCallExpression {
-									if innerCE := recvExpr.AsCallExpression(); innerCE != nil && innerCE.QuestionDotToken == nil && innerCE.Expression != nil && innerCE.Expression.Kind == ast.KindPropertyAccessExpression {
-										if innerPA := innerCE.Expression.AsPropertyAccessExpression(); innerPA != nil && innerPA.QuestionDotToken == nil && innerPA.Name() != nil {
-											if p, ok := saResolveDirectCallProv(scope, innerPA); ok {
-												prov, provOk = p, true
-											}
+							if provOk {
+								if cdef := saScopeOrHarvestClassDef(scope, prov, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
+									if cmn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && cmn.Body() != nil {
+										op, msg := saLowerGuardedMethodCall(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
+										if msg != "" {
+											return "", false, msg
 										}
-									}
-								}
-								if provOk {
-									if cdef := saScopeOrHarvestClassDef(scope, prov, def); cdef != nil && !cdef.isIface && !cdef.isAbstract {
-										if cmn, ok3 := cdef.methods[pa.Name().Text()]; ok3 && cmn.Body() != nil {
-											op, msg := saLowerGuardedMethodCall(w, h, cdef, pa.Name().Text(), ce, scope, pos, refusals, nextTemp)
-											if msg != "" {
-												return "", false, msg
-											}
-											return op, false, ""
-										}
+										return op, false, ""
 									}
 								}
 							}
@@ -8404,7 +8414,7 @@ func saLowerIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool,
 				}
 			}
 		}
-		if op, msg, handled := saLowerFieldIncDec(w, operand, up, prefix, scope, nextTemp); handled {
+		if op, msg, handled := saLowerFieldIncDec(w, operand, up, prefix, scope, pos, refusals, nextTemp); handled {
 			return op, msg
 		}
 		return "", "incdec target must be bound i32 variable"
@@ -9531,6 +9541,81 @@ func saEvalI32(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func(i
 							if ch, cdef, msg := saChainBase(w, lpa.Expression, scope, pos, refusals, nextTemp); msg == "" {
 								fname := lpa.Name().Text()
 								if _, ok := cdef.offsets[fname]; ok {
+									// optchain beyond-v1 arm 7: a
+									// guarded chain store (`h.nx?.n
+									// = v`) stores only when the
+									// chain base is non-null. Today
+									// the arm ignores the outer
+									// `?.` and stores unconditionally
+									// (a null base stores to address
+									// 0). The guarded form runs the
+									// same leaf switch inside the
+									// non-null arm, with each case
+									// writing its value into a join
+									// slot; the null arm stores a 0
+									// dummy (statement use discards
+									// the assignment value). The inst
+									// leaf still refuses, but only in
+									// the non-null arm. Unguarded
+									// keeps the direct returns,
+									// byte-identical.
+									if lpa.QuestionDotToken != nil {
+										resSlot := fmt.Sprintf("t_%d", *nextTemp)
+										*nextTemp++
+										w.Write(fmt.Sprintf("  %s = alloc 8\n", resSlot))
+										skipL := fmt.Sprintf("L_gstoref_skip_%d", *scope.nextLabel)
+										*scope.nextLabel++
+										doL := fmt.Sprintf("L_gstoref_do_%d", *scope.nextLabel)
+										*scope.nextLabel++
+										endL := fmt.Sprintf("L_gstoref_end_%d", *scope.nextLabel)
+										*scope.nextLabel++
+										isnull := fmt.Sprintf("t_%d", *nextTemp)
+										*nextTemp++
+										w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, ch))
+										w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, skipL, doL))
+										w.Write(fmt.Sprintf("%s:\n", skipL))
+										w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", resSlot))
+										w.Write(fmt.Sprintf("  jmp %s\n", endL))
+										w.Write(fmt.Sprintf("%s:\n", doL))
+										switch cdef.fkinds[fname] {
+										case "str":
+											sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)
+											if msg != "" {
+												return "", msg
+											}
+											if msg := saLowerClassFieldStore(w, ch, cdef, fname, sop); msg != "" {
+												return "", msg
+											}
+											w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", resSlot, sop))
+										case "arr":
+											v, msg := saArrValueOf(w, be.Right, scope, pos, refusals, nextTemp)
+											if msg != "" {
+												return "", msg
+											}
+											if msg := saLowerClassFieldStore(w, ch, cdef, fname, v); msg != "" {
+												return "", msg
+											}
+											w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", resSlot, v))
+										case "inst":
+											return "", "nested object reassignment needs a constructed handle"
+										default:
+											op, msg := saEvalI32(w, be.Right, scope, pos, refusals, nextTemp)
+											if msg != "" {
+												return "", msg
+											}
+											if msg := saLowerClassFieldStore(w, ch, cdef, fname, op); msg != "" {
+												return "", msg
+											}
+											w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", resSlot, op))
+										}
+										w.Write(fmt.Sprintf("  jmp %s\n", endL))
+										w.Write(fmt.Sprintf("%s:\n", endL))
+										res := fmt.Sprintf("t_%d", *nextTemp)
+										*nextTemp++
+										w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, resSlot))
+										w.Write(fmt.Sprintf("  !%s\n", resSlot))
+										return res, ""
+									}
 									switch cdef.fkinds[fname] {
 									case "str":
 										sop, msg := saEvalStr(w, be.Right, scope, pos, refusals, nextTemp)

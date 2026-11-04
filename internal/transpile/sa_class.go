@@ -2779,6 +2779,37 @@ func saCouldBeInst(e *ast.Node, scope *saScope) bool {
 	if e != nil && e.Kind == ast.KindCallExpression {
 		// 调用结果基（`M.get(k)` 实例映射取；具实例签名的同文件函数调用；
 		// 种以求值后记种为准，此处只放行语法形；`?.` 沿旧门）。
+		// optchain beyond-v1 arm 2: a GUARDED method call whose
+		// declared return is an instance kind is an instance operand
+		// for the outer call (mirroring saCallRetKindPA minus its
+		// QuestionDotToken fail-closed rule; saCallRetKindPA itself
+		// is untouched, so its other consumers keep failing closed).
+		// The guarded dest's kind entry is recorded by
+		// saLowerGuardedMethodCall (arm 1 root); this admission only
+		// opens the gate, the evaluation below still resolves the
+		// layout from that recorded kind.
+		if ce := e.AsCallExpression(); ce != nil && ce.Expression != nil && ce.Expression.Kind == ast.KindPropertyAccessExpression {
+			pa := ce.Expression.AsPropertyAccessExpression()
+			if pa != nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier && (ce.QuestionDotToken != nil || pa.QuestionDotToken != nil) {
+				if recvClass := saPAReceiverClass(pa.Expression, scope); recvClass != "" {
+					if def, ok := scope.classes[recvClass]; ok && def != nil {
+						if mn, ok := def.methods[pa.Name().Text()]; ok && mn != nil {
+							if k, ok := saDeclaredReturnKind(mn); ok && len(k) > 5 && k[:5] == "inst:" {
+								// Same primitive-name guard as the
+								// arm-1 recording: `: i32` yields
+								// "inst:i32" from
+								// saDeclaredReturnKind, which must
+								// not admit the call as an instance
+								// operand.
+								if d := saScopeOrHarvestClassDef(scope, k[5:], def); d != nil {
+									return true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 		if ce := e.AsCallExpression(); ce != nil && ce.QuestionDotToken == nil && ce.Expression != nil {
 			if ce.Expression.Kind == ast.KindPropertyAccessExpression {
 				pa := ce.Expression.AsPropertyAccessExpression()
@@ -10417,6 +10448,8 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 		ownOk   bool
 		mv      string
 		mvok    bool
+		mr      bool
+		mrok    bool
 		smv     bool
 		smvok   bool
 		save    string
@@ -10447,6 +10480,14 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				scope.mapVals[name] = s.mv
 			} else if scope.mapVals != nil {
 				delete(scope.mapVals, name)
+			}
+			if s.mrok {
+				if scope.mapRecord == nil {
+					scope.mapRecord = map[string]bool{}
+				}
+				scope.mapRecord[name] = s.mr
+			} else if scope.mapRecord != nil {
+				delete(scope.mapRecord, name)
 			}
 			if s.smvok {
 				if s.smv {
@@ -10542,6 +10583,11 @@ func saWireCtorBody(w printer.EmitTextWriter, h, owner string, ctor *ast.Node, p
 				if scope.mapVals != nil {
 					if mv, mvok := scope.mapVals[pname]; mvok {
 						ws.mv, ws.mvok = mv, true
+					}
+				}
+				if scope.mapRecord != nil {
+					if mr, mrok := scope.mapRecord[pname]; mrok {
+						ws.mr, ws.mrok = mr, true
 					}
 				}
 				sv := fmt.Sprintf("__wired_save_%d", *nextTemp)
@@ -11864,6 +11910,36 @@ func saLowerGuardedMethodCall(w printer.EmitTextWriter, h string, def *saClassDe
 	*nextTemp++
 	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", dest, slot))
 	w.Write(fmt.Sprintf("  !%s\n", slot))
+	// optchain beyond-v1 arm 1: the inline result's handle now lives
+	// in the slot (and after the join in dest, owned by the caller
+	// through the normal binding path). A temp result is still
+	// registered owned by the inline machinery, but it was assigned
+	// inside the ok branch — the function-end drain would emit
+	// `!v` after the join, where the verifier reports it undeclared.
+	// Consume temp results here; named bindings (e.g. a `this`
+	// return) are never touched, their owner stays live.
+	if saIsTempOp(v) {
+		saConsumeOwn(scope, v)
+	}
+	// optchain beyond-v1 arms 1–2: record the declared instance kind
+	// of a guarded method call's result (mirroring the guarded field
+	// load's inst arm). The dest bits are the result handle (null
+	// base → 0); without the kind entry every kind-consulting
+	// downstream use refuses where the unguarded twin flips. Only
+	// inst kinds are recorded — i32/str/f64/arr guarded results keep
+	// today's unkinded dest, byte-identical. saDeclaredReturnKind
+	// accepts any plain named type, including primitives spelled as
+	// TypeReferences (`: i32` yields "inst:i32"), so record only
+	// names that resolve to a recorded class/interface def —
+	// otherwise the dest would poison downstream kind checks
+	// (451_opt_call: console.log saw inst:i32 and refused).
+	if mn, ok := def.methods[method]; ok && mn != nil {
+		if k, ok := saDeclaredReturnKind(mn); ok && len(k) > 5 && k[:5] == "inst:" {
+			if d := saScopeOrHarvestClassDef(scope, k[5:], def); d != nil {
+				scope.types[dest] = k
+			}
+		}
+	}
 	return dest, ""
 }
 
@@ -12095,11 +12171,71 @@ func saChainBase(w printer.EmitTextWriter, e *ast.Node, scope *saScope, pos func
 
 // saLowerFieldIncDec 实例 i32 域自增 `o.f++`/`this.f--`（读-改-写回，前缀返新值、
 // 后缀返旧值，与模块槽自增同序；基限 this/实例绑定；非 i32 域与存取器大声拒）。
-func saLowerFieldIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, nextTemp *int) (string, string, bool) {
+func saLowerFieldIncDec(w printer.EmitTextWriter, operand *ast.Node, up, prefix bool, scope *saScope, pos func(int) (int, int), refusals *[]SARefusal, nextTemp *int) (string, string, bool) {
 	if operand == nil || operand.Kind != ast.KindPropertyAccessExpression {
 		return "", "", false
 	}
 	pa := operand.AsPropertyAccessExpression()
+	// optchain beyond-v1 arm 8: guarded chain incdec (`h.nx?.n++`).
+	// The outer `?.` makes the read-modify-write conditional on
+	// the chain base being non-null; null base skips (the
+	// assignment value is a 0 dummy — statement use discards it;
+	// prefix mirrors with the new value, postfix with the old).
+	// Only i32 fields: f64 and other non-i32 guarded chain fields
+	// keep refusing loudly (not in the candidate set).
+	if pa.QuestionDotToken != nil && pa.Name() != nil && pa.Expression != nil && pa.Expression.Kind == ast.KindPropertyAccessExpression {
+		if ch, cdef, msg := saChainBase(w, pa.Expression, scope, pos, refusals, nextTemp); msg == "" {
+			fname := pa.Name().Text()
+			if _, ok := cdef.offsets[fname]; ok {
+				if k := cdef.fkinds[fname]; k != "" && k != "i32" {
+					return "", "++/-- on non-i32 field " + fname + " is not lowerable", true
+				}
+				resSlot := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = alloc 8\n", resSlot))
+				skipL := fmt.Sprintf("L_ginc_skip_%d", *scope.nextLabel)
+				*scope.nextLabel++
+				doL := fmt.Sprintf("L_ginc_do_%d", *scope.nextLabel)
+				*scope.nextLabel++
+				endL := fmt.Sprintf("L_ginc_end_%d", *scope.nextLabel)
+				*scope.nextLabel++
+				isnull := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isnull, ch))
+				w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isnull, skipL, doL))
+				w.Write(fmt.Sprintf("%s:\n", skipL))
+				w.Write(fmt.Sprintf("  store %s + 0, 0 as ptr\n", resSlot))
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", doL))
+				cur, msg := saLowerClassFieldLoad(w, ch, cdef, fname, scope, nextTemp)
+				if msg != "" {
+					return "", msg, true
+				}
+				op := "add"
+				if !up {
+					op = "sub"
+				}
+				nw := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = %s %s, 1\n", nw, op, cur))
+				if msg := saLowerClassFieldStore(w, ch, cdef, fname, nw); msg != "" {
+					return "", msg, true
+				}
+				if prefix {
+					w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", resSlot, nw))
+				} else {
+					w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", resSlot, cur))
+				}
+				w.Write(fmt.Sprintf("  jmp %s\n", endL))
+				w.Write(fmt.Sprintf("%s:\n", endL))
+				res := fmt.Sprintf("t_%d", *nextTemp)
+				*nextTemp++
+				w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", res, resSlot))
+				w.Write(fmt.Sprintf("  !%s\n", resSlot))
+				return res, "", true
+			}
+		}
+	}
 	if pa.QuestionDotToken != nil || pa.Name() == nil || !saCouldBeInst(pa.Expression, scope) {
 		return "", "", false
 	}
@@ -12234,6 +12370,12 @@ func saMethodCallArgVals(w printer.EmitTextWriter, mn *ast.Node, ce *ast.CallExp
 						kinds[i] = "map"
 						if nm := pd.Name(); nm != nil && nm.Kind == ast.KindIdentifier {
 							saSetMapVal(scope, nm.Text(), vkind)
+							// Arm-5 narrowing: inline call-site param
+							// seeding mirrors saSeedParamMapVals — a
+							// Record-annotated param is Record-originated.
+							if saIsRecordTypeRef(pd.Type) {
+								saMarkRecordMap(scope, nm.Text())
+							}
 						}
 						continue
 					}

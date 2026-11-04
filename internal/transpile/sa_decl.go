@@ -394,6 +394,12 @@ func saLowerVarDeclList(w printer.EmitTextWriter, anchor *ast.Node, dl *ast.Vari
 					if !saLowerRecordLiteral(w, name, vkind, vd.Initializer, scope, pos, refusals, nextTemp) {
 						return false
 					}
+					// Arm-5 narrowing: a Record-annotated literal is
+					// Record-originated; a Map-annotated one is a Map
+					// instance (saLowerRecordLiteral serves both).
+					if saIsRecordTypeRef(vd.Type) {
+						saMarkRecordMap(scope, name)
+					}
 					continue
 				}
 			}
@@ -1530,6 +1536,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		w.Write(fmt.Sprintf("  %s = %s\n", name, slot))
 		scope.types[name] = "map"
 		saSetMapVal(scope, name, tm.vkind)
+		// Arm-5 narrowing: a top snapshot bound locally keeps its
+		// Record/Map provenance.
+		if tm.rec {
+			saMarkRecordMap(scope, name)
+		}
 		saConsumeOwn(scope, slot)
 		saDeclareOwned(scope, name)
 		return true
@@ -2035,6 +2046,11 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 		scope.types[name] = "map"
 		if mv, ok := scope.mapVals[op]; ok {
 			saSetMapVal(scope, name, mv)
+		}
+		// Arm-5 narrowing: a copied map binding keeps its source's
+		// Record/Map provenance.
+		if saIsRecordMap(scope, op) {
+			saMarkRecordMap(scope, name)
 		}
 		saConsumeOwn(scope, op)
 		if scope.inlineRet != nil {
