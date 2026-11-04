@@ -48,11 +48,18 @@ type saStaticVal struct {
 // isMono 为单态派生布局（与用户声明名区分，防键碰撞静默复用）；
 // isSynth 为字面量合成布局（不参与键集匹配，保多命中拒不变）。
 type saClassDef struct {
-	name          string
-	fields        []saClassField
-	offsets       map[string]int
-	fkinds        map[string]string
-	fsub          map[string]string
+	name    string
+	fields  []saClassField
+	offsets map[string]int
+	fkinds  map[string]string
+	fsub    map[string]string
+	// jvstruct slice: jsonCast marks layouts synthesized by the json-cast
+	// materializer (saJsonSynthDef); farrElem/farrSub record array element
+	// kinds for synthetic layouts (named layouts resolve array elements
+	// via fdefs instead).
+	jsonCast      bool
+	farrElem      map[string]string
+	farrSub       map[string]string
 	fopt          map[string]bool
 	fpos          map[string]int
 	abstracts     map[string]int
@@ -1076,13 +1083,167 @@ func saLowerJsonCatchValue(w printer.EmitTextWriter, jsonCall *ast.CallExpressio
 
 type saJsonMember struct {
 	name string
-	kind string
+	kind string // "str" | "bool" | "i32" | "f64" | "inst" | "arr" | "jsval"
+	sub  string // inst sub-layout name (recorded class refs)
+	// arr element kind + sub-layout (inst elems); nested literal members
+	// carry kind "inst" with a nested member list instead of sub.
+	elem    string
+	elemSub string
+	nested  []saJsonMember
 }
 
-// saJsonCastMembers extracts the scalar members of a cast type: (members,
-// hasLayout). TypeLiteral casts always build a layout (bool/string/number
-// members; number -> f64); TypeReference casts use a claimed interface
-// layout's field kinds (str/bool/i32/f64 only); anything else falls through
+// saJsonElemKind resolves an array element type: scalars, the i32/bool
+// dialect refs, recorded class refs (inst), JsonValue (jsval). Nested
+// literals, nested arrays, unions, generics -> ok=false, and the enclosing
+// member is dropped (today's behavior).
+func saJsonElemKind(tn *ast.TypeNode, scope *saScope) (string, string, bool) {
+	if tn == nil {
+		return "", "", false
+	}
+	for tn != nil && tn.Kind == ast.KindParenthesizedType {
+		if pt := tn.AsParenthesizedTypeNode(); pt != nil {
+			tn = pt.Type
+		} else {
+			break
+		}
+	}
+	if tn == nil {
+		return "", "", false
+	}
+	switch tn.Kind {
+	case ast.KindBooleanKeyword:
+		return "bool", "", true
+	case ast.KindStringKeyword:
+		return "str", "", true
+	case ast.KindNumberKeyword:
+		return "f64", "", true
+	case ast.KindTypeReference:
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier || ref.TypeArguments != nil {
+			return "", "", false
+		}
+		switch ref.TypeName.Text() {
+		case "JsonValue":
+			return "jsval", "", true
+		case "i32":
+			return "i32", "", true
+		case "bool":
+			return "bool", "", true
+		}
+		if def, ok := scope.classes[ref.TypeName.Text()]; ok && def != nil {
+			return "inst", ref.TypeName.Text(), true
+		}
+	}
+	return "", "", false
+}
+
+// saJsonMemberFromType resolves a single member type into a materializable
+// json member. Scalars, recorded class refs (inst), JsonValue (jsval),
+// arrays of resolvable elements, and nested literals (kind "inst" with a
+// nested member list, synthesized at layout build time) resolve; anything
+// else (unions, any/unknown, generics, maps, dates, arrays of literals)
+// returns ok=false and the caller DROPS the member — today's behavior, so
+// the use site still refuses loudly on "unknown field". Depth-capped at 8
+// (nested literal recursion guard).
+func saJsonMemberFromType(name string, tn *ast.TypeNode, scope *saScope) (saJsonMember, bool) {
+	return saJsonMemberFromTypeDepth(name, tn, scope, 0)
+}
+
+func saJsonMemberFromTypeDepth(name string, tn *ast.TypeNode, scope *saScope, depth int) (saJsonMember, bool) {
+	if tn == nil || depth > 8 {
+		return saJsonMember{}, false
+	}
+	for tn != nil && tn.Kind == ast.KindParenthesizedType {
+		if pt := tn.AsParenthesizedTypeNode(); pt != nil {
+			tn = pt.Type
+		} else {
+			break
+		}
+	}
+	if tn == nil {
+		return saJsonMember{}, false
+	}
+	switch tn.Kind {
+	case ast.KindBooleanKeyword:
+		return saJsonMember{name: name, kind: "bool"}, true
+	case ast.KindStringKeyword:
+		return saJsonMember{name: name, kind: "str"}, true
+	case ast.KindNumberKeyword:
+		return saJsonMember{name: name, kind: "f64"}, true
+	case ast.KindTypeReference:
+		ref := tn.AsTypeReferenceNode()
+		if ref == nil || ref.TypeName == nil || ref.TypeName.Kind != ast.KindIdentifier {
+			return saJsonMember{}, false
+		}
+		if ref.TypeArguments == nil {
+			switch ref.TypeName.Text() {
+			case "JsonValue":
+				return saJsonMember{name: name, kind: "jsval"}, true
+			case "i32":
+				return saJsonMember{name: name, kind: "i32"}, true
+			case "bool":
+				return saJsonMember{name: name, kind: "bool"}, true
+			}
+			if def, ok := scope.classes[ref.TypeName.Text()]; ok && def != nil {
+				return saJsonMember{name: name, kind: "inst", sub: ref.TypeName.Text()}, true
+			}
+			return saJsonMember{}, false
+		}
+		if len(ref.TypeArguments.Nodes) == 1 && ref.TypeArguments.Nodes[0] != nil &&
+			(ref.TypeName.Text() == "Array" || ref.TypeName.Text() == "ReadonlyArray") {
+			if ek, esub, ok := saJsonElemKind(ref.TypeArguments.Nodes[0], scope); ok {
+				return saJsonMember{name: name, kind: "arr", elem: ek, elemSub: esub}, true
+			}
+		}
+		return saJsonMember{}, false
+	case ast.KindArrayType:
+		at := tn.AsArrayTypeNode()
+		if at == nil || at.ElementType == nil {
+			return saJsonMember{}, false
+		}
+		if ek, esub, ok := saJsonElemKind(at.ElementType, scope); ok {
+			return saJsonMember{name: name, kind: "arr", elem: ek, elemSub: esub}, true
+		}
+		return saJsonMember{}, false
+	case ast.KindTypeLiteral:
+		tl := tn.AsTypeLiteralNode()
+		if tl == nil || tl.Members == nil {
+			return saJsonMember{}, false
+		}
+		var nested []saJsonMember
+		for _, m := range tl.Members.Nodes {
+			if m == nil || m.Kind != ast.KindPropertySignature {
+				continue
+			}
+			fn := m.Name()
+			if fn == nil || fn.Kind != ast.KindIdentifier {
+				continue
+			}
+			pd := m.AsPropertySignatureDeclaration()
+			if pd == nil || pd.Type == nil {
+				continue
+			}
+			if nm, ok := saJsonMemberFromTypeDepth(fn.Text(), pd.Type, scope, depth+1); ok {
+				nested = append(nested, nm)
+			}
+		}
+		// An all-unresolvable (or empty) literal stays dropped, exactly as
+		// today; a partially resolvable literal keeps its resolvable
+		// members, mirroring the top-level partial behavior.
+		if len(nested) == 0 {
+			return saJsonMember{}, false
+		}
+		return saJsonMember{name: name, kind: "inst", nested: nested}, true
+	}
+	return saJsonMember{}, false
+}
+
+// saJsonCastMembers extracts the materializable members of a cast type:
+// TypeLiteral casts build a layout from their resolvable members; TypeReference
+// casts use a claimed layout's fields (scalars as before, plus inst/jsval
+// fields and array fields whose element kind resolves via fdefs). Members
+// whose type does not resolve are DROPPED (today's behavior — the use site
+// refuses loudly on "unknown field"); anything else falls through
 // (hasLayout=false, caller keeps the transparent as-cast behavior).
 func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) {
 	if tn == nil {
@@ -1106,13 +1267,8 @@ func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) 
 			if pd == nil || pd.Type == nil {
 				continue
 			}
-			switch pd.Type.Kind {
-			case ast.KindBooleanKeyword:
-				members = append(members, saJsonMember{fn.Text(), "bool"})
-			case ast.KindStringKeyword:
-				members = append(members, saJsonMember{fn.Text(), "str"})
-			case ast.KindNumberKeyword:
-				members = append(members, saJsonMember{fn.Text(), "f64"})
+			if nm, ok := saJsonMemberFromType(fn.Text(), pd.Type, scope); ok {
+				members = append(members, nm)
 			}
 		}
 		return members, true
@@ -1130,7 +1286,22 @@ func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) 
 		for _, f := range def.fields {
 			switch def.fkinds[f.name] {
 			case "str", "bool", "i32", "f64":
-				members = append(members, saJsonMember{f.name, def.fkinds[f.name]})
+				members = append(members, saJsonMember{name: f.name, kind: def.fkinds[f.name]})
+			case "inst":
+				if sub := def.fsub[f.name]; sub != "" {
+					members = append(members, saJsonMember{name: f.name, kind: "inst", sub: sub})
+				}
+			case "jsval":
+				members = append(members, saJsonMember{name: f.name, kind: "jsval"})
+			case "arr":
+				// Array element kind via the field's recorded TypeNode;
+				// unresolvable (or non-array fdefs) keeps the member
+				// dropped, as today.
+				if etn, ok := def.fdefs[f.name]; ok && etn != nil {
+					if em, ok2 := saJsonMemberFromType(f.name, etn, scope); ok2 && em.kind == "arr" {
+						members = append(members, em)
+					}
+				}
 			}
 		}
 		return members, true
@@ -1138,20 +1309,37 @@ func saJsonCastMembers(tn *ast.TypeNode, scope *saScope) ([]saJsonMember, bool) 
 	return nil, false
 }
 
-// saLowerJsonCast extracts a json node's scalar members into a fresh
-// synthetic inst layout and returns (layoutName, structTemp). The struct
-// temp is saOwnTemp'd.
-func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMember, scope *saScope, nextTemp *int) (string, string) {
-	scope.addImport("sa_std/encoding/json.sai")
+// saJsonSynthDef builds + registers a synthetic inst layout from json
+// members (offsets/kinds/subs/arr-elem info), marked jsonCast so the widen
+// guard and the narrow return arm can recognize materializer output.
+// Nested literal members synthesize their sub-layouts eagerly, in member
+// order (label numbering for programs without nested members is unchanged).
+func saJsonSynthDef(members []saJsonMember, scope *saScope) *saClassDef {
 	lname := fmt.Sprintf("__JsonCast_%d", *scope.nextLabel)
 	*scope.nextLabel++
 	offsets := map[string]int{}
 	fkinds := map[string]string{}
+	fsub := map[string]string{}
+	farrElem := map[string]string{}
+	farrSub := map[string]string{}
 	off := 0
 	for _, m := range members {
 		off = saAlignOff(off, m.kind)
 		offsets[m.name] = off
 		fkinds[m.name] = m.kind
+		if m.kind == "inst" {
+			if m.sub != "" {
+				fsub[m.name] = m.sub
+			} else if m.nested != nil {
+				fsub[m.name] = saJsonSynthDef(m.nested, scope).name
+			}
+		}
+		if m.kind == "arr" {
+			farrElem[m.name] = m.elem
+			if m.elemSub != "" {
+				farrSub[m.name] = m.elemSub
+			}
+		}
 		width, _ := saFieldWidth(m.kind)
 		off += width
 	}
@@ -1159,20 +1347,152 @@ func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMemb
 	for _, m := range members {
 		fields = append(fields, saClassField{name: m.name, offset: offsets[m.name]})
 	}
-	scope.classes[lname] = &saClassDef{
+	def := &saClassDef{
 		name: lname, fields: fields, offsets: offsets, fkinds: fkinds,
-		fsub: map[string]string{}, fopt: map[string]bool{}, fpos: map[string]int{},
+		fsub: fsub, farrElem: farrElem, farrSub: farrSub,
+		fopt: map[string]bool{}, fpos: map[string]int{},
 		methods: map[string]*ast.Node{}, getters: map[string]*ast.Node{},
 		setters: map[string]*ast.Node{}, statics: map[string]saStaticVal{},
-		size: off, isSynth: true,
+		size: off, isSynth: true, jsonCast: true,
 	}
+	scope.classes[lname] = def
+	return def
+}
+
+// saJsonArrElemOf resolves a layout field's array element kind: synthetic
+// layouts carry farrElem/farrSub; named layouts resolve via the field's
+// recorded TypeNode. Anything else is a loud refusal — never a silent drop
+// at this level (the decl path drops unresolvable members earlier, so
+// reaching here with an unresolvable element means a named target layout
+// the return arm cannot build).
+func saJsonArrElemOf(def *saClassDef, field string, scope *saScope) (string, string, string) {
+	if ek, ok := def.farrElem[field]; ok && ek != "" {
+		return ek, def.farrSub[field], ""
+	}
+	if tn, ok := def.fdefs[field]; ok && tn != nil {
+		if em, ok2 := saJsonMemberFromType(field, tn, scope); ok2 && em.kind == "arr" {
+			return em.elem, em.elemSub, ""
+		}
+	}
+	return "", "", "json array field " + field + " has no materializable element type"
+}
+
+// saBoxJsonJsVal boxes a json node handle as a jsval box, mapping the
+// node's json kind to the jsval box kind (object->4, array->5, string->1,
+// null->6; bool/number nodes box as kind 4 carrying the node handle —
+// jsval member reads stay out of this slice, so the box is never unboxed
+// here; the binding itself flips, as today).
+func saBoxJsonJsVal(w printer.EmitTextWriter, node string, scope *saScope, nextTemp *int) string {
+	scope.addImport("sa_std/encoding/json.sai")
+	scope.addImport("sa_std/ts_jsval.sa")
+	k := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_kind(%s)\n", k, node))
+	slot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+	chkArr := fmt.Sprintf("L_jbox_chkarr_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	chkStr := fmt.Sprintf("L_jbox_chkstr_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	chkNull := fmt.Sprintf("L_jbox_chknull_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	objL := fmt.Sprintf("L_jbox_obj_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	arrL := fmt.Sprintf("L_jbox_arr_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	strL := fmt.Sprintf("L_jbox_str_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	nullL := fmt.Sprintf("L_jbox_null_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	otherL := fmt.Sprintf("L_jbox_other_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jbox_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	isObj := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 7\n", isObj, k))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isObj, objL, chkArr))
+	w.Write(fmt.Sprintf("%s:\n", chkArr))
+	isArr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 6\n", isArr, k))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isArr, arrL, chkStr))
+	w.Write(fmt.Sprintf("%s:\n", chkStr))
+	isStr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 5\n", isStr, k))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isStr, strL, chkNull))
+	w.Write(fmt.Sprintf("%s:\n", chkNull))
+	isNull := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = eq %s, 0\n", isNull, k))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", isNull, nullL, otherL))
+	w.Write(fmt.Sprintf("%s:\n", objL))
+	w.Write(fmt.Sprintf("  store %s + 0, 4 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", arrL))
+	w.Write(fmt.Sprintf("  store %s + 0, 5 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", strL))
+	w.Write(fmt.Sprintf("  store %s + 0, 1 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", nullL))
+	w.Write(fmt.Sprintf("  store %s + 0, 6 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", otherL))
+	w.Write(fmt.Sprintf("  store %s + 0, 4 as i32\n", slot))
+	w.Write(fmt.Sprintf("  jmp %s\n", endL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	kind := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as i32\n", kind, slot))
+	w.Write(fmt.Sprintf("  !%s\n", slot))
+	box := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @ts_jsval_box_ptr(%s, %s)\n", box, kind, node))
+	return box
+}
+
+// saReleaseBranchOwned releases, in reverse order, the owned temps added
+// since mark (saReleaseOwnedTemp skips non-temps, consumed, released, and
+// non-heap names). Call it inside a branch/loop body before the jump to
+// the join label: a temp defined inside a branch and drained at function
+// end is UnknownRegister at the drain point (the h1 precedent in
+// saLowerArrayLiteral's oob arm, sa_arr.go: the branch-local owned names
+// must be released inside the branch). Values escaping the branch (the
+// nested block / array handle stored into the parent slot) are UNOWNED by
+// construction, so they are never in ownOrder and never released here;
+// the branch-local key handles from saLowerStringLiteral are the names
+// this exists for (they are dead after their get_* call).
+func saReleaseBranchOwned(w printer.EmitTextWriter, scope *saScope, mark int) {
+	for i := len(scope.ownOrder) - 1; i >= mark; i-- {
+		saReleaseOwnedTemp(w, scope, scope.ownOrder[i])
+	}
+}
+
+// saLowerJsonIntoLayout extracts a json node handle into a fresh block of
+// the given layout and returns the UNOWNED block temp (callers own the top
+// handle; nested blocks and array handles stored into slots stay unowned
+// children, mirroring the str-handle pattern). Scalar members use the
+// existing get_* accessors verbatim (missing keys read the fresh slot
+// default, as in the old saLowerJsonCast); inst/arr/jsval members pre-zero
+// their handle slot so a missing key yields a null handle, and a null
+// handle stores 0 without recursing. A field kind the extractor cannot
+// build (map/set/date/...) returns a loud refusal, never a silent drop.
+func saLowerJsonIntoLayout(w printer.EmitTextWriter, node string, def *saClassDef, scope *saScope, nextTemp *int) (string, string) {
+	scope.addImport("sa_std/encoding/json.sai")
 	st := fmt.Sprintf("t_%d", *nextTemp)
 	*nextTemp++
-	w.Write(fmt.Sprintf("  %s = alloc %d\n", st, off))
-	for _, m := range members {
-		kh := saLowerStringLiteral(w, m.name, scope, nextTemp)
+	w.Write(fmt.Sprintf("  %s = alloc %d\n", st, def.size))
+	for _, f := range def.fields {
+		fk := def.fkinds[f.name]
+		if fk == "" {
+			fk = "i32"
+		}
+		kh := saLowerStringLiteral(w, f.name, scope, nextTemp)
 		kbp, kbl := saExpandStr(w, kh, nextTemp)
-		switch m.kind {
+		switch fk {
 		case "bool":
 			slot := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
@@ -1187,7 +1507,7 @@ func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMemb
 			v := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v, v8))
-			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, def.offsets[f.name], v))
 			w.Write(fmt.Sprintf("  !%s\n", slot))
 		case "str":
 			pslot := fmt.Sprintf("t_%d", *nextTemp)
@@ -1211,7 +1531,7 @@ func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMemb
 			w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
 			w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, p))
 			w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, l))
-			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, offsets[m.name], h))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, def.offsets[f.name], h))
 			w.Write(fmt.Sprintf("  !%s\n", pslot))
 			w.Write(fmt.Sprintf("  !%s\n", lslot))
 		case "f64":
@@ -1225,7 +1545,7 @@ func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMemb
 			v := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", v, slot))
-			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as f64\n", st, def.offsets[f.name], v))
 			w.Write(fmt.Sprintf("  !%s\n", slot))
 		case "i32":
 			slot := fmt.Sprintf("t_%d", *nextTemp)
@@ -1241,12 +1561,289 @@ func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMemb
 			v := fmt.Sprintf("t_%d", *nextTemp)
 			*nextTemp++
 			w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v, v64))
-			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, offsets[m.name], v))
+			w.Write(fmt.Sprintf("  store %s + %d, %s as i32\n", st, def.offsets[f.name], v))
 			w.Write(fmt.Sprintf("  !%s\n", slot))
+		case "inst":
+			subDef, ok := scope.classes[def.fsub[f.name]]
+			if !ok || subDef == nil {
+				return "", "json struct member " + f.name + " has no recorded sub-layout"
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", h, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			z := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", z, h))
+			zeroL := fmt.Sprintf("L_jinst_zero_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nzL := fmt.Sprintf("L_jinst_nz_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jinst_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", z, zeroL, nzL))
+			w.Write(fmt.Sprintf("%s:\n", zeroL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", st, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", nzL))
+			branchMark := len(scope.ownOrder)
+			sub, msg := saLowerJsonIntoLayout(w, h, subDef, scope, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, def.offsets[f.name], sub))
+			// jvstruct drain fix: the recursive extraction's key handles
+			// are owned temps defined inside this nz branch; draining them
+			// at function end would be UnknownRegister. Release them here,
+			// before the join jump (saReleaseBranchOwned precedent above).
+			saReleaseBranchOwned(w, scope, branchMark)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+		case "arr":
+			elem, elemSub, msg := saJsonArrElemOf(def, f.name, scope)
+			if msg != "" {
+				return "", msg
+			}
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", h, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			z := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", z, h))
+			zeroL := fmt.Sprintf("L_jarr_zero_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nzL := fmt.Sprintf("L_jarr_nz_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jarr_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", z, zeroL, nzL))
+			w.Write(fmt.Sprintf("%s:\n", zeroL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", st, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", nzL))
+			branchMark := len(scope.ownOrder)
+			arr, msg := saLowerJsonArray(w, h, elem, elemSub, scope, nextTemp)
+			if msg != "" {
+				return "", msg
+			}
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, def.offsets[f.name], arr))
+			// jvstruct drain fix: same branch-local owned-temp rule as the
+			// inst arm above (the array loop body's own releases are
+			// handled inside saLowerJsonArray; this covers any other owned
+			// temp the array call adds inside this branch).
+			saReleaseBranchOwned(w, scope, branchMark)
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+		case "jsval":
+			slot := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+			w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", slot))
+			gr := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = call @sa_json_object_get(%s, &%s, %s, &%s)\n", gr, node, kbp, kbl, slot))
+			saReleaseStmtTemp(w, scope, gr)
+			h := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", h, slot))
+			w.Write(fmt.Sprintf("  !%s\n", slot))
+			z := fmt.Sprintf("t_%d", *nextTemp)
+			*nextTemp++
+			w.Write(fmt.Sprintf("  %s = eq %s, 0\n", z, h))
+			zeroL := fmt.Sprintf("L_jval_zero_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			nzL := fmt.Sprintf("L_jval_nz_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			endL := fmt.Sprintf("L_jval_end_%d", *scope.nextLabel)
+			*scope.nextLabel++
+			w.Write(fmt.Sprintf("  br %s -> %s, %s\n", z, zeroL, nzL))
+			w.Write(fmt.Sprintf("%s:\n", zeroL))
+			w.Write(fmt.Sprintf("  store %s + %d, 0 as ptr\n", st, def.offsets[f.name]))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", nzL))
+			box := saBoxJsonJsVal(w, h, scope, nextTemp)
+			w.Write(fmt.Sprintf("  store %s + %d, %s as ptr\n", st, def.offsets[f.name], box))
+			w.Write(fmt.Sprintf("  jmp %s\n", endL))
+			w.Write(fmt.Sprintf("%s:\n", endL))
+		default:
+			return "", "json struct member " + f.name + " has unmaterializable kind " + fk
 		}
 	}
+	return st, ""
+}
+
+// saLowerJsonArray materializes a json array node handle into a fresh array
+// handle (16-byte {ptr, len} header, word elements via @ts_arr_push_word,
+// mirroring array literals) and returns the UNOWNED handle (callers own a
+// returned array; struct-stored arrays stay unowned children). Element
+// kinds: f64/i32/bool via the as_* accessors, str via string_ptr/len
+// handles, inst via recursive layout extraction, jsval via boxing.
+func saLowerJsonArray(w printer.EmitTextWriter, node, elemKind, elemSub string, scope *saScope, nextTemp *int) (string, string) {
+	switch elemKind {
+	case "f64", "i32", "bool", "str", "jsval":
+	case "inst":
+		if subDef, ok := scope.classes[elemSub]; !ok || subDef == nil {
+			return "", "json array element has no recorded sub-layout"
+		}
+	default:
+		return "", "json array element kind " + elemKind + " is not materializable"
+	}
+	scope.addImport("sa_std/encoding/json.sai")
+	cslot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", cslot))
+	gr := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_value_count(%s, &%s)\n", gr, node, cslot))
+	saReleaseStmtTemp(w, scope, gr)
+	cnt := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", cnt, cslot))
+	w.Write(fmt.Sprintf("  !%s\n", cslot))
+	arr := saNewEmptyArray(w, nextTemp)
+	islot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", islot))
+	w.Write(fmt.Sprintf("  store %s + 0, 0 as u64\n", islot))
+	eslot := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = alloc 8\n", eslot))
+	loopL := fmt.Sprintf("L_jarr_loop_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	bodyL := fmt.Sprintf("L_jarr_body_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	endL := fmt.Sprintf("L_jarr_end_%d", *scope.nextLabel)
+	*scope.nextLabel++
+	w.Write(fmt.Sprintf("%s:\n", loopL))
+	iv := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", iv, islot))
+	ok := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = ult %s, %s\n", ok, iv, cnt))
+	w.Write(fmt.Sprintf("  br %s -> %s, %s\n", ok, bodyL, endL))
+	w.Write(fmt.Sprintf("%s:\n", bodyL))
+	bodyMark := len(scope.ownOrder)
+	gr2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = call @sa_json_array_get(%s, %s, &%s)\n", gr2, node, iv, eslot))
+	saReleaseStmtTemp(w, scope, gr2)
+	en := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = load %s + 0 as u64\n", en, eslot))
+	switch elemKind {
+	case "f64":
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		gr3 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_as_f64(%s, &%s)\n", gr3, en, slot))
+		saReleaseStmtTemp(w, scope, gr3)
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as f64\n", v, slot))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		saLowerArrayPush(w, arr, v, scope, nextTemp)
+	case "i32":
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		gr3 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_as_i64(%s, &%s)\n", gr3, en, slot))
+		saReleaseStmtTemp(w, scope, gr3)
+		v64 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as i64\n", v64, slot))
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = trunc %s as i32\n", v, v64))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		saLowerArrayPush(w, arr, v, scope, nextTemp)
+	case "bool":
+		slot := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 8\n", slot))
+		gr3 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_as_bool(%s, &%s)\n", gr3, en, slot))
+		saReleaseStmtTemp(w, scope, gr3)
+		v8 := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = load %s + 0 as u8\n", v8, slot))
+		v := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = zext %s as i32\n", v, v8))
+		w.Write(fmt.Sprintf("  !%s\n", slot))
+		saLowerArrayPush(w, arr, v, scope, nextTemp)
+	case "str":
+		p := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_string_ptr(%s)\n", p, en))
+		l := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = call @sa_json_string_len(%s)\n", l, en))
+		h := fmt.Sprintf("t_%d", *nextTemp)
+		*nextTemp++
+		w.Write(fmt.Sprintf("  %s = alloc 16\n", h))
+		w.Write(fmt.Sprintf("  store %s + 0, %s as ptr\n", h, p))
+		w.Write(fmt.Sprintf("  store %s + 8, %s as u64\n", h, l))
+		saLowerArrayPush(w, arr, h, scope, nextTemp)
+	case "inst":
+		sub, msg := saLowerJsonIntoLayout(w, en, scope.classes[elemSub], scope, nextTemp)
+		if msg != "" {
+			return "", msg
+		}
+		saLowerArrayPush(w, arr, sub, scope, nextTemp)
+	case "jsval":
+		box := saBoxJsonJsVal(w, en, scope, nextTemp)
+		saLowerArrayPush(w, arr, box, scope, nextTemp)
+	}
+	// jvstruct drain fix: element lowering inside this loop body defines
+	// owned temps (inst-element key handles from the recursive extraction)
+	// that must not survive to the function-end drain — release them here,
+	// before the back-edge jump (same rule as saReleaseBranchOwned).
+	saReleaseBranchOwned(w, scope, bodyMark)
+	iv2 := fmt.Sprintf("t_%d", *nextTemp)
+	*nextTemp++
+	w.Write(fmt.Sprintf("  %s = add %s, 1\n", iv2, iv))
+	w.Write(fmt.Sprintf("  store %s + 0, %s as u64\n", islot, iv2))
+	w.Write(fmt.Sprintf("  jmp %s\n", loopL))
+	w.Write(fmt.Sprintf("%s:\n", endL))
+	w.Write(fmt.Sprintf("  !%s\n", islot))
+	w.Write(fmt.Sprintf("  !%s\n", eslot))
+	return arr, ""
+}
+
+// saLowerJsonCast extracts a json node's members into a fresh synthetic
+// inst layout and returns (layoutName, structTemp, msg). The struct temp
+// is saOwnTemp'd; a non-empty msg is a loud refusal for the caller.
+func saLowerJsonCast(w printer.EmitTextWriter, node string, members []saJsonMember, scope *saScope, nextTemp *int) (string, string, string) {
+	def := saJsonSynthDef(members, scope)
+	st, msg := saLowerJsonIntoLayout(w, node, def, scope, nextTemp)
+	if msg != "" {
+		return "", "", msg
+	}
 	saOwnTemp(scope, st)
-	return lname, st
+	return def.name, st, ""
 }
 
 // saLowerStdOpaqueNew lowers `new X(...)` for an opaque std class to a fresh

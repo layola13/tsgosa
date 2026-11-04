@@ -1087,6 +1087,21 @@ func saWidenInstValueDepth(w printer.EmitTextWriter, src, srcKind, tgtKind strin
 	if !ok {
 		return "", "", false
 	}
+	// jvstruct slice, W guard: widening a json-cast value into a layout
+	// with a REQUIRED inst field the synthetic lacks would zero-fill that
+	// slot and let the caller dereference a 0 pointer (H3). Refuse loudly
+	// instead. Optional target fields keep their absent-zero-fill, and
+	// non-json sources are untouched (their zero-fill is existing
+	// behavior, out of this slice).
+	if srcDef.jsonCast {
+		for _, f := range tgtDef.fields {
+			if tgtDef.fkinds[f.name] == "inst" && !tgtDef.fopt[f.name] {
+				if _, ok := srcDef.fkinds[f.name]; !ok {
+					return "", "struct widening refused: json-cast value lacks required struct field " + f.name + " in target layout", true
+				}
+			}
+		}
+	}
 	if msg := saWidenCompatible(srcDef, tgtDef, scope, depth); msg != "" {
 		return "", msg, true
 	}
@@ -1281,6 +1296,54 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 			return "", "map return needs matching map value"
 		}
 	}
+	// jvstruct slice: return-operand json materialization (R arms). A
+	// `return (await) response.json() as T` operand is lowered into the
+	// TARGET layout (retKind), never the cast layout: scalars via the
+	// existing get_* extraction, non-scalar members per the D arms. This
+	// arm sits before the arr/direct-call arms, which previously let the
+	// sync twin flip returning the raw @sa_json_parse node handle (H1)
+	// and the array twin flip returning the node handle as Cfg[] (H2).
+	// Unsupported targets/elements refuse LOUDLY — never fall through to
+	// the node-handle path. Other retKinds (jsval/string/...) and
+	// non-json operands fall through untouched.
+	if e != nil && e.Kind == ast.KindAsExpression {
+		if ae := e.AsAsExpression(); ae != nil && ae.Expression != nil {
+			if jcall, hasCatch, jmsg := saJsonValueOf(ae.Expression, scope); jmsg != "" {
+				return "", jmsg
+			} else if jcall != nil {
+				var node string
+				if hasCatch {
+					node = saLowerJsonCatchValue(w, jcall, scope, nextTemp)
+				} else {
+					node = saLowerJsonNode(w, jcall, scope, nextTemp)
+				}
+				if strings.HasPrefix(retKind, "inst:") {
+					tgtDef, ok := scope.classes[retKind[5:]]
+					if !ok || tgtDef == nil {
+						return "", "struct return needs matching struct value"
+					}
+					h, msg := saLowerJsonIntoLayout(w, node, tgtDef, scope, nextTemp)
+					if msg != "" {
+						return "", msg
+					}
+					saOwnTemp(scope, h)
+					return h, ""
+				}
+				if retKind == "arr" || retKind == "arrStr" {
+					if em, ok := saJsonMemberFromType("", ae.Type, scope); !ok || em.kind != "arr" {
+						return "", "json array return needs a materializable element type"
+					} else {
+						h, msg := saLowerJsonArray(w, node, em.elem, em.elemSub, scope, nextTemp)
+						if msg != "" {
+							return "", msg
+						}
+						saOwnTemp(scope, h)
+						return h, ""
+					}
+				}
+			}
+		}
+	}
 	// 数组返回：同种句柄直传（`return a` 见上；字面量/数组调用经句柄通道；
 	// 注解擦除位：串值具化柄、i32 值直通（上游 `return 5`/`return t_2` 同形）；
 	// map/inst 返回同律；串元 arrStr 与 arr 同门）。
@@ -1432,6 +1495,28 @@ func saEvalReturnOperand(w printer.EmitTextWriter, e *ast.Node, retKind string, 
 	if e != nil && e.Kind == ast.KindIdentifier {
 		if k, ok := scope.types[e.Text()]; ok && k == "f64" {
 			return e.Text(), ""
+		}
+	}
+	// jvstruct slice, narrow D-sub-arm: return a struct field of a
+	// json-cast synthetic base (`return b.data` where b is a decl-cast
+	// binding) when the field's sub-layout is EXACTLY the return layout.
+	// Scoped by the jsonCast marker, which only saJsonSynthDef sets, so
+	// general field-read returns (fieldret territory, non-synthetic bases)
+	// still refuse at the tail below. Mismatches fall through untouched.
+	if e != nil && e.Kind == ast.KindPropertyAccessExpression {
+		if pa := e.AsPropertyAccessExpression(); pa != nil && pa.QuestionDotToken == nil &&
+			pa.Expression != nil && pa.Expression.Kind == ast.KindIdentifier &&
+			pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier &&
+			strings.HasPrefix(retKind, "inst:") {
+			if bk, ok := scope.types[pa.Expression.Text()]; ok && strings.HasPrefix(bk, "inst:") {
+				if def, ok := scope.classes[bk[5:]]; ok && def != nil && def.jsonCast {
+					if fld := pa.Name().Text(); def.fkinds[fld] == "inst" && def.fsub[fld] == retKind[5:] {
+						if h, msg := saLowerClassFieldLoad(w, pa.Expression.Text(), def, fld, scope, nextTemp); msg == "" {
+							return h, ""
+						}
+					}
+				}
+			}
 		}
 	}
 	op, msg := saEvalI32(w, e, scope, pos, refusals, nextTemp)

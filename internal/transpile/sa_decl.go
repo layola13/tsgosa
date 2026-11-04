@@ -1372,7 +1372,12 @@ func saLowerInferredDecl(w printer.EmitTextWriter, d *ast.Node, vd *ast.Variable
 					} else {
 						node = saLowerJsonNode(w, jcall, scope, nextTemp)
 					}
-					lname, h := saLowerJsonCast(w, node, members, scope, nextTemp)
+					lname, h, msg := saLowerJsonCast(w, node, members, scope, nextTemp)
+					if msg != "" {
+						ln, col := pos(vd.Initializer.Pos())
+						*refusals = append(*refusals, SARefusal{Line: ln, Col: col, Msg: msg})
+						return false
+					}
 					w.Write(fmt.Sprintf("  %s = %s\n", name, h))
 					scope.types[name] = "inst:" + lname
 					saConsumeOwn(scope, h)
